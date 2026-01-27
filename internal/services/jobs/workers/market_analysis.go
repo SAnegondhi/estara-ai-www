@@ -1,0 +1,405 @@
+package workers
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/estara-ai/www/internal/services/ai/agents"
+	"github.com/estara-ai/www/internal/services/cache"
+	"github.com/estara-ai/www/internal/services/jobs/queue"
+	"github.com/estara-ai/www/internal/services/market/aggregator"
+)
+
+// MarketAnalysisWorker processes market analysis jobs
+type MarketAnalysisWorker struct {
+	orchestrator *agents.DualAgentOrchestrator
+	market       *aggregator.Aggregator
+	cache        *cache.HybridCache
+	logger       *slog.Logger
+}
+
+// MarketAnalysisWorkerConfig holds configuration for the worker
+type MarketAnalysisWorkerConfig struct {
+	Orchestrator *agents.DualAgentOrchestrator
+	Market       *aggregator.Aggregator
+	Cache        *cache.HybridCache
+}
+
+// NewMarketAnalysisWorker creates a new market analysis worker
+func NewMarketAnalysisWorker(cfg MarketAnalysisWorkerConfig) *MarketAnalysisWorker {
+	return &MarketAnalysisWorker{
+		orchestrator: cfg.Orchestrator,
+		market:       cfg.Market,
+		cache:        cfg.Cache,
+		logger:       slog.Default().With("component", "market_analysis_worker"),
+	}
+}
+
+// GetHandler returns the job handler function
+func (w *MarketAnalysisWorker) GetHandler() queue.JobHandler {
+	return func(ctx context.Context, job *queue.Job, progress chan<- queue.ProgressEvent) (*queue.JobResult, error) {
+		return w.Process(ctx, job, progress)
+	}
+}
+
+// Process executes a market analysis job
+func (w *MarketAnalysisWorker) Process(
+	ctx context.Context,
+	job *queue.Job,
+	progress chan<- queue.ProgressEvent,
+) (*queue.JobResult, error) {
+	startTime := time.Now()
+	w.logger.Info("processing market analysis job",
+		"job_id", job.ID,
+		"user_id", job.UserID,
+	)
+
+	// Parse job parameters
+	req, err := w.parseJobParams(job)
+	if err != nil {
+		return w.failedResult(job, fmt.Errorf("invalid job parameters: %w", err))
+	}
+
+	// Check cache first (unless force refresh)
+	if !req.ForceRefresh && req.CacheKey != "" {
+		if cached, err := w.checkCache(ctx, job.UserID, req.CacheKey); err == nil && cached != nil {
+			w.logger.Info("returning cached analysis",
+				"job_id", job.ID,
+				"cache_key", req.CacheKey,
+			)
+			w.reportProgress(progress, job.ID, 100, "Retrieved from cache")
+			return &queue.JobResult{
+				JobID:       job.ID,
+				Status:      queue.JobStatusCompleted,
+				Data:        w.resultToMap(cached),
+				Duration:    time.Since(startTime),
+				CompletedAt: time.Now(),
+			}, nil
+		}
+	}
+
+	// Report initial progress
+	w.reportProgress(progress, job.ID, 5, "Starting market analysis")
+
+	// Step 1: Fetch market data (20%)
+	w.reportProgress(progress, job.ID, 10, "Fetching market data")
+	marketData, err := w.fetchMarketData(ctx, req.Location)
+	if err != nil {
+		w.logger.Warn("failed to fetch market data, using provided data", "error", err)
+		// Use provided market data if available
+		if req.MarketData != nil {
+			marketData = w.convertMarketData(req.MarketData)
+		}
+	}
+
+	// Step 2: Build analysis context (30%)
+	w.reportProgress(progress, job.ID, 25, "Building analysis context")
+	analysisCtx := w.buildAnalysisContext(req.Location, marketData)
+
+	// Step 3: Run dual-agent analysis (80%)
+	w.reportProgress(progress, job.ID, 35, "Running metrics analysis")
+
+	// Create analysis request for orchestrator
+	orchReq := agents.AnalysisRequest{
+		Location:   req.Location,
+		CacheKey:   req.CacheKey,
+		MarketData: w.contextToMap(analysisCtx),
+	}
+
+	// Create a channel to receive streaming events
+	eventCh := make(chan agents.AnalysisEvent, 100)
+	var analysisResult *agents.AnalysisResult
+	var analysisErr error
+
+	// Run analysis with streaming
+	go func() {
+		analysisResult, analysisErr = w.orchestrator.Analyze(ctx, orchReq)
+		close(eventCh)
+	}()
+
+	// Forward events to progress channel
+	for event := range eventCh {
+		switch event.Type {
+		case agents.AnalysisEventMetrics:
+			w.reportProgress(progress, job.ID, 50, "Metrics analysis complete")
+		case agents.AnalysisEventNarrative:
+			w.reportProgress(progress, job.ID, 70, "Narrative analysis complete")
+		case agents.AnalysisEventCombined:
+			w.reportProgress(progress, job.ID, 85, "Combining insights")
+		}
+	}
+
+	if analysisErr != nil {
+		return w.failedResult(job, fmt.Errorf("analysis failed: %w", analysisErr))
+	}
+
+	// Step 4: Build result (90%)
+	w.reportProgress(progress, job.ID, 90, "Finalizing results")
+
+	// Convert map analysis results to JSON strings for storage
+	metricsJSON, _ := json.Marshal(analysisResult.MetricsAnalysis)
+	narrativeJSON, _ := json.Marshal(analysisResult.NarrativeAnalysis)
+	combinedJSON, _ := json.Marshal(analysisResult.CombinedReport)
+
+	result := &agents.MarketAnalysisResult{
+		Location:          req.Location,
+		MetricsAnalysis:   string(metricsJSON),
+		NarrativeAnalysis: string(narrativeJSON),
+		CombinedInsight:   string(combinedJSON),
+		MarketData:        *marketData,
+		Confidence:        analysisResult.Confidence,
+		GeneratedAt:       time.Now(),
+	}
+
+	// Step 5: Cache result (95%)
+	w.reportProgress(progress, job.ID, 95, "Caching results")
+	if req.CacheKey != "" {
+		if err := w.cacheResult(ctx, job.UserID, req.CacheKey, result); err != nil {
+			w.logger.Warn("failed to cache result", "error", err)
+		}
+	}
+
+	// Complete
+	w.reportProgress(progress, job.ID, 100, "Market analysis complete")
+
+	duration := time.Since(startTime)
+	w.logger.Info("market analysis job complete",
+		"job_id", job.ID,
+		"duration_ms", duration.Milliseconds(),
+		"location", req.Location,
+		"confidence", result.Confidence,
+	)
+
+	return &queue.JobResult{
+		JobID:       job.ID,
+		Status:      queue.JobStatusCompleted,
+		Data:        w.resultToMap(result),
+		Duration:    duration,
+		CompletedAt: time.Now(),
+	}, nil
+}
+
+// parseJobParams extracts analysis parameters from job payload
+func (w *MarketAnalysisWorker) parseJobParams(job *queue.Job) (*agents.MarketAnalysisRequest, error) {
+	req := &agents.MarketAnalysisRequest{}
+
+	if location, ok := job.Payload["location"].(string); ok {
+		req.Location = location
+	} else {
+		return nil, fmt.Errorf("location not specified")
+	}
+
+	if cacheKey, ok := job.Payload["cacheKey"].(string); ok {
+		req.CacheKey = cacheKey
+	}
+
+	if forceRefresh, ok := job.Payload["forceRefresh"].(bool); ok {
+		req.ForceRefresh = forceRefresh
+	}
+
+	if marketData, ok := job.Payload["marketData"].(map[string]interface{}); ok {
+		req.MarketData = marketData
+	}
+
+	return req, nil
+}
+
+// fetchMarketData retrieves market data from the aggregator
+func (w *MarketAnalysisWorker) fetchMarketData(ctx context.Context, location string) (*agents.MarketDataSummary, error) {
+	if w.market == nil {
+		return &agents.MarketDataSummary{}, fmt.Errorf("market aggregator not configured")
+	}
+
+	// Parse location
+	parts := strings.Split(location, ",")
+	city := strings.TrimSpace(parts[0])
+	state := ""
+	if len(parts) > 1 {
+		state = strings.TrimSpace(parts[1])
+	}
+
+	// Fetch from aggregator
+	data, err := w.market.GetMarketData(ctx, city, state)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to summary
+	summary := &agents.MarketDataSummary{
+		MedianHomePrice: data.MedianHomePrice,
+		MedianRent:      data.MedianRent,
+		PriceChange1Y:   data.YearOverYearPct,
+		RentChange1Y:    data.RentYearOverYear,
+		MortgageRate:    data.MortgageRate30,
+	}
+
+	// Set default inventory level based on confidence
+	if data.Confidence >= 0.8 {
+		summary.InventoryLevel = "normal"
+	} else {
+		summary.InventoryLevel = "unknown"
+	}
+
+	return summary, nil
+}
+
+// convertMarketData converts map to MarketDataSummary
+func (w *MarketAnalysisWorker) convertMarketData(data map[string]interface{}) *agents.MarketDataSummary {
+	summary := &agents.MarketDataSummary{}
+
+	if v, ok := data["medianHomePrice"].(float64); ok {
+		summary.MedianHomePrice = int(v)
+	}
+	if v, ok := data["medianRent"].(float64); ok {
+		summary.MedianRent = int(v)
+	}
+	if v, ok := data["priceChange1Y"].(float64); ok {
+		summary.PriceChange1Y = v
+	}
+	if v, ok := data["rentChange1Y"].(float64); ok {
+		summary.RentChange1Y = v
+	}
+	if v, ok := data["mortgageRate"].(float64); ok {
+		summary.MortgageRate = v
+	}
+	if v, ok := data["daysOnMarket"].(float64); ok {
+		summary.DaysOnMarket = int(v)
+	}
+	if v, ok := data["inventoryLevel"].(string); ok {
+		summary.InventoryLevel = v
+	}
+
+	return summary
+}
+
+// buildAnalysisContext creates context for AI analysis
+func (w *MarketAnalysisWorker) buildAnalysisContext(location string, marketData *agents.MarketDataSummary) *agents.AnalysisContext {
+	parts := strings.Split(location, ",")
+	city := strings.TrimSpace(parts[0])
+	state := ""
+	if len(parts) > 1 {
+		state = strings.TrimSpace(parts[1])
+	}
+
+	ctx := &agents.AnalysisContext{
+		Location: location,
+		City:     city,
+		State:    state,
+	}
+
+	if marketData != nil {
+		ctx.MarketData = *marketData
+	}
+
+	return ctx
+}
+
+// contextToMap converts AnalysisContext to map for orchestrator
+func (w *MarketAnalysisWorker) contextToMap(ctx *agents.AnalysisContext) map[string]interface{} {
+	return map[string]interface{}{
+		"location":        ctx.Location,
+		"city":            ctx.City,
+		"state":           ctx.State,
+		"medianHomePrice": ctx.MarketData.MedianHomePrice,
+		"medianRent":      ctx.MarketData.MedianRent,
+		"priceChange1Y":   ctx.MarketData.PriceChange1Y,
+		"rentChange1Y":    ctx.MarketData.RentChange1Y,
+		"mortgageRate":    ctx.MarketData.MortgageRate,
+		"daysOnMarket":    ctx.MarketData.DaysOnMarket,
+		"inventoryLevel":  ctx.MarketData.InventoryLevel,
+	}
+}
+
+// checkCache checks for cached analysis result
+func (w *MarketAnalysisWorker) checkCache(ctx context.Context, userID, cacheKey string) (*agents.MarketAnalysisResult, error) {
+	if w.cache == nil {
+		return nil, fmt.Errorf("cache not configured")
+	}
+
+	fullKey := fmt.Sprintf("market_analysis:%s:%s", userID, cacheKey)
+	data, err := w.cache.Get(ctx, userID, fullKey)
+	if err != nil {
+		return nil, err
+	}
+
+	var result agents.MarketAnalysisResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	result.CachedAt = &now
+
+	return &result, nil
+}
+
+// cacheResult stores the result in the hybrid cache
+func (w *MarketAnalysisWorker) cacheResult(
+	ctx context.Context,
+	userID string,
+	cacheKey string,
+	result *agents.MarketAnalysisResult,
+) error {
+	if w.cache == nil {
+		return nil
+	}
+
+	fullKey := fmt.Sprintf("market_analysis:%s:%s", userID, cacheKey)
+	return w.cache.Set(ctx, userID, fullKey, "market_analysis", result, 24*time.Hour) // Cache for 24 hours
+}
+
+// reportProgress sends a progress event
+func (w *MarketAnalysisWorker) reportProgress(
+	progress chan<- queue.ProgressEvent,
+	jobID string,
+	percent float64,
+	message string,
+) {
+	if progress == nil {
+		return
+	}
+
+	select {
+	case progress <- queue.ProgressEvent{
+		JobID:    jobID,
+		Progress: percent,
+		Stage:    "processing",
+		Message:  message,
+	}:
+	default:
+		// Channel full, skip
+	}
+}
+
+// failedResult creates a failed job result
+func (w *MarketAnalysisWorker) failedResult(job *queue.Job, err error) (*queue.JobResult, error) {
+	w.logger.Error("market analysis job failed",
+		"job_id", job.ID,
+		"error", err,
+	)
+
+	return &queue.JobResult{
+		JobID:       job.ID,
+		Status:      queue.JobStatusFailed,
+		Error:       err.Error(),
+		CompletedAt: time.Now(),
+	}, err
+}
+
+// resultToMap converts MarketAnalysisResult to a map for JobResult.Data
+func (w *MarketAnalysisWorker) resultToMap(result *agents.MarketAnalysisResult) map[string]interface{} {
+	return map[string]interface{}{
+		"location":          result.Location,
+		"metricsAnalysis":   result.MetricsAnalysis,
+		"narrativeAnalysis": result.NarrativeAnalysis,
+		"combinedInsight":   result.CombinedInsight,
+		"marketData":        result.MarketData,
+		"confidence":        result.Confidence,
+		"generatedAt":       result.GeneratedAt,
+		"cachedAt":          result.CachedAt,
+	}
+}

@@ -1,0 +1,534 @@
+package timeseries
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"sort"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/estara-ai/www/internal/db/postgres"
+)
+
+var (
+	ErrNotFound     = errors.New("data not found")
+	ErrInvalidInput = errors.New("invalid input")
+)
+
+// MetroData represents Zillow market data for a metro area
+type MetroData struct {
+	RegionID     int       `json:"regionId"`
+	RegionName   string    `json:"regionName"`
+	RegionType   string    `json:"regionType"`
+	StateCode    string    `json:"stateCode"`
+	Metro        string    `json:"metro"`
+	Date         time.Time `json:"date"`
+	ZHVI         float64   `json:"zhvi"`         // Zillow Home Value Index
+	ZORI         float64   `json:"zori"`         // Zillow Observed Rent Index
+	ZHVIForecast float64   `json:"zhviForecast"`
+	ZORIForecast float64   `json:"zoriForecast"`
+}
+
+// YearOverYearData represents year-over-year changes
+type YearOverYearData struct {
+	CurrentZHVI float64   `json:"currentZhvi"`
+	CurrentZORI float64   `json:"currentZori"`
+	LatestDate  time.Time `json:"latestDate"`
+	ZHVIYoYPct  float64   `json:"zhviYoyPct"`
+	ZORIYoYPct  float64   `json:"zoriYoyPct"`
+}
+
+// CityMetroMapping represents a city to metro mapping
+type CityMetroMapping struct {
+	City          string `json:"city"`
+	StateCode     string `json:"stateCode"`
+	MetroName     string `json:"metroName"`
+	MetroRegionID int    `json:"metroRegionId"`
+}
+
+// MetroTimeSeries represents the raw database row with JSONB columns
+// Matches www_v1's Prisma schema: metro_time_series table
+type MetroTimeSeries struct {
+	ID               int              `json:"id"`
+	MetroRegionID    int              `json:"metroRegionId"`
+	MetroName        string           `json:"metroName"`
+	ZHVIData         map[string]int64 `json:"zhviData"`         // JSONB: {"2024-01": 341000, ...}
+	ZORIData         map[string]int64 `json:"zoriData"`         // JSONB: {"2024-01": 2100, ...}
+	ZHVIForecastData map[string]int64 `json:"zhviForecastData"` // JSONB
+	ZORIForecastData map[string]int64 `json:"zoriForecastData"` // JSONB
+	CreatedAt        time.Time        `json:"createdAt"`
+	UpdatedAt        time.Time        `json:"updatedAt"`
+}
+
+// MetroReader reads Zillow time series data from PostgreSQL
+// Handles www_v1's JSONB-based schema where data is stored as {"YYYY-MM": value}
+type MetroReader struct {
+	db     *postgres.Pool
+	logger *slog.Logger
+}
+
+// NewMetroReader creates a new metro time series reader
+func NewMetroReader(db *postgres.Pool) *MetroReader {
+	return &MetroReader{
+		db:     db,
+		logger: slog.Default().With("component", "metro_reader"),
+	}
+}
+
+// GetLatestData returns the most recent data for a metro by name
+func (r *MetroReader) GetLatestData(ctx context.Context, metroName, regionType string) (*MetroData, error) {
+	if metroName == "" {
+		return nil, ErrInvalidInput
+	}
+
+	// Query the metro_time_series table with JSONB columns
+	query := `
+		SELECT
+			metro_region_id,
+			metro_name,
+			COALESCE(zhvi_data, '{}'::jsonb),
+			COALESCE(zori_data, '{}'::jsonb),
+			COALESCE(zhvi_forecast_data, '{}'::jsonb),
+			COALESCE(zori_forecast_data, '{}'::jsonb)
+		FROM metro_time_series
+		WHERE metro_name ILIKE $1
+		LIMIT 1
+	`
+
+	var (
+		regionID         int
+		name             string
+		zhviDataJSON     []byte
+		zoriDataJSON     []byte
+		zhviForecastJSON []byte
+		zoriForecastJSON []byte
+	)
+
+	err := r.db.QueryRow(ctx, query, metroName).Scan(
+		&regionID,
+		&name,
+		&zhviDataJSON,
+		&zoriDataJSON,
+		&zhviForecastJSON,
+		&zoriForecastJSON,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	// Parse JSONB data and extract latest values
+	data := &MetroData{
+		RegionID:   regionID,
+		RegionName: name,
+		RegionType: regionType,
+		Metro:      name,
+	}
+
+	data.ZHVI, data.Date = extractLatestValue(zhviDataJSON)
+	data.ZORI, _ = extractLatestValue(zoriDataJSON)
+	data.ZHVIForecast, _ = extractLatestValue(zhviForecastJSON)
+	data.ZORIForecast, _ = extractLatestValue(zoriForecastJSON)
+
+	r.logger.Debug("fetched metro data",
+		"region", name,
+		"type", regionType,
+		"zhvi", data.ZHVI,
+		"date", data.Date,
+	)
+
+	return data, nil
+}
+
+// GetLatestDataByID returns the most recent data for a metro by region ID
+func (r *MetroReader) GetLatestDataByID(ctx context.Context, regionID int) (*MetroData, error) {
+	query := `
+		SELECT
+			metro_region_id,
+			metro_name,
+			COALESCE(zhvi_data, '{}'::jsonb),
+			COALESCE(zori_data, '{}'::jsonb),
+			COALESCE(zhvi_forecast_data, '{}'::jsonb),
+			COALESCE(zori_forecast_data, '{}'::jsonb)
+		FROM metro_time_series
+		WHERE metro_region_id = $1
+		LIMIT 1
+	`
+
+	var (
+		id               int
+		name             string
+		zhviDataJSON     []byte
+		zoriDataJSON     []byte
+		zhviForecastJSON []byte
+		zoriForecastJSON []byte
+	)
+
+	err := r.db.QueryRow(ctx, query, regionID).Scan(
+		&id,
+		&name,
+		&zhviDataJSON,
+		&zoriDataJSON,
+		&zhviForecastJSON,
+		&zoriForecastJSON,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	data := &MetroData{
+		RegionID:   id,
+		RegionName: name,
+		RegionType: "msa",
+		Metro:      name,
+	}
+
+	data.ZHVI, data.Date = extractLatestValue(zhviDataJSON)
+	data.ZORI, _ = extractLatestValue(zoriDataJSON)
+	data.ZHVIForecast, _ = extractLatestValue(zhviForecastJSON)
+	data.ZORIForecast, _ = extractLatestValue(zoriForecastJSON)
+
+	return data, nil
+}
+
+// GetTimeSeries returns historical data for a metro region
+func (r *MetroReader) GetTimeSeries(ctx context.Context, metroName, regionType string, startDate, endDate time.Time) ([]MetroData, error) {
+	query := `
+		SELECT
+			metro_region_id,
+			metro_name,
+			COALESCE(zhvi_data, '{}'::jsonb),
+			COALESCE(zori_data, '{}'::jsonb)
+		FROM metro_time_series
+		WHERE metro_name ILIKE $1
+		LIMIT 1
+	`
+
+	var (
+		regionID     int
+		name         string
+		zhviDataJSON []byte
+		zoriDataJSON []byte
+	)
+
+	err := r.db.QueryRow(ctx, query, metroName).Scan(
+		&regionID,
+		&name,
+		&zhviDataJSON,
+		&zoriDataJSON,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	// Parse JSONB and filter by date range
+	zhviMap := parseJSONBData(zhviDataJSON)
+	zoriMap := parseJSONBData(zoriDataJSON)
+
+	// Get all unique dates
+	dateSet := make(map[string]bool)
+	for date := range zhviMap {
+		dateSet[date] = true
+	}
+	for date := range zoriMap {
+		dateSet[date] = true
+	}
+
+	var dates []string
+	for date := range dateSet {
+		dates = append(dates, date)
+	}
+	sort.Strings(dates)
+
+	var series []MetroData
+	for _, dateStr := range dates {
+		date, err := time.Parse("2006-01", dateStr)
+		if err != nil {
+			continue
+		}
+
+		// Filter by date range
+		if date.Before(startDate) || date.After(endDate) {
+			continue
+		}
+
+		data := MetroData{
+			RegionID:   regionID,
+			RegionName: name,
+			RegionType: regionType,
+			Metro:      name,
+			Date:       date,
+			ZHVI:       float64(zhviMap[dateStr]),
+			ZORI:       float64(zoriMap[dateStr]),
+		}
+		series = append(series, data)
+	}
+
+	return series, nil
+}
+
+// GetCityMetroMapping returns the metro mapping for a city
+// Uses the city_market_cache table from www_v1
+func (r *MetroReader) GetCityMetroMapping(ctx context.Context, city, stateCode string) (*CityMetroMapping, error) {
+	// Try city_market_cache first which has metro info
+	query := `
+		SELECT
+			city,
+			state_code,
+			metro,
+			COALESCE(metro_region_id, 0)
+		FROM city_market_cache
+		WHERE city ILIKE $1 AND state_code = $2
+		LIMIT 1
+	`
+
+	var mapping CityMetroMapping
+	err := r.db.QueryRow(ctx, query, city, stateCode).Scan(
+		&mapping.City,
+		&mapping.StateCode,
+		&mapping.MetroName,
+		&mapping.MetroRegionID,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	r.logger.Debug("found city mapping",
+		"city", city,
+		"state", stateCode,
+		"metro", mapping.MetroName,
+	)
+
+	return &mapping, nil
+}
+
+// GetMarketData returns market data for a city, falling back to metro if needed
+func (r *MetroReader) GetMarketData(ctx context.Context, city, stateCode string) (*MetroData, error) {
+	// First try city_market_cache for cached city data
+	cacheQuery := `
+		SELECT
+			COALESCE(metro_region_id, 0),
+			city,
+			state_code,
+			metro,
+			COALESCE(median_home_value, 0),
+			COALESCE(median_rent, 0),
+			COALESCE(yoy_change, 0),
+			updated_at
+		FROM city_market_cache
+		WHERE city ILIKE $1 AND state_code = $2
+		LIMIT 1
+	`
+
+	var (
+		metroRegionID   int
+		cityName        string
+		state           string
+		metroName       string
+		medianHomeValue float64
+		medianRent      float64
+		yoyChange       float64
+		updatedAt       time.Time
+	)
+
+	err := r.db.QueryRow(ctx, cacheQuery, city, stateCode).Scan(
+		&metroRegionID,
+		&cityName,
+		&state,
+		&metroName,
+		&medianHomeValue,
+		&medianRent,
+		&yoyChange,
+		&updatedAt,
+	)
+	if err == nil && medianHomeValue > 0 {
+		// Return cached city data
+		return &MetroData{
+			RegionID:   metroRegionID,
+			RegionName: cityName,
+			RegionType: "city",
+			StateCode:  state,
+			Metro:      metroName,
+			Date:       updatedAt,
+			ZHVI:       medianHomeValue,
+			ZORI:       medianRent,
+		}, nil
+	}
+
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		r.logger.Warn("city cache query error", "error", err)
+	}
+
+	// Fall back to metro-level data
+	mapping, err := r.GetCityMetroMapping(ctx, city, stateCode)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			r.logger.Warn("no city or metro mapping found", "city", city, "state", stateCode)
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	r.logger.Info("falling back to metro data",
+		"city", city,
+		"metro", mapping.MetroName,
+	)
+
+	// Use metro region ID if available
+	if mapping.MetroRegionID > 0 {
+		return r.GetLatestDataByID(ctx, mapping.MetroRegionID)
+	}
+
+	// Otherwise search by metro name
+	return r.GetLatestData(ctx, mapping.MetroName, "msa")
+}
+
+// GetYearOverYearChange returns year-over-year changes for a metro region
+func (r *MetroReader) GetYearOverYearChange(ctx context.Context, regionID int) (*YearOverYearData, error) {
+	query := `
+		SELECT
+			COALESCE(zhvi_data, '{}'::jsonb),
+			COALESCE(zori_data, '{}'::jsonb)
+		FROM metro_time_series
+		WHERE metro_region_id = $1
+		LIMIT 1
+	`
+
+	var (
+		zhviDataJSON []byte
+		zoriDataJSON []byte
+	)
+
+	err := r.db.QueryRow(ctx, query, regionID).Scan(
+		&zhviDataJSON,
+		&zoriDataJSON,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	zhviMap := parseJSONBData(zhviDataJSON)
+	zoriMap := parseJSONBData(zoriDataJSON)
+
+	// Get latest and year-ago values
+	currentZHVI, latestDate := extractLatestValue(zhviDataJSON)
+	currentZORI, _ := extractLatestValue(zoriDataJSON)
+
+	// Calculate year-ago date key
+	yearAgoDate := latestDate.AddDate(-1, 0, 0)
+	yearAgoKey := yearAgoDate.Format("2006-01")
+
+	var zhviYoY, zoriYoY float64
+
+	if yearAgoZHVI, ok := zhviMap[yearAgoKey]; ok && yearAgoZHVI > 0 {
+		zhviYoY = (currentZHVI - float64(yearAgoZHVI)) / float64(yearAgoZHVI) * 100
+	}
+
+	if yearAgoZORI, ok := zoriMap[yearAgoKey]; ok && yearAgoZORI > 0 {
+		zoriYoY = (currentZORI - float64(yearAgoZORI)) / float64(yearAgoZORI) * 100
+	}
+
+	return &YearOverYearData{
+		CurrentZHVI: currentZHVI,
+		CurrentZORI: currentZORI,
+		LatestDate:  latestDate,
+		ZHVIYoYPct:  zhviYoY,
+		ZORIYoYPct:  zoriYoY,
+	}, nil
+}
+
+// SearchRegions searches for metro regions by name
+func (r *MetroReader) SearchRegions(ctx context.Context, query string, limit int) ([]MetroData, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	sqlQuery := `
+		SELECT DISTINCT metro_region_id, metro_name
+		FROM metro_time_series
+		WHERE metro_name ILIKE $1
+		ORDER BY metro_name
+		LIMIT $2
+	`
+
+	rows, err := r.db.Query(ctx, sqlQuery, "%"+query+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var regions []MetroData
+	for rows.Next() {
+		var data MetroData
+		if err := rows.Scan(&data.RegionID, &data.RegionName); err != nil {
+			return nil, err
+		}
+		data.RegionType = "msa"
+		data.Metro = data.RegionName
+		regions = append(regions, data)
+	}
+
+	return regions, rows.Err()
+}
+
+// Helper functions for parsing JSONB time-series data
+
+// parseJSONBData parses JSONB bytes into a map of date -> value
+func parseJSONBData(data []byte) map[string]int64 {
+	result := make(map[string]int64)
+	if len(data) == 0 {
+		return result
+	}
+
+	if err := json.Unmarshal(data, &result); err != nil {
+		return result
+	}
+
+	return result
+}
+
+// extractLatestValue extracts the most recent value from JSONB time-series data
+// JSONB format: {"2024-01": 341000, "2024-02": 343500, ...}
+func extractLatestValue(data []byte) (float64, time.Time) {
+	dataMap := parseJSONBData(data)
+	if len(dataMap) == 0 {
+		return 0, time.Time{}
+	}
+
+	// Find the latest date (keys are "YYYY-MM" format, sortable lexicographically)
+	var latestKey string
+	for key := range dataMap {
+		if key > latestKey {
+			latestKey = key
+		}
+	}
+
+	if latestKey == "" {
+		return 0, time.Time{}
+	}
+
+	// Parse the date
+	date, err := time.Parse("2006-01", latestKey)
+	if err != nil {
+		return float64(dataMap[latestKey]), time.Now()
+	}
+
+	return float64(dataMap[latestKey]), date
+}
