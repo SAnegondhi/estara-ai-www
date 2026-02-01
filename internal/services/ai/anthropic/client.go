@@ -48,15 +48,23 @@ type Message struct {
 
 // MessageRequest represents a request to the messages API
 type MessageRequest struct {
-	Model       string    `json:"model"`
-	MaxTokens   int       `json:"max_tokens"`
-	System      string    `json:"system,omitempty"`
-	Messages    []Message `json:"messages"`
-	Stream      bool      `json:"stream,omitempty"`
-	Temperature float64   `json:"temperature,omitempty"`
-	TopP        float64   `json:"top_p,omitempty"`
-	TopK        int       `json:"top_k,omitempty"`
-	StopSequences []string `json:"stop_sequences,omitempty"`
+	Model         string        `json:"model"`
+	MaxTokens     int           `json:"max_tokens"`
+	System        string        `json:"system,omitempty"`
+	Messages      []Message     `json:"messages"`
+	Stream        bool          `json:"stream,omitempty"`
+	Temperature   float64       `json:"temperature,omitempty"`
+	TopP          float64       `json:"top_p,omitempty"`
+	TopK          int           `json:"top_k,omitempty"`
+	StopSequences []string      `json:"stop_sequences,omitempty"`
+	Tools         []interface{} `json:"tools,omitempty"` // Supports both regular and web_search tools
+}
+
+// WebSearchTool represents the web_search_20250305 tool
+type WebSearchTool struct {
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	MaxUses int    `json:"max_uses,omitempty"`
 }
 
 // MessageResponse represents a response from the messages API
@@ -73,8 +81,11 @@ type MessageResponse struct {
 
 // ContentBlock represents a content block in a response
 type ContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type  string `json:"type"`
+	Text  string `json:"text,omitempty"`
+	Name  string `json:"name,omitempty"`  // For server_tool_use blocks
+	ID    string `json:"id,omitempty"`    // For tool use blocks
+	Input interface{} `json:"input,omitempty"` // For tool use input
 }
 
 // Usage represents token usage information
@@ -377,6 +388,21 @@ func (c *Client) setHeaders(req *http.Request) {
 // IsConfigured returns true if the client has an API key
 func (c *Client) IsConfigured() bool {
 	return c.apiKey != ""
+}
+
+// CompleteWithTools sends a message with tools and returns the response
+func (c *Client) CompleteWithTools(ctx context.Context, systemPrompt, userPrompt string, tools []interface{}) (*MessageResponse, error) {
+	req := MessageRequest{
+		Model:     c.model,
+		MaxTokens: c.maxTokens,
+		System:    systemPrompt,
+		Messages: []Message{
+			{Role: "user", Content: userPrompt},
+		},
+		Tools: tools,
+	}
+
+	return c.sendRequest(ctx, req)
 }
 
 // GetModel returns the current model

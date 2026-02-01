@@ -57,7 +57,7 @@ The JSON must have this exact structure:
 
 Guidelines:
 - Use your knowledge of the area's economy, population, and historical trends
-- Cap rate should reflect: (Annual Rent / Home Price) * 100
+- Cap rate = (NOI / Home Price) * 100, where NOI = Annual Rent - Operating Expenses (~40% of rent)
 - Confidence should be lower for smaller or less-known cities
 - Year-over-year should reflect typical market conditions
 - Be conservative in estimates - it's better to underestimate than overestimate

@@ -37,18 +37,20 @@ const (
 
 // Job represents a unit of work to be processed
 type Job struct {
-	ID        string                 `json:"id"`
-	Type      JobType                `json:"type"`
-	UserID    string                 `json:"user_id"`
-	Payload   map[string]interface{} `json:"payload"`
-	Status    JobStatus              `json:"status"`
-	Priority  int                    `json:"priority"` // Higher = more urgent
-	CreatedAt time.Time              `json:"created_at"`
-	StartedAt *time.Time             `json:"started_at,omitempty"`
-	UpdatedAt time.Time              `json:"updated_at"`
-	Attempts  int                    `json:"attempts"`
-	MaxRetries int                   `json:"max_retries"`
-	Error     string                 `json:"error,omitempty"`
+	ID              string                 `json:"id"`
+	Type            JobType                `json:"type"`
+	UserID          string                 `json:"user_id"`
+	Payload         map[string]interface{} `json:"payload"`
+	Status          JobStatus              `json:"status"`
+	Priority        int                    `json:"priority"` // Higher = more urgent
+	Progress        float64                `json:"progress"` // 0-100
+	ProgressMessage string                 `json:"progress_message,omitempty"`
+	CreatedAt       time.Time              `json:"created_at"`
+	StartedAt       *time.Time             `json:"started_at,omitempty"`
+	UpdatedAt       time.Time              `json:"updated_at"`
+	Attempts        int                    `json:"attempts"`
+	MaxRetries      int                    `json:"max_retries"`
+	Error           string                 `json:"error,omitempty"`
 }
 
 // JobResult represents the result of a completed job

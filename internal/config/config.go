@@ -92,13 +92,15 @@ type AIConfig struct {
 
 // PropertyConfig holds property finder configuration
 type PropertyConfig struct {
-	Priority           []string `mapstructure:"PROPERTY_FINDER_PRIORITY"`
-	BrightDataEnabled  bool     `mapstructure:"PROPERTY_FINDER_BRIGHTDATA_ENABLED"`
-	BrightDataAPIKey   string   `mapstructure:"BRIGHTDATA_API_KEY"`
-	HasDataEnabled     bool     `mapstructure:"PROPERTY_FINDER_HASDATA_ENABLED"`
-	HasDataAPIKey      string   `mapstructure:"HASDATA_API_KEY"`
-	PublicEnabled      bool     `mapstructure:"PROPERTY_FINDER_PUBLIC_ENABLED"`
-	CacheTTL           time.Duration
+	Priority               []string `mapstructure:"PROPERTY_FINDER_PRIORITY"`
+	BrightDataEnabled      bool     `mapstructure:"PROPERTY_FINDER_BRIGHTDATA_ENABLED"`
+	BrightDataAPIKey       string   `mapstructure:"BRIGHTDATA_API_KEY"`
+	HasDataEnabled         bool     `mapstructure:"PROPERTY_FINDER_HASDATA_ENABLED"`
+	HasDataAPIKey          string   `mapstructure:"HASDATA_API_KEY"`
+	ClaudeEnabled          bool     `mapstructure:"PROPERTY_FINDER_CLAUDE_ENABLED"`
+	PublicEnabled          bool     `mapstructure:"PROPERTY_FINDER_PUBLIC_ENABLED"`
+	CacheTTL               time.Duration
+	EnrichmentConcurrency  int      `mapstructure:"HASDATA_CONCURRENT_CONNECTIONS"`
 }
 
 // MarketConfig holds market data configuration
@@ -144,9 +146,13 @@ func Load() (*Config, error) {
 		}
 	}
 
-	// Try reading .env.local as well
-	v.SetConfigName(".env.local")
-	_ = v.MergeInConfig()
+	// Try reading .env.local as well (use SetConfigFile for exact filename)
+	v.SetConfigFile(".env.local")
+	if err := v.MergeInConfig(); err != nil {
+		// Also try parent directory for .env.local
+		v.SetConfigFile("../.env.local")
+		_ = v.MergeInConfig()
+	}
 
 	// Enable reading from environment variables
 	v.AutomaticEnv()
@@ -218,13 +224,14 @@ func Load() (*Config, error) {
 		}
 	}
 	cfg.Property = PropertyConfig{
-		Priority:          priority,
-		BrightDataEnabled: v.GetBool("PROPERTY_FINDER_BRIGHTDATA_ENABLED"),
-		BrightDataAPIKey:  v.GetString("BRIGHTDATA_API_KEY"),
-		HasDataEnabled:    v.GetBool("PROPERTY_FINDER_HASDATA_ENABLED"),
-		HasDataAPIKey:     v.GetString("HASDATA_API_KEY"),
-		PublicEnabled:     v.GetBool("PROPERTY_FINDER_PUBLIC_ENABLED"),
-		CacheTTL:          24 * time.Hour,
+		Priority:              priority,
+		BrightDataEnabled:     v.GetBool("PROPERTY_FINDER_BRIGHTDATA_ENABLED"),
+		BrightDataAPIKey:      v.GetString("BRIGHTDATA_API_KEY"),
+		HasDataEnabled:        v.GetBool("PROPERTY_FINDER_HASDATA_ENABLED"),
+		HasDataAPIKey:         v.GetString("HASDATA_API_KEY"),
+		PublicEnabled:         v.GetBool("PROPERTY_FINDER_PUBLIC_ENABLED"),
+		CacheTTL:              24 * time.Hour,
+		EnrichmentConcurrency: v.GetInt("HASDATA_CONCURRENT_CONNECTIONS"),
 	}
 
 	// Market config
@@ -362,6 +369,8 @@ func (c *Config) Validate() error {
 	slog.Info("config loaded",
 		"env", c.Server.Env,
 		"port", c.Server.Port,
+		"read_timeout", c.Server.ReadTimeout.String(),
+		"write_timeout", c.Server.WriteTimeout.String(),
 		"database_configured", c.Database.URL != "",
 		"market_db_configured", c.MarketDB.URL != "",
 		"redis_configured", c.Redis.URL != "",

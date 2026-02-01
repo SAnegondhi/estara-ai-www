@@ -11,6 +11,8 @@ import (
 )
 
 type Querier interface {
+	ArchiveDiscoverySession(ctx context.Context, arg ArchiveDiscoverySessionParams) (DiscoverySession, error)
+	AutoArchiveOldSessions(ctx context.Context) error
 	CancelInsightAccess(ctx context.Context, id string) (InsightAccess, error)
 	CancelSubscription(ctx context.Context, arg CancelSubscriptionParams) error
 	CountActiveAlertsBySeverity(ctx context.Context) ([]CountActiveAlertsBySeverityRow, error)
@@ -22,11 +24,17 @@ type Querier interface {
 	CountEarlyAccess(ctx context.Context) (int64, error)
 	CountExpiredCache(ctx context.Context) (int64, error)
 	CountPendingEarlyAccess(ctx context.Context) (int64, error)
+	CountSessionActivitiesByType(ctx context.Context, arg CountSessionActivitiesByTypeParams) (int64, error)
+	CountSessionEvaluations(ctx context.Context, discoverysessionid string) (int64, error)
+	CountSessionProperties(ctx context.Context, discoverysessionid string) (int64, error)
 	CountSnapshotsByEmail(ctx context.Context, email pgtype.Text) (int64, error)
 	CountSubscriptionsByStatus(ctx context.Context) (CountSubscriptionsByStatusRow, error)
+	CountUserDiscoverySessions(ctx context.Context, arg CountUserDiscoverySessionsParams) (int64, error)
 	CountUserInvestorReports(ctx context.Context, userid pgtype.Text) (int64, error)
 	CountUserScenarios(ctx context.Context, userid string) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
+	// Activity Linking Queries
+	CreateActivityLink(ctx context.Context, arg CreateActivityLinkParams) (DiscoverySessionActivity, error)
 	// Admin Audit Log Queries
 	CreateAdminAuditLog(ctx context.Context, arg CreateAdminAuditLogParams) (AdminAuditLog, error)
 	// Admin Session Queries
@@ -40,6 +48,12 @@ type Querier interface {
 	CreateBillingCycle(ctx context.Context, arg CreateBillingCycleParams) (BillingCycle, error)
 	CreateCheckoutEvidence(ctx context.Context, arg CreateCheckoutEvidenceParams) (CheckoutEvidence, error)
 	CreateContactSubmission(ctx context.Context, arg CreateContactSubmissionParams) (ContactSubmission, error)
+	// Discovery Session Queries
+	CreateDiscoverySession(ctx context.Context, arg CreateDiscoverySessionParams) (DiscoverySession, error)
+	// Discovery Session Evaluations Queries
+	CreateDiscoverySessionEvaluation(ctx context.Context, arg CreateDiscoverySessionEvaluationParams) (DiscoverySessionEvaluation, error)
+	// Discovery Session Properties Queries
+	CreateDiscoverySessionProperty(ctx context.Context, arg CreateDiscoverySessionPropertyParams) (DiscoverySessionProperty, error)
 	CreateEarlyAccess(ctx context.Context, arg CreateEarlyAccessParams) (EarlyAccess, error)
 	CreateEmailVerificationCode(ctx context.Context, arg CreateEmailVerificationCodeParams) (EmailVerificationCode, error)
 	CreateGuestSession(ctx context.Context, arg CreateGuestSessionParams) (GuestSession, error)
@@ -59,6 +73,7 @@ type Querier interface {
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeactivateSilentLoginSession(ctx context.Context, id string) error
 	DeactivateUserSilentLoginSessions(ctx context.Context, userid string) error
+	DeleteActivityLink(ctx context.Context, arg DeleteActivityLinkParams) error
 	DeleteAdminTwoFactor(ctx context.Context, userid string) error
 	DeleteAllExpiredCache(ctx context.Context) (int64, error)
 	DeleteAuditLogsOlderThan(ctx context.Context, timestamp pgtype.Timestamp) error
@@ -73,11 +88,14 @@ type Querier interface {
 	DeleteExpiredEmailVerificationCodes(ctx context.Context) error
 	DeleteExpiredGuestSessions(ctx context.Context) error
 	DeleteExpiredPasswordResetTokens(ctx context.Context) error
+	DeleteExpiredSessions(ctx context.Context) error
 	DeleteExpiredSilentLoginSessions(ctx context.Context) error
 	DeleteExpiredSnapshots(ctx context.Context) error
 	DeleteExpiredSystemAlerts(ctx context.Context) error
 	DeleteScenario(ctx context.Context, id string) error
 	DeleteScenarioByIDAndUser(ctx context.Context, arg DeleteScenarioByIDAndUserParams) error
+	DeleteSessionEvaluations(ctx context.Context, discoverysessionid string) error
+	DeleteSessionProperties(ctx context.Context, discoverysessionid string) error
 	DeleteUser(ctx context.Context, id string) error
 	DeleteUserAnalysisPreference(ctx context.Context, arg DeleteUserAnalysisPreferenceParams) error
 	DisableAdminTwoFactor(ctx context.Context, userid string) error
@@ -85,6 +103,7 @@ type Querier interface {
 	DismissSystemAlertByKey(ctx context.Context, alertkey string) error
 	EnableAdminTwoFactor(ctx context.Context, userid string) error
 	GetActiveSilentLoginSessionsByUser(ctx context.Context, userid string) ([]SilentLoginSession, error)
+	GetActivityLink(ctx context.Context, arg GetActivityLinkParams) (DiscoverySessionActivity, error)
 	GetAdminAuditLogByID(ctx context.Context, id string) (AdminAuditLog, error)
 	GetAdminSessionByID(ctx context.Context, id string) (AdminSession, error)
 	GetAdminSessionByTokenHash(ctx context.Context, tokenhash string) (AdminSession, error)
@@ -104,6 +123,8 @@ type Querier interface {
 	// Website and Public API Queries
 	// Contact Submissions
 	GetContactSubmissionByID(ctx context.Context, id string) (ContactSubmission, error)
+	GetDiscoverySession(ctx context.Context, id string) (DiscoverySession, error)
+	GetDiscoverySessionByUser(ctx context.Context, arg GetDiscoverySessionByUserParams) (DiscoverySession, error)
 	GetEarlyAccessByEmail(ctx context.Context, email string) (EarlyAccess, error)
 	// Early Access (Waitlist)
 	GetEarlyAccessByID(ctx context.Context, id string) (EarlyAccess, error)
@@ -144,6 +165,8 @@ type Querier interface {
 	// Scenario Queries
 	GetScenarioByID(ctx context.Context, id string) (Scenario, error)
 	GetScenarioByIDAndUser(ctx context.Context, arg GetScenarioByIDAndUserParams) (Scenario, error)
+	GetSessionEvaluation(ctx context.Context, arg GetSessionEvaluationParams) (DiscoverySessionEvaluation, error)
+	GetSessionProperty(ctx context.Context, arg GetSessionPropertyParams) (DiscoverySessionProperty, error)
 	// Silent Login Session Queries
 	GetSilentLoginSessionByID(ctx context.Context, id string) (SilentLoginSession, error)
 	GetSnapshotByCacheKey(ctx context.Context, cachekey pgtype.Text) (SnapshotRequest, error)
@@ -162,7 +185,9 @@ type Querier interface {
 	GetUserByID(ctx context.Context, id string) (User, error)
 	GetUserByStripeCustomerID(ctx context.Context, stripecustomerid pgtype.Text) (User, error)
 	GetUserStats(ctx context.Context) (GetUserStatsRow, error)
+	IncrementChatSessionCount(ctx context.Context, id string) error
 	IncrementEmailVerificationAttempts(ctx context.Context, id string) error
+	IncrementEvaluationCount(ctx context.Context, id string) error
 	IncrementGuestSessionSnapshots(ctx context.Context, id string) (GuestSession, error)
 	IncrementInsightAccessUsage(ctx context.Context, id string) (InsightAccess, error)
 	IncrementReportPackUsage(ctx context.Context, id string) (ReportPack, error)
@@ -196,12 +221,16 @@ type Querier interface {
 	ListInvoicesByStatus(ctx context.Context, arg ListInvoicesByStatusParams) ([]Invoice, error)
 	ListPendingEarlyAccess(ctx context.Context, limit int32) ([]EarlyAccess, error)
 	ListRenewalNotificationsBySubscription(ctx context.Context, subscriptionid string) ([]RenewalNotification, error)
+	ListSessionActivities(ctx context.Context, discoverysessionid string) ([]DiscoverySessionActivity, error)
+	ListSessionEvaluations(ctx context.Context, discoverysessionid string) ([]DiscoverySessionEvaluation, error)
+	ListSessionProperties(ctx context.Context, discoverysessionid string) ([]DiscoverySessionProperty, error)
 	ListSubscriptionsByTier(ctx context.Context, arg ListSubscriptionsByTierParams) ([]Subscription, error)
 	ListSystemAlertsBySeverity(ctx context.Context, arg ListSystemAlertsBySeverityParams) ([]SystemAlert, error)
 	ListSystemAlertsRequiringAction(ctx context.Context) ([]SystemAlert, error)
 	ListUnprocessedBillingCycles(ctx context.Context, limit int32) ([]BillingCycle, error)
 	ListUserBillingCycles(ctx context.Context, arg ListUserBillingCyclesParams) ([]BillingCycle, error)
 	ListUserCheckoutEvidence(ctx context.Context, arg ListUserCheckoutEvidenceParams) ([]CheckoutEvidence, error)
+	ListUserDiscoverySessions(ctx context.Context, arg ListUserDiscoverySessionsParams) ([]DiscoverySession, error)
 	ListUserFavoriteScenarios(ctx context.Context, arg ListUserFavoriteScenariosParams) ([]Scenario, error)
 	ListUserFavoritedAnalyses(ctx context.Context, arg ListUserFavoritedAnalysesParams) ([]UserAnalysisPreference, error)
 	ListUserHiddenAnalyses(ctx context.Context, userid string) ([]UserAnalysisPreference, error)
@@ -218,6 +247,7 @@ type Querier interface {
 	MarkEmailVerificationCodeVerified(ctx context.Context, id string) error
 	MarkPasswordResetTokenUsed(ctx context.Context, id string) error
 	MarkSnapshotConverted(ctx context.Context, id string) (SnapshotRequest, error)
+	RestoreDiscoverySession(ctx context.Context, arg RestoreDiscoverySessionParams) (DiscoverySession, error)
 	RevokeAdminSession(ctx context.Context, id string) error
 	RevokeAllAdminSessionsByUser(ctx context.Context, userid string) error
 	SearchUserScenarios(ctx context.Context, arg SearchUserScenariosParams) ([]Scenario, error)
@@ -230,6 +260,8 @@ type Querier interface {
 	UpdateAdminTwoFactorBackupCodes(ctx context.Context, arg UpdateAdminTwoFactorBackupCodesParams) error
 	UpdateCacheAccess(ctx context.Context, key string) error
 	UpdateContactSubmissionStatus(ctx context.Context, arg UpdateContactSubmissionStatusParams) (ContactSubmission, error)
+	UpdateDiscoverySession(ctx context.Context, arg UpdateDiscoverySessionParams) (DiscoverySession, error)
+	UpdateDiscoverySessionAccess(ctx context.Context, id string) (DiscoverySession, error)
 	UpdateEarlyAccessAccepted(ctx context.Context, id string) (EarlyAccess, error)
 	UpdateEarlyAccessInvited(ctx context.Context, id string) (EarlyAccess, error)
 	UpdateGuestSessionActivity(ctx context.Context, arg UpdateGuestSessionActivityParams) (GuestSession, error)

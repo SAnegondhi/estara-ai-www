@@ -4,17 +4,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-playground/validator/v10"
+	"github.com/google/uuid"
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/db/postgres"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
+	"github.com/estara-ai/www/internal/services/investment/expenses"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
 	"github.com/estara-ai/www/internal/services/property/finder"
 	"github.com/estara-ai/www/internal/services/property/providers"
@@ -40,6 +43,11 @@ func NewHandler(
 	orchestrator *finder.Orchestrator,
 	aggregator *aggregator.Aggregator,
 ) *Handler {
+	// Set the global enrichment job manager for SSE handlers
+	if orchestrator != nil {
+		SetEnrichmentJobManager(orchestrator.GetEnrichmentJobManager())
+	}
+
 	return &Handler{
 		db:           db,
 		redis:        redis,
@@ -64,11 +72,23 @@ type PropertySearchResponse struct {
 // MarketDefaultsResponse wraps market defaults data
 // Matches client's expected format from MarketDefaultsResponse in client/src/lib/api/client.ts
 type MarketDefaultsResponse struct {
-	Success  bool                          `json:"success"`
-	Location MarketDefaultsLocation        `json:"location"`
-	MarketData MarketDefaultsData          `json:"marketData"`
-	SuggestedDefaults *SuggestedDefaults   `json:"suggestedDefaults"`
-	DataQuality float64                    `json:"dataQuality"`
+	Success           bool                    `json:"success"`
+	Location          MarketDefaultsLocation  `json:"location"`
+	MarketData        MarketDefaultsData      `json:"marketData"`
+	SuggestedDefaults *SuggestedDefaults      `json:"suggestedDefaults"`
+	ExpenseDefaults   *ExpenseDefaults        `json:"expenseDefaults,omitempty"`
+	DataQuality       float64                 `json:"dataQuality"`
+}
+
+// ExpenseDefaults contains state-specific operating expense rates
+type ExpenseDefaults struct {
+	PropertyTaxRate  float64  `json:"propertyTaxRate"`  // % of home value
+	InsuranceRate    float64  `json:"insuranceRate"`    // % of home value
+	MaintenanceRate  float64  `json:"maintenanceRate"`  // % of home value
+	VacancyRate      float64  `json:"vacancyRate"`      // % of rent
+	PropertyMgmtRate float64  `json:"propertyMgmtRate"` // % of rent
+	RiskFactors      []string `json:"riskFactors,omitempty"`
+	Notes            string   `json:"notes,omitempty"`
 }
 
 // MarketDefaultsLocation contains city/state info
@@ -85,6 +105,8 @@ type MarketDefaultsData struct {
 	GrossRentalYield   *float64 `json:"grossRentalYield"`
 	PriceYoyChange     *float64 `json:"priceYoyChange"`
 	MedianDaysOnMarket *int     `json:"medianDaysOnMarket"`
+	MortgageRate30     *float64 `json:"mortgageRate30,omitempty"` // Current 30-year fixed rate from FRED
+	MortgageRate15     *float64 `json:"mortgageRate15,omitempty"` // Current 15-year fixed rate from FRED
 }
 
 // SuggestedDefaults contains price range suggestions
@@ -97,27 +119,89 @@ type SuggestedDefaults struct {
 
 // BatchEvaluateRequest represents a batch evaluation request
 type BatchEvaluateRequest struct {
-	PropertyIDs []string `json:"propertyIds" validate:"required,min=1,max=20"`
-	Location    string   `json:"location" validate:"required"`
+	Properties []BatchPropertyInput `json:"properties" validate:"required,min=1,max=50,dive"`
 }
 
-// PropertyEvaluation represents evaluation metrics for a property
-type PropertyEvaluation struct {
-	PropertyID    string  `json:"propertyId"`
-	EstimatedRent int     `json:"estimatedRent"`
-	CapRate       float64 `json:"capRate"`
-	CashOnCash    float64 `json:"cashOnCash"`
-	GrossYield    float64 `json:"grossYield"`
-	DSCR          float64 `json:"dscr"`
-	Score         int     `json:"score"` // 0-100
-	Rating        string  `json:"rating"` // poor, fair, good, excellent
+// BatchPropertyInput represents property data from client for evaluation
+type BatchPropertyInput struct {
+	ID            string  `json:"id" validate:"required"`
+	Address       string  `json:"address" validate:"required"`
+	City          string  `json:"city" validate:"required"`
+	State         string  `json:"state" validate:"required"`
+	ZipCode       string  `json:"zipCode,omitempty"`
+	Price         int     `json:"price" validate:"required,gt=0"`
+	Beds          int     `json:"beds,omitempty"`
+	Baths         float64 `json:"baths,omitempty"`
+	Sqft          int     `json:"sqft,omitempty"`
+	EstimatedRent int     `json:"estimatedRent,omitempty"`
+	PropertyType  string  `json:"propertyType,omitempty"`
+}
+
+// ScenarioMetrics represents metrics for a scenario
+type ScenarioMetrics struct {
+	MonthlyPayment  float64 `json:"monthlyPayment"`
+	MonthlyCashFlow float64 `json:"monthlyCashFlow"`
+	AnnualCashFlow  float64 `json:"annualCashFlow"`
+	CashOnCash      float64 `json:"cashOnCash"`
+	CapRate         float64 `json:"capRate"`
+	TotalReturn5Yr  float64 `json:"totalReturn5Yr"`
+	IRR5Yr          float64 `json:"irr5Yr"`
+	BreakEvenMonths int     `json:"breakEvenMonths"`
+}
+
+// ScenarioAssumptions represents assumptions for a scenario
+type ScenarioAssumptions struct {
+	AppreciationRate float64 `json:"appreciationRate"`
+	VacancyRate      float64 `json:"vacancyRate"`
+	RentGrowthRate   float64 `json:"rentGrowthRate"`
+}
+
+// ScenarioResult wraps metrics and assumptions for a scenario
+type ScenarioResult struct {
+	Name        string              `json:"name"`
+	Assumptions ScenarioAssumptions `json:"assumptions"`
+	Metrics     ScenarioMetrics     `json:"metrics"`
+}
+
+// BatchPropertyInfo represents property info in evaluation result
+type BatchPropertyInfo struct {
+	ID      string  `json:"id"`
+	Address string  `json:"address"`
+	City    string  `json:"city"`
+	State   string  `json:"state"`
+	ZipCode string  `json:"zipCode,omitempty"`
+	Price   int     `json:"price"`
+	Beds    int     `json:"beds,omitempty"`
+	Baths   float64 `json:"baths,omitempty"`
+	Sqft    int     `json:"sqft,omitempty"`
+}
+
+// BatchEvaluationResult represents evaluation result for a property (matches client interface)
+type BatchEvaluationResult struct {
+	EvaluationID string             `json:"evaluationId"`
+	PropertyID   string             `json:"propertyId"`
+	Property     BatchPropertyInfo  `json:"property"`
+	Scenarios    *BatchScenarios    `json:"scenarios,omitempty"`
+	Error        string             `json:"error,omitempty"`
+	Status       string             `json:"status"` // COMPLETED or ERROR
+}
+
+// BatchScenarios contains all scenario results
+type BatchScenarios struct {
+	Conservative ScenarioResult `json:"conservative"`
+	Base         ScenarioResult `json:"base"`
+	Optimistic   ScenarioResult `json:"optimistic"`
 }
 
 // BatchEvaluateResponse wraps batch evaluation results
 type BatchEvaluateResponse struct {
-	Success     bool                   `json:"success"`
-	Evaluations []PropertyEvaluation   `json:"evaluations"`
-	MarketData  *aggregator.MarketData `json:"marketData"`
+	Success         bool                    `json:"success"`
+	ReportID        string                  `json:"reportId"`
+	TotalProperties int                     `json:"totalProperties"`
+	CompletedCount  int                     `json:"completedCount"`
+	FailedCount     int                     `json:"failedCount"`
+	Evaluations     []BatchEvaluationResult `json:"evaluations"`
+	MarketData      *aggregator.MarketData  `json:"marketData,omitempty"`
 }
 
 // SearchCriteria matches www_v1 /api/v2/discover/search request body
@@ -182,14 +266,23 @@ type V2PropertyResult struct {
 
 // V2SearchResponse matches www_v1 /api/v2/discover/search response
 type V2SearchResponse struct {
-	Success    bool               `json:"success"`
-	Properties []V2PropertyResult `json:"properties"`
-	TotalCount int                `json:"totalCount"`
+	Success            bool               `json:"success"`
+	Properties         []V2PropertyResult `json:"properties"`
+	TotalCount         int                `json:"totalCount"`
+	DiscoverySessionId string             `json:"discoverySessionId,omitempty"`
+	EnrichmentJobID    string             `json:"enrichmentJobId,omitempty"`
+	EnrichmentStatus   string             `json:"enrichmentStatus,omitempty"` // PENDING, PROCESSING, COMPLETED, FAILED
 }
 
 // Search handles POST /api/v2/discover/search - matches www_v1 API contract
 func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// Get user ID from context for discovery session
+	var userID string
+	if user := middleware.GetUserFromContext(ctx); user != nil {
+		userID = user.UserID
+	}
 
 	// Parse request body
 	var criteria SearchCriteria
@@ -239,17 +332,40 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 		"minBeds", params.MinBeds,
 	)
 
-	// Execute search
-	result, err := h.orchestrator.Search(ctx, params)
+	// Execute search with async enrichment (properties return immediately, yearBuilt/sqft enrichment via SSE)
+	result, err := h.orchestrator.SearchAsync(ctx, params)
 	if err != nil {
 		h.logger.Error("property search failed", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "property search failed")
 		return
 	}
 
-	// Transform to V2 response format (properties already enriched by orchestrator)
+	// Transform to V2 response format (properties have investment metrics, yearBuilt may come via SSE)
+	// Filter out invalid properties (zero price, zero cap rate indicates enrichment failure)
 	properties := make([]V2PropertyResult, 0, len(result.Properties))
 	for _, p := range result.Properties {
+		// Skip properties with zero or negative price - these are invalid listings
+		if p.Price <= 0 {
+			h.logger.Debug("skipping property with invalid price",
+				"id", p.ID,
+				"price", p.Price,
+				"address", p.Address,
+			)
+			continue
+		}
+
+		// Skip properties where enrichment failed (zero cap rate when price is valid)
+		// This indicates the rent estimation also failed
+		if p.EstimatedCapRate <= 0 && p.EstimatedRent <= 0 {
+			h.logger.Debug("skipping property with failed enrichment",
+				"id", p.ID,
+				"price", p.Price,
+				"capRate", p.EstimatedCapRate,
+				"rent", p.EstimatedRent,
+			)
+			continue
+		}
+
 		prop := V2PropertyResult{
 			ID:               p.ID,
 			Address:          p.Address,
@@ -352,10 +468,41 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 		properties = append(properties, prop)
 	}
 
+	// Create discovery session if user is authenticated
+	var discoverySessionId string
+	if userID != "" && len(properties) > 0 {
+		// Extract property IDs for the session
+		propertyIds := make([]string, len(properties))
+		for i, p := range properties {
+			propertyIds[i] = p.ID
+		}
+
+		// Serialize search criteria
+		criteriaJSON, err := json.Marshal(criteria)
+		if err != nil {
+			h.logger.Warn("failed to serialize search criteria", "error", err)
+			criteriaJSON = []byte("{}")
+		}
+
+		// Create the discovery session with properties
+		discoverySessionId = h.CreateDiscoverySessionForSearch(
+			ctx,
+			userID,
+			criteriaJSON,
+			criteria.Location,
+			len(properties),
+			propertyIds,
+			properties,
+		)
+	}
+
 	response := V2SearchResponse{
-		Success:    true,
-		Properties: properties,
-		TotalCount: len(properties),
+		Success:            true,
+		Properties:         properties,
+		TotalCount:         len(properties),
+		DiscoverySessionId: discoverySessionId,
+		EnrichmentJobID:    result.EnrichmentJobID,
+		EnrichmentStatus:   result.EnrichmentStatus,
 	}
 
 	httputil.JSON(w, http.StatusOK, response)
@@ -515,17 +662,38 @@ func (h *Handler) GetMarketDefaults(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build suggested defaults based on market data
+	// Use the same price options as client dropdown for consistency
 	var suggestedDefaults *SuggestedDefaults
 	if medianHomePrice > 0 {
-		minPrice := int(float64(medianHomePrice) * 0.5)  // 50% of median
-		maxPrice := int(float64(medianHomePrice) * 1.5)  // 150% of median
+		// Price options must match client/src/components/discover/SearchCriteriaForm.tsx PRICE_OPTIONS
+		priceOptions := []int{100000, 200000, 300000, 400000, 500000, 750000, 1000000, 1500000, 2000000}
 
-		// Round to nice numbers
-		minPrice = (minPrice / 10000) * 10000
-		maxPrice = (maxPrice / 10000) * 10000
+		// Find the index of the price option closest to but not exceeding median
+		medianIdx := -1
+		for i, opt := range priceOptions {
+			if opt <= medianHomePrice {
+				medianIdx = i
+			} else {
+				break
+			}
+		}
 
-		if minPrice < 50000 {
-			minPrice = 50000
+		// minPrice = 1 step LOWER than median's position in the dropdown
+		// maxPrice = 1 step HIGHER than median's position in the dropdown
+		var minPrice, maxPrice int
+
+		if medianIdx <= 0 {
+			// Median is at or below first option - use first option for min
+			minPrice = priceOptions[0]
+			maxPrice = priceOptions[1]
+		} else if medianIdx >= len(priceOptions)-1 {
+			// Median is at or above last option - use last two options
+			minPrice = priceOptions[len(priceOptions)-2]
+			maxPrice = priceOptions[len(priceOptions)-1]
+		} else {
+			// Normal case: one step below and one step above median position
+			minPrice = priceOptions[medianIdx-1]
+			maxPrice = priceOptions[medianIdx+1]
 		}
 
 		suggestedDefaults = &SuggestedDefaults{
@@ -534,6 +702,37 @@ func (h *Handler) GetMarketDefaults(w http.ResponseWriter, r *http.Request) {
 			MinCapRate:    nil, // Let user decide
 			MinGrossYield: nil,
 		}
+	}
+
+	// Get expense defaults for the state
+	var expenseDefaults *ExpenseDefaults
+	expenseCalc := expenses.NewCalculator()
+	marketDefaults := expenseCalc.GetMarketDefaults(state)
+	if marketDefaults != nil {
+		// Use vacancy rate from market data (FRED) if available, otherwise use default
+		vacancyRate := marketDefaults.VacancyRate
+		if data.VacancyRate > 0 {
+			vacancyRate = data.VacancyRate
+		}
+
+		expenseDefaults = &ExpenseDefaults{
+			PropertyTaxRate:  marketDefaults.PropertyTaxRate,
+			InsuranceRate:    marketDefaults.InsuranceRate,
+			MaintenanceRate:  marketDefaults.MaintenanceRate,
+			VacancyRate:      vacancyRate,
+			PropertyMgmtRate: marketDefaults.PropertyMgmtRate,
+			RiskFactors:      marketDefaults.InsuranceRisk,
+			Notes:            marketDefaults.Notes,
+		}
+	}
+
+	// Get mortgage rates (may be 0 if FRED not configured)
+	var mortgageRate30, mortgageRate15 *float64
+	if data.MortgageRate30 > 0 {
+		mortgageRate30 = &data.MortgageRate30
+	}
+	if data.MortgageRate15 > 0 {
+		mortgageRate15 = &data.MortgageRate15
 	}
 
 	response := MarketDefaultsResponse{
@@ -549,8 +748,11 @@ func (h *Handler) GetMarketDefaults(w http.ResponseWriter, r *http.Request) {
 			GrossRentalYield:   grossRentalYield,
 			PriceYoyChange:     &priceYoyChange,
 			MedianDaysOnMarket: nil, // Not available from current sources
+			MortgageRate30:     mortgageRate30,
+			MortgageRate15:     mortgageRate15,
 		},
 		SuggestedDefaults: suggestedDefaults,
+		ExpenseDefaults:   expenseDefaults,
 		DataQuality:       dataQuality,
 	}
 
@@ -574,15 +776,16 @@ func (h *Handler) BatchEvaluate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse location
-	city, state := parseLocation(req.Location)
-	if city == "" || state == "" {
-		httputil.BadRequest(w, "invalid location format")
+	// Get location from first property
+	if len(req.Properties) == 0 {
+		httputil.BadRequest(w, "no properties provided")
 		return
 	}
+	city := req.Properties[0].City
+	state := req.Properties[0].State
 
 	h.logger.Info("batch evaluating properties",
-		"propertyCount", len(req.PropertyIDs),
+		"propertyCount", len(req.Properties),
 		"city", city,
 		"state", state,
 	)
@@ -597,187 +800,147 @@ func (h *Handler) BatchEvaluate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Evaluate each property
-	evaluations := make([]PropertyEvaluation, 0, len(req.PropertyIDs))
+	// Generate report ID
+	reportID := uuid.New().String()
 
-	for _, propID := range req.PropertyIDs {
-		// Get property details
-		var property *providers.Property
-		if h.orchestrator != nil {
-			var err error
-			property, err = h.orchestrator.GetProperty(ctx, "", propID)
-			if err != nil {
-				h.logger.Warn("failed to get property", "propertyId", propID, "error", err)
-				// Add placeholder evaluation for missing property
-				evaluations = append(evaluations, PropertyEvaluation{
-					PropertyID: propID,
-					Score:      0,
-					Rating:     "unknown",
-				})
-				continue
-			}
-		}
+	// Evaluate each property using data from request (no need to fetch)
+	evaluations := make([]BatchEvaluationResult, 0, len(req.Properties))
+	completedCount := 0
 
-		// Calculate evaluation metrics
-		eval := h.evaluateProperty(property, marketData)
+	for _, prop := range req.Properties {
+		// Calculate evaluation with scenarios directly from input
+		eval := h.evaluatePropertyInputWithScenarios(&prop, marketData)
 		evaluations = append(evaluations, eval)
+		completedCount++
 	}
 
 	response := BatchEvaluateResponse{
-		Success:     true,
-		Evaluations: evaluations,
-		MarketData:  marketData,
+		Success:         true,
+		ReportID:        reportID,
+		TotalProperties: len(req.Properties),
+		CompletedCount:  completedCount,
+		FailedCount:     0,
+		Evaluations:     evaluations,
+		MarketData:      marketData,
 	}
 
 	httputil.JSON(w, http.StatusOK, response)
 }
 
-// evaluateProperty calculates investment metrics for a property
-func (h *Handler) evaluateProperty(property *providers.Property, marketData *aggregator.MarketData) PropertyEvaluation {
-	if property == nil {
-		return PropertyEvaluation{
-			Score:  0,
-			Rating: "unknown",
-		}
-	}
-
-	eval := PropertyEvaluation{
-		PropertyID: property.ID,
+// evaluatePropertyInputWithScenarios calculates investment metrics from BatchPropertyInput
+func (h *Handler) evaluatePropertyInputWithScenarios(prop *BatchPropertyInput, marketData *aggregator.MarketData) BatchEvaluationResult {
+	result := BatchEvaluationResult{
+		EvaluationID: uuid.New().String(),
+		PropertyID:   prop.ID,
+		Property: BatchPropertyInfo{
+			ID:      prop.ID,
+			Address: prop.Address,
+			City:    prop.City,
+			State:   prop.State,
+			ZipCode: prop.ZipCode,
+			Price:   prop.Price,
+			Beds:    prop.Beds,
+			Baths:   prop.Baths,
+			Sqft:    prop.Sqft,
+		},
+		Status: "COMPLETED",
 	}
 
 	// Use property's estimated rent or fall back to market data
-	estimatedRent := property.EstimatedRent
-	if estimatedRent == 0 && marketData != nil {
-		estimatedRent = marketData.MedianRent
+	baseRent := prop.EstimatedRent
+	if baseRent == 0 && marketData != nil {
+		baseRent = marketData.MedianRent
 	}
-	eval.EstimatedRent = estimatedRent
 
-	// Calculate metrics if we have price and rent
-	if property.Price > 0 && estimatedRent > 0 {
-		annualRent := float64(estimatedRent * 12)
-
-		// Gross yield: (Annual Rent / Price) * 100
-		eval.GrossYield = (annualRent / float64(property.Price)) * 100
-
-		// Cap rate (simplified - assuming 35% expenses)
-		netOperatingIncome := annualRent * 0.65
-		eval.CapRate = (netOperatingIncome / float64(property.Price)) * 100
-
-		// Cash on cash return (assuming 25% down payment)
-		downPayment := float64(property.Price) * 0.25
-		if downPayment > 0 {
-			// Simplified - not accounting for mortgage details
-			annualCashFlow := netOperatingIncome - (float64(property.Price) * 0.75 * 0.07) // 7% assumed rate
-			eval.CashOnCash = (annualCashFlow / downPayment) * 100
+	if prop.Price > 0 && baseRent > 0 {
+		// Scenario assumptions
+		conservativeAssumptions := ScenarioAssumptions{
+			AppreciationRate: 0.02,
+			VacancyRate:      0.10,
+			RentGrowthRate:   0.01,
+		}
+		baseAssumptions := ScenarioAssumptions{
+			AppreciationRate: 0.03,
+			VacancyRate:      0.05,
+			RentGrowthRate:   0.02,
+		}
+		optimisticAssumptions := ScenarioAssumptions{
+			AppreciationRate: 0.05,
+			VacancyRate:      0.03,
+			RentGrowthRate:   0.03,
 		}
 
-		// DSCR (Debt Service Coverage Ratio)
-		monthlyMortgage := (float64(property.Price) * 0.75 * 0.07) / 12
-		if monthlyMortgage > 0 {
-			eval.DSCR = (netOperatingIncome / 12) / monthlyMortgage
+		result.Scenarios = &BatchScenarios{
+			Conservative: h.calculateScenarioMetrics("Conservative", prop.Price, baseRent, conservativeAssumptions),
+			Base:         h.calculateScenarioMetrics("Base", prop.Price, baseRent, baseAssumptions),
+			Optimistic:   h.calculateScenarioMetrics("Optimistic", prop.Price, baseRent, optimisticAssumptions),
 		}
 	}
 
-	// Calculate score and rating
-	eval.Score = h.calculatePropertyScore(eval)
-	eval.Rating = h.calculatePropertyRating(eval.Score)
-
-	return eval
+	return result
 }
 
-// calculatePropertyScore calculates a 0-100 score based on metrics
-func (h *Handler) calculatePropertyScore(eval PropertyEvaluation) int {
-	score := 0
-	factors := 0
+// calculateScenarioMetrics calculates metrics for a given price, rent, and assumptions
+func (h *Handler) calculateScenarioMetrics(name string, price, monthlyRent int, assumptions ScenarioAssumptions) ScenarioResult {
+	priceFloat := float64(price)
 
-	// Cap rate scoring (0-25 points)
-	if eval.CapRate > 0 {
-		factors++
-		switch {
-		case eval.CapRate >= 8:
-			score += 25
-		case eval.CapRate >= 6:
-			score += 20
-		case eval.CapRate >= 4:
-			score += 15
-		case eval.CapRate >= 2:
-			score += 10
-		default:
-			score += 5
-		}
+	// Apply vacancy rate to rent
+	effectiveRent := float64(monthlyRent) * (1 - assumptions.VacancyRate)
+	annualRent := effectiveRent * 12
+
+	// Cap rate (assuming 35% expenses)
+	netOperatingIncome := annualRent * 0.65
+	capRate := (netOperatingIncome / priceFloat) * 100
+
+	// Cash on cash return (assuming 25% down payment, 7% interest rate)
+	downPayment := priceFloat * 0.25
+	loanAmount := priceFloat * 0.75
+	interestRate := 0.07
+	// Monthly mortgage payment (simplified: P&I using standard formula)
+	monthlyRate := interestRate / 12
+	numPayments := 360.0 // 30-year loan
+	monthlyPayment := loanAmount * (monthlyRate * math.Pow(1+monthlyRate, numPayments)) / (math.Pow(1+monthlyRate, numPayments) - 1)
+	annualDebtService := monthlyPayment * 12
+
+	annualCashFlow := netOperatingIncome - annualDebtService
+	cashOnCash := 0.0
+	if downPayment > 0 {
+		cashOnCash = (annualCashFlow / downPayment) * 100
 	}
 
-	// Cash on cash scoring (0-25 points)
-	if eval.CashOnCash > 0 {
-		factors++
-		switch {
-		case eval.CashOnCash >= 12:
-			score += 25
-		case eval.CashOnCash >= 8:
-			score += 20
-		case eval.CashOnCash >= 4:
-			score += 15
-		case eval.CashOnCash >= 0:
-			score += 10
-		default:
-			score += 0
-		}
+	// Monthly cash flow
+	monthlyCashFlow := annualCashFlow / 12
+
+	// 5-year total return (appreciation + cash flow)
+	totalAppreciation := priceFloat * math.Pow(1+assumptions.AppreciationRate, 5) - priceFloat
+	totalCashFlow := annualCashFlow * 5
+	totalReturn5Yr := 0.0
+	if downPayment > 0 {
+		totalReturn5Yr = ((totalAppreciation + totalCashFlow) / downPayment) * 100
 	}
 
-	// DSCR scoring (0-25 points)
-	if eval.DSCR > 0 {
-		factors++
-		switch {
-		case eval.DSCR >= 1.5:
-			score += 25
-		case eval.DSCR >= 1.25:
-			score += 20
-		case eval.DSCR >= 1.0:
-			score += 15
-		case eval.DSCR >= 0.8:
-			score += 10
-		default:
-			score += 5
-		}
+	// IRR 5-year (simplified approximation)
+	irr5Yr := totalReturn5Yr / 5
+
+	// Break-even months (time to recover down payment from cash flow)
+	breakEvenMonths := 0
+	if monthlyCashFlow > 0 {
+		breakEvenMonths = int(math.Ceil(downPayment / monthlyCashFlow))
 	}
 
-	// Gross yield scoring (0-25 points)
-	if eval.GrossYield > 0 {
-		factors++
-		switch {
-		case eval.GrossYield >= 10:
-			score += 25
-		case eval.GrossYield >= 8:
-			score += 20
-		case eval.GrossYield >= 6:
-			score += 15
-		case eval.GrossYield >= 4:
-			score += 10
-		default:
-			score += 5
-		}
-	}
-
-	// Normalize to 100 if we have factors
-	if factors > 0 {
-		maxPossible := factors * 25
-		score = (score * 100) / maxPossible
-	}
-
-	return score
-}
-
-// calculatePropertyRating converts score to rating
-func (h *Handler) calculatePropertyRating(score int) string {
-	switch {
-	case score >= 80:
-		return "excellent"
-	case score >= 60:
-		return "good"
-	case score >= 40:
-		return "fair"
-	default:
-		return "poor"
+	return ScenarioResult{
+		Name:        name,
+		Assumptions: assumptions,
+		Metrics: ScenarioMetrics{
+			MonthlyPayment:  math.Round(monthlyPayment*100) / 100,
+			MonthlyCashFlow: math.Round(monthlyCashFlow*100) / 100,
+			AnnualCashFlow:  math.Round(annualCashFlow*100) / 100,
+			CashOnCash:      math.Round(cashOnCash*100) / 100,
+			CapRate:         math.Round(capRate*100) / 100,
+			TotalReturn5Yr:  math.Round(totalReturn5Yr*100) / 100,
+			IRR5Yr:          math.Round(irr5Yr*100) / 100,
+			BreakEvenMonths: breakEvenMonths,
+		},
 	}
 }
 

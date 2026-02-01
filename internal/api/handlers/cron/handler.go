@@ -844,3 +844,68 @@ func (h *Handler) cleanupGuestSessions(ctx context.Context) (int64, error) {
 	}
 	return result.RowsAffected(), nil
 }
+
+// DiscoveryCleanup handles auto-archiving and deletion of discovery sessions
+// POST /api/cron/discovery-cleanup
+func (h *Handler) DiscoveryCleanup(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	start := time.Now()
+	result := newCronResult(start)
+
+	h.logger.Info("starting discovery session cleanup")
+
+	// Auto-archive sessions older than 30 days
+	archived, err := h.autoArchiveDiscoverySessions(ctx)
+	if err != nil {
+		h.logger.Error("failed to auto-archive discovery sessions", "error", err)
+	}
+
+	// Delete sessions past expiration (180 days)
+	deleted, err := h.deleteExpiredDiscoverySessions(ctx)
+	if err != nil {
+		h.logger.Error("failed to delete expired discovery sessions", "error", err)
+	}
+
+	result.Status = "completed"
+	result.Message = "discovery session cleanup completed"
+	result.AffectedRows = archived + deleted
+	result.Details = map[string]int64{
+		"archived": archived,
+		"deleted":  deleted,
+	}
+	result.Duration = time.Since(start).String()
+
+	h.logger.Info("discovery session cleanup completed",
+		"archived", archived,
+		"deleted", deleted,
+		"duration", result.Duration,
+	)
+
+	httputil.Success(w, result)
+}
+
+func (h *Handler) autoArchiveDiscoverySessions(ctx context.Context) (int64, error) {
+	result, err := h.db.Main.Exec(ctx, `
+		UPDATE discovery_sessions SET
+			status = 'ARCHIVED',
+			"archivedAt" = NOW(),
+			"updatedAt" = NOW()
+		WHERE status = 'ACTIVE'
+		  AND "createdAt" < NOW() - INTERVAL '30 days'
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+func (h *Handler) deleteExpiredDiscoverySessions(ctx context.Context) (int64, error) {
+	result, err := h.db.Main.Exec(ctx, `
+		DELETE FROM discovery_sessions
+		WHERE "expiresAt" < NOW()
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}

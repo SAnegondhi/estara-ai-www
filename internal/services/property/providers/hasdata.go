@@ -505,6 +505,14 @@ func (p *HasDataProvider) convertZillowProperty(zp hasDataZillowProp) hasDataPro
 		propertyID = zp.ID.String()
 	}
 
+	// Debug: Log URL for enrichment debugging
+	p.logger.Debug("converting Zillow property",
+		"propertyId", propertyID,
+		"url", zp.URL,
+		"yearBuilt", zp.YearBuilt,
+		"address", zp.Address.Street,
+	)
+
 	return hasDataProperty{
 		PropertyID: propertyID,
 		Address: hasDataAddress{
@@ -673,4 +681,93 @@ func (p *HasDataProvider) parseListingStatus(s string) ListingStatus {
 	default:
 		return ListingStatusActive
 	}
+}
+
+// hasDataPropertyAPIResponse represents the response from HasData Property API
+// GET /scrape/zillow/property
+// Note: Property data is NESTED under 'property' field (not at top level)
+// Matches www_v1 HasDataPropertyResponse type structure
+type hasDataPropertyAPIResponse struct {
+	RequestMetadata hasDataRequestMetadata     `json:"requestMetadata"`
+	Property        hasDataPropertyAPIProperty `json:"property,omitempty"`
+}
+
+// hasDataPropertyAPIProperty contains the nested property data from Property API
+// Field names match the API response exactly (case-sensitive JSON)
+type hasDataPropertyAPIProperty struct {
+	YearBuilt     int     `json:"yearBuilt"`
+	LivingArea    int     `json:"livingArea"`    // Square feet (primary)
+	Area          int     `json:"area"`          // Square feet (alias)
+	LotSize       int     `json:"lotSize"`
+	LotAreaValue  float64 `json:"lotAreaValue"`  // Alternative lot size field (can be decimal)
+	RentZestimate int     `json:"rentZestimate"`
+}
+
+// GetPropertyByURL fetches property details using the HasData Property API
+// This is used for yearBuilt enrichment since Listing API no longer returns yearBuilt
+// Returns the nested property data directly (not the full API response wrapper)
+func (p *HasDataProvider) GetPropertyByURL(ctx context.Context, zillowURL string) (*hasDataPropertyAPIProperty, error) {
+	if !p.IsEnabled() {
+		return nil, fmt.Errorf("HasData provider is not enabled")
+	}
+
+	// Build query parameters
+	queryParams := url.Values{}
+	queryParams.Set("url", zillowURL)
+
+	endpoint := fmt.Sprintf("%s/scrape/zillow/property?%s", p.baseURL, queryParams.Encode())
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("x-api-key", p.apiKey)
+	req.Header.Set("Accept", "application/json")
+
+	p.logger.Debug("HasData Property API request",
+		"url", zillowURL,
+	)
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API error: status %d", resp.StatusCode)
+	}
+
+	// Log raw response for debugging
+	p.logger.Info("HasData Property API raw response",
+		"url", zillowURL,
+		"bodyLen", len(body),
+		"bodyPreview", string(body[:min(500, len(body))]),
+	)
+
+	var apiResp hasDataPropertyAPIResponse
+	if err := json.Unmarshal(body, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	p.logger.Info("HasData Property API parsed response",
+		"url", zillowURL,
+		"yearBuilt", apiResp.Property.YearBuilt,
+		"livingArea", apiResp.Property.LivingArea,
+		"area", apiResp.Property.Area,
+		"rentZestimate", apiResp.Property.RentZestimate,
+	)
+
+	if apiResp.RequestMetadata.Status == "error" {
+		return nil, fmt.Errorf("API returned error: %s", apiResp.RequestMetadata.Error)
+	}
+
+	// Return the nested property data directly
+	return &apiResp.Property, nil
 }

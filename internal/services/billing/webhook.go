@@ -17,6 +17,7 @@ import (
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/db/postgres"
 	"github.com/estara-ai/www/internal/db/queries"
+	"github.com/estara-ai/www/internal/services/email"
 )
 
 // WebhookService handles Stripe webhook events
@@ -37,7 +38,10 @@ func NewWebhookService(db *postgres.DB, cfg *config.Config) *WebhookService {
 
 // VerifyAndParseEvent verifies the webhook signature and parses the event
 func (s *WebhookService) VerifyAndParseEvent(payload []byte, signature string) (*stripe.Event, error) {
-	event, err := webhook.ConstructEvent(payload, signature, s.cfg.Stripe.WebhookSecret)
+	// Allow newer Stripe API versions from CLI/test fixtures.
+	event, err := webhook.ConstructEventWithOptions(payload, signature, s.cfg.Stripe.WebhookSecret, webhook.ConstructEventOptions{
+		IgnoreAPIVersionMismatch: true,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("webhook signature verification failed: %w", err)
 	}
@@ -158,6 +162,15 @@ func (s *WebhookService) handleSubscriptionCreated(ctx context.Context, event *s
 		"status", subscription.Status,
 	)
 
+	if user, err := s.findUserForStripe(ctx, subscription.Customer.ID, subscription.ID); err == nil && user != nil {
+		emailSvc := email.NewService(s.cfg)
+		if _, err := emailSvc.SendSubscriptionActivated(user.Email, s.userFirstName(user)); err != nil {
+			s.logger.Warn("failed to send subscription created email", "error", err)
+		}
+	} else if err != nil {
+		s.logger.Warn("failed to resolve user for subscription created email", "error", err)
+	}
+
 	// Record billing audit log
 	eventData, _ := json.Marshal(subscription)
 	return s.recordAuditLog(ctx, queries.CreateBillingAuditLogParams{
@@ -257,6 +270,20 @@ func (s *WebhookService) handleSubscriptionDeleted(ctx context.Context, event *s
 		}
 	}
 
+	if user, err := s.findUserForStripe(ctx, subscription.Customer.ID, subscription.ID); err == nil && user != nil {
+		emailSvc := email.NewService(s.cfg)
+		var endDate *time.Time
+		if subscription.CurrentPeriodEnd > 0 {
+			t := time.Unix(subscription.CurrentPeriodEnd, 0)
+			endDate = &t
+		}
+		if _, err := emailSvc.SendSubscriptionCancelled(user.Email, s.userFirstName(user), endDate); err != nil {
+			s.logger.Warn("failed to send subscription cancelled email", "error", err)
+		}
+	} else if err != nil {
+		s.logger.Warn("failed to resolve user for subscription cancelled email", "error", err)
+	}
+
 	// Record billing audit log
 	eventData, _ := json.Marshal(subscription)
 	return s.recordAuditLog(ctx, queries.CreateBillingAuditLogParams{
@@ -281,15 +308,23 @@ func (s *WebhookService) handleTrialWillEnd(ctx context.Context, event *stripe.E
 		"trial_end", time.Unix(subscription.TrialEnd, 0),
 	)
 
-	// TODO: Send trial ending notification email
+	if user, err := s.findUserForStripe(ctx, subscription.Customer.ID, subscription.ID); err == nil && user != nil {
+		emailSvc := email.NewService(s.cfg)
+		trialEnd := time.Unix(subscription.TrialEnd, 0)
+		if _, err := emailSvc.SendTrialEnding(user.Email, s.userFirstName(user), trialEnd); err != nil {
+			s.logger.Warn("failed to send trial ending email", "error", err)
+		}
+	} else if err != nil {
+		s.logger.Warn("failed to resolve user for trial ending email", "error", err)
+	}
 
-	// Record billing audit log
+	// Record billing audit log (map trial_will_end to a valid enum)
 	eventData, _ := json.Marshal(subscription)
 	return s.recordAuditLog(ctx, queries.CreateBillingAuditLogParams{
 		ID:                   uuid.New().String(),
 		StripeCustomerId:     pgtype.Text{String: subscription.Customer.ID, Valid: true},
 		StripeSubscriptionId: pgtype.Text{String: subscription.ID, Valid: true},
-		EventType:            "TRIAL_WILL_END",
+		EventType:            "SUBSCRIPTION_UPDATED",
 		EventData:            eventData,
 		IpAddress:            pgtype.Text{String: ipAddress, Valid: ipAddress != ""},
 		UserAgent:            pgtype.Text{String: userAgent, Valid: userAgent != ""},
@@ -302,6 +337,15 @@ func (s *WebhookService) handleInvoicePaymentSucceeded(ctx context.Context, even
 		return fmt.Errorf("failed to parse invoice: %w", err)
 	}
 
+	customerID := ""
+	if invoice.Customer != nil {
+		customerID = invoice.Customer.ID
+	}
+	subscriptionID := ""
+	if invoice.Subscription != nil {
+		subscriptionID = invoice.Subscription.ID
+	}
+
 	s.logger.Info("invoice payment succeeded",
 		"invoice_id", invoice.ID,
 		"amount_paid", invoice.AmountPaid,
@@ -312,14 +356,23 @@ func (s *WebhookService) handleInvoicePaymentSucceeded(ctx context.Context, even
 		s.logger.Error("failed to create invoice record", "error", err)
 	}
 
+	if user, err := s.findUserForStripe(ctx, customerID, subscriptionID); err == nil && user != nil {
+		emailSvc := email.NewService(s.cfg)
+		if _, err := emailSvc.SendPaymentSucceeded(user.Email, s.userFirstName(user), invoice.AmountPaid, string(invoice.Currency), invoice.HostedInvoiceURL); err != nil {
+			s.logger.Warn("failed to send payment success email", "error", err)
+		}
+	} else if err != nil {
+		s.logger.Warn("failed to resolve user for payment success email", "error", err)
+	}
+
 	// Record billing audit log
 	eventData, _ := json.Marshal(invoice)
 	return s.recordAuditLog(ctx, queries.CreateBillingAuditLogParams{
 		ID:                   uuid.New().String(),
-		StripeCustomerId:     pgtype.Text{String: invoice.Customer.ID, Valid: invoice.Customer != nil},
-		StripeSubscriptionId: pgtype.Text{String: invoice.Subscription.ID, Valid: invoice.Subscription != nil},
+		StripeCustomerId:     pgtype.Text{String: customerID, Valid: customerID != ""},
+		StripeSubscriptionId: pgtype.Text{String: subscriptionID, Valid: subscriptionID != ""},
 		StripeInvoiceId:      pgtype.Text{String: invoice.ID, Valid: true},
-		EventType:            "INVOICE_PAID",
+		EventType:            "PAYMENT_SUCCEEDED",
 		EventData:            eventData,
 		IpAddress:            pgtype.Text{String: ipAddress, Valid: ipAddress != ""},
 		UserAgent:            pgtype.Text{String: userAgent, Valid: userAgent != ""},
@@ -332,9 +385,18 @@ func (s *WebhookService) handleInvoicePaymentFailed(ctx context.Context, event *
 		return fmt.Errorf("failed to parse invoice: %w", err)
 	}
 
+	customerID := ""
+	if invoice.Customer != nil {
+		customerID = invoice.Customer.ID
+	}
+	subscriptionID := ""
+	if invoice.Subscription != nil {
+		subscriptionID = invoice.Subscription.ID
+	}
+
 	s.logger.Warn("invoice payment failed",
 		"invoice_id", invoice.ID,
-		"customer_id", invoice.Customer.ID,
+		"customer_id", customerID,
 	)
 
 	q := queries.New(s.db.Main)
@@ -355,16 +417,23 @@ func (s *WebhookService) handleInvoicePaymentFailed(ctx context.Context, event *
 		}
 	}
 
-	// TODO: Send payment failed notification email
+	if user, err := s.findUserForStripe(ctx, customerID, subscriptionID); err == nil && user != nil {
+		emailSvc := email.NewService(s.cfg)
+		if _, err := emailSvc.SendPaymentFailed(user.Email, s.userFirstName(user), invoice.AmountDue, string(invoice.Currency)); err != nil {
+			s.logger.Warn("failed to send payment failed email", "error", err)
+		}
+	} else if err != nil {
+		s.logger.Warn("failed to resolve user for payment failed email", "error", err)
+	}
 
 	// Record billing audit log
 	eventData, _ := json.Marshal(invoice)
 	return s.recordAuditLog(ctx, queries.CreateBillingAuditLogParams{
 		ID:                   uuid.New().String(),
-		StripeCustomerId:     pgtype.Text{String: invoice.Customer.ID, Valid: invoice.Customer != nil},
-		StripeSubscriptionId: pgtype.Text{String: invoice.Subscription.ID, Valid: invoice.Subscription != nil},
+		StripeCustomerId:     pgtype.Text{String: customerID, Valid: customerID != ""},
+		StripeSubscriptionId: pgtype.Text{String: subscriptionID, Valid: subscriptionID != ""},
 		StripeInvoiceId:      pgtype.Text{String: invoice.ID, Valid: true},
-		EventType:            "INVOICE_FAILED",
+		EventType:            "PAYMENT_FAILED",
 		EventData:            eventData,
 		IpAddress:            pgtype.Text{String: ipAddress, Valid: ipAddress != ""},
 		UserAgent:            pgtype.Text{String: userAgent, Valid: userAgent != ""},
@@ -445,8 +514,25 @@ func (s *WebhookService) handleDisputeClosed(ctx context.Context, event *stripe.
 // Helper methods
 
 func (s *WebhookService) recordAuditLog(ctx context.Context, params queries.CreateBillingAuditLogParams) error {
-	q := queries.New(s.db.Main)
-	_, err := q.CreateBillingAuditLog(ctx, params)
+	eventType := params.EventType
+	if value, ok := params.EventType.(string); ok {
+		eventType = value
+	}
+
+	_, err := s.db.Main.Exec(ctx, `
+		INSERT INTO billing_audit_logs (
+			id, "userId", "stripeCustomerId", "stripeSubscriptionId",
+			"stripePaymentIntentId", "stripeInvoiceId",
+			"appleOriginalTransactionId", "appleTransactionId", "appleProductId", "appleEnvironment",
+			"eventType", "eventData", "ipAddress", "userAgent", "createdAt"
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW()
+		)
+	`, params.ID, params.UserId, params.StripeCustomerId, params.StripeSubscriptionId,
+		params.StripePaymentIntentId, params.StripeInvoiceId, params.AppleOriginalTransactionId,
+		params.AppleTransactionId, params.AppleProductId, params.AppleEnvironment, eventType,
+		params.EventData, params.IpAddress, params.UserAgent,
+	)
 	return err
 }
 
@@ -502,6 +588,15 @@ func (s *WebhookService) createOrUpdateSubscription(ctx context.Context, userID,
 func (s *WebhookService) createInvoiceRecord(ctx context.Context, inv *stripe.Invoice) error {
 	q := queries.New(s.db.Main)
 
+	customerID := ""
+	if inv.Customer != nil {
+		customerID = inv.Customer.ID
+	}
+	subscriptionID := ""
+	if inv.Subscription != nil {
+		subscriptionID = inv.Subscription.ID
+	}
+
 	// Find user by Stripe customer ID
 	userID := ""
 	if inv.Subscription != nil {
@@ -546,10 +641,10 @@ func (s *WebhookService) createInvoiceRecord(ctx context.Context, inv *stripe.In
 	_, err = q.CreateInvoice(ctx, queries.CreateInvoiceParams{
 		ID:              uuid.New().String(),
 		StripeInvoiceId: inv.ID,
-		StripeCustomerId: inv.Customer.ID,
+		StripeCustomerId: customerID,
 		StripeSubscriptionId: pgtype.Text{
-			String: inv.Subscription.ID,
-			Valid:  inv.Subscription != nil,
+			String: subscriptionID,
+			Valid:  subscriptionID != "",
 		},
 		UserId: userID,
 		InvoiceNumber: pgtype.Text{
@@ -580,6 +675,55 @@ func (s *WebhookService) createInvoiceRecord(ctx context.Context, inv *stripe.In
 	})
 
 	return err
+}
+
+func (s *WebhookService) findUserForStripe(ctx context.Context, customerID, subscriptionID string) (*queries.User, error) {
+	q := queries.New(s.db.Main)
+
+	if subscriptionID != "" {
+		sub, err := q.GetSubscriptionByStripeID(ctx, pgtype.Text{
+			String: subscriptionID,
+			Valid:  true,
+		})
+		if err == nil {
+			user, err := q.GetUserByID(ctx, sub.UserId)
+			if err == nil {
+				return &user, nil
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return nil, err
+			}
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+	}
+
+	if customerID == "" {
+		return nil, nil
+	}
+
+	user, err := q.GetUserByStripeCustomerID(ctx, pgtype.Text{
+		String: customerID,
+		Valid:  true,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &user, nil
+}
+
+func (s *WebhookService) userFirstName(user *queries.User) string {
+	if user == nil {
+		return ""
+	}
+	if user.FirstName.Valid {
+		return user.FirstName.String
+	}
+	return ""
 }
 
 func (s *WebhookService) mapStripeStatus(status stripe.SubscriptionStatus) string {

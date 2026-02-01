@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/estara-ai/www/internal/config"
@@ -201,6 +202,175 @@ func (s *Service) SendVerificationCode(to, code, firstName string) (*Result, err
 		HTML:    html,
 		Text:    text,
 	})
+}
+
+// SendSubscriptionActivated sends a subscription activation confirmation email.
+func (s *Service) SendSubscriptionActivated(to, firstName string) (*Result, error) {
+	if firstName == "" {
+		firstName = "there"
+	}
+
+	subject := "Your Estara AI subscription is active"
+	html := s.renderBillingHTML(firstName, subject, "Your subscription is now active. You can start using Estara AI immediately.")
+	text := s.renderBillingText(firstName, subject, "Your subscription is now active. You can start using Estara AI immediately.")
+
+	return s.Send(EmailParams{
+		To:      to,
+		ToName:  firstName,
+		Subject: subject,
+		HTML:    html,
+		Text:    text,
+	})
+}
+
+// SendSubscriptionCancelled sends a subscription cancellation email.
+func (s *Service) SendSubscriptionCancelled(to, firstName string, endDate *time.Time) (*Result, error) {
+	if firstName == "" {
+		firstName = "there"
+	}
+
+	subject := "Your Estara AI subscription was cancelled"
+	message := "Your subscription has been cancelled."
+	if endDate != nil {
+		message = fmt.Sprintf("Your subscription has been cancelled and will remain active until %s.", endDate.Format("January 2, 2006"))
+	}
+
+	html := s.renderBillingHTML(firstName, subject, message)
+	text := s.renderBillingText(firstName, subject, message)
+
+	return s.Send(EmailParams{
+		To:      to,
+		ToName:  firstName,
+		Subject: subject,
+		HTML:    html,
+		Text:    text,
+	})
+}
+
+// SendPaymentSucceeded sends a successful payment email.
+func (s *Service) SendPaymentSucceeded(to, firstName string, amount int64, currency string, invoiceURL string) (*Result, error) {
+	if firstName == "" {
+		firstName = "there"
+	}
+
+	subject := "Payment received for your Estara AI subscription"
+	amountText := formatCurrency(amount, currency)
+	message := fmt.Sprintf("We have received your payment of %s. Thank you!", amountText)
+	if invoiceURL != "" {
+		message = fmt.Sprintf("%s You can view your invoice here: %s", message, invoiceURL)
+	}
+
+	html := s.renderBillingHTML(firstName, subject, message)
+	text := s.renderBillingText(firstName, subject, message)
+
+	return s.Send(EmailParams{
+		To:      to,
+		ToName:  firstName,
+		Subject: subject,
+		HTML:    html,
+		Text:    text,
+	})
+}
+
+// SendPaymentFailed sends a payment failure email.
+func (s *Service) SendPaymentFailed(to, firstName string, amount int64, currency string) (*Result, error) {
+	if firstName == "" {
+		firstName = "there"
+	}
+
+	subject := "Payment failed for your Estara AI subscription"
+	amountText := formatCurrency(amount, currency)
+	message := fmt.Sprintf("We could not process your payment of %s. Please update your billing details to avoid service interruption.", amountText)
+
+	html := s.renderBillingHTML(firstName, subject, message)
+	text := s.renderBillingText(firstName, subject, message)
+
+	return s.Send(EmailParams{
+		To:      to,
+		ToName:  firstName,
+		Subject: subject,
+		HTML:    html,
+		Text:    text,
+	})
+}
+
+// SendTrialEnding sends a trial ending reminder email.
+func (s *Service) SendTrialEnding(to, firstName string, endDate time.Time) (*Result, error) {
+	if firstName == "" {
+		firstName = "there"
+	}
+
+	subject := "Your Estara AI trial is ending soon"
+	message := fmt.Sprintf("Your trial ends on %s. Upgrade now to keep uninterrupted access.", endDate.Format("January 2, 2006"))
+
+	html := s.renderBillingHTML(firstName, subject, message)
+	text := s.renderBillingText(firstName, subject, message)
+
+	return s.Send(EmailParams{
+		To:      to,
+		ToName:  firstName,
+		Subject: subject,
+		HTML:    html,
+		Text:    text,
+	})
+}
+
+func (s *Service) renderBillingHTML(firstName, headline, message string) string {
+	tmpl := `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{.Headline}}</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: linear-gradient(135deg, #D4AF37 0%, #B8860B 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+    <h1 style="color: white; margin: 0; font-size: 28px;">Estara AI</h1>
+    <p style="color: rgba(255,255,255,0.9); margin: 10px 0 0 0; font-size: 16px;">{{.Headline}}</p>
+  </div>
+
+  <div style="background: white; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e1e8ed;">
+    <h2 style="color: #333; margin-bottom: 20px;">Hello {{.FirstName}},</h2>
+    <p style="margin-bottom: 20px; font-size: 16px; line-height: 1.6;">{{.Message}}</p>
+    <p style="margin-bottom: 0; font-size: 14px; color: #666;">
+      If you have questions, reply to this email and our team will help.
+    </p>
+  </div>
+</body>
+</html>`
+
+	t, err := template.New("billing").Parse(tmpl)
+	if err != nil {
+		return message
+	}
+
+	data := struct {
+		FirstName string
+		Headline  string
+		Message   string
+	}{
+		FirstName: firstName,
+		Headline:  headline,
+		Message:   message,
+	}
+
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, data); err != nil {
+		return message
+	}
+
+	return buf.String()
+}
+
+func (s *Service) renderBillingText(firstName, headline, message string) string {
+	return fmt.Sprintf("Hello %s,\n\n%s\n\n%s\n", firstName, headline, message)
+}
+
+func formatCurrency(amount int64, currency string) string {
+	if currency == "" {
+		currency = "USD"
+	}
+	return fmt.Sprintf("%.2f %s", float64(amount)/100, strings.ToUpper(currency))
 }
 
 func (s *Service) renderPasswordResetHTML(firstName, resetURL string) string {

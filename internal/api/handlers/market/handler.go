@@ -31,8 +31,9 @@ func NewHandler(cfg *config.Config) *Handler {
 	}
 
 	// Initialize FRED client if API key is available
+	// Note: Redis passed as nil here - main FRED usage via aggregator has caching
 	if cfg.Market.FREDAPIKey != "" {
-		h.fredClient = timeseries.NewFREDClient(cfg.Market.FREDAPIKey)
+		h.fredClient = timeseries.NewFREDClient(cfg.Market.FREDAPIKey, nil)
 		h.logger.Info("FRED client initialized")
 	}
 

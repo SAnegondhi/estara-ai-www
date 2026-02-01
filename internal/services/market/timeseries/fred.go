@@ -9,17 +9,26 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
+
+	redisClient "github.com/estara-ai/www/internal/db/redis"
 )
 
 const (
 	fredBaseURL = "https://api.stlouisfed.org/fred"
 
 	// Series IDs
-	SeriesMortgage30US = "MORTGAGE30US"  // 30-Year Fixed Rate Mortgage Average
-	SeriesMortgage15US = "MORTGAGE15US"  // 15-Year Fixed Rate Mortgage Average
-	SeriesUnemployment = "UNRATE"        // Unemployment Rate
-	SeriesCPI          = "CPIAUCSL"      // Consumer Price Index
+	SeriesMortgage30US     = "MORTGAGE30US"  // 30-Year Fixed Rate Mortgage Average
+	SeriesMortgage15US     = "MORTGAGE15US"  // 15-Year Fixed Rate Mortgage Average
+	SeriesUnemployment     = "UNRATE"        // Unemployment Rate
+	SeriesCPI              = "CPIAUCSL"      // Consumer Price Index
+	SeriesRentalVacancy    = "RRVRUSQ156N"   // Rental Vacancy Rate (national, quarterly)
+	SeriesHomeownerVacancy = "RHVRUSQ156N"   // Homeowner Vacancy Rate (national, quarterly)
+
+	// Cache settings - FRED data doesn't change frequently
+	// 7-day TTL to avoid rate limits and IP blocks (matches www_v1 implementation)
+	fredCacheTTL = 7 * 24 * time.Hour
 )
 
 // FREDObservation represents a single data point from FRED
@@ -56,17 +65,20 @@ type MortgageRateData struct {
 // FREDClient fetches economic data from the Federal Reserve
 type FREDClient struct {
 	client  *http.Client
+	redis   *redisClient.Client
 	apiKey  string
 	baseURL string
 	logger  *slog.Logger
 }
 
 // NewFREDClient creates a new FRED API client
-func NewFREDClient(apiKey string) *FREDClient {
+// Pass redis client for 7-day caching (nil disables caching)
+func NewFREDClient(apiKey string, redis *redisClient.Client) *FREDClient {
 	return &FREDClient{
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		redis:   redis,
 		apiKey:  apiKey,
 		baseURL: fredBaseURL,
 		logger:  slog.Default().With("component", "fred_client"),
@@ -104,7 +116,24 @@ func (c *FREDClient) GetMortgageRates(ctx context.Context) (*MortgageRateData, e
 }
 
 // GetSeries returns historical data for a series
+// Uses 7-day Redis cache to avoid rate limits (matches www_v1)
 func (c *FREDClient) GetSeries(ctx context.Context, seriesID string, startDate, endDate time.Time) ([]FREDObservation, error) {
+	cacheKey := fmt.Sprintf("fred:%s:%s:%s", seriesID, startDate.Format("2006-01-02"), endDate.Format("2006-01-02"))
+
+	// Check cache first
+	if c.redis != nil {
+		cached, err := c.redis.GetJSON(ctx, cacheKey)
+		if err == nil && cached != nil {
+			var obs []FREDObservation
+			if err := json.Unmarshal(cached, &obs); err == nil {
+				c.logger.Debug("FRED series cache hit", "series", seriesID)
+				return obs, nil
+			}
+		}
+	}
+
+	c.logger.Debug("FRED series cache miss, fetching from API", "series", seriesID)
+
 	params := url.Values{
 		"series_id":         {seriesID},
 		"api_key":           {c.apiKey},
@@ -119,11 +148,39 @@ func (c *FREDClient) GetSeries(ctx context.Context, seriesID string, startDate, 
 		return nil, err
 	}
 
+	// Cache the result for 7 days
+	if c.redis != nil && len(resp.Observations) > 0 {
+		if data, err := json.Marshal(resp.Observations); err == nil {
+			if err := c.redis.SetJSON(ctx, cacheKey, data, fredCacheTTL); err != nil {
+				c.logger.Warn("failed to cache FRED series", "series", seriesID, "error", err)
+			} else {
+				c.logger.Debug("cached FRED series for 7 days", "series", seriesID)
+			}
+		}
+	}
+
 	return resp.Observations, nil
 }
 
 // getLatestValue returns the most recent value for a series
+// Uses 7-day Redis cache to avoid rate limits (matches www_v1)
 func (c *FREDClient) getLatestValue(ctx context.Context, seriesID string) (float64, time.Time, error) {
+	cacheKey := fmt.Sprintf("fred:%s:1", seriesID)
+
+	// Check cache first
+	if c.redis != nil {
+		cached, err := c.redis.GetJSON(ctx, cacheKey)
+		if err == nil && cached != nil {
+			var obs []FREDObservation
+			if err := json.Unmarshal(cached, &obs); err == nil && len(obs) > 0 {
+				c.logger.Debug("FRED cache hit", "series", seriesID)
+				return c.parseObservation(obs[0], seriesID)
+			}
+		}
+	}
+
+	c.logger.Debug("FRED cache miss, fetching from API", "series", seriesID)
+
 	params := url.Values{
 		"series_id":  {seriesID},
 		"api_key":    {c.apiKey},
@@ -141,8 +198,22 @@ func (c *FREDClient) getLatestValue(ctx context.Context, seriesID string) (float
 		return 0, time.Time{}, fmt.Errorf("no observations found for series %s", seriesID)
 	}
 
-	obs := resp.Observations[0]
+	// Cache the result for 7 days
+	if c.redis != nil {
+		if data, err := json.Marshal(resp.Observations); err == nil {
+			if err := c.redis.SetJSON(ctx, cacheKey, data, fredCacheTTL); err != nil {
+				c.logger.Warn("failed to cache FRED data", "series", seriesID, "error", err)
+			} else {
+				c.logger.Debug("cached FRED data for 7 days", "series", seriesID)
+			}
+		}
+	}
 
+	return c.parseObservation(resp.Observations[0], seriesID)
+}
+
+// parseObservation extracts value and date from a FRED observation
+func (c *FREDClient) parseObservation(obs FREDObservation, seriesID string) (float64, time.Time, error) {
 	// Parse value (FRED returns "." for missing values)
 	if obs.Value == "." {
 		return 0, time.Time{}, fmt.Errorf("missing value for series %s", seriesID)
@@ -239,7 +310,147 @@ func (c *FREDClient) GetInflationRate(ctx context.Context) (float64, time.Time, 
 	return inflation, date, nil
 }
 
+// GetRentalVacancyRate returns the latest national rental vacancy rate
+// FRED series RRVRUSQ156N is quarterly data
+func (c *FREDClient) GetRentalVacancyRate(ctx context.Context) (float64, time.Time, error) {
+	return c.getLatestValue(ctx, SeriesRentalVacancy)
+}
+
 // IsConfigured returns true if the client has an API key
 func (c *FREDClient) IsConfigured() bool {
 	return c.apiKey != ""
+}
+
+// GetMetroEmploymentGrowth returns the year-over-year employment growth rate for a metro area
+// Uses FRED's metro employment series (e.g., PEOI for Peoria, IL)
+func (c *FREDClient) GetMetroEmploymentGrowth(ctx context.Context, city, state string) (float64, error) {
+	// Try to find a FRED series for this metro
+	seriesID := c.lookupMetroEmploymentSeries(city, state)
+	if seriesID == "" {
+		// Fall back to national unemployment rate as proxy (inverted)
+		c.logger.Debug("no metro employment series found, using national proxy",
+			"city", city, "state", state)
+		return c.getNationalEmploymentGrowthProxy(ctx)
+	}
+
+	// Get 13 months of data to calculate YoY
+	endDate := time.Now()
+	startDate := endDate.AddDate(-1, -1, 0)
+
+	obs, err := c.GetSeries(ctx, seriesID, startDate, endDate)
+	if err != nil {
+		c.logger.Warn("failed to get metro employment series, using national proxy",
+			"series", seriesID, "error", err)
+		return c.getNationalEmploymentGrowthProxy(ctx)
+	}
+
+	if len(obs) < 12 {
+		c.logger.Debug("insufficient metro employment data, using national proxy",
+			"series", seriesID, "observations", len(obs))
+		return c.getNationalEmploymentGrowthProxy(ctx)
+	}
+
+	// Calculate YoY growth
+	latest := obs[len(obs)-1]
+	yearAgo := obs[0]
+
+	latestVal, err := strconv.ParseFloat(latest.Value, 64)
+	if err != nil || latest.Value == "." {
+		return c.getNationalEmploymentGrowthProxy(ctx)
+	}
+
+	yearAgoVal, err := strconv.ParseFloat(yearAgo.Value, 64)
+	if err != nil || yearAgo.Value == "." || yearAgoVal == 0 {
+		return c.getNationalEmploymentGrowthProxy(ctx)
+	}
+
+	growth := ((latestVal - yearAgoVal) / yearAgoVal) * 100
+
+	c.logger.Debug("calculated metro employment growth",
+		"city", city, "state", state,
+		"series", seriesID, "growth", growth)
+
+	return growth, nil
+}
+
+// getNationalEmploymentGrowthProxy returns an estimated employment growth
+// based on national unemployment rate (lower unemployment = higher growth)
+func (c *FREDClient) getNationalEmploymentGrowthProxy(ctx context.Context) (float64, error) {
+	unemployment, _, err := c.GetUnemploymentRate(ctx)
+	if err != nil {
+		return 1.5, nil // Default moderate growth
+	}
+
+	// Rough proxy: if unemployment is low (3-4%), growth is higher (2-3%)
+	// If unemployment is high (6%+), growth is lower or negative
+	// This is a simplification but better than hardcoded defaults
+	if unemployment <= 4.0 {
+		return 2.5, nil
+	} else if unemployment <= 5.0 {
+		return 1.5, nil
+	} else if unemployment <= 6.0 {
+		return 0.5, nil
+	}
+	return 0.0, nil
+}
+
+// lookupMetroEmploymentSeries maps a city/state to a FRED employment series ID
+// FRED uses various patterns like:
+// - {PREFIX}NA for MSA total nonfarm (e.g., PEOI for Peoria)
+// - SMS{STATE}{METRO}0000000001 for some metros
+// This is a known metros mapping - expand as needed
+func (c *FREDClient) lookupMetroEmploymentSeries(city, state string) string {
+	// Normalize city name for lookup
+	cityUpper := strings.ToUpper(city)
+	stateUpper := strings.ToUpper(state)
+
+	// Common metro employment series
+	// Pattern: typically first 4 letters of metro + state abbreviation or similar
+	// These are FRED series IDs for Total Nonfarm All Employees (Thousands)
+	metroSeries := map[string]string{
+		// Illinois
+		"PEORIA_IL":       "PEOI",
+		"CHICAGO_IL":      "CHIC",
+		"SPRINGFIELD_IL":  "SPRI",
+		"ROCKFORD_IL":     "ROCK",
+		"CHAMPAIGN_IL":    "CHAM",
+		"BLOOMINGTON_IL":  "BLOO",
+		// Texas
+		"HOUSTON_TX":      "HOUS",
+		"DALLAS_TX":       "DALL",
+		"AUSTIN_TX":       "AUST",
+		"SAN ANTONIO_TX":  "SANA",
+		// California
+		"LOS ANGELES_CA":  "LOSA",
+		"SAN FRANCISCO_CA":"SANF",
+		"SAN DIEGO_CA":    "SAND",
+		"SAN JOSE_CA":     "SANJ",
+		// Florida
+		"MIAMI_FL":        "MIAM",
+		"TAMPA_FL":        "TAMP",
+		"ORLANDO_FL":      "ORLA",
+		"JACKSONVILLE_FL": "JACK",
+		// New York
+		"NEW YORK_NY":     "NEWY",
+		"BUFFALO_NY":      "BUFF",
+		// Other major metros
+		"PHOENIX_AZ":      "PHOE",
+		"DENVER_CO":       "DENV",
+		"SEATTLE_WA":      "SEAT",
+		"PORTLAND_OR":     "PORT",
+		"ATLANTA_GA":      "ATLA",
+		"BOSTON_MA":       "BOST",
+		"DETROIT_MI":      "DETR",
+		"MINNEAPOLIS_MN":  "MINN",
+		"CHARLOTTE_NC":    "CHAR",
+		"NASHVILLE_TN":    "NASH",
+		"LAS VEGAS_NV":    "LASV",
+	}
+
+	key := cityUpper + "_" + stateUpper
+	if series, ok := metroSeries[key]; ok {
+		return series
+	}
+
+	return ""
 }

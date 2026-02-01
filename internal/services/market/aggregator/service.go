@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/estara-ai/www/internal/services/cache"
@@ -18,25 +19,33 @@ const (
 	maxSourceVariance = 0.5 // 50%
 
 	// Cache TTL for aggregated market data
+	// Market data is mostly static (updates monthly), so 7-day TTL is safe
 	cacheKeyPrefix = "market_data:"
-	cacheTTL       = 24 * time.Hour
+	cacheTTL       = 7 * 24 * time.Hour // 7 days (was 24 hours)
+
+	// In-memory cache TTL for ultra-fast repeated lookups
+	memoryCacheTTL = 24 * time.Hour // 1 day
 )
 
 // MarketData represents aggregated market data from multiple sources
 type MarketData struct {
-	City             string    `json:"city"`
-	State            string    `json:"state"`
-	MedianHomePrice  int       `json:"medianHomePrice"`
-	MedianRent       int       `json:"medianRent"`
-	CapRate          float64   `json:"capRate"`
-	MortgageRate30   float64   `json:"mortgageRate30"`
-	MortgageRate15   float64   `json:"mortgageRate15"`
-	YearOverYearPct  float64   `json:"yearOverYearPct"`
-	RentYearOverYear float64   `json:"rentYearOverYearPct"`
-	Confidence       float64   `json:"confidence"`
-	Sources          []string  `json:"sources"`
-	DataDate         time.Time `json:"dataDate"`
-	IsAIEstimated    bool      `json:"isAiEstimated"`
+	City                 string    `json:"city"`
+	State                string    `json:"state"`
+	MedianHomePrice      int       `json:"medianHomePrice"`
+	MedianRent           int       `json:"medianRent"`
+	CapRate              float64   `json:"capRate"`
+	MortgageRate30       float64   `json:"mortgageRate30"`
+	MortgageRate15       float64   `json:"mortgageRate15"`
+	YearOverYearPct      float64   `json:"yearOverYearPct"`
+	RentYearOverYear     float64   `json:"rentYearOverYearPct"`
+	VacancyRate          float64   `json:"vacancyRate"`          // Rental vacancy rate (%)
+	UnemploymentRate     float64   `json:"unemploymentRate"`     // Local unemployment rate (%)
+	EmploymentGrowthRate float64   `json:"employmentGrowthRate"` // YoY employment growth (%)
+	PopulationGrowthRate float64   `json:"populationGrowthRate"` // YoY population growth (%)
+	Confidence           float64   `json:"confidence"`
+	Sources              []string  `json:"sources"`
+	DataDate             time.Time `json:"dataDate"`
+	IsAIEstimated        bool      `json:"isAiEstimated"`
 }
 
 // SourceData holds data from a single source for cross-validation
@@ -47,13 +56,20 @@ type SourceData struct {
 	Date            time.Time
 }
 
+// memoryCacheEntry holds cached data with expiration
+type memoryCacheEntry struct {
+	data      *MarketData
+	expiresAt time.Time
+}
+
 // Aggregator aggregates data from multiple market data sources
 type Aggregator struct {
-	metro     *timeseries.MetroReader
-	fred      *timeseries.FREDClient
-	estimator *estimation.AIEstimator
-	cache     *cache.HybridCache
-	logger    *slog.Logger
+	metro       *timeseries.MetroReader
+	fred        *timeseries.FREDClient
+	estimator   *estimation.AIEstimator
+	cache       *cache.HybridCache
+	memoryCache sync.Map // In-memory cache for ultra-fast repeated lookups
+	logger      *slog.Logger
 }
 
 // NewAggregator creates a new market data aggregator
@@ -76,14 +92,29 @@ func NewAggregator(
 func (a *Aggregator) GetMarketData(ctx context.Context, city, state string) (*MarketData, error) {
 	cacheKey := a.buildCacheKey(city, state)
 
-	// Check cache first
+	// L0: Check in-memory cache first (ultra-fast, ~1µs)
+	if entry, ok := a.memoryCache.Load(cacheKey); ok {
+		if cached, ok := entry.(*memoryCacheEntry); ok && time.Now().Before(cached.expiresAt) {
+			a.logger.Debug("memory cache hit for market data", "city", city, "state", state)
+			return cached.data, nil
+		}
+		// Expired entry, delete it
+		a.memoryCache.Delete(cacheKey)
+	}
+
+	// L1/L2: Check Redis/DB cache (fast, ~1-5ms)
 	if a.cache != nil {
 		cached, err := a.cache.Get(ctx, "", cacheKey)
 		if err == nil && cached != nil {
-			a.logger.Debug("cache hit for market data", "city", city, "state", state)
+			a.logger.Debug("hybrid cache hit for market data", "city", city, "state", state)
 			// Parse cached data
 			var data MarketData
 			if err := parseJSON(cached, &data); err == nil {
+				// Store in memory cache for faster subsequent lookups
+				a.memoryCache.Store(cacheKey, &memoryCacheEntry{
+					data:      &data,
+					expiresAt: time.Now().Add(memoryCacheTTL),
+				})
 				return &data, nil
 			}
 		}
@@ -124,6 +155,41 @@ func (a *Aggregator) GetMarketData(ctx context.Context, city, state string) (*Ma
 		}
 	}
 
+	// Get national vacancy rate from FRED as fallback
+	var vacancyRate float64
+	if a.fred != nil && a.fred.IsConfigured() {
+		vr, _, err := a.fred.GetRentalVacancyRate(ctx)
+		if err != nil {
+			a.logger.Debug("failed to get FRED vacancy rate, using default", "error", err)
+			vacancyRate = 6.5 // Default national average
+		} else {
+			vacancyRate = vr
+		}
+	} else {
+		vacancyRate = 6.5 // Default when FRED not configured
+	}
+
+	// Get employment growth from FRED
+	var employmentGrowth float64
+	if a.fred != nil && a.fred.IsConfigured() {
+		eg, err := a.fred.GetMetroEmploymentGrowth(ctx, city, state)
+		if err != nil {
+			a.logger.Debug("failed to get metro employment growth, using default", "city", city, "state", state, "error", err)
+			employmentGrowth = 1.5 // Default moderate growth
+		} else {
+			a.logger.Info("fetched metro employment growth", "city", city, "state", state, "growth", eg)
+			employmentGrowth = eg
+		}
+	} else {
+		a.logger.Debug("FRED not configured, using default employment growth", "city", city, "state", state)
+		employmentGrowth = 1.5 // Default when FRED not configured
+	}
+
+	// Population growth - Census API deprecated since 2020, use regional defaults
+	// TODO: Integrate Census flat files for accurate population data
+	populationGrowth := getRegionalPopulationGrowthDefault(state)
+	a.logger.Debug("population growth for state", "state", state, "growth", populationGrowth)
+
 	// Cross-validate sources
 	if len(sources) > 1 {
 		if !a.validateSources(sources) {
@@ -145,14 +211,20 @@ func (a *Aggregator) GetMarketData(ctx context.Context, city, state string) (*Ma
 	}
 
 	// Aggregate data
-	data := a.aggregateData(city, state, sources, metroData, yoyData, mortgageData)
+	data := a.aggregateData(city, state, sources, metroData, yoyData, mortgageData, vacancyRate, employmentGrowth, populationGrowth)
 
-	// Cache the result
+	// Cache the result in L1/L2 (Redis/DB)
 	if a.cache != nil {
 		if err := a.cache.Set(ctx, "", cacheKey, "market_data", data, cacheTTL); err != nil {
 			a.logger.Warn("failed to cache market data", "error", err)
 		}
 	}
+
+	// Also cache in L0 (memory) for ultra-fast subsequent lookups
+	a.memoryCache.Store(cacheKey, &memoryCacheEntry{
+		data:      data,
+		expiresAt: time.Now().Add(memoryCacheTTL),
+	})
 
 	return data, nil
 }
@@ -211,12 +283,17 @@ func (a *Aggregator) aggregateData(
 	metro *timeseries.MetroData,
 	yoy *timeseries.YearOverYearData,
 	mortgage *timeseries.MortgageRateData,
+	vacancyRate float64,
+	employmentGrowth float64,
+	populationGrowth float64,
 ) *MarketData {
 	data := &MarketData{
-		City:       city,
-		State:      state,
-		Confidence: 1.0, // High confidence for real data
-		Sources:    make([]string, 0, len(sources)),
+		City:                 city,
+		State:                state,
+		Confidence:           1.0, // High confidence for real data
+		Sources:              make([]string, 0, len(sources)),
+		EmploymentGrowthRate: employmentGrowth,
+		PopulationGrowthRate: populationGrowth,
 	}
 
 	// Collect source names
@@ -230,10 +307,14 @@ func (a *Aggregator) aggregateData(
 		data.MedianRent = int(math.Round(metro.ZORI))
 		data.DataDate = metro.Date
 
-		// Calculate cap rate: (Annual Rent / Home Price) * 100
+		// Calculate cap rate: (NOI / Home Price) * 100
+		// NOI = Annual Rent - Operating Expenses
+		// Typical expense ratio is ~40% (taxes, insurance, maintenance, vacancy, management)
 		if metro.ZHVI > 0 && metro.ZORI > 0 {
 			annualRent := metro.ZORI * 12
-			data.CapRate = (annualRent / metro.ZHVI) * 100
+			expenseRatio := 0.40 // 40% of gross rent goes to operating expenses
+			noi := annualRent * (1 - expenseRatio)
+			data.CapRate = (noi / metro.ZHVI) * 100
 		}
 	}
 
@@ -252,6 +333,9 @@ func (a *Aggregator) aggregateData(
 			data.Sources = append(data.Sources, mortgage.Source)
 		}
 	}
+
+	// Add vacancy rate (from FRED or default)
+	data.VacancyRate = vacancyRate
 
 	return data
 }
@@ -349,4 +433,42 @@ func normalizeString(s string) string {
 // parseJSON is a helper to unmarshal JSON data
 func parseJSON(data []byte, v interface{}) error {
 	return json.Unmarshal(data, v)
+}
+
+// getRegionalPopulationGrowthDefault returns estimated population growth by state
+// Based on Census Bureau 2020-2024 estimates and regional trends
+// TODO: Replace with actual Census flat file integration
+func getRegionalPopulationGrowthDefault(state string) float64 {
+	// High-growth states (Sun Belt, tech hubs)
+	highGrowth := map[string]bool{
+		"TX": true, "FL": true, "AZ": true, "NV": true, "UT": true,
+		"ID": true, "MT": true, "SC": true, "NC": true, "TN": true,
+		"GA": true, "CO": true,
+	}
+
+	// Moderate-growth states
+	moderateGrowth := map[string]bool{
+		"WA": true, "OR": true, "DE": true, "SD": true, "ND": true,
+		"NE": true, "MN": true, "VA": true, "MD": true, "NH": true,
+	}
+
+	// Low/negative growth states (Rust Belt, Northeast)
+	lowGrowth := map[string]bool{
+		"NY": true, "IL": true, "CA": true, "PA": true, "OH": true,
+		"MI": true, "NJ": true, "CT": true, "WV": true, "LA": true,
+		"MS": true, "HI": true,
+	}
+
+	if highGrowth[state] {
+		return 1.5 // 1.5% annual growth
+	}
+	if moderateGrowth[state] {
+		return 0.8 // 0.8% annual growth
+	}
+	if lowGrowth[state] {
+		return 0.1 // Near-flat or slight decline
+	}
+
+	// Default for other states
+	return 0.5
 }

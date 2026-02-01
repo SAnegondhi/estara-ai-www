@@ -4,6 +4,7 @@ import (
 	"math"
 
 	"github.com/estara-ai/www/internal/services/investment"
+	"github.com/estara-ai/www/internal/services/investment/expenses"
 )
 
 // DefaultConfig holds default projection parameters
@@ -163,6 +164,12 @@ func (c *Calculator) CalculateMetrics(properties []investment.PropertyInPortfoli
 	metrics.AvgCashOnCash = totalCashOnCash / count
 	metrics.AvgDSCR = totalDSCR / count
 
+	// Calculate Expected Annual Return = NOI / Cash Invested (before debt service)
+	// This differs from CoC which is (NOI - Debt Service) / Cash Invested
+	if metrics.TotalDownPayment > 0 {
+		metrics.ExpectedAnnualReturn = (totalNOI / float64(metrics.TotalDownPayment)) * 100
+	}
+
 	// Calculate portfolio-level DSCR
 	if totalDebtService > 0 {
 		metrics.PortfolioDSCR = totalNOI / totalDebtService
@@ -173,14 +180,125 @@ func (c *Calculator) CalculateMetrics(properties []investment.PropertyInPortfoli
 		metrics.LeverageRatio = float64(metrics.TotalLoanAmount) / float64(metrics.TotalInvestment)
 	}
 
+	// === Additional metrics for client compatibility ===
+
+	// DebtServiceCoverage - alias for PortfolioDSCR
+	metrics.DebtServiceCoverage = metrics.PortfolioDSCR
+
+	// LocationCount - count unique locations
+	locationSet := make(map[string]bool)
+	for _, p := range properties {
+		if p.Property.City != "" && p.Property.State != "" {
+			locationSet[p.Property.City+", "+p.Property.State] = true
+		}
+	}
+	metrics.LocationCount = len(locationSet)
+
+	// DiversificationScore - 20 points per location, max 100
+	metrics.DiversificationScore = math.Min(100, float64(metrics.LocationCount)*20)
+
+	// SharpeRatio - simplified calculation
+	// Sharpe = (Return - Risk-free rate) / Volatility
+	// Using avg CoC as return, 4% as risk-free, estimate volatility from property spread
+	riskFreeRate := 4.0
+	if count > 1 {
+		// Calculate standard deviation of CoC returns
+		variance := 0.0
+		for _, p := range properties {
+			diff := p.CashOnCash - metrics.AvgCashOnCash
+			variance += diff * diff
+		}
+		volatility := math.Sqrt(variance / count)
+		if volatility > 0 {
+			metrics.SharpeRatio = (metrics.AvgCashOnCash - riskFreeRate) / volatility
+		} else {
+			// No volatility = perfect Sharpe (capped at 3)
+			metrics.SharpeRatio = math.Min(3.0, (metrics.AvgCashOnCash-riskFreeRate)/1.0)
+		}
+	} else {
+		// Single property - use simplified calculation
+		metrics.SharpeRatio = (metrics.AvgCashOnCash - riskFreeRate) / 10.0 // Assume 10% volatility
+	}
+
+	// TotalROI - 5-year projected return
+	// Assumes 3% annual appreciation + cumulative cash flow
+	if metrics.TotalDownPayment > 0 {
+		fiveYearAppreciation := float64(metrics.TotalInvestment) * (math.Pow(1.03, 5) - 1)
+		fiveYearCashFlow := float64(metrics.AnnualCashFlow) * 5
+		totalReturn := fiveYearAppreciation + fiveYearCashFlow
+		metrics.TotalROI = (totalReturn / float64(metrics.TotalDownPayment)) * 100
+	}
+
+	// FiveYearProjection - pre-computed yearly values for client display
+	metrics.FiveYearProjection = c.calculateFiveYearProjection(properties)
+
 	return metrics
 }
 
+// calculateFiveYearProjection computes 5-year portfolio value and cash flow projections
+func (c *Calculator) calculateFiveYearProjection(properties []investment.PropertyInPortfolio) *investment.FiveYearProjectionData {
+	if len(properties) == 0 {
+		return nil
+	}
+
+	// Calculate initial totals
+	initialValue := 0
+	annualCashFlow := 0
+	for _, p := range properties {
+		initialValue += p.Property.Price
+		annualCashFlow += p.MonthlyCashFlow * 12
+	}
+
+	projection := &investment.FiveYearProjectionData{}
+	currentValue := float64(initialValue)
+	currentCashFlow := float64(annualCashFlow)
+	cumulativeCashFlow := 0
+
+	for year := 1; year <= 5; year++ {
+		// Apply 3% appreciation
+		currentValue *= 1.03
+		// Apply 2% rent growth to cash flow
+		currentCashFlow *= 1.02
+		cumulativeCashFlow += int(currentCashFlow)
+
+		yearData := investment.YearProjectionData{
+			Value:    int(currentValue),
+			CashFlow: cumulativeCashFlow,
+		}
+
+		switch year {
+		case 1:
+			projection.Year1 = yearData
+		case 2:
+			projection.Year2 = yearData
+		case 3:
+			projection.Year3 = yearData
+		case 4:
+			projection.Year4 = yearData
+		case 5:
+			projection.Year5 = yearData
+		}
+	}
+
+	return projection
+}
+
 // CalculatePropertyMetrics calculates investment metrics for a single property
+// Uses actual state-specific expense rates instead of flat defaults
 func (c *Calculator) CalculatePropertyMetrics(
 	property investment.Property,
 	downPaymentPct float64,
 	mortgageRate float64,
+) investment.PropertyInPortfolio {
+	return c.CalculatePropertyMetricsWithVacancy(property, downPaymentPct, mortgageRate, nil)
+}
+
+// CalculatePropertyMetricsWithVacancy calculates metrics with optional market-specific vacancy rate
+func (c *Calculator) CalculatePropertyMetricsWithVacancy(
+	property investment.Property,
+	downPaymentPct float64,
+	mortgageRate float64,
+	marketVacancyRate *float64,
 ) investment.PropertyInPortfolio {
 	downPayment := int(float64(property.Price) * downPaymentPct)
 	loanAmount := property.Price - downPayment
@@ -188,22 +306,73 @@ func (c *Calculator) CalculatePropertyMetrics(
 	// Calculate monthly mortgage payment
 	monthlyPayment := c.calculateMonthlyPayment(float64(loanAmount), mortgageRate, c.config.LoanTermYears)
 
-	// Calculate NOI
-	annualRent := property.EstimatedRent * 12
-	effectiveRent := float64(annualRent) * (1 - c.config.VacancyRate)
-	operatingExpenses := effectiveRent * c.config.ExpenseRatio
-	noi := effectiveRent - operatingExpenses
+	// Use expense calculator for actual state-specific rates
+	expCalc := expenses.NewCalculator()
+	expInput := expenses.PropertyInput{
+		Price:         property.Price,
+		State:         property.State,
+		City:          property.City, // For market-class based management fees
+		YearBuilt:     property.YearBuilt,
+		EstimatedRent: property.EstimatedRent,
+		PropertyType:  property.PropertyType,
+	}
+	if marketVacancyRate != nil {
+		expInput.VacancyRateOverride = marketVacancyRate
+	}
+
+	opEx, err := expCalc.Calculate(expInput)
+	if err != nil {
+		// Fall back to legacy flat-rate calculation if expense calculator fails
+		annualRent := float64(property.EstimatedRent * 12)
+		vacancyRate := c.config.VacancyRate
+		if marketVacancyRate != nil {
+			vacancyRate = *marketVacancyRate / 100.0
+		}
+		effectiveRent := annualRent * (1 - vacancyRate)
+		noi := effectiveRent * (1 - c.config.ExpenseRatio)
+
+		capRate := 0.0
+		if property.Price > 0 {
+			capRate = (noi / float64(property.Price)) * 100
+		}
+
+		annualDebtService := monthlyPayment * 12
+		annualCashFlow := noi - annualDebtService
+		monthlyCashFlow := int(annualCashFlow / 12)
+
+		cashOnCash := 0.0
+		if downPayment > 0 {
+			cashOnCash = (annualCashFlow / float64(downPayment)) * 100
+		}
+
+		dscr := 0.0
+		if annualDebtService > 0 {
+			dscr = noi / annualDebtService
+		}
+
+		return investment.PropertyInPortfolio{
+			Property:        property,
+			DownPayment:     downPayment,
+			LoanAmount:      loanAmount,
+			MonthlyPayment:  int(monthlyPayment),
+			MonthlyCashFlow: monthlyCashFlow,
+			CapRate:         capRate,
+			CashOnCash:      cashOnCash,
+			DSCR:            dscr,
+			Expenses:        nil, // No detailed expenses on fallback
+		}
+	}
+
+	// Use calculated NOI from expense calculator
+	noi := opEx.NOI
 
 	// Calculate monthly cash flow
 	annualDebtService := monthlyPayment * 12
 	annualCashFlow := noi - annualDebtService
 	monthlyCashFlow := int(annualCashFlow / 12)
 
-	// Calculate cap rate
-	capRate := 0.0
-	if property.Price > 0 {
-		capRate = (noi / float64(property.Price)) * 100
-	}
+	// Calculate cap rate (from expense calculator is more accurate)
+	capRate := opEx.CapRate
 
 	// Calculate cash on cash return
 	cashOnCash := 0.0
@@ -217,6 +386,22 @@ func (c *Calculator) CalculatePropertyMetrics(
 		dscr = noi / annualDebtService
 	}
 
+	// Store calculated expenses for projection transparency
+	propExpenses := &investment.PropertyExpenses{
+		PropertyTax:      opEx.PropertyTax,
+		Insurance:        opEx.Insurance,
+		Maintenance:      opEx.Maintenance,
+		VacancyAllowance: opEx.VacancyAllowance,
+		PropertyMgmt:     opEx.PropertyMgmt,
+		TotalAnnual:      opEx.TotalAnnual,
+		NOI:              opEx.NOI,
+		PropertyTaxRate:  opEx.PropertyTaxRate,
+		InsuranceRate:    opEx.InsuranceRate,
+		MaintenanceRate:  opEx.MaintenanceRate,
+		VacancyRate:      opEx.VacancyRate,
+		PropertyMgmtRate: opEx.PropertyMgmtRate,
+	}
+
 	return investment.PropertyInPortfolio{
 		Property:        property,
 		DownPayment:     downPayment,
@@ -226,6 +411,7 @@ func (c *Calculator) CalculatePropertyMetrics(
 		CapRate:         capRate,
 		CashOnCash:      cashOnCash,
 		DSCR:            dscr,
+		Expenses:        propExpenses,
 	}
 }
 

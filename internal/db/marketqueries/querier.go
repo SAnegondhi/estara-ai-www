@@ -6,19 +6,42 @@ package marketqueries
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
-	GetCityMetroMapping(ctx context.Context, arg GetCityMetroMappingParams) (CityMetroMapping, error)
-	GetLatestMetroData(ctx context.Context, arg GetLatestMetroDataParams) (MetroTimeseries, error)
-	GetLatestMetroDataByID(ctx context.Context, regionID int32) (MetroTimeseries, error)
-	GetMetroDataByState(ctx context.Context, arg GetMetroDataByStateParams) ([]MetroTimeseries, error)
-	GetMetroForCity(ctx context.Context, arg GetMetroForCityParams) (MetroTimeseries, error)
-	GetMetroTimeSeries(ctx context.Context, arg GetMetroTimeSeriesParams) ([]MetroTimeseries, error)
-	GetMetroTimeSeriesByID(ctx context.Context, arg GetMetroTimeSeriesByIDParams) ([]MetroTimeseries, error)
-	GetYearOverYearChange(ctx context.Context, regionID int32) (GetYearOverYearChangeRow, error)
-	ListAvailableRegions(ctx context.Context, arg ListAvailableRegionsParams) ([]ListAvailableRegionsRow, error)
-	SearchMetroByName(ctx context.Context, arg SearchMetroByNameParams) ([]SearchMetroByNameRow, error)
+	// Get cities where cache has expired
+	GetCitiesNeedingRefresh(ctx context.Context, limit int32) ([]GetCitiesNeedingRefreshRow, error)
+	// Get total count of cached cities
+	GetCityCount(ctx context.Context) (int64, error)
+	// Get count of cached cities in a state
+	GetCityCountByState(ctx context.Context, state string) (int64, error)
+	// Market Database Queries
+	// These queries are validated against the schema at compile time by sqlc.
+	// If column names don't match, sqlc will fail to generate code.
+	// ============================================================================
+	// CITY MARKET CACHE QUERIES
+	// ============================================================================
+	// Get market data for a specific city, joined with metro for metro name
+	GetCityMarketData(ctx context.Context, arg GetCityMarketDataParams) (GetCityMarketDataRow, error)
+	// Get the metro mapping for a city (for fallback to metro-level data)
+	GetCityMetroMapping(ctx context.Context, arg GetCityMetroMappingParams) (GetCityMetroMappingRow, error)
+	// ============================================================================
+	// METRO TIME SERIES QUERIES
+	// ============================================================================
+	// Get metro data by name
+	GetMetroByName(ctx context.Context, metroName string) (GetMetroByNameRow, error)
+	// Get metro data by region ID
+	GetMetroByRegionID(ctx context.Context, metroRegionID int32) (GetMetroByRegionIDRow, error)
+	// Get total count of metros
+	GetMetroCount(ctx context.Context) (int64, error)
+	// List all cities in a state with their market data
+	ListCitiesByState(ctx context.Context, arg ListCitiesByStateParams) ([]ListCitiesByStateRow, error)
+	// List all metros in a state
+	ListMetrosByState(ctx context.Context, stateName pgtype.Text) ([]ListMetrosByStateRow, error)
+	// Search metros by name pattern
+	SearchMetros(ctx context.Context, arg SearchMetrosParams) ([]SearchMetrosRow, error)
 }
 
 var _ Querier = (*Queries)(nil)

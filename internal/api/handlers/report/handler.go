@@ -2,16 +2,19 @@
 package report
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/db/postgres"
+	"github.com/estara-ai/www/internal/services/pdf"
 	"github.com/estara-ai/www/internal/services/reports"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -239,7 +242,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Download returns a download URL for the report PDF
+// Download returns a generated PDF for the report
 // GET /api/investor-report/download/{id}
 func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -256,7 +259,7 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	downloadURL, err := h.service.GetDownloadURL(ctx, claims.UserID, reportID)
+	report, err := h.service.Get(ctx, claims.UserID, reportID)
 	if err != nil {
 		if errors.Is(err, reports.ErrReportNotFound) {
 			httputil.JSON(w, http.StatusNotFound, map[string]interface{}{
@@ -266,13 +269,73 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		h.logger.Error("failed to get download URL", "error", err, "report_id", reportID)
-		httputil.Error(w, http.StatusInternalServerError, err.Error())
+		h.logger.Error("failed to get report", "error", err, "report_id", reportID)
+		httputil.Error(w, http.StatusInternalServerError, "failed to get report")
 		return
 	}
 
-	httputil.JSON(w, http.StatusOK, map[string]interface{}{
-		"success":     true,
-		"downloadUrl": downloadURL,
+	if report.Status != reports.ReportStatusComplete {
+		httputil.JSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   "Report not ready for download",
+			"status":  report.Status,
+		})
+		return
+	}
+
+	metricsBytes, _ := json.Marshal(report.MetricsData)
+	narrativeBytes, _ := json.Marshal(report.NarrativeData)
+
+	email := claims.Email
+	if report.Email != nil && *report.Email != "" {
+		email = *report.Email
+	}
+	address := ""
+	if report.PropertyAddress != nil {
+		address = *report.PropertyAddress
+	}
+
+	pdfBytes, err := pdf.BuildInvestorReportPDF(pdf.InvestorReportPDFInput{
+		ReportType:      string(report.Type),
+		PropertyAddress: address,
+		Email:           email,
+		MetricsData:     metricsBytes,
+		NarrativeData:   narrativeBytes,
+		FullReport:      report.FullReport,
 	})
+	if err != nil {
+		h.logger.Error("failed to generate report pdf", "error", err, "report_id", reportID)
+		httputil.Error(w, http.StatusInternalServerError, "failed to generate report pdf")
+		return
+	}
+
+	filename := "estara-ai-investor-report.pdf"
+	if address != "" {
+		filename = "estara-ai-investor-report-" + sanitizeFilename(address) + ".pdf"
+	}
+
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+filename+"\"")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(pdfBytes)
+}
+
+func sanitizeFilename(value string) string {
+	safe := strings.ToLower(strings.TrimSpace(value))
+	replacer := strings.NewReplacer(
+		" ", "-",
+		"/", "-",
+		"\\", "-",
+		":", "-",
+		".", "-",
+		",", "-",
+	)
+	safe = replacer.Replace(safe)
+	safe = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			return r
+		}
+		return -1
+	}, safe)
+	return strings.Trim(safe, "-")
 }

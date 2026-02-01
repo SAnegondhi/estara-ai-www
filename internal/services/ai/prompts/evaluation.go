@@ -22,11 +22,27 @@ Details: <detailed analysis>
 
 [STRESS_TEST]
 Scenario: mild_recession|severe_recession|interest_rate_shock|local_downturn|custom
-ValueImpact: <percentage>
-RentImpact: <percentage>
-CashFlowImpact: <dollar amount>
+ValueImpact: <percentage, e.g., -15%>
+RentImpact: <percentage, e.g., -10%>
+CashFlowImpact: <monthly dollar change, e.g., -$350/mo>
 Narrative: <explanation>
 [/STRESS_TEST]
+
+STRESS TEST CALCULATION GUIDANCE:
+For each scenario, calculate realistic impacts using these assumptions:
+- Default financing: 80% LTV, 30-year fixed mortgage
+- Current mortgage rate: Use market rate from context, or assume 7%
+
+Scenario-specific calculations:
+- mild_recession: ValueImpact -10%, RentImpact -5%, calculate reduced NOI
+- severe_recession: ValueImpact -20%, RentImpact -15%, VacancyIncrease +10%
+- interest_rate_shock: ValueImpact 0%, RentImpact 0%, CashFlowImpact = increased monthly payment
+  * Calculate: For +200bps rate increase, recalculate monthly P&I at new rate
+  * Example: $200K property at 80% LTV ($160K loan): 7% vs 9% = ~$180/mo increase
+- local_downturn: ValueImpact -15%, RentImpact -10%, based on local market factors
+
+IMPORTANT: Always provide non-zero values for CashFlowImpact. For interest_rate_shock,
+calculate the increased debt service cost per month even if value/rent unchanged.
 
 [METRICS]
 | Metric | Value | Rating |
@@ -169,6 +185,22 @@ func BuildPropertyContext(properties []PropertyContext) string {
 		if prop.PropertyType != "" {
 			result += "    <property_type>" + prop.PropertyType + "</property_type>\n"
 		}
+		// Include calculated operating expenses if available
+		if prop.OperatingExpenses != nil {
+			exp := prop.OperatingExpenses
+			result += "    <operating_expenses>\n"
+			result += "      <property_tax>$" + formatFloat(exp.PropertyTax) + "/year</property_tax>\n"
+			result += "      <insurance>$" + formatFloat(exp.Insurance) + "/year</insurance>\n"
+			result += "      <maintenance>$" + formatFloat(exp.Maintenance) + "/year</maintenance>\n"
+			result += "      <vacancy_allowance>$" + formatFloat(exp.VacancyAllowance) + "/year</vacancy_allowance>\n"
+			result += "      <property_mgmt>$" + formatFloat(exp.PropertyMgmt) + "/year</property_mgmt>\n"
+			result += "      <total_annual>$" + formatFloat(exp.TotalAnnual) + "/year</total_annual>\n"
+			result += "      <total_monthly>$" + formatFloat(exp.TotalMonthly) + "/month</total_monthly>\n"
+			result += "      <expense_ratio>" + formatFloat(exp.ExpenseRatio) + "% of rent</expense_ratio>\n"
+			result += "      <noi>$" + formatFloat(exp.NOI) + "/year</noi>\n"
+			result += "      <calculated_cap_rate>" + formatFloat(exp.CapRate) + "%</calculated_cap_rate>\n"
+			result += "    </operating_expenses>\n"
+		}
 		result += "  </property>\n"
 	}
 	result += "</PROPERTIES>"
@@ -190,6 +222,23 @@ type PropertyContext struct {
 	CapRate       string
 	YearBuilt     int
 	PropertyType  string
+
+	// Calculated operating expenses (optional, populated by handler)
+	OperatingExpenses *PropertyExpenses
+}
+
+// PropertyExpenses holds calculated operating expense data
+type PropertyExpenses struct {
+	PropertyTax      float64 `json:"propertyTax"`      // Annual property tax
+	Insurance        float64 `json:"insurance"`        // Annual insurance
+	Maintenance      float64 `json:"maintenance"`      // Annual maintenance
+	VacancyAllowance float64 `json:"vacancyAllowance"` // Annual vacancy reserve
+	PropertyMgmt     float64 `json:"propertyMgmt"`     // Annual property management
+	TotalAnnual      float64 `json:"totalAnnual"`      // Total annual expenses
+	TotalMonthly     float64 `json:"totalMonthly"`     // Total monthly expenses
+	ExpenseRatio     float64 `json:"expenseRatio"`     // % of gross rent
+	NOI              float64 `json:"noi"`              // Net Operating Income
+	CapRate          float64 `json:"capRate"`          // Calculated cap rate
 }
 
 // BuildPortfolioContext creates XML-formatted portfolio context

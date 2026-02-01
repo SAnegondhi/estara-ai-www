@@ -9,8 +9,11 @@ import (
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 	"github.com/estara-ai/www/internal/services/ai/agents"
 	"github.com/estara-ai/www/internal/services/ai/anthropic"
+	"github.com/estara-ai/www/internal/services/ai/compliance"
 	"github.com/estara-ai/www/internal/services/cache"
+	"github.com/estara-ai/www/internal/services/investment/optimization"
 	"github.com/estara-ai/www/internal/services/jobs/queue"
+	"github.com/estara-ai/www/internal/services/jobs/workers"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
 	"github.com/estara-ai/www/internal/services/market/estimation"
 	"github.com/estara-ai/www/internal/services/market/timeseries"
@@ -24,6 +27,7 @@ type Services struct {
 	MarketData     *aggregator.Aggregator
 	ChatAgent      *agents.EvaluationChatAgent
 	JobQueue       *queue.Queue
+	WorkerPool     *queue.WorkerPool
 	HybridCache    *cache.HybridCache
 	Anthropic      *anthropic.Client
 }
@@ -64,35 +68,54 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 	}
 
 	// Create property finder orchestrator
+	// Provider priority order per www_v1 .env.local:
+	// PROPERTY_FINDER_PRIORITY=hasdata,brightdata,claude,public
 	var providerList []providers.Provider
 
-	// Create BrightData provider if enabled
-	if cfg.Config.Property.BrightDataEnabled && cfg.Config.Property.BrightDataAPIKey != "" {
-		brightdata := providers.NewBrightDataProvider(providers.BrightDataConfig{
-			APIKey:  cfg.Config.Property.BrightDataAPIKey,
-			Enabled: true,
-		})
-		providerList = append(providerList, brightdata)
-		logger.Info("brightdata provider enabled")
-	}
-
-	// Create HasData provider if enabled
+	// Create HasData provider if enabled (Priority 1 - PRIMARY per www_v1)
 	if cfg.Config.Property.HasDataEnabled && cfg.Config.Property.HasDataAPIKey != "" {
 		hasdata := providers.NewHasDataProvider(providers.HasDataConfig{
-			APIKey:  cfg.Config.Property.HasDataAPIKey,
-			Enabled: true,
+			APIKey:   cfg.Config.Property.HasDataAPIKey,
+			Enabled:  true,
+			Priority: 1, // PRIMARY - per www_v1 config
 		})
 		providerList = append(providerList, hasdata)
-		logger.Info("hasdata provider enabled")
+		logger.Info("hasdata provider enabled", "priority", 1)
+	}
+
+	// Create BrightData provider if enabled (Priority 2)
+	if cfg.Config.Property.BrightDataEnabled && cfg.Config.Property.BrightDataAPIKey != "" {
+		brightdata := providers.NewBrightDataProvider(providers.BrightDataConfig{
+			APIKey:   cfg.Config.Property.BrightDataAPIKey,
+			Enabled:  true,
+			Priority: 2,
+		})
+		providerList = append(providerList, brightdata)
+		logger.Info("brightdata provider enabled", "priority", 2)
+	}
+
+	// Create Claude Web Search provider if enabled (Priority 3)
+	if cfg.Config.Property.ClaudeEnabled && services.Anthropic != nil {
+		claude := providers.NewClaudeWebSearchProvider(providers.ClaudeWebSearchConfig{
+			Client:   services.Anthropic,
+			Enabled:  true,
+			Priority: 3,
+		})
+		providerList = append(providerList, claude)
+		logger.Info("claude web search provider enabled", "priority", 3)
 	}
 
 	if len(providerList) > 0 {
 		services.PropertyFinder = finder.NewOrchestrator(finder.OrchestratorConfig{
-			Providers:     providerList,
-			Cache:         services.HybridCache,
-			PriorityOrder: cfg.Config.Property.Priority,
+			Providers:             providerList,
+			Cache:                 services.HybridCache,
+			PriorityOrder:         cfg.Config.Property.Priority,
+			EnrichmentConcurrency: cfg.Config.Property.EnrichmentConcurrency,
 		})
-		logger.Info("property finder initialized", "providers", len(providerList))
+		logger.Info("property finder initialized",
+			"providers", len(providerList),
+			"enrichmentConcurrency", cfg.Config.Property.EnrichmentConcurrency,
+		)
 	}
 
 	// Create market data aggregator
@@ -107,9 +130,10 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 	}
 
 	// Initialize FRED client if API key is configured
+	// Pass Redis client for 7-day caching to avoid rate limits (www v2 parity with www_v1)
 	if cfg.Config.Market.FREDAPIKey != "" {
-		fredClient = timeseries.NewFREDClient(cfg.Config.Market.FREDAPIKey)
-		logger.Info("FRED client initialized")
+		fredClient = timeseries.NewFREDClient(cfg.Config.Market.FREDAPIKey, cfg.Redis)
+		logger.Info("FRED client initialized", "caching", cfg.Redis != nil)
 	}
 
 	// Initialize AI estimator if Anthropic client is available
@@ -131,12 +155,47 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 
 	// Create evaluation chat agent
 	if services.Anthropic != nil {
+		complianceFilter := compliance.NewFilter(compliance.FilterConfig{StrictMode: false})
 		services.ChatAgent = agents.NewEvaluationChatAgent(
 			services.Anthropic,
 			services.HybridCache,
-			nil, // compliance filter - will add later
+			complianceFilter,
 		)
 		logger.Info("evaluation chat agent initialized")
+	}
+
+	// Create and start worker pool for job processing
+	if services.JobQueue != nil {
+		// Create optimization service for investment planning
+		var optimizer *optimization.Service
+		if services.Anthropic != nil {
+			optimizer = optimization.NewService(
+				services.Anthropic,
+				services.MarketData,
+				services.HybridCache,
+			)
+		}
+
+		// Create investment planning worker and register with queue
+		investmentWorker := workers.NewInvestmentPlanningWorker(workers.InvestmentPlanningWorkerConfig{
+			Optimizer: optimizer,
+			Finder:    services.PropertyFinder,
+			Market:    services.MarketData,
+			Cache:     services.HybridCache,
+			Client:    services.Anthropic,
+			Redis:     cfg.Redis,
+		})
+		services.JobQueue.RegisterHandler(queue.JobTypeInvestmentPlanning, investmentWorker.GetHandler())
+		logger.Info("investment planning worker registered")
+
+		// Create and start worker pool
+		services.WorkerPool = queue.NewWorkerPool(services.JobQueue, queue.WorkerPoolConfig{
+			Workers:      4, // 4 concurrent workers
+			PollInterval: 0, // Use default (100ms)
+			JobTimeout:   0, // Use default (10 minutes)
+		})
+		services.WorkerPool.Start()
+		logger.Info("worker pool started", "workers", 4)
 	}
 
 	return services, nil
@@ -144,6 +203,10 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 
 // Close cleans up service resources
 func (s *Services) Close() {
+	// Stop worker pool first (gracefully waits for in-progress jobs)
+	if s.WorkerPool != nil {
+		s.WorkerPool.Stop()
+	}
 	if s.JobQueue != nil {
 		s.JobQueue.Close()
 	}

@@ -23,6 +23,7 @@ type ChatRequest struct {
 	Properties      []prompts.PropertyContext `json:"properties"`
 	Portfolio       *prompts.PortfolioContext `json:"portfolio,omitempty"`
 	InvestorProfile *prompts.InvestorProfile  `json:"investor_profile,omitempty"`
+	MarketContext   string                    `json:"market_context,omitempty"` // Market expense characteristics
 	History         []ChatMessage             `json:"history,omitempty"`
 }
 
@@ -141,7 +142,128 @@ func (a *EvaluationChatAgent) Chat(ctx context.Context, req ChatRequest) (*ChatR
 	return result, nil
 }
 
-// Stream processes chat with real-time streaming
+// StreamingBlockParser incrementally parses blocks from streaming text (www_v1 parity)
+type StreamingBlockParser struct {
+	buffer          string
+	completedBlocks []ChatBlock
+}
+
+// blockPattern defines a block type with its markers
+type blockPattern struct {
+	blockType string
+	start     string
+	end       string
+}
+
+var blockPatterns = []blockPattern{
+	{blockType: "insight", start: "[INSIGHT]", end: "[/INSIGHT]"},
+	{blockType: "stress_test", start: "[STRESS_TEST]", end: "[/STRESS_TEST]"},
+	{blockType: "metrics", start: "[METRICS]", end: "[/METRICS]"},
+	{blockType: "comparison", start: "[COMPARISON]", end: "[/COMPARISON]"},
+	{blockType: "disclaimer", start: "[DISCLAIMER]", end: "[/DISCLAIMER]"},
+}
+
+// AddChunk adds a chunk to the buffer and extracts complete blocks
+func (p *StreamingBlockParser) AddChunk(chunk string) (newBlocks []ChatBlock, partialText string) {
+	p.buffer += chunk
+
+	// Try to extract complete blocks
+	foundBlock := true
+	for foundBlock {
+		foundBlock = false
+
+		for _, pattern := range blockPatterns {
+			startIdx := strings.Index(p.buffer, pattern.start)
+			if startIdx == -1 {
+				continue
+			}
+
+			endIdx := strings.Index(p.buffer[startIdx:], pattern.end)
+			if endIdx == -1 {
+				continue
+			}
+			endIdx += startIdx // Adjust to absolute position
+
+			// Extract text before block (if any)
+			if startIdx > 0 {
+				textBefore := strings.TrimSpace(p.buffer[:startIdx])
+				if len(textBefore) > 0 {
+					newBlocks = append(newBlocks, ChatBlock{
+						Type:    "text",
+						Content: map[string]interface{}{"text": textBefore},
+						Raw:     textBefore,
+					})
+				}
+			}
+
+			// Extract block content
+			blockContent := strings.TrimSpace(p.buffer[startIdx+len(pattern.start) : endIdx])
+			rawBlock := p.buffer[startIdx : endIdx+len(pattern.end)]
+
+			// Parse and add block with raw content
+			block := parseBlock(pattern.blockType, blockContent)
+			block.Raw = rawBlock // Use full raw block including markers
+			newBlocks = append(newBlocks, block)
+
+			// Update buffer - remove processed content
+			p.buffer = p.buffer[endIdx+len(pattern.end):]
+			foundBlock = true
+			break
+		}
+	}
+
+	p.completedBlocks = append(p.completedBlocks, newBlocks...)
+
+	// Calculate partial text (text safe to emit)
+	// Find earliest potential block start marker
+	minBlockStart := -1
+	for _, pattern := range blockPatterns {
+		idx := strings.Index(p.buffer, pattern.start)
+		if idx != -1 && (minBlockStart == -1 || idx < minBlockStart) {
+			minBlockStart = idx
+		}
+	}
+
+	if minBlockStart > 0 {
+		// Text before next block marker is safe
+		partialText = p.buffer[:minBlockStart]
+	} else if minBlockStart == -1 {
+		// No block markers found - check for partial marker starts
+		markerStarts := []string{"[IN", "[ST", "[ME", "[DI", "[CO", "["}
+		endsWithPartialMarker := false
+		for _, start := range markerStarts {
+			if strings.HasSuffix(p.buffer, start) {
+				endsWithPartialMarker = true
+				partialText = p.buffer[:len(p.buffer)-len(start)]
+				break
+			}
+		}
+		if !endsWithPartialMarker {
+			partialText = p.buffer
+		}
+	}
+
+	return newBlocks, partialText
+}
+
+// Finalize returns all blocks, treating remaining buffer as text
+func (p *StreamingBlockParser) Finalize() []ChatBlock {
+	if trimmed := strings.TrimSpace(p.buffer); len(trimmed) > 0 {
+		p.completedBlocks = append(p.completedBlocks, ChatBlock{
+			Type:    "text",
+			Content: map[string]interface{}{"text": trimmed},
+			Raw:     trimmed,
+		})
+	}
+	return p.completedBlocks
+}
+
+// GetBlocks returns all completed blocks
+func (p *StreamingBlockParser) GetBlocks() []ChatBlock {
+	return p.completedBlocks
+}
+
+// Stream processes chat with real-time streaming (www_v1 parity)
 func (a *EvaluationChatAgent) Stream(ctx context.Context, req ChatRequest, events chan<- ChatEvent) error {
 	defer close(events)
 
@@ -149,11 +271,12 @@ func (a *EvaluationChatAgent) Stream(ctx context.Context, req ChatRequest, event
 	propertiesContext := prompts.BuildPropertyContext(req.Properties)
 	portfolioContext := prompts.BuildPortfolioContext(req.Portfolio)
 
-	// Build user prompt
+	// Build user prompt (including market context with expense characteristics)
 	userPrompt := prompts.BuildEvaluationUserPrompt(prompts.EvaluationPromptParams{
 		PropertiesContext: propertiesContext,
 		PortfolioContext:  portfolioContext,
 		InvestorProfile:   req.InvestorProfile,
+		MarketContext:     req.MarketContext,
 		UserMessage:       req.Message,
 	})
 
@@ -180,11 +303,10 @@ func (a *EvaluationChatAgent) Stream(ctx context.Context, req ChatRequest, event
 		return err
 	}
 
-	// Collect and process stream
+	// Initialize streaming block parser (www_v1 parity)
+	parser := &StreamingBlockParser{}
 	var fullResponse strings.Builder
-	var currentBlock strings.Builder
-	var inBlock bool
-	var blockType string
+	var lastEmittedText string
 
 	for event := range streamEvents {
 		switch event.Type {
@@ -193,49 +315,34 @@ func (a *EvaluationChatAgent) Stream(ctx context.Context, req ChatRequest, event
 				text := event.Delta.Text
 				fullResponse.WriteString(text)
 
-				// Check for block markers
-				if strings.Contains(text, "[INSIGHT]") {
-					inBlock = true
-					blockType = "insight"
-					currentBlock.Reset()
-				} else if strings.Contains(text, "[STRESS_TEST]") {
-					inBlock = true
-					blockType = "stress_test"
-					currentBlock.Reset()
-				} else if strings.Contains(text, "[METRICS]") {
-					inBlock = true
-					blockType = "metrics"
-					currentBlock.Reset()
-				} else if strings.Contains(text, "[COMPARISON]") {
-					inBlock = true
-					blockType = "comparison"
-					currentBlock.Reset()
-				} else if strings.Contains(text, "[DISCLAIMER]") {
-					inBlock = true
-					blockType = "disclaimer"
-					currentBlock.Reset()
+				// Add chunk to parser and get results
+				newBlocks, partialText := parser.AddChunk(text)
+
+				// Emit each new complete block immediately
+				for _, block := range newBlocks {
+					if block.Type != "text" {
+						// Emit structured block
+						sendChatEvent(events, ChatEvent{
+							Type: block.Type,
+							Content: map[string]interface{}{
+								"content": block.Content,
+								"raw":     block.Raw,
+							},
+						})
+					}
 				}
 
-				// Check for block end markers
-				if inBlock {
-					currentBlock.WriteString(text)
-					endMarker := "[/" + strings.ToUpper(blockType) + "]"
-					if strings.Contains(currentBlock.String(), endMarker) {
-						// Parse and emit the block
-						block := parseBlock(blockType, currentBlock.String())
+				// Emit partial text (text that's safe to display)
+				// Only emit if there's new text to show
+				if len(partialText) > len(lastEmittedText) {
+					newText := partialText[len(lastEmittedText):]
+					if len(newText) > 0 {
 						sendChatEvent(events, ChatEvent{
-							Type:    blockType,
-							Content: block,
+							Type:    "text",
+							Content: newText,
 						})
-						inBlock = false
-						currentBlock.Reset()
+						lastEmittedText = partialText
 					}
-				} else {
-					// Emit text event
-					sendChatEvent(events, ChatEvent{
-						Type:    "text",
-						Content: text,
-					})
 				}
 			}
 
@@ -250,6 +357,9 @@ func (a *EvaluationChatAgent) Stream(ctx context.Context, req ChatRequest, event
 		}
 	}
 
+	// Finalize parser to get all blocks including remaining text
+	allBlocks := parser.Finalize()
+
 	// Apply compliance filter to full response
 	response := fullResponse.String()
 	filteredResponse, _ := a.compliance.FilterContent(response)
@@ -260,11 +370,14 @@ func (a *EvaluationChatAgent) Stream(ctx context.Context, req ChatRequest, event
 		sessionID = generateSessionID()
 	}
 
-	// Send complete event
+	// Send complete event with all parsed blocks
 	sendChatEvent(events, ChatEvent{
 		Type:      "complete",
 		SessionID: sessionID,
-		Content:   filteredResponse,
+		Content: map[string]interface{}{
+			"content":      filteredResponse,
+			"parsedBlocks": allBlocks,
+		},
 	})
 
 	return nil
@@ -282,11 +395,12 @@ func (a *EvaluationChatAgent) buildMessages(req ChatRequest, propertiesContext, 
 		})
 	}
 
-	// Build current user message with context
+	// Build current user message with context (including market expense characteristics)
 	userPrompt := prompts.BuildEvaluationUserPrompt(prompts.EvaluationPromptParams{
 		PropertiesContext: propertiesContext,
 		PortfolioContext:  portfolioContext,
 		InvestorProfile:   req.InvestorProfile,
+		MarketContext:     req.MarketContext,
 		UserMessage:       req.Message,
 	})
 
@@ -374,6 +488,7 @@ func parseInsightBlock(content string) map[string]interface{} {
 }
 
 // parseStressTestBlock parses a stress test block
+// Fields use camelCase to match client expectations (www_v1 parity)
 func parseStressTestBlock(content string) map[string]interface{} {
 	result := make(map[string]interface{})
 
@@ -382,12 +497,22 @@ func parseStressTestBlock(content string) map[string]interface{} {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "Scenario:") {
 			result["scenario"] = strings.TrimSpace(strings.TrimPrefix(line, "Scenario:"))
+		} else if strings.HasPrefix(line, "Name:") {
+			result["name"] = strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
+		} else if strings.HasPrefix(line, "PropertyAddress:") {
+			result["propertyAddress"] = strings.TrimSpace(strings.TrimPrefix(line, "PropertyAddress:"))
 		} else if strings.HasPrefix(line, "ValueImpact:") {
-			result["value_impact"] = strings.TrimSpace(strings.TrimPrefix(line, "ValueImpact:"))
+			result["valueImpact"] = strings.TrimSpace(strings.TrimPrefix(line, "ValueImpact:"))
 		} else if strings.HasPrefix(line, "RentImpact:") {
-			result["rent_impact"] = strings.TrimSpace(strings.TrimPrefix(line, "RentImpact:"))
+			result["rentImpact"] = strings.TrimSpace(strings.TrimPrefix(line, "RentImpact:"))
 		} else if strings.HasPrefix(line, "CashFlowImpact:") {
-			result["cash_flow_impact"] = strings.TrimSpace(strings.TrimPrefix(line, "CashFlowImpact:"))
+			result["cashFlowImpact"] = strings.TrimSpace(strings.TrimPrefix(line, "CashFlowImpact:"))
+		} else if strings.HasPrefix(line, "OccupancyImpact:") {
+			result["occupancyImpact"] = strings.TrimSpace(strings.TrimPrefix(line, "OccupancyImpact:"))
+		} else if strings.HasPrefix(line, "DscrUnderStress:") {
+			result["dscrUnderStress"] = strings.TrimSpace(strings.TrimPrefix(line, "DscrUnderStress:"))
+		} else if strings.HasPrefix(line, "BreakEvenOccupancy:") {
+			result["breakEvenOccupancy"] = strings.TrimSpace(strings.TrimPrefix(line, "BreakEvenOccupancy:"))
 		} else if strings.HasPrefix(line, "Narrative:") {
 			result["narrative"] = strings.TrimSpace(strings.TrimPrefix(line, "Narrative:"))
 		}
@@ -422,7 +547,7 @@ func parseMetricsBlock(content string) map[string]interface{} {
 		}
 	}
 
-	result["metrics"] = metrics
+	result["rows"] = metrics // Client expects "rows", not "metrics" (www_v1 parity)
 	return result
 }
 

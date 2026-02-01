@@ -11,350 +11,422 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const GetCitiesNeedingRefresh = `-- name: GetCitiesNeedingRefresh :many
+SELECT
+    c.id,
+    c.city,
+    c.state,
+    c.ttl_expires_at,
+    c.last_updated
+FROM city_market_cache c
+WHERE c.ttl_expires_at < NOW()
+ORDER BY c.ttl_expires_at
+LIMIT $1
+`
+
+type GetCitiesNeedingRefreshRow struct {
+	ID           int32            `json:"id"`
+	City         string           `json:"city"`
+	State        string           `json:"state"`
+	TtlExpiresAt pgtype.Timestamp `json:"ttl_expires_at"`
+	LastUpdated  pgtype.Timestamp `json:"last_updated"`
+}
+
+// Get cities where cache has expired
+func (q *Queries) GetCitiesNeedingRefresh(ctx context.Context, limit int32) ([]GetCitiesNeedingRefreshRow, error) {
+	rows, err := q.db.Query(ctx, GetCitiesNeedingRefresh, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetCitiesNeedingRefreshRow{}
+	for rows.Next() {
+		var i GetCitiesNeedingRefreshRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.City,
+			&i.State,
+			&i.TtlExpiresAt,
+			&i.LastUpdated,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const GetCityCount = `-- name: GetCityCount :one
+SELECT COUNT(*) FROM city_market_cache
+`
+
+// Get total count of cached cities
+func (q *Queries) GetCityCount(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, GetCityCount)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const GetCityCountByState = `-- name: GetCityCountByState :one
+SELECT COUNT(*) FROM city_market_cache WHERE state = $1
+`
+
+// Get count of cached cities in a state
+func (q *Queries) GetCityCountByState(ctx context.Context, state string) (int64, error) {
+	row := q.db.QueryRow(ctx, GetCityCountByState, state)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const GetCityMarketData = `-- name: GetCityMarketData :one
+
+
+SELECT
+    c.id,
+    c.location_key,
+    c.city,
+    c.state,
+    c.metro_region_id,
+    COALESCE(m.metro_name, '') AS metro_name,
+    c.median_home_price,
+    c.median_price_per_sqft,
+    c.median_list_price,
+    c.homes_sold,
+    c.inventory_count,
+    c.months_of_supply,
+    c.median_days_on_market,
+    c.price_yoy_change,
+    c.forecast_growth,
+    c.median_rent,
+    c.rent_yoy_change,
+    c.rental_yield,
+    c.cap_rate,
+    c.price_to_rent_ratio,
+    c.vacancy_rate,
+    c.population,
+    c.median_household_income,
+    c.unemployment_rate,
+    c.market_heat_index,
+    c.market_temperature,
+    c.affordability_index,
+    c.data_sources,
+    c.data_quality_score,
+    c.data_date,
+    c.last_updated,
+    c.is_ai_estimated,
+    c.ai_confidence_score
+FROM city_market_cache c
+LEFT JOIN metro_time_series m ON c.metro_region_id = m.metro_region_id
+WHERE c.city ILIKE $1 AND c.state = $2
+LIMIT 1
+`
+
+type GetCityMarketDataParams struct {
+	City  string `json:"city"`
+	State string `json:"state"`
+}
+
+type GetCityMarketDataRow struct {
+	ID                    int32            `json:"id"`
+	LocationKey           string           `json:"location_key"`
+	City                  string           `json:"city"`
+	State                 string           `json:"state"`
+	MetroRegionID         pgtype.Int4      `json:"metro_region_id"`
+	MetroName             string           `json:"metro_name"`
+	MedianHomePrice       pgtype.Numeric   `json:"median_home_price"`
+	MedianPricePerSqft    pgtype.Numeric   `json:"median_price_per_sqft"`
+	MedianListPrice       pgtype.Numeric   `json:"median_list_price"`
+	HomesSold             pgtype.Int4      `json:"homes_sold"`
+	InventoryCount        pgtype.Int4      `json:"inventory_count"`
+	MonthsOfSupply        pgtype.Numeric   `json:"months_of_supply"`
+	MedianDaysOnMarket    pgtype.Int4      `json:"median_days_on_market"`
+	PriceYoyChange        pgtype.Numeric   `json:"price_yoy_change"`
+	ForecastGrowth        pgtype.Numeric   `json:"forecast_growth"`
+	MedianRent            pgtype.Numeric   `json:"median_rent"`
+	RentYoyChange         pgtype.Numeric   `json:"rent_yoy_change"`
+	RentalYield           pgtype.Numeric   `json:"rental_yield"`
+	CapRate               pgtype.Numeric   `json:"cap_rate"`
+	PriceToRentRatio      pgtype.Numeric   `json:"price_to_rent_ratio"`
+	VacancyRate           pgtype.Numeric   `json:"vacancy_rate"`
+	Population            pgtype.Int4      `json:"population"`
+	MedianHouseholdIncome pgtype.Numeric   `json:"median_household_income"`
+	UnemploymentRate      pgtype.Numeric   `json:"unemployment_rate"`
+	MarketHeatIndex       pgtype.Numeric   `json:"market_heat_index"`
+	MarketTemperature     pgtype.Text      `json:"market_temperature"`
+	AffordabilityIndex    pgtype.Numeric   `json:"affordability_index"`
+	DataSources           []byte           `json:"data_sources"`
+	DataQualityScore      int32            `json:"data_quality_score"`
+	DataDate              string           `json:"data_date"`
+	LastUpdated           pgtype.Timestamp `json:"last_updated"`
+	IsAiEstimated         bool             `json:"is_ai_estimated"`
+	AiConfidenceScore     pgtype.Int4      `json:"ai_confidence_score"`
+}
+
+// Market Database Queries
+// These queries are validated against the schema at compile time by sqlc.
+// If column names don't match, sqlc will fail to generate code.
+// ============================================================================
+// CITY MARKET CACHE QUERIES
+// ============================================================================
+// Get market data for a specific city, joined with metro for metro name
+func (q *Queries) GetCityMarketData(ctx context.Context, arg GetCityMarketDataParams) (GetCityMarketDataRow, error) {
+	row := q.db.QueryRow(ctx, GetCityMarketData, arg.City, arg.State)
+	var i GetCityMarketDataRow
+	err := row.Scan(
+		&i.ID,
+		&i.LocationKey,
+		&i.City,
+		&i.State,
+		&i.MetroRegionID,
+		&i.MetroName,
+		&i.MedianHomePrice,
+		&i.MedianPricePerSqft,
+		&i.MedianListPrice,
+		&i.HomesSold,
+		&i.InventoryCount,
+		&i.MonthsOfSupply,
+		&i.MedianDaysOnMarket,
+		&i.PriceYoyChange,
+		&i.ForecastGrowth,
+		&i.MedianRent,
+		&i.RentYoyChange,
+		&i.RentalYield,
+		&i.CapRate,
+		&i.PriceToRentRatio,
+		&i.VacancyRate,
+		&i.Population,
+		&i.MedianHouseholdIncome,
+		&i.UnemploymentRate,
+		&i.MarketHeatIndex,
+		&i.MarketTemperature,
+		&i.AffordabilityIndex,
+		&i.DataSources,
+		&i.DataQualityScore,
+		&i.DataDate,
+		&i.LastUpdated,
+		&i.IsAiEstimated,
+		&i.AiConfidenceScore,
+	)
+	return i, err
+}
+
 const GetCityMetroMapping = `-- name: GetCityMetroMapping :one
-SELECT id, city, state_code, metro_name, metro_region_id, created_at FROM city_metro_mapping
-WHERE city ILIKE $1 AND state_code = $2
+SELECT
+    c.city,
+    c.state,
+    COALESCE(m.metro_name, '') AS metro_name,
+    COALESCE(c.metro_region_id, 0) AS metro_region_id
+FROM city_market_cache c
+LEFT JOIN metro_time_series m ON c.metro_region_id = m.metro_region_id
+WHERE c.city ILIKE $1 AND c.state = $2
+LIMIT 1
 `
 
 type GetCityMetroMappingParams struct {
-	City      string `json:"city"`
-	StateCode string `json:"state_code"`
+	City  string `json:"city"`
+	State string `json:"state"`
 }
 
-func (q *Queries) GetCityMetroMapping(ctx context.Context, arg GetCityMetroMappingParams) (CityMetroMapping, error) {
-	row := q.db.QueryRow(ctx, GetCityMetroMapping, arg.City, arg.StateCode)
-	var i CityMetroMapping
+type GetCityMetroMappingRow struct {
+	City          string `json:"city"`
+	State         string `json:"state"`
+	MetroName     string `json:"metro_name"`
+	MetroRegionID int32  `json:"metro_region_id"`
+}
+
+// Get the metro mapping for a city (for fallback to metro-level data)
+func (q *Queries) GetCityMetroMapping(ctx context.Context, arg GetCityMetroMappingParams) (GetCityMetroMappingRow, error) {
+	row := q.db.QueryRow(ctx, GetCityMetroMapping, arg.City, arg.State)
+	var i GetCityMetroMappingRow
 	err := row.Scan(
-		&i.ID,
 		&i.City,
-		&i.StateCode,
+		&i.State,
 		&i.MetroName,
 		&i.MetroRegionID,
-		&i.CreatedAt,
 	)
 	return i, err
 }
 
-const GetLatestMetroData = `-- name: GetLatestMetroData :one
-SELECT id, region_id, region_name, region_type, state_code, metro, date, zhvi, zori, zhvi_forecast, zori_forecast, created_at, updated_at FROM metro_timeseries
-WHERE region_name = $1 AND region_type = $2
-ORDER BY date DESC
-LIMIT 1
-`
+const GetMetroByName = `-- name: GetMetroByName :one
 
-type GetLatestMetroDataParams struct {
-	RegionName string `json:"region_name"`
-	RegionType string `json:"region_type"`
-}
-
-func (q *Queries) GetLatestMetroData(ctx context.Context, arg GetLatestMetroDataParams) (MetroTimeseries, error) {
-	row := q.db.QueryRow(ctx, GetLatestMetroData, arg.RegionName, arg.RegionType)
-	var i MetroTimeseries
-	err := row.Scan(
-		&i.ID,
-		&i.RegionID,
-		&i.RegionName,
-		&i.RegionType,
-		&i.StateCode,
-		&i.Metro,
-		&i.Date,
-		&i.Zhvi,
-		&i.Zori,
-		&i.ZhviForecast,
-		&i.ZoriForecast,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const GetLatestMetroDataByID = `-- name: GetLatestMetroDataByID :one
-SELECT id, region_id, region_name, region_type, state_code, metro, date, zhvi, zori, zhvi_forecast, zori_forecast, created_at, updated_at FROM metro_timeseries
-WHERE region_id = $1
-ORDER BY date DESC
-LIMIT 1
-`
-
-func (q *Queries) GetLatestMetroDataByID(ctx context.Context, regionID int32) (MetroTimeseries, error) {
-	row := q.db.QueryRow(ctx, GetLatestMetroDataByID, regionID)
-	var i MetroTimeseries
-	err := row.Scan(
-		&i.ID,
-		&i.RegionID,
-		&i.RegionName,
-		&i.RegionType,
-		&i.StateCode,
-		&i.Metro,
-		&i.Date,
-		&i.Zhvi,
-		&i.Zori,
-		&i.ZhviForecast,
-		&i.ZoriForecast,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const GetMetroDataByState = `-- name: GetMetroDataByState :many
-SELECT m.id, m.region_id, m.region_name, m.region_type, m.state_code, m.metro, m.date, m.zhvi, m.zori, m.zhvi_forecast, m.zori_forecast, m.created_at, m.updated_at FROM metro_timeseries m
-WHERE m.state_code = $1 AND m.region_type = $2
-AND m.date = (SELECT MAX(sub.date) FROM metro_timeseries sub WHERE sub.state_code = $1)
-ORDER BY m.region_name
-`
-
-type GetMetroDataByStateParams struct {
-	StateCode  pgtype.Text `json:"state_code"`
-	RegionType string      `json:"region_type"`
-}
-
-func (q *Queries) GetMetroDataByState(ctx context.Context, arg GetMetroDataByStateParams) ([]MetroTimeseries, error) {
-	rows, err := q.db.Query(ctx, GetMetroDataByState, arg.StateCode, arg.RegionType)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []MetroTimeseries{}
-	for rows.Next() {
-		var i MetroTimeseries
-		if err := rows.Scan(
-			&i.ID,
-			&i.RegionID,
-			&i.RegionName,
-			&i.RegionType,
-			&i.StateCode,
-			&i.Metro,
-			&i.Date,
-			&i.Zhvi,
-			&i.Zori,
-			&i.ZhviForecast,
-			&i.ZoriForecast,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const GetMetroForCity = `-- name: GetMetroForCity :one
-SELECT m.id, m.region_id, m.region_name, m.region_type, m.state_code, m.metro, m.date, m.zhvi, m.zori, m.zhvi_forecast, m.zori_forecast, m.created_at, m.updated_at FROM metro_timeseries m
-JOIN city_metro_mapping c ON m.region_id = c.metro_region_id
-WHERE c.city ILIKE $1 AND c.state_code = $2
-ORDER BY m.date DESC
-LIMIT 1
-`
-
-type GetMetroForCityParams struct {
-	City      string `json:"city"`
-	StateCode string `json:"state_code"`
-}
-
-func (q *Queries) GetMetroForCity(ctx context.Context, arg GetMetroForCityParams) (MetroTimeseries, error) {
-	row := q.db.QueryRow(ctx, GetMetroForCity, arg.City, arg.StateCode)
-	var i MetroTimeseries
-	err := row.Scan(
-		&i.ID,
-		&i.RegionID,
-		&i.RegionName,
-		&i.RegionType,
-		&i.StateCode,
-		&i.Metro,
-		&i.Date,
-		&i.Zhvi,
-		&i.Zori,
-		&i.ZhviForecast,
-		&i.ZoriForecast,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const GetMetroTimeSeries = `-- name: GetMetroTimeSeries :many
-SELECT id, region_id, region_name, region_type, state_code, metro, date, zhvi, zori, zhvi_forecast, zori_forecast, created_at, updated_at FROM metro_timeseries
-WHERE region_name = $1 AND region_type = $2
-AND date >= $3 AND date <= $4
-ORDER BY date ASC
-`
-
-type GetMetroTimeSeriesParams struct {
-	RegionName string      `json:"region_name"`
-	RegionType string      `json:"region_type"`
-	Date       pgtype.Date `json:"date"`
-	Date_2     pgtype.Date `json:"date_2"`
-}
-
-func (q *Queries) GetMetroTimeSeries(ctx context.Context, arg GetMetroTimeSeriesParams) ([]MetroTimeseries, error) {
-	rows, err := q.db.Query(ctx, GetMetroTimeSeries,
-		arg.RegionName,
-		arg.RegionType,
-		arg.Date,
-		arg.Date_2,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []MetroTimeseries{}
-	for rows.Next() {
-		var i MetroTimeseries
-		if err := rows.Scan(
-			&i.ID,
-			&i.RegionID,
-			&i.RegionName,
-			&i.RegionType,
-			&i.StateCode,
-			&i.Metro,
-			&i.Date,
-			&i.Zhvi,
-			&i.Zori,
-			&i.ZhviForecast,
-			&i.ZoriForecast,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const GetMetroTimeSeriesByID = `-- name: GetMetroTimeSeriesByID :many
-SELECT id, region_id, region_name, region_type, state_code, metro, date, zhvi, zori, zhvi_forecast, zori_forecast, created_at, updated_at FROM metro_timeseries
-WHERE region_id = $1
-AND date >= $2 AND date <= $3
-ORDER BY date ASC
-`
-
-type GetMetroTimeSeriesByIDParams struct {
-	RegionID int32       `json:"region_id"`
-	Date     pgtype.Date `json:"date"`
-	Date_2   pgtype.Date `json:"date_2"`
-}
-
-func (q *Queries) GetMetroTimeSeriesByID(ctx context.Context, arg GetMetroTimeSeriesByIDParams) ([]MetroTimeseries, error) {
-	rows, err := q.db.Query(ctx, GetMetroTimeSeriesByID, arg.RegionID, arg.Date, arg.Date_2)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []MetroTimeseries{}
-	for rows.Next() {
-		var i MetroTimeseries
-		if err := rows.Scan(
-			&i.ID,
-			&i.RegionID,
-			&i.RegionName,
-			&i.RegionType,
-			&i.StateCode,
-			&i.Metro,
-			&i.Date,
-			&i.Zhvi,
-			&i.Zori,
-			&i.ZhviForecast,
-			&i.ZoriForecast,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const GetYearOverYearChange = `-- name: GetYearOverYearChange :one
-WITH latest AS (
-    SELECT t.zhvi, t.zori, t.date FROM metro_timeseries t
-    WHERE t.region_id = $1
-    ORDER BY t.date DESC
-    LIMIT 1
-),
-year_ago AS (
-    SELECT sub.zhvi, sub.zori FROM metro_timeseries sub
-    WHERE sub.region_id = $1
-    AND sub.date <= (SELECT latest.date - INTERVAL '1 year' FROM latest)
-    ORDER BY sub.date DESC
-    LIMIT 1
-)
 SELECT
-    l.zhvi AS current_zhvi,
-    l.zori AS current_zori,
-    l.date AS latest_date,
-    CASE WHEN y.zhvi > 0 THEN ((l.zhvi - y.zhvi) / y.zhvi * 100) ELSE 0 END AS zhvi_yoy_pct,
-    CASE WHEN y.zori > 0 THEN ((l.zori - y.zori) / y.zori * 100) ELSE 0 END AS zori_yoy_pct
-FROM latest l, year_ago y
+    id,
+    metro_region_id,
+    metro_name,
+    state_name,
+    zhvi_data,
+    zori_data,
+    zhvf_data,
+    sales_count_data,
+    days_on_market_data,
+    market_heat_data,
+    created_at,
+    updated_at
+FROM metro_time_series
+WHERE metro_name ILIKE $1
+LIMIT 1
 `
 
-type GetYearOverYearChangeRow struct {
-	CurrentZhvi pgtype.Numeric `json:"current_zhvi"`
-	CurrentZori pgtype.Numeric `json:"current_zori"`
-	LatestDate  pgtype.Date    `json:"latest_date"`
-	ZhviYoyPct  int32          `json:"zhvi_yoy_pct"`
-	ZoriYoyPct  int32          `json:"zori_yoy_pct"`
+type GetMetroByNameRow struct {
+	ID               int32            `json:"id"`
+	MetroRegionID    int32            `json:"metro_region_id"`
+	MetroName        string           `json:"metro_name"`
+	StateName        pgtype.Text      `json:"state_name"`
+	ZhviData         []byte           `json:"zhvi_data"`
+	ZoriData         []byte           `json:"zori_data"`
+	ZhvfData         []byte           `json:"zhvf_data"`
+	SalesCountData   []byte           `json:"sales_count_data"`
+	DaysOnMarketData []byte           `json:"days_on_market_data"`
+	MarketHeatData   []byte           `json:"market_heat_data"`
+	CreatedAt        pgtype.Timestamp `json:"created_at"`
+	UpdatedAt        pgtype.Timestamp `json:"updated_at"`
 }
 
-func (q *Queries) GetYearOverYearChange(ctx context.Context, regionID int32) (GetYearOverYearChangeRow, error) {
-	row := q.db.QueryRow(ctx, GetYearOverYearChange, regionID)
-	var i GetYearOverYearChangeRow
+// ============================================================================
+// METRO TIME SERIES QUERIES
+// ============================================================================
+// Get metro data by name
+func (q *Queries) GetMetroByName(ctx context.Context, metroName string) (GetMetroByNameRow, error) {
+	row := q.db.QueryRow(ctx, GetMetroByName, metroName)
+	var i GetMetroByNameRow
 	err := row.Scan(
-		&i.CurrentZhvi,
-		&i.CurrentZori,
-		&i.LatestDate,
-		&i.ZhviYoyPct,
-		&i.ZoriYoyPct,
+		&i.ID,
+		&i.MetroRegionID,
+		&i.MetroName,
+		&i.StateName,
+		&i.ZhviData,
+		&i.ZoriData,
+		&i.ZhvfData,
+		&i.SalesCountData,
+		&i.DaysOnMarketData,
+		&i.MarketHeatData,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
 
-const ListAvailableRegions = `-- name: ListAvailableRegions :many
-SELECT DISTINCT region_id, region_name, region_type, state_code
-FROM metro_timeseries
-WHERE region_type = $1
-ORDER BY region_name
+const GetMetroByRegionID = `-- name: GetMetroByRegionID :one
+SELECT
+    id,
+    metro_region_id,
+    metro_name,
+    state_name,
+    zhvi_data,
+    zori_data,
+    zhvf_data,
+    sales_count_data,
+    days_on_market_data,
+    market_heat_data,
+    created_at,
+    updated_at
+FROM metro_time_series
+WHERE metro_region_id = $1
+LIMIT 1
+`
+
+type GetMetroByRegionIDRow struct {
+	ID               int32            `json:"id"`
+	MetroRegionID    int32            `json:"metro_region_id"`
+	MetroName        string           `json:"metro_name"`
+	StateName        pgtype.Text      `json:"state_name"`
+	ZhviData         []byte           `json:"zhvi_data"`
+	ZoriData         []byte           `json:"zori_data"`
+	ZhvfData         []byte           `json:"zhvf_data"`
+	SalesCountData   []byte           `json:"sales_count_data"`
+	DaysOnMarketData []byte           `json:"days_on_market_data"`
+	MarketHeatData   []byte           `json:"market_heat_data"`
+	CreatedAt        pgtype.Timestamp `json:"created_at"`
+	UpdatedAt        pgtype.Timestamp `json:"updated_at"`
+}
+
+// Get metro data by region ID
+func (q *Queries) GetMetroByRegionID(ctx context.Context, metroRegionID int32) (GetMetroByRegionIDRow, error) {
+	row := q.db.QueryRow(ctx, GetMetroByRegionID, metroRegionID)
+	var i GetMetroByRegionIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.MetroRegionID,
+		&i.MetroName,
+		&i.StateName,
+		&i.ZhviData,
+		&i.ZoriData,
+		&i.ZhvfData,
+		&i.SalesCountData,
+		&i.DaysOnMarketData,
+		&i.MarketHeatData,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const GetMetroCount = `-- name: GetMetroCount :one
+SELECT COUNT(*) FROM metro_time_series
+`
+
+// Get total count of metros
+func (q *Queries) GetMetroCount(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, GetMetroCount)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const ListCitiesByState = `-- name: ListCitiesByState :many
+SELECT
+    c.city,
+    c.state,
+    c.median_home_price,
+    c.median_rent,
+    c.cap_rate,
+    c.data_quality_score,
+    c.is_ai_estimated
+FROM city_market_cache c
+WHERE c.state = $1
+ORDER BY c.city
 LIMIT $2 OFFSET $3
 `
 
-type ListAvailableRegionsParams struct {
-	RegionType string `json:"region_type"`
-	Limit      int32  `json:"limit"`
-	Offset     int32  `json:"offset"`
+type ListCitiesByStateParams struct {
+	State  string `json:"state"`
+	Limit  int32  `json:"limit"`
+	Offset int32  `json:"offset"`
 }
 
-type ListAvailableRegionsRow struct {
-	RegionID   int32       `json:"region_id"`
-	RegionName string      `json:"region_name"`
-	RegionType string      `json:"region_type"`
-	StateCode  pgtype.Text `json:"state_code"`
+type ListCitiesByStateRow struct {
+	City             string         `json:"city"`
+	State            string         `json:"state"`
+	MedianHomePrice  pgtype.Numeric `json:"median_home_price"`
+	MedianRent       pgtype.Numeric `json:"median_rent"`
+	CapRate          pgtype.Numeric `json:"cap_rate"`
+	DataQualityScore int32          `json:"data_quality_score"`
+	IsAiEstimated    bool           `json:"is_ai_estimated"`
 }
 
-func (q *Queries) ListAvailableRegions(ctx context.Context, arg ListAvailableRegionsParams) ([]ListAvailableRegionsRow, error) {
-	rows, err := q.db.Query(ctx, ListAvailableRegions, arg.RegionType, arg.Limit, arg.Offset)
+// List all cities in a state with their market data
+func (q *Queries) ListCitiesByState(ctx context.Context, arg ListCitiesByStateParams) ([]ListCitiesByStateRow, error) {
+	rows, err := q.db.Query(ctx, ListCitiesByState, arg.State, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListAvailableRegionsRow{}
+	items := []ListCitiesByStateRow{}
 	for rows.Next() {
-		var i ListAvailableRegionsRow
+		var i ListCitiesByStateRow
 		if err := rows.Scan(
-			&i.RegionID,
-			&i.RegionName,
-			&i.RegionType,
-			&i.StateCode,
+			&i.City,
+			&i.State,
+			&i.MedianHomePrice,
+			&i.MedianRent,
+			&i.CapRate,
+			&i.DataQualityScore,
+			&i.IsAiEstimated,
 		); err != nil {
 			return nil, err
 		}
@@ -366,43 +438,76 @@ func (q *Queries) ListAvailableRegions(ctx context.Context, arg ListAvailableReg
 	return items, nil
 }
 
-const SearchMetroByName = `-- name: SearchMetroByName :many
-SELECT DISTINCT region_id, region_name, region_type, state_code, metro
-FROM metro_timeseries
-WHERE region_name ILIKE $1
-ORDER BY region_name
-LIMIT $2
+const ListMetrosByState = `-- name: ListMetrosByState :many
+SELECT
+    metro_region_id,
+    metro_name,
+    state_name
+FROM metro_time_series
+WHERE state_name = $1
+ORDER BY metro_name
 `
 
-type SearchMetroByNameParams struct {
-	RegionName string `json:"region_name"`
-	Limit      int32  `json:"limit"`
+type ListMetrosByStateRow struct {
+	MetroRegionID int32       `json:"metro_region_id"`
+	MetroName     string      `json:"metro_name"`
+	StateName     pgtype.Text `json:"state_name"`
 }
 
-type SearchMetroByNameRow struct {
-	RegionID   int32       `json:"region_id"`
-	RegionName string      `json:"region_name"`
-	RegionType string      `json:"region_type"`
-	StateCode  pgtype.Text `json:"state_code"`
-	Metro      pgtype.Text `json:"metro"`
-}
-
-func (q *Queries) SearchMetroByName(ctx context.Context, arg SearchMetroByNameParams) ([]SearchMetroByNameRow, error) {
-	rows, err := q.db.Query(ctx, SearchMetroByName, arg.RegionName, arg.Limit)
+// List all metros in a state
+func (q *Queries) ListMetrosByState(ctx context.Context, stateName pgtype.Text) ([]ListMetrosByStateRow, error) {
+	rows, err := q.db.Query(ctx, ListMetrosByState, stateName)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []SearchMetroByNameRow{}
+	items := []ListMetrosByStateRow{}
 	for rows.Next() {
-		var i SearchMetroByNameRow
-		if err := rows.Scan(
-			&i.RegionID,
-			&i.RegionName,
-			&i.RegionType,
-			&i.StateCode,
-			&i.Metro,
-		); err != nil {
+		var i ListMetrosByStateRow
+		if err := rows.Scan(&i.MetroRegionID, &i.MetroName, &i.StateName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const SearchMetros = `-- name: SearchMetros :many
+SELECT DISTINCT
+    metro_region_id,
+    metro_name,
+    state_name
+FROM metro_time_series
+WHERE metro_name ILIKE $1
+ORDER BY metro_name
+LIMIT $2
+`
+
+type SearchMetrosParams struct {
+	MetroName string `json:"metro_name"`
+	Limit     int32  `json:"limit"`
+}
+
+type SearchMetrosRow struct {
+	MetroRegionID int32       `json:"metro_region_id"`
+	MetroName     string      `json:"metro_name"`
+	StateName     pgtype.Text `json:"state_name"`
+}
+
+// Search metros by name pattern
+func (q *Queries) SearchMetros(ctx context.Context, arg SearchMetrosParams) ([]SearchMetrosRow, error) {
+	rows, err := q.db.Query(ctx, SearchMetros, arg.MetroName, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SearchMetrosRow{}
+	for rows.Next() {
+		var i SearchMetrosRow
+		if err := rows.Scan(&i.MetroRegionID, &i.MetroName, &i.StateName); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -168,6 +168,75 @@ type ContactSubmission struct {
 	UpdatedAt   pgtype.Timestamp `json:"updatedAt"`
 }
 
+type DiscoverySession struct {
+	ID                string           `json:"id"`
+	UserId            string           `json:"userId"`
+	SearchCriteria    json.RawMessage  `json:"searchCriteria"`
+	Location          string           `json:"location"`
+	PropertyCount     int32            `json:"propertyCount"`
+	CachedPropertyIds []string         `json:"cachedPropertyIds"`
+	Name              pgtype.Text      `json:"name"`
+	Notes             pgtype.Text      `json:"notes"`
+	Status            string           `json:"status"`
+	CreatedAt         pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt         pgtype.Timestamp `json:"updatedAt"`
+	LastAccessedAt    pgtype.Timestamp `json:"lastAccessedAt"`
+	ArchivedAt        pgtype.Timestamp `json:"archivedAt"`
+	ExpiresAt         pgtype.Timestamp `json:"expiresAt"`
+	ChatSessionCount  int32            `json:"chatSessionCount"`
+	EvaluationCount   int32            `json:"evaluationCount"`
+}
+
+type DiscoverySessionActivity struct {
+	ID                 string           `json:"id"`
+	DiscoverySessionId string           `json:"discoverySessionId"`
+	ActivityType       string           `json:"activityType"`
+	ActivityId         string           `json:"activityId"`
+	CreatedAt          pgtype.Timestamp `json:"createdAt"`
+}
+
+type DiscoverySessionEvaluation struct {
+	ID                 string           `json:"id"`
+	DiscoverySessionId string           `json:"discoverySessionId"`
+	PropertyId         string           `json:"propertyId"`
+	Address            string           `json:"address"`
+	Price              int32            `json:"price"`
+	EstimatedRent      pgtype.Int4      `json:"estimatedRent"`
+	Scenarios          json.RawMessage  `json:"scenarios"`
+	Recommendation     pgtype.Text      `json:"recommendation"`
+	RiskLevel          pgtype.Text      `json:"riskLevel"`
+	Score              pgtype.Int4      `json:"score"`
+	Status             string           `json:"status"`
+	CreatedAt          pgtype.Timestamp `json:"createdAt"`
+}
+
+type DiscoverySessionProperty struct {
+	ID                 string           `json:"id"`
+	DiscoverySessionId string           `json:"discoverySessionId"`
+	ListingId          string           `json:"listingId"`
+	Address            string           `json:"address"`
+	City               string           `json:"city"`
+	State              string           `json:"state"`
+	ZipCode            pgtype.Text      `json:"zipCode"`
+	Price              int32            `json:"price"`
+	EstimatedRent      pgtype.Int4      `json:"estimatedRent"`
+	CapRateMin         pgtype.Numeric   `json:"capRateMin"`
+	CapRateMax         pgtype.Numeric   `json:"capRateMax"`
+	Beds               int32            `json:"beds"`
+	Baths              pgtype.Numeric   `json:"baths"`
+	Sqft               pgtype.Int4      `json:"sqft"`
+	YearBuilt          pgtype.Int4      `json:"yearBuilt"`
+	PropertyType       pgtype.Text      `json:"propertyType"`
+	ListingDate        pgtype.Text      `json:"listingDate"`
+	DaysOnMarket       pgtype.Int4      `json:"daysOnMarket"`
+	ImageUrl           pgtype.Text      `json:"imageUrl"`
+	ListingSearchUrl   pgtype.Text      `json:"listingSearchUrl"`
+	GoogleSearchUrl    pgtype.Text      `json:"googleSearchUrl"`
+	Latitude           pgtype.Numeric   `json:"latitude"`
+	Longitude          pgtype.Numeric   `json:"longitude"`
+	CreatedAt          pgtype.Timestamp `json:"createdAt"`
+}
+
 type EarlyAccess struct {
 	ID         string           `json:"id"`
 	Email      string           `json:"email"`

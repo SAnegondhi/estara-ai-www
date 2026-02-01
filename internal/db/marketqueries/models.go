@@ -10,6 +10,54 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type CityMarketCache struct {
+	ID                    int32              `json:"id"`
+	LocationKey           string             `json:"location_key"`
+	City                  string             `json:"city"`
+	State                 string             `json:"state"`
+	MetroRegionID         pgtype.Int4        `json:"metro_region_id"`
+	MedianHomePrice       pgtype.Numeric     `json:"median_home_price"`
+	MedianPricePerSqft    pgtype.Numeric     `json:"median_price_per_sqft"`
+	MedianListPrice       pgtype.Numeric     `json:"median_list_price"`
+	HomesSold             pgtype.Int4        `json:"homes_sold"`
+	InventoryCount        pgtype.Int4        `json:"inventory_count"`
+	MonthsOfSupply        pgtype.Numeric     `json:"months_of_supply"`
+	MedianDaysOnMarket    pgtype.Int4        `json:"median_days_on_market"`
+	PriceYoyChange        pgtype.Numeric     `json:"price_yoy_change"`
+	ForecastGrowth        pgtype.Numeric     `json:"forecast_growth"`
+	MedianRent            pgtype.Numeric     `json:"median_rent"`
+	RentYoyChange         pgtype.Numeric     `json:"rent_yoy_change"`
+	RentalYield           pgtype.Numeric     `json:"rental_yield"`
+	CapRate               pgtype.Numeric     `json:"cap_rate"`
+	PriceToRentRatio      pgtype.Numeric     `json:"price_to_rent_ratio"`
+	VacancyRate           pgtype.Numeric     `json:"vacancy_rate"`
+	HudFmr0br             pgtype.Numeric     `json:"hud_fmr_0br"`
+	HudFmr1br             pgtype.Numeric     `json:"hud_fmr_1br"`
+	HudFmr2br             pgtype.Numeric     `json:"hud_fmr_2br"`
+	HudFmr3br             pgtype.Numeric     `json:"hud_fmr_3br"`
+	HudFmr4br             pgtype.Numeric     `json:"hud_fmr_4br"`
+	Population            pgtype.Int4        `json:"population"`
+	PopulationGrowthRate  pgtype.Numeric     `json:"population_growth_rate"`
+	MedianHouseholdIncome pgtype.Numeric     `json:"median_household_income"`
+	UnemploymentRate      pgtype.Numeric     `json:"unemployment_rate"`
+	EmploymentGrowthRate  pgtype.Numeric     `json:"employment_growth_rate"`
+	MarketHeatIndex       pgtype.Numeric     `json:"market_heat_index"`
+	MarketTemperature     pgtype.Text        `json:"market_temperature"`
+	AffordabilityIndex    pgtype.Numeric     `json:"affordability_index"`
+	AffordabilityBurden   pgtype.Text        `json:"affordability_burden"`
+	PriceToIncomeRatio    pgtype.Numeric     `json:"price_to_income_ratio"`
+	DataSources           []byte             `json:"data_sources"`
+	DataQualityScore      int32              `json:"data_quality_score"`
+	DataDate              string             `json:"data_date"`
+	LastUpdated           pgtype.Timestamp   `json:"last_updated"`
+	TtlExpiresAt          pgtype.Timestamp   `json:"ttl_expires_at"`
+	CreatedAt             pgtype.Timestamp   `json:"created_at"`
+	IsAiEstimated         bool               `json:"is_ai_estimated"`
+	AiConfidenceScore     pgtype.Int4        `json:"ai_confidence_score"`
+	AiEstimationDetails   []byte             `json:"ai_estimation_details"`
+	AiEstimatedAt         pgtype.Timestamptz `json:"ai_estimated_at"`
+}
+
 type CityMetroMapping struct {
 	ID            int32       `json:"id"`
 	City          string      `json:"city"`
@@ -17,6 +65,23 @@ type CityMetroMapping struct {
 	MetroName     string      `json:"metro_name"`
 	MetroRegionID pgtype.Int4 `json:"metro_region_id"`
 	CreatedAt     time.Time   `json:"created_at"`
+}
+
+type MetroTimeSeries struct {
+	ID                int32            `json:"id"`
+	MetroRegionID     int32            `json:"metro_region_id"`
+	MetroName         string           `json:"metro_name"`
+	StateName         pgtype.Text      `json:"state_name"`
+	ZhviData          []byte           `json:"zhvi_data"`
+	ZoriData          []byte           `json:"zori_data"`
+	ZhvfData          []byte           `json:"zhvf_data"`
+	SalesCountData    []byte           `json:"sales_count_data"`
+	DaysOnMarketData  []byte           `json:"days_on_market_data"`
+	MarketHeatData    []byte           `json:"market_heat_data"`
+	AffordabilityData []byte           `json:"affordability_data"`
+	RedfinData        []byte           `json:"redfin_data"`
+	CreatedAt         pgtype.Timestamp `json:"created_at"`
+	UpdatedAt         pgtype.Timestamp `json:"updated_at"`
 }
 
 type MetroTimeseries struct {

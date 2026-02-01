@@ -336,6 +336,37 @@ func (q *Queue) Cancel(jobID string) error {
 	return nil
 }
 
+// Delete removes a job and its result from memory and Redis.
+// Use this to hard-delete completed/cancelled jobs (e.g., user-initiated delete).
+func (q *Queue) Delete(jobID string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	job, ok := q.jobs[jobID]
+	if !ok {
+		return ErrJobNotFound
+	}
+
+	// Remove from pending queue if present
+	for i, p := range q.pending {
+		if p.ID == jobID {
+			q.pending = append(q.pending[:i], q.pending[i+1:]...)
+			break
+		}
+	}
+
+	delete(q.jobs, jobID)
+	delete(q.results, jobID)
+	q.closeSubscribers(jobID)
+
+	if q.config.UseRedisBackup && q.redis != nil {
+		go q.deleteFromRedis(job)
+	}
+
+	q.logger.Info("job deleted", "job_id", jobID)
+	return nil
+}
+
 // Subscribe returns a channel for job progress updates
 func (q *Queue) Subscribe(jobID string) <-chan ProgressEvent {
 	q.mu.Lock()
@@ -349,12 +380,20 @@ func (q *Queue) Subscribe(jobID string) <-chan ProgressEvent {
 	return ch
 }
 
-// ReportProgress reports progress for a job
+// ReportProgress reports progress for a job and stores it in the job
 func (q *Queue) ReportProgress(jobID string, event ProgressEvent) {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
+	q.mu.Lock()
+	defer q.mu.Unlock()
 
 	event.JobID = jobID
+
+	// Store progress in the job for polling access
+	if job, exists := q.jobs[jobID]; exists {
+		job.Progress = event.Progress
+		job.ProgressMessage = event.Message
+		job.UpdatedAt = time.Now()
+	}
+
 	q.notifySubscribers(jobID, event)
 }
 
@@ -520,6 +559,22 @@ func (q *Queue) backupResultToRedis(result *JobResult) {
 	key := redisResultKeyPrefix + result.JobID
 	if err := q.redis.Set(ctx, key, data, q.config.ResultRetention).Err(); err != nil {
 		q.logger.Warn("failed to backup result to Redis", "error", err)
+	}
+}
+
+// deleteFromRedis removes job and result entries from Redis.
+func (q *Queue) deleteFromRedis(job *Job) {
+	if q.redis == nil || job == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	jobKey := redisJobKeyPrefix + job.ID
+	resultKey := redisResultKeyPrefix + job.ID
+	if err := q.redis.Del(ctx, jobKey, resultKey).Err(); err != nil {
+		q.logger.Warn("failed to delete job from Redis", "error", err)
 	}
 }
 

@@ -163,8 +163,28 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Post("/search", handlers.Discover.Search)
 		// GET properties endpoint - alternative query param based search
 		r.Get("/properties", handlers.Discover.SearchProperties)
+		// Streaming search endpoint - returns fully enriched properties via SSE
+		r.Get("/search/stream", handlers.Discover.StreamingSearch)
 		r.Get("/market-defaults", handlers.Discover.GetMarketDefaults)
 		r.Post("/batch-evaluate", handlers.Discover.BatchEvaluate)
+
+		// Async enrichment endpoints (for SSE-based property enrichment)
+		r.Get("/enrich/{jobId}", handlers.Discover.GetEnrichmentStatus)
+		r.Get("/enrich/{jobId}/stream", handlers.Discover.StreamEnrichmentUpdates)
+
+		// Cache management
+		r.Post("/cache/invalidate", handlers.Discover.InvalidateSearchCache)
+
+		// Discovery Sessions
+		r.Route("/sessions", func(r chi.Router) {
+			r.Get("/", handlers.Discover.ListDiscoverySessions)
+			r.Post("/", handlers.Discover.CreateDiscoverySession)
+			r.Get("/{id}", handlers.Discover.GetDiscoverySession)
+			r.Delete("/{id}", handlers.Discover.ArchiveDiscoverySession)
+			r.Post("/{id}/restore", handlers.Discover.RestoreDiscoverySession)
+			r.Post("/{id}/link", handlers.Discover.LinkActivity)
+			r.Post("/{id}/evaluations", handlers.Discover.SaveEvaluations)
+		})
 	})
 
 	// V2 Quota API
@@ -179,6 +199,15 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Use(authMiddleware.Authenticate)
 		r.Use(rateLimiter.Limit)
 		r.Get("/", handlers.Discover.GetRecords)
+		r.Get("/{id}/download", handlers.Discover.DownloadDecisionRecord)
+	})
+
+	// V2 Evaluation API
+	r.Route("/api/v2/evaluate", func(r chi.Router) {
+		r.Use(authMiddleware.Authenticate)
+		r.Use(rateLimiter.Limit)
+		r.Post("/batch", handlers.Discover.BatchEvaluate)
+		r.Post("/batch/export", handlers.Discover.ExportBatchEvaluations)
 	})
 
 	// Location API - autocomplete is public, validate requires auth
@@ -212,6 +241,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Get("/search", handlers.Market.SearchMetros)
 		r.Get("/historical", handlers.Market.GetHistoricalTrends)
 		r.Post("/synthesize", handlers.Market.SynthesizeTrends)
+		r.Post("/export", handlers.Market.ExportTrendsPDF)
 	})
 
 	// AI Evaluation Chat
@@ -233,7 +263,10 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 
 		r.Post("/queue", handlers.AI.QueueInvestmentPlan)
 		r.Get("/stream", handlers.AI.StreamInvestmentPlan)
+		r.Get("/status/{jobId}", handlers.AI.StreamInvestmentPlanStatus)
 		r.Get("/history", handlers.AI.GetInvestmentPlanHistory)
+		r.Post("/{jobId}/cancel", handlers.AI.CancelInvestmentPlan)
+		r.Delete("/{jobId}", handlers.AI.DeleteInvestmentPlan)
 		r.Get("/{jobId}", handlers.AI.GetInvestmentPlan)
 	})
 
@@ -272,6 +305,17 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Get("/status/{id}", handlers.Report.GetStatus)
 		r.Get("/{id}", handlers.Report.Get)
 		r.Get("/download/{id}", handlers.Report.Download)
+	})
+
+	// Report exports (market analysis, investment plans, projections)
+	r.Route("/api/report", func(r chi.Router) {
+		r.Use(authMiddleware.Authenticate)
+		r.Use(rateLimiter.Limit)
+
+		r.Post("/generate", handlers.Report.GenerateMarketAnalysisPDF)
+		r.Post("/investment-plan", handlers.Report.GenerateInvestmentPlanPDF)
+		r.Post("/portfolio-projections", handlers.Report.GeneratePortfolioProjectionsPDF)
+		r.Post("/portfolio-projections/csv", handlers.Report.GeneratePortfolioProjectionsCSV)
 	})
 
 	// Cache management
@@ -355,6 +399,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Post("/reports", handlers.Cron.ProcessScheduledReports)
 		r.Post("/ai-estimate-refresh", handlers.Cron.RefreshAIEstimates)
 		r.Post("/cleanup-guest-sessions", handlers.Cron.CleanupGuestSessions)
+		r.Post("/discovery-cleanup", handlers.Cron.DiscoveryCleanup)
 	})
 
 	// Billing/Payment routes (protected)

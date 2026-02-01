@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
+	"strings"
 
 	"github.com/estara-ai/www/internal/services/ai/anthropic"
 	"github.com/estara-ai/www/internal/services/cache"
@@ -50,8 +52,37 @@ func (s *Service) Optimize(ctx context.Context, req investment.OptimizationReque
 		return nil, fmt.Errorf("no properties provided for optimization")
 	}
 
+	// Filter out properties with unrealistic data (likely bad data or distressed)
+	qualityFiltered := filterByDataQuality(req.Properties)
+	if len(qualityFiltered) == 0 {
+		s.logger.Warn("all properties filtered out by data quality checks, using original set")
+		qualityFiltered = req.Properties
+	} else if len(qualityFiltered) < len(req.Properties) {
+		s.logger.Info("filtered properties by data quality",
+			"original", len(req.Properties),
+			"remaining", len(qualityFiltered),
+			"removed", len(req.Properties)-len(qualityFiltered),
+		)
+	}
+
+	locationMarketData := s.getLocationMarketData(ctx, qualityFiltered)
+	filteredProperties := qualityFiltered
+	var filterSummary *investment.MarketFilterSummary
+	if len(locationMarketData) > 0 {
+		filters := buildMarketFilters(req.Strategy)
+		summary := ApplyMarketFilters(locationMarketData, filters)
+		filterSummary = &summary
+		// IMPORTANT: Use qualityFiltered (not req.Properties) to preserve data quality filtering
+		qualified := filterPropertiesByMarket(qualityFiltered, summary)
+		if len(qualified) > 0 {
+			filteredProperties = qualified
+		}
+	}
+
+	marketQuality := CalculateMarketQualityScores(locationMarketData)
+
 	// Score properties using AI
-	scoredProperties, err := s.ScoreProperties(ctx, req.Properties, investment.InvestorProfile{
+	scoredProperties, err := s.ScoreProperties(ctx, filteredProperties, investment.InvestorProfile{
 		RiskTolerance:     req.RiskTolerance,
 		Strategy:          req.Strategy,
 		AvailableCapital:  req.Budget,
@@ -61,21 +92,42 @@ func (s *Service) Optimize(ctx context.Context, req investment.OptimizationReque
 		return nil, fmt.Errorf("failed to score properties: %w", err)
 	}
 
+	applyMarketQualityToScored(scoredProperties, marketQuality)
+
 	// Filter to STRONG_BUY and BUY recommendations
 	candidates := filterByRecommendation(scoredProperties)
+	if len(candidates) == 0 {
+		candidates = scoredProperties
+	}
 
-	// Select properties within budget
-	selected := s.selectPropertiesWithinBudget(candidates, req)
+	selected, concentration, _ := s.selectWithTwoStage(
+		candidates,
+		req.Budget,
+		req.DownPaymentPct,
+		req.MortgageRate,
+		req.RiskTolerance,
+		req.MaxProperties,
+	)
 
 	// Calculate metrics for selected properties
 	portfolioProperties := make([]investment.PropertyInPortfolio, 0, len(selected))
-	for _, sp := range selected {
-		pp := s.calculator.CalculatePropertyMetrics(sp.Property, req.DownPaymentPct, req.MortgageRate)
-		pp.Score = sp.OverallScore
+	for _, pp := range selected {
 		portfolioProperties = append(portfolioProperties, pp)
 	}
 
 	metrics := s.calculator.CalculateMetrics(portfolioProperties)
+
+	// Calculate allocations by location
+	allocations := calculateAllocations(portfolioProperties, metrics.TotalInvestment)
+
+	// Calculate risk analysis
+	riskAnalysis := calculateRiskAnalysis(portfolioProperties, scoredProperties)
+
+	// Calculate diversification analysis
+	diversificationAnalysis := calculateDiversificationAnalysis(portfolioProperties, concentration)
+
+	// Generate recommendations
+	recommendations := generateRecommendations(portfolioProperties, metrics, riskAnalysis, diversificationAnalysis)
 
 	s.logger.Info("optimization complete",
 		"selected_count", len(portfolioProperties),
@@ -84,9 +136,16 @@ func (s *Service) Optimize(ctx context.Context, req investment.OptimizationReque
 	)
 
 	return &investment.OptimizationResult{
-		SelectedProperties: portfolioProperties,
-		Metrics:            *metrics,
-		ScoredProperties:   scoredProperties,
+		SelectedProperties:      portfolioProperties,
+		Metrics:                 *metrics,
+		ScoredProperties:        scoredProperties,
+		Concentration:           concentration,
+		MarketFilters:           filterSummary,
+		MarketQuality:           marketQuality,
+		Allocations:             allocations,
+		RiskAnalysis:            riskAnalysis,
+		DiversificationAnalysis: diversificationAnalysis,
+		Recommendations:         recommendations,
 	}, nil
 }
 
@@ -139,6 +198,35 @@ func (s *Service) OptimizeMultiYear(ctx context.Context, req investment.MultiYea
 		return nil, fmt.Errorf("no yearly budgets provided")
 	}
 
+	// Filter out properties with unrealistic data (likely bad data or distressed)
+	qualityFiltered := filterByDataQuality(req.Properties)
+	if len(qualityFiltered) == 0 {
+		s.logger.Warn("all properties filtered out by data quality checks, using original set")
+		qualityFiltered = req.Properties
+	} else if len(qualityFiltered) < len(req.Properties) {
+		s.logger.Info("filtered properties by data quality",
+			"original", len(req.Properties),
+			"remaining", len(qualityFiltered),
+			"removed", len(req.Properties)-len(qualityFiltered),
+		)
+	}
+
+	locationMarketData := s.getLocationMarketData(ctx, qualityFiltered)
+	filteredProperties := qualityFiltered
+	var filterSummary *investment.MarketFilterSummary
+	if len(locationMarketData) > 0 {
+		filters := buildMarketFilters(req.Strategy)
+		summary := ApplyMarketFilters(locationMarketData, filters)
+		filterSummary = &summary
+		// IMPORTANT: Use qualityFiltered (not req.Properties) to preserve data quality filtering
+		qualified := filterPropertiesByMarket(qualityFiltered, summary)
+		if len(qualified) > 0 {
+			filteredProperties = qualified
+		}
+	}
+
+	marketQuality := CalculateMarketQualityScores(locationMarketData)
+
 	// Score all properties upfront
 	profile := investment.InvestorProfile{
 		RiskTolerance:     req.RiskTolerance,
@@ -147,13 +235,18 @@ func (s *Service) OptimizeMultiYear(ctx context.Context, req investment.MultiYea
 		InvestmentHorizon: fmt.Sprintf("%d years", len(req.YearlyBudgets)),
 	}
 
-	scoredProperties, err := s.ScoreProperties(ctx, req.Properties, profile, req.ExistingPortfolio)
+	scoredProperties, err := s.ScoreProperties(ctx, filteredProperties, profile, req.ExistingPortfolio)
 	if err != nil {
 		return nil, fmt.Errorf("failed to score properties: %w", err)
 	}
 
+	applyMarketQualityToScored(scoredProperties, marketQuality)
+
 	// Filter to recommendations
 	candidates := filterByRecommendation(scoredProperties)
+	if len(candidates) == 0 {
+		candidates = scoredProperties
+	}
 	remaining := make([]investment.ScoredProperty, len(candidates))
 	copy(remaining, candidates)
 
@@ -163,15 +256,37 @@ func (s *Service) OptimizeMultiYear(ctx context.Context, req investment.MultiYea
 	totalInvestment := 0
 
 	for _, yearBudget := range req.YearlyBudgets {
-		yearPlan := s.allocatePropertiesForYear(remaining, yearBudget, req.DownPaymentPct, req.MortgageRate)
+		selected, _, selectedIDs := s.selectWithTwoStage(
+			remaining,
+			yearBudget.Budget,
+			req.DownPaymentPct,
+			req.MortgageRate,
+			req.RiskTolerance,
+			0,
+		)
+
+		allocatedCapital := 0
+		projectedCashFlow := 0
+		for _, pp := range selected {
+			allocatedCapital += pp.Property.Price
+			projectedCashFlow += pp.MonthlyCashFlow * 12
+		}
+
+		yearPlan := investment.YearlyAcquisitionPlan{
+			Year:             yearBudget.Year,
+			Budget:           yearBudget.Budget,
+			AllocatedCapital: allocatedCapital,
+			Properties:       selected,
+			Metrics: investment.YearlyPlanMetrics{
+				PropertyCount:     len(selected),
+				TotalInvestment:   allocatedCapital,
+				ProjectedCashFlow: projectedCashFlow,
+			},
+		}
+
 		yearlyPlans = append(yearlyPlans, yearPlan)
 
 		// Remove selected properties from pool
-		selectedIDs := make(map[string]bool)
-		for _, pp := range yearPlan.Properties {
-			selectedIDs[pp.Property.ID] = true
-		}
-
 		newRemaining := make([]investment.ScoredProperty, 0)
 		for _, sp := range remaining {
 			if !selectedIDs[sp.Property.ID] {
@@ -227,6 +342,8 @@ func (s *Service) OptimizeMultiYear(ctx context.Context, req investment.MultiYea
 		MultiYearPlan:     multiYearPlan,
 		ExistingPortfolio: existingSummary,
 		CombinedMetrics:   combinedMetrics,
+		MarketFilters:     filterSummary,
+		MarketQuality:     marketQuality,
 	}, nil
 }
 
@@ -242,10 +359,10 @@ func (s *Service) selectPropertiesWithinBudget(
 
 	selected := make([]investment.ScoredProperty, 0)
 	totalDownPayment := 0
-	maxDownPayment := int(float64(req.Budget) * req.DownPaymentPct)
+	maxDownPayment := req.Budget
 
 	for _, candidate := range candidates {
-		if len(selected) >= req.MaxProperties {
+		if req.MaxProperties > 0 && len(selected) >= req.MaxProperties {
 			break
 		}
 
@@ -257,6 +374,409 @@ func (s *Service) selectPropertiesWithinBudget(
 	}
 
 	return selected
+}
+
+func (s *Service) selectWithTwoStage(
+	candidates []investment.ScoredProperty,
+	budget int,
+	downPaymentPct float64,
+	mortgageRate float64,
+	riskTolerance investment.RiskTolerance,
+	maxProperties int,
+) ([]investment.PropertyInPortfolio, *investment.ConcentrationMetrics, map[string]bool) {
+	if len(candidates) == 0 {
+		return []investment.PropertyInPortfolio{}, nil, map[string]bool{}
+	}
+
+	optimizable := MapToOptimizableProperties(candidates, downPaymentPct, mortgageRate, s.calculator.CalculatePropertyMetrics)
+	if len(optimizable) == 0 {
+		return []investment.PropertyInPortfolio{}, nil, map[string]bool{}
+	}
+
+	config := BuildOptimizerConfig(budget, riskTolerance)
+	optResult := OptimizePortfolioTwoStage(optimizable, config)
+	selectedIndices := optResult.SelectedIndices
+
+	if len(selectedIndices) == 0 {
+		fallbackReq := investment.OptimizationRequest{
+			Budget:         budget,
+			DownPaymentPct: downPaymentPct,
+			MaxProperties:  maxProperties,
+		}
+		fallback := s.selectPropertiesWithinBudget(candidates, fallbackReq)
+		selected := make([]investment.PropertyInPortfolio, 0, len(fallback))
+		selectedIDs := make(map[string]bool)
+		for _, sp := range fallback {
+			pp := s.calculator.CalculatePropertyMetrics(sp.Property, downPaymentPct, mortgageRate)
+			pp.Score = sp.OverallScore
+			selected = append(selected, pp)
+			selectedIDs[sp.Property.ID] = true
+		}
+		return selected, nil, selectedIDs
+	}
+
+	if maxProperties > 0 && len(selectedIndices) > maxProperties {
+		sort.SliceStable(selectedIndices, func(i, j int) bool {
+			left := candidates[optimizable[selectedIndices[i]].OriginalIndex].OverallScore
+			right := candidates[optimizable[selectedIndices[j]].OriginalIndex].OverallScore
+			return left > right
+		})
+		selectedIndices = selectedIndices[:maxProperties]
+	}
+
+	selection := make([]bool, len(optimizable))
+	for _, idx := range selectedIndices {
+		if idx >= 0 && idx < len(selection) {
+			selection[idx] = true
+		}
+	}
+
+	concentration := optResult.Concentration
+	if maxProperties > 0 && len(optResult.SelectedIndices) > maxProperties {
+		concentration = CalculateConcentrationMetrics(selection, optimizable, config)
+	}
+
+	selected := make([]investment.PropertyInPortfolio, 0, len(selectedIndices))
+	selectedIDs := make(map[string]bool)
+	for _, idx := range selectedIndices {
+		sp := candidates[optimizable[idx].OriginalIndex]
+		pp := s.calculator.CalculatePropertyMetrics(sp.Property, downPaymentPct, mortgageRate)
+		pp.Score = sp.OverallScore
+		selected = append(selected, pp)
+		selectedIDs[sp.Property.ID] = true
+	}
+
+	return selected, &concentration, selectedIDs
+}
+
+func buildMarketFilters(strategy investment.InvestmentStrategy) investment.MarketFilterCriteria {
+	filters := DefaultMarketFilters()
+	switch strategy {
+	case investment.StrategyCashFlow:
+		filters.MinCapRate = 4
+		filters.MaxPriceToIncome = 5
+	case investment.StrategyAppreciation:
+		filters.MinPriceGrowth5Y = 10
+		filters.MinPopulationGrowth = 0
+		filters.MinCapRate = 0
+	case investment.StrategyRiskAdjusted:
+		filters.MaxPriceVolatility = 4
+		filters.MaxUnemploymentRate = 6
+		filters.MaxVacancyRate = 7
+	}
+	return filters
+}
+
+func filterPropertiesByMarket(
+	properties []investment.Property,
+	summary investment.MarketFilterSummary,
+) []investment.Property {
+	if len(summary.Passed) == 0 {
+		return nil
+	}
+	passed := make(map[string]bool, len(summary.Passed))
+	for _, result := range summary.Passed {
+		passed[result.Location] = true
+	}
+
+	filtered := make([]investment.Property, 0, len(properties))
+	for _, prop := range properties {
+		location := buildLocationKey(prop.City, prop.State)
+		if passed[location] {
+			filtered = append(filtered, prop)
+		}
+	}
+	return filtered
+}
+
+func applyMarketQualityToScored(
+	scored []investment.ScoredProperty,
+	marketQuality []investment.LocationMarketAnalysis,
+) {
+	if len(scored) == 0 || len(marketQuality) == 0 {
+		return
+	}
+
+	qualityByLocation := make(map[string]investment.LocationMarketAnalysis, len(marketQuality))
+	for _, analysis := range marketQuality {
+		qualityByLocation[analysis.Location] = analysis
+	}
+
+	for i := range scored {
+		location := buildLocationKey(scored[i].Property.City, scored[i].Property.State)
+		if analysis, ok := qualityByLocation[location]; ok {
+			scored[i].MarketQualityScore = float64(analysis.MarketQualityScore)
+			scored[i].MarketQualityRating = analysis.MarketQualityRating
+		}
+	}
+}
+
+// marketDataResult holds the result of a concurrent market data fetch
+type marketDataResult struct {
+	location string
+	data     *aggregator.MarketData
+	err      error
+}
+
+func (s *Service) getLocationMarketData(
+	ctx context.Context,
+	properties []investment.Property,
+) map[string]*aggregator.MarketData {
+	results := make(map[string]*aggregator.MarketData)
+	if s.market == nil {
+		s.logger.Warn("market aggregator is nil, cannot fetch market data")
+		return results
+	}
+
+	// Collect unique locations
+	locationSet := make(map[string]struct{})
+	for _, prop := range properties {
+		location := buildLocationKey(prop.City, prop.State)
+		if location != "" {
+			locationSet[location] = struct{}{}
+		}
+	}
+
+	locations := make([]string, 0, len(locationSet))
+	for loc := range locationSet {
+		locations = append(locations, loc)
+	}
+
+	s.logger.Info("fetching market data for locations concurrently", "count", len(locations))
+
+	// Fetch market data concurrently
+	resultChan := make(chan marketDataResult, len(locations))
+
+	for _, location := range locations {
+		go func(loc string) {
+			city, state := splitLocation(loc)
+			if city == "" || state == "" {
+				resultChan <- marketDataResult{location: loc, err: fmt.Errorf("invalid location format")}
+				return
+			}
+			data, err := s.market.GetMarketData(ctx, city, state)
+			resultChan <- marketDataResult{location: loc, data: data, err: err}
+		}(location)
+	}
+
+	// Collect results
+	for i := 0; i < len(locations); i++ {
+		result := <-resultChan
+		if result.err != nil {
+			s.logger.Warn("failed to fetch market data", "location", result.location, "error", result.err)
+			continue
+		}
+		s.logger.Info("market data fetched",
+			"location", result.location,
+			"employmentGrowth", result.data.EmploymentGrowthRate,
+			"populationGrowth", result.data.PopulationGrowthRate,
+			"vacancyRate", result.data.VacancyRate,
+			"unemploymentRate", result.data.UnemploymentRate,
+		)
+		results[result.location] = result.data
+	}
+
+	return results
+}
+
+func buildLocationKey(city, state string) string {
+	city = strings.TrimSpace(city)
+	state = strings.TrimSpace(state)
+	if city == "" || state == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s, %s", city, state)
+}
+
+func splitLocation(location string) (string, string) {
+	parts := strings.Split(location, ",")
+	if len(parts) < 2 {
+		return "", ""
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+}
+
+// calculateAllocations computes allocation breakdown by location
+func calculateAllocations(properties []investment.PropertyInPortfolio, totalInvestment int) map[string]investment.LocationAllocation {
+	allocations := make(map[string]investment.LocationAllocation)
+	if len(properties) == 0 || totalInvestment == 0 {
+		return allocations
+	}
+
+	for _, prop := range properties {
+		location := buildLocationKey(prop.Property.City, prop.Property.State)
+		if location == "" {
+			continue
+		}
+		alloc := allocations[location]
+		alloc.PropertyCount++
+		alloc.InvestmentAmount += prop.Property.Price
+		allocations[location] = alloc
+	}
+
+	// Calculate percentages
+	for loc, alloc := range allocations {
+		alloc.Percentage = float64(alloc.InvestmentAmount) / float64(totalInvestment) * 100
+		allocations[loc] = alloc
+	}
+
+	return allocations
+}
+
+// calculateRiskAnalysis computes portfolio risk metrics
+func calculateRiskAnalysis(properties []investment.PropertyInPortfolio, scored []investment.ScoredProperty) *investment.RiskAnalysis {
+	if len(properties) == 0 {
+		return &investment.RiskAnalysis{
+			PortfolioRisk:    50,
+			RiskDistribution: investment.RiskDistribution{Low: 33, Medium: 34, High: 33},
+			Warnings:         []string{},
+		}
+	}
+
+	// Build score map for selected properties
+	scoreMap := make(map[string]float64)
+	for _, s := range scored {
+		scoreMap[s.Property.ID] = s.OverallScore
+	}
+
+	// Calculate risk distribution based on property scores
+	var lowCount, medCount, highCount int
+	var totalScore float64
+	for _, prop := range properties {
+		score := scoreMap[prop.Property.ID]
+		if score == 0 {
+			score = prop.Score
+		}
+		totalScore += score
+
+		if score >= 70 {
+			lowCount++
+		} else if score >= 50 {
+			medCount++
+		} else {
+			highCount++
+		}
+	}
+
+	total := float64(len(properties))
+	avgScore := totalScore / total
+
+	// Portfolio risk is inverse of average score
+	portfolioRisk := 100 - avgScore
+
+	// Generate warnings
+	var warnings []string
+	if highCount > 0 {
+		warnings = append(warnings, fmt.Sprintf("⚠️ %d properties have elevated risk profiles", highCount))
+	}
+	if portfolioRisk > 50 {
+		warnings = append(warnings, "⚠️ Portfolio risk is above moderate threshold")
+	}
+
+	return &investment.RiskAnalysis{
+		PortfolioRisk: portfolioRisk,
+		RiskDistribution: investment.RiskDistribution{
+			Low:    float64(lowCount) / total * 100,
+			Medium: float64(medCount) / total * 100,
+			High:   float64(highCount) / total * 100,
+		},
+		Warnings: warnings,
+	}
+}
+
+// calculateDiversificationAnalysis computes diversification metrics
+func calculateDiversificationAnalysis(properties []investment.PropertyInPortfolio, concentration *investment.ConcentrationMetrics) *investment.DiversificationAnalysis {
+	if len(properties) == 0 {
+		return &investment.DiversificationAnalysis{
+			DiversificationScore: 0,
+			Correlations:         []investment.MarketCorrelation{},
+			Opportunities:        []string{},
+		}
+	}
+
+	// Count unique locations
+	locationSet := make(map[string]bool)
+	for _, prop := range properties {
+		location := buildLocationKey(prop.Property.City, prop.Property.State)
+		if location != "" {
+			locationSet[location] = true
+		}
+	}
+	numLocations := len(locationSet)
+
+	// Calculate diversification score
+	// More locations = better diversification, up to 5 locations
+	diversificationScore := math.Min(100, float64(numLocations)*20)
+
+	// Adjust based on concentration if available
+	if concentration != nil && concentration.ConcentrationIndex > 0 {
+		diversificationScore = math.Max(0, diversificationScore-concentration.ConcentrationIndex)
+	}
+
+	// Generate opportunities
+	var opportunities []string
+	if numLocations == 1 {
+		opportunities = append(opportunities, "Consider expanding to additional markets for better diversification")
+	}
+	if numLocations < 3 {
+		opportunities = append(opportunities, "Adding properties in different metros could reduce concentration risk")
+	}
+
+	return &investment.DiversificationAnalysis{
+		DiversificationScore: diversificationScore,
+		Correlations:         []investment.MarketCorrelation{}, // Could be populated with actual correlation data
+		Opportunities:        opportunities,
+	}
+}
+
+// generateRecommendations creates user-friendly recommendation strings
+func generateRecommendations(
+	properties []investment.PropertyInPortfolio,
+	metrics *investment.PortfolioMetrics,
+	riskAnalysis *investment.RiskAnalysis,
+	diversification *investment.DiversificationAnalysis,
+) []string {
+	var recommendations []string
+
+	if metrics == nil {
+		return recommendations
+	}
+
+	// Diversification recommendation
+	if diversification != nil && diversification.DiversificationScore >= 60 {
+		recommendations = append(recommendations,
+			fmt.Sprintf("✅ Good diversification (%.1f/100) across %d locations",
+				diversification.DiversificationScore, len(properties)))
+	} else if diversification != nil {
+		recommendations = append(recommendations,
+			fmt.Sprintf("⚠️ Limited diversification (%.1f/100) - consider additional markets",
+				diversification.DiversificationScore))
+	}
+
+	// Cash flow recommendation
+	if metrics.MonthlyCashFlow > 0 {
+		recommendations = append(recommendations,
+			fmt.Sprintf("✅ Positive monthly cash flow: $%d", metrics.MonthlyCashFlow))
+	} else {
+		recommendations = append(recommendations, "⚠️ Negative cash flow - review financing terms")
+	}
+
+	// Cap rate recommendation
+	if metrics.AvgCapRate >= 6 {
+		recommendations = append(recommendations,
+			fmt.Sprintf("✅ Strong average cap rate: %.1f%%", metrics.AvgCapRate))
+	}
+
+	// Risk recommendation
+	if riskAnalysis != nil {
+		if riskAnalysis.PortfolioRisk < 40 {
+			recommendations = append(recommendations, "✅ Portfolio risk is within acceptable range")
+		} else if riskAnalysis.PortfolioRisk > 60 {
+			recommendations = append(recommendations, "⚠️ Elevated portfolio risk - review property selection")
+		}
+	}
+
+	return recommendations
 }
 
 // allocatePropertiesForYear selects properties for a specific year's budget
@@ -307,7 +827,7 @@ func (s *Service) buildGrowthChart(yearlyPlans []investment.YearlyAcquisitionPla
 
 	// Collect all properties with their acquisition year
 	type propertyWithYear struct {
-		property      investment.PropertyInPortfolio
+		property        investment.PropertyInPortfolio
 		acquisitionYear int
 	}
 	allProperties := make([]propertyWithYear, 0)
@@ -514,7 +1034,7 @@ func (s *Service) fallbackScoring(properties []investment.Property, profile inve
 			buyabilityScore += 10 // Hot property
 		}
 
-		rentabilityScore := 50.0 + (grossYield - 5) * 10 // Base 50, +10 for each % above 5%
+		rentabilityScore := 50.0 + (grossYield-5)*10 // Base 50, +10 for each % above 5%
 		if rentabilityScore > 100 {
 			rentabilityScore = 100
 		}
@@ -535,6 +1055,8 @@ func (s *Service) fallbackScoring(properties []investment.Property, profile inve
 			}
 		case investment.StrategyBalanced:
 			roiScore = (rentabilityScore + 50) / 2
+		case investment.StrategyRiskAdjusted:
+			roiScore = (rentabilityScore + 60) / 2
 		}
 
 		portfolioFit := 70.0 // Default good fit
@@ -574,6 +1096,62 @@ func filterByRecommendation(properties []investment.ScoredProperty) []investment
 			filtered = append(filtered, p)
 		}
 	}
+	return filtered
+}
+
+// filterByDataQuality removes properties with unrealistic data that indicates
+// bad data quality or distressed properties that shouldn't be recommended.
+// Thresholds:
+// - Price < $40,000: Likely distressed/uninhabitable
+// - Price-to-rent ratio < 6: Unrealistic (normal is 12-20x annual rent)
+// - Implied cap rate > 20%: Unrealistic (normal is 4-10%)
+// - No rent estimate: Cannot evaluate
+func filterByDataQuality(properties []investment.Property) []investment.Property {
+	const (
+		minPrice          = 40000  // $40k minimum
+		minPriceToRent    = 6.0    // Minimum price / annual rent ratio
+		maxImpliedCapRate = 20.0   // Maximum cap rate percentage
+	)
+
+	filtered := make([]investment.Property, 0, len(properties))
+	for _, p := range properties {
+		// Skip if no price
+		if p.Price <= 0 {
+			continue
+		}
+
+		// Skip very cheap properties (likely distressed)
+		if p.Price < minPrice {
+			continue
+		}
+
+		// Skip if no rent estimate
+		if p.EstimatedRent <= 0 {
+			continue
+		}
+
+		// Calculate price-to-rent ratio (price / annual rent)
+		annualRent := p.EstimatedRent * 12
+		priceToRent := float64(p.Price) / float64(annualRent)
+
+		// Skip if price-to-rent ratio is too low (unrealistic)
+		if priceToRent < minPriceToRent {
+			continue
+		}
+
+		// Calculate implied cap rate (assuming 40% expenses)
+		// NOI = annual rent * 0.95 (vacancy) * 0.65 (expenses) = annual rent * 0.6175
+		noi := float64(annualRent) * 0.6175
+		impliedCapRate := (noi / float64(p.Price)) * 100
+
+		// Skip if cap rate is unrealistically high
+		if impliedCapRate > maxImpliedCapRate {
+			continue
+		}
+
+		filtered = append(filtered, p)
+	}
+
 	return filtered
 }
 

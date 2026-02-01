@@ -167,29 +167,59 @@ func (h *Handler) searchLocations(ctx context.Context, query string, limit int) 
 	// Normalize query
 	queryLower := strings.ToLower(strings.TrimSpace(query))
 
+	// Handle "City, State" format - extract city and state for better matching
+	var cityPart string
+	var stateFilter string
+	if parts := strings.Split(queryLower, ","); len(parts) >= 2 {
+		cityPart = strings.TrimSpace(parts[0])
+		stateFilter = strings.ToUpper(strings.TrimSpace(parts[1]))
+	} else {
+		cityPart = queryLower
+	}
+
 	// Check if market database is available
 	if h.db.Market == nil {
 		h.logger.Warn("market database not configured, falling back to state-only suggestions")
 		return h.searchStatesOnly(queryLower)
 	}
 
-	// Query city_states table in market database
-	// Uses city_lower column for case-insensitive prefix search
-	// Sorted by population descending for relevance
-	cityQuery := `
-		SELECT
-			id,
-			city,
-			state_id,
-			state_name,
-			population
-		FROM city_states
-		WHERE city_lower LIKE $1 || '%'
-		ORDER BY population DESC, city
-		LIMIT $2
-	`
+	// Build query based on whether state filter is provided
+	var sqlQuery string
+	var args []interface{}
 
-	rows, err := h.db.Market.Query(ctx, cityQuery, queryLower, limit)
+	if stateFilter != "" {
+		// User typed "City, State" format - filter by both city prefix AND state
+		sqlQuery = `
+			SELECT
+				id,
+				city,
+				state_id,
+				state_name,
+				population
+			FROM city_states
+			WHERE city_lower LIKE $1 || '%' AND state_id = $2
+			ORDER BY population DESC, city
+			LIMIT $3
+		`
+		args = []interface{}{cityPart, stateFilter, limit}
+	} else {
+		// User typed city only - prefix search on city
+		sqlQuery = `
+			SELECT
+				id,
+				city,
+				state_id,
+				state_name,
+				population
+			FROM city_states
+			WHERE city_lower LIKE $1 || '%'
+			ORDER BY population DESC, city
+			LIMIT $2
+		`
+		args = []interface{}{cityPart, limit}
+	}
+
+	rows, err := h.db.Market.Query(ctx, sqlQuery, args...)
 	if err != nil {
 		h.logger.Error("city_states query failed", "error", err, "query", query)
 		// Fall back to state-only suggestions on error

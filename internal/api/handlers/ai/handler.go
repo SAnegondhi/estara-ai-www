@@ -3,20 +3,30 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-playground/validator/v10"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/db/postgres"
+	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 	"github.com/estara-ai/www/internal/services/ai/agents"
+	"github.com/estara-ai/www/internal/services/ai/compliance"
 	"github.com/estara-ai/www/internal/services/ai/prompts"
+	"github.com/estara-ai/www/internal/services/investment/expenses"
 	"github.com/estara-ai/www/internal/services/jobs/queue"
 	"github.com/estara-ai/www/pkg/httputil"
 	"github.com/estara-ai/www/pkg/sse"
@@ -58,11 +68,12 @@ func NewHandler(
 
 // EvaluationChatRequest represents a request to queue an evaluation chat
 type EvaluationChatRequest struct {
-	Properties      []PropertyInput  `json:"properties" validate:"required,min=1,max=10"`
-	PortfolioID     *string          `json:"portfolioId,omitempty"`
-	InvestorProfile *InvestorProfile `json:"investorProfile,omitempty"`
-	Message         string           `json:"message" validate:"required,min=1,max=2000"`
-	SessionID       *string          `json:"sessionId,omitempty"`
+	Properties        []PropertyInput  `json:"properties" validate:"required,min=1,max=10"`
+	PortfolioID       *string          `json:"portfolioId,omitempty"`
+	PortfolioSnapshot json.RawMessage  `json:"portfolioSnapshot,omitempty"`
+	InvestorProfile   *InvestorProfile `json:"investorProfile,omitempty"`
+	Message           string           `json:"message" validate:"required,min=1,max=2000"`
+	SessionID         *string          `json:"sessionId,omitempty"`
 }
 
 // PropertyInput represents a property in a chat request
@@ -71,6 +82,7 @@ type PropertyInput struct {
 	Address       string  `json:"address" validate:"required"`
 	City          string  `json:"city" validate:"required"`
 	State         string  `json:"state" validate:"required"`
+	ZipCode       string  `json:"zipCode,omitempty"`
 	Price         int     `json:"price" validate:"required,gt=0"`
 	Beds          int     `json:"beds,omitempty"`
 	Baths         float64 `json:"baths,omitempty"`
@@ -79,6 +91,8 @@ type PropertyInput struct {
 	CapRate       string  `json:"capRate,omitempty"`
 	YearBuilt     int     `json:"yearBuilt,omitempty"`
 	PropertyType  string  `json:"propertyType,omitempty"`
+	ListingUrl    string  `json:"listingUrl,omitempty"`
+	ImageUrl      string  `json:"imageUrl,omitempty"`
 }
 
 // InvestorProfile represents the user's investment profile
@@ -93,6 +107,7 @@ type EvaluationChatResponse struct {
 	Success   bool   `json:"success"`
 	JobID     string `json:"jobId"`
 	SessionID string `json:"sessionId"`
+	MessageID string `json:"messageId"`
 	StreamURL string `json:"streamUrl"`
 }
 
@@ -126,17 +141,84 @@ type TokenUsage struct {
 	OutputTokens int `json:"outputTokens"`
 }
 
-// InvestmentPlanningRequest represents a request to queue an investment plan
+// FinancialAssumptions for investment planning (nested struct matching www_v1)
+type FinancialAssumptions struct {
+	MortgageRate       *float64 `json:"mortgageRate,omitempty"`
+	DownPaymentPercent *float64 `json:"downPaymentPercent,omitempty"`
+	OperatingExpenses  *float64 `json:"operatingExpenses,omitempty"`
+}
+
+// InvestmentConstraints for planning (nested struct matching www_v1)
+type InvestmentConstraints struct {
+	RiskTolerance            string   `json:"riskTolerance,omitempty"`
+	MaxPropertiesPerLocation *int     `json:"maxPropertiesPerLocation,omitempty"`
+	MinCashFlow              *int     `json:"minCashFlow,omitempty"`
+	MinCapRate               *float64 `json:"minCapRate,omitempty"`
+	MinDiversification       *float64 `json:"minDiversification,omitempty"`
+	MaxConcentration         *float64 `json:"maxConcentration,omitempty"`
+	TargetCashFlow           *float64 `json:"targetCashFlow,omitempty"`
+}
+
+// MarketFilters for property search filtering
+type MarketFilters struct {
+	MinPriceGrowth5Y     *float64 `json:"minPriceGrowth5Y,omitempty"`
+	MaxPriceVolatility   *float64 `json:"maxPriceVolatility,omitempty"`
+	MaxUnemploymentRate  *float64 `json:"maxUnemploymentRate,omitempty"`
+	MinEmploymentGrowth  *float64 `json:"minEmploymentGrowth,omitempty"`
+	MinPopulationGrowth  *float64 `json:"minPopulationGrowth,omitempty"`
+	MaxVacancyRate       *float64 `json:"maxVacancyRate,omitempty"`
+	MaxPriceToIncome     *float64 `json:"maxPriceToIncome,omitempty"`
+	MinCapRate           *float64 `json:"minCapRate,omitempty"`
+}
+
+// InvestmentPlanningRequest represents a request to queue an investment plan (www_v1 compatible)
 type InvestmentPlanningRequest struct {
-	Locations            []string         `json:"locations" validate:"required,min=1,max=5"`
-	Budget               int              `json:"budget" validate:"required,gt=0"`
-	DownPaymentPercent   float64          `json:"downPaymentPercent" validate:"required,gt=0,lte=100"`
-	Strategy             string           `json:"strategy" validate:"required,oneof=cash-flow appreciation balanced"`
-	RiskTolerance        string           `json:"riskTolerance" validate:"required,oneof=conservative moderate aggressive"`
-	MaxProperties        int              `json:"maxProperties" validate:"omitempty,gte=1,lte=20"`
-	IncludePortfolio     bool             `json:"includePortfolio"`
-	YearlyBudgets        []YearlyBudget   `json:"yearlyBudgets,omitempty"`
-	InvestorProfile      *InvestorProfile `json:"investorProfile,omitempty"`
+	CacheKey             string                  `json:"cacheKey" validate:"required,startswith=investment_plan_"`
+	Locations            []string                `json:"locations" validate:"omitempty,max=5"` // Optional if SelectedProperties provided
+	AvailableCapital     int                     `json:"availableCapital" validate:"required,gt=0"`
+	FinancialAssumptions FinancialAssumptions    `json:"financialAssumptions" validate:"required"`
+	Strategy             string                  `json:"strategy" validate:"required,oneof=cash-flow appreciation balanced risk-adjusted"`
+	Constraints          *InvestmentConstraints  `json:"constraints,omitempty"`
+	SearchFilters        map[string]interface{}  `json:"searchFilters,omitempty"`
+	MarketFilters        *MarketFilters          `json:"marketFilters,omitempty"`
+	TargetPropertyValue  *int                    `json:"targetPropertyValue,omitempty"`
+	RecommendedZipCodes  []string                `json:"recommendedZipCodes,omitempty"`
+	IncludeSuburbs       bool                    `json:"includeSuburbs,omitempty"`
+	ExpansionRadius      string                  `json:"expansionRadius,omitempty"`
+	IncludeAllTowns      bool                    `json:"includeAllTowns,omitempty"`
+	ForceRefresh         bool                    `json:"forceRefresh,omitempty"`
+	YearlyBudgets        []YearlyBudget          `json:"yearlyBudgets,omitempty"`
+	InvestorProfile      *InvestorProfile        `json:"investorProfile,omitempty"`
+	IncludePortfolio     bool                    `json:"includePortfolio,omitempty"`
+	MaxProperties        int                     `json:"maxProperties,omitempty" validate:"omitempty,gte=1,lte=20"`
+
+	// ADR-059: Selection mode - if provided, skip property search and use these
+	SelectedProperties []SelectedProperty `json:"selectedProperties,omitempty" validate:"omitempty,max=20"`
+
+	// ADR-059: Cash flow reinvestment modeling
+	ReinvestSurplusCashFlows bool     `json:"reinvestSurplusCashFlows,omitempty"`
+	ReinvestmentRate         *float64 `json:"reinvestmentRate,omitempty" validate:"omitempty,gte=0,lte=100"`
+	ProjectionYears          *int     `json:"projectionYears,omitempty" validate:"omitempty,gte=1,lte=10"`
+}
+
+// SelectedProperty represents a property pre-selected by the user (ADR-059)
+type SelectedProperty struct {
+	ID            string  `json:"id" validate:"required"`
+	Address       string  `json:"address" validate:"required"`
+	City          string  `json:"city" validate:"required"`
+	State         string  `json:"state" validate:"required"`
+	ZipCode       string  `json:"zipCode,omitempty"`
+	Price         int     `json:"price" validate:"required,gt=0"`
+	Beds          int     `json:"beds,omitempty"`
+	Baths         float64 `json:"baths,omitempty"`
+	Sqft          int     `json:"sqft,omitempty"`
+	EstimatedRent int     `json:"estimatedRent,omitempty"`
+	CapRate       float64 `json:"capRate,omitempty"`
+	YearBuilt     int     `json:"yearBuilt,omitempty"`
+	PropertyType  string  `json:"propertyType,omitempty"`
+	DaysOnMarket  int     `json:"daysOnMarket,omitempty"`
+	ImageURL      string  `json:"imageUrl,omitempty"`
+	ListingURL    string  `json:"listingUrl,omitempty"`
 }
 
 // YearlyBudget represents a budget for a specific year
@@ -190,7 +272,7 @@ func (h *Handler) QueueEvaluationChat(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Create new session
 		var err error
-		sessionID, err = h.createChatSession(ctx, user.UserID, req.Properties, req.InvestorProfile)
+		sessionID, err = h.createChatSession(ctx, user.UserID, req.Properties, req.InvestorProfile, req.PortfolioSnapshot)
 		if err != nil {
 			h.logger.Error("failed to create chat session", "error", err)
 			httputil.InternalError(w, fmt.Errorf("failed to create session"))
@@ -198,16 +280,19 @@ func (h *Handler) QueueEvaluationChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Save user message to database
-	if err := h.saveChatMessage(ctx, sessionID, "user", req.Message, nil); err != nil {
+	// Save user message to database (no token usage for user messages)
+	userMessageID, err := h.saveChatMessage(ctx, sessionID, "user", req.Message, nil, nil)
+	if err != nil {
 		h.logger.Error("failed to save user message", "error", err)
-		// Continue - don't fail the request
+		// Continue - don't fail the request, use a fallback ID
+		userMessageID = uuid.New().String()
 	}
 
-	// Convert properties to prompt context
+	// Convert properties to prompt context and calculate operating expenses
 	properties := make([]prompts.PropertyContext, 0, len(req.Properties))
+	expenseCalc := h.getExpenseCalculator()
 	for _, p := range req.Properties {
-		properties = append(properties, prompts.PropertyContext{
+		prop := prompts.PropertyContext{
 			ID:            p.ID,
 			Address:       p.Address,
 			City:          p.City,
@@ -220,14 +305,50 @@ func (h *Handler) QueueEvaluationChat(w http.ResponseWriter, r *http.Request) {
 			CapRate:       p.CapRate,
 			YearBuilt:     p.YearBuilt,
 			PropertyType:  p.PropertyType,
-		})
+		}
+
+		// Calculate operating expenses if we have price and state
+		if expenseCalc != nil && p.Price > 0 && p.State != "" {
+			exp, err := expenseCalc.Calculate(expenses.PropertyInput{
+				Price:         p.Price,
+				State:         p.State,
+				YearBuilt:     p.YearBuilt,
+				EstimatedRent: p.EstimatedRent,
+				PropertyType:  p.PropertyType,
+			})
+			if err == nil {
+				prop.OperatingExpenses = &prompts.PropertyExpenses{
+					PropertyTax:      exp.PropertyTax,
+					Insurance:        exp.Insurance,
+					Maintenance:      exp.Maintenance,
+					VacancyAllowance: exp.VacancyAllowance,
+					PropertyMgmt:     exp.PropertyMgmt,
+					TotalAnnual:      exp.TotalAnnual,
+					TotalMonthly:     exp.TotalMonthly,
+					ExpenseRatio:     exp.ExpenseRatio,
+					NOI:              exp.NOI,
+					CapRate:          exp.CapRate,
+				}
+			} else {
+				h.logger.Warn("failed to calculate operating expenses",
+					"property_id", p.ID,
+					"error", err,
+				)
+			}
+		}
+
+		properties = append(properties, prop)
 	}
+
+	// Build market expense context for unique states
+	marketContext := h.buildMarketExpenseContext(req.Properties)
 
 	// Build payload
 	payload := map[string]interface{}{
-		"session_id": sessionID,
-		"message":    req.Message,
-		"properties": properties,
+		"session_id":     sessionID,
+		"message":        req.Message,
+		"properties":     properties,
+		"market_context": marketContext,
 	}
 
 	if req.InvestorProfile != nil {
@@ -249,6 +370,14 @@ func (h *Handler) QueueEvaluationChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Generate SSE token for stream authentication (EventSource doesn't support headers)
+	sseToken, err := h.generateSSEToken(user.UserID, jobID, sessionID)
+	if err != nil {
+		h.logger.Error("failed to generate SSE token", "error", err)
+		httputil.InternalError(w, fmt.Errorf("failed to generate stream token"))
+		return
+	}
+
 	h.logger.Info("evaluation chat queued",
 		"job_id", jobID,
 		"session_id", sessionID,
@@ -256,11 +385,19 @@ func (h *Handler) QueueEvaluationChat(w http.ResponseWriter, r *http.Request) {
 		"properties", len(req.Properties),
 	)
 
+	// Build absolute URL for SSE stream (EventSource resolves relative URLs against page origin, not API)
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	baseURL := fmt.Sprintf("%s://%s", scheme, r.Host)
+
 	httputil.JSON(w, http.StatusOK, EvaluationChatResponse{
 		Success:   true,
 		JobID:     jobID,
 		SessionID: sessionID,
-		StreamURL: fmt.Sprintf("/api/ai/evaluate/chat/stream?jobId=%s", jobID),
+		MessageID: userMessageID,
+		StreamURL: fmt.Sprintf("%s/api/ai/evaluate/chat/stream?jobId=%s&token=%s", baseURL, jobID, sseToken),
 	})
 }
 
@@ -314,29 +451,12 @@ func (h *Handler) StreamEvaluationChat(w http.ResponseWriter, r *http.Request) {
 		Message:   message,
 	}
 
-	// Extract properties
-	if propsRaw, ok := job.Payload["properties"].([]interface{}); ok {
-		for _, pRaw := range propsRaw {
-			if pMap, ok := pRaw.(map[string]interface{}); ok {
-				chatReq.Properties = append(chatReq.Properties, prompts.PropertyContext{
-					ID:            getString(pMap, "id"),
-					Address:       getString(pMap, "address"),
-					City:          getString(pMap, "city"),
-					State:         getString(pMap, "state"),
-					Price:         getInt(pMap, "price"),
-					Beds:          getInt(pMap, "beds"),
-					Baths:         getFloat(pMap, "baths"),
-					Sqft:          getInt(pMap, "sqft"),
-					EstimatedRent: getInt(pMap, "estimated_rent"),
-					CapRate:       getString(pMap, "cap_rate"),
-					YearBuilt:     getInt(pMap, "year_built"),
-					PropertyType:  getString(pMap, "property_type"),
-				})
-			}
-		}
+	// Extract properties - job queue is in-memory, so properties are []prompts.PropertyContext
+	if props, ok := job.Payload["properties"].([]prompts.PropertyContext); ok {
+		chatReq.Properties = props
 	}
 
-	// Extract investor profile
+	// Extract investor profile (uses snake_case keys as set in QueueEvaluationChat)
 	if profileRaw, ok := job.Payload["investor_profile"].(map[string]interface{}); ok {
 		chatReq.InvestorProfile = &prompts.InvestorProfile{
 			RiskTolerance:     getString(profileRaw, "risk_tolerance"),
@@ -344,6 +464,18 @@ func (h *Handler) StreamEvaluationChat(w http.ResponseWriter, r *http.Request) {
 			AvailableCapital:  getInt(profileRaw, "available_capital"),
 		}
 	}
+
+	// Extract market context (expense characteristics for the market)
+	if marketContext, ok := job.Payload["market_context"].(string); ok {
+		chatReq.MarketContext = marketContext
+	}
+
+	h.logger.Info("chat request built",
+		"session_id", sessionID,
+		"message", message,
+		"properties_count", len(chatReq.Properties),
+		"has_investor_profile", chatReq.InvestorProfile != nil,
+	)
 
 	// Load conversation history
 	history, err := h.getSessionHistory(ctx, sessionID)
@@ -368,8 +500,19 @@ func (h *Handler) StreamEvaluationChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	// Send initial progress event immediately (www_v1 parity - ADR-057)
+	// This eliminates "Connecting..." delay by giving client immediate feedback
+	sseWriter.WriteEventJSON("progress", map[string]interface{}{
+		"jobId":     jobID,
+		"sessionId": sessionID,
+		"status":    "INITIALIZING",
+		"progress":  0,
+		"message":   "Starting analysis...",
+	})
+
 	// Forward events to SSE
 	var fullContent string
+	var parsedBlocks []interface{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -384,23 +527,70 @@ func (h *Handler) StreamEvaluationChat(w http.ResponseWriter, r *http.Request) {
 
 			switch event.Type {
 			case "text":
+				// Client expects "chunk" field for text events
 				sseWriter.WriteEventJSON("text", map[string]interface{}{
-					"type":    "text",
-					"content": event.Content,
+					"type":  "text",
+					"chunk": event.Content,
 				})
 
 			case "insight", "stress_test", "metrics", "comparison", "disclaimer":
-				sseWriter.WriteEventJSON(event.Type, map[string]interface{}{
+				// Extract content and raw from map (www_v1 parity - ADR-057)
+				var blockContent interface{}
+				var blockRaw string
+				if contentMap, ok := event.Content.(map[string]interface{}); ok {
+					blockContent = contentMap["content"]
+					if raw, ok := contentMap["raw"].(string); ok {
+						blockRaw = raw
+					}
+				} else {
+					blockContent = event.Content
+				}
+
+				block := map[string]interface{}{
 					"type":    event.Type,
-					"content": event.Content,
-				})
+					"content": blockContent,
+					"raw":     blockRaw,
+				}
+				parsedBlocks = append(parsedBlocks, block)
+
+				sseWriter.WriteEventJSON(event.Type, block)
 
 			case "complete":
-				fullContent, _ = event.Content.(string)
+				// Extract content and parsedBlocks from agent response (www_v1 parity)
+				var agentParsedBlocks []interface{}
+				if contentMap, ok := event.Content.(map[string]interface{}); ok {
+					if c, ok := contentMap["content"].(string); ok {
+						fullContent = c
+					}
+					if blocks, ok := contentMap["parsedBlocks"].([]agents.ChatBlock); ok {
+						// Convert ChatBlock to map for JSON serialization
+						for _, b := range blocks {
+							agentParsedBlocks = append(agentParsedBlocks, map[string]interface{}{
+								"type":    b.Type,
+								"content": b.Content,
+								"raw":     b.Raw,
+							})
+						}
+					}
+				} else if s, ok := event.Content.(string); ok {
+					fullContent = s
+				}
 
-				// Save assistant message
+				// Use agent's parsed blocks if we have them, otherwise use collected blocks
+				finalBlocks := parsedBlocks
+				if len(agentParsedBlocks) > 0 {
+					finalBlocks = agentParsedBlocks
+				}
+
+				// Save assistant message with parsedBlocks (ADR-057 fix)
+				var messageID string
 				if sessionID != "" && fullContent != "" {
-					h.saveChatMessage(ctx, sessionID, "assistant", fullContent, nil)
+					// Marshal parsedBlocks to JSON for storage
+					var blocksJSON []byte
+					if len(finalBlocks) > 0 {
+						blocksJSON, _ = json.Marshal(finalBlocks)
+					}
+					messageID, _ = h.saveChatMessage(ctx, sessionID, "assistant", fullContent, blocksJSON, nil)
 				}
 
 				// Complete the job
@@ -411,10 +601,14 @@ func (h *Handler) StreamEvaluationChat(w http.ResponseWriter, r *http.Request) {
 					},
 				})
 
+				// Include parsedBlocks, messageId, and status in complete event (www_v1 parity - ADR-057)
 				sseWriter.WriteEventJSON("complete", map[string]interface{}{
-					"type":      "complete",
-					"sessionId": sessionID,
-					"content":   fullContent,
+					"type":         "complete",
+					"sessionId":    sessionID,
+					"content":      fullContent,
+					"parsedBlocks": finalBlocks,
+					"messageId":    messageID,
+					"status":       "COMPLETED",
 				})
 				return
 
@@ -425,10 +619,13 @@ func (h *Handler) StreamEvaluationChat(w http.ResponseWriter, r *http.Request) {
 			}
 
 		case progress := <-progressChan:
+			// Include jobId, sessionId, and status in progress events (www_v1 parity - ADR-057)
 			sseWriter.WriteEventJSON("progress", map[string]interface{}{
-				"progress": progress.Progress,
-				"stage":    progress.Stage,
-				"message":  progress.Message,
+				"jobId":     jobID,
+				"sessionId": sessionID,
+				"status":    progress.Stage,
+				"progress":  progress.Progress,
+				"message":   progress.Message,
 			})
 		}
 	}
@@ -443,57 +640,112 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse pagination params
+	limit := 20
+	offset := 0
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
+			limit = parsed
+		}
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	// Get total count
+	var total int
+	err := h.db.Main.QueryRow(ctx,
+		`SELECT COUNT(*) FROM evaluation_chat_sessions WHERE user_id = $1`,
+		user.UserID,
+	).Scan(&total)
+	if err != nil {
+		h.logger.Error("failed to count sessions", "error", err)
+		total = 0
+	}
+
 	// Table names use plural form (Prisma @@map): evaluation_chat_sessions, evaluation_chat_messages
 	query := `
 		SELECT
-			id, user_id, cached_property_ids, investor_profile, portfolio_snapshot,
-			created_at, updated_at,
-			(SELECT MAX(created_at) FROM evaluation_chat_messages WHERE session_id = s.id) as last_message_at
+			s.id, s.user_id, s.property_ids, s.cached_property_ids, s.investor_profile, s.portfolio_snapshot,
+			s.created_at, s.updated_at,
+			(SELECT COUNT(*) FROM evaluation_chat_messages WHERE session_id = s.id) as message_count,
+			(SELECT content FROM evaluation_chat_messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) as last_message_content,
+			(SELECT role FROM evaluation_chat_messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) as last_message_role,
+			(SELECT created_at FROM evaluation_chat_messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) as last_message_at
 		FROM evaluation_chat_sessions s
-		WHERE user_id = $1
-		ORDER BY updated_at DESC
-		LIMIT 50
+		WHERE s.user_id = $1
+		ORDER BY s.updated_at DESC
+		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := h.db.Main.Query(ctx, query, user.UserID)
+	rows, err := h.db.Main.Query(ctx, query, user.UserID, limit, offset)
 	if err != nil {
 		h.logger.Error("failed to list sessions", "error", err)
 		// Return empty array on error (graceful degradation)
 		httputil.JSON(w, http.StatusOK, map[string]interface{}{
-			"success":  true,
-			"sessions": []ChatSession{},
+			"sessions": []map[string]interface{}{},
+			"pagination": map[string]interface{}{
+				"total":   0,
+				"offset":  offset,
+				"limit":   limit,
+				"hasMore": false,
+			},
 		})
 		return
 	}
 	defer rows.Close()
 
-	sessions := make([]ChatSession, 0)
+	sessions := make([]map[string]interface{}, 0)
 	for rows.Next() {
-		var s ChatSession
-		var propertyIDs []string
+		var id, userID string
+		var propertyIDs, cachedPropertyIDs []string
 		var investorProfile, portfolioSnapshot *string
-		var lastMessageAt *time.Time
+		var createdAt, updatedAt time.Time
+		var messageCount int
+		var lastMsgContent, lastMsgRole *string
+		var lastMsgAt *time.Time
 
 		err := rows.Scan(
-			&s.ID, &s.UserID, &propertyIDs, &investorProfile, &portfolioSnapshot,
-			&s.CreatedAt, &s.UpdatedAt, &lastMessageAt,
+			&id, &userID, &propertyIDs, &cachedPropertyIDs, &investorProfile, &portfolioSnapshot,
+			&createdAt, &updatedAt, &messageCount, &lastMsgContent, &lastMsgRole, &lastMsgAt,
 		)
 		if err != nil {
 			h.logger.Error("failed to scan session", "error", err)
 			continue
 		}
 
-		s.PropertyIDs = propertyIDs
-		s.PropertyCount = len(propertyIDs)
-		s.InvestorProfile = investorProfile
-		s.PortfolioSnapshot = portfolioSnapshot
-		s.LastMessageAt = lastMessageAt
-		sessions = append(sessions, s)
+		session := map[string]interface{}{
+			"id":                id,
+			"propertyCount":     len(propertyIDs),
+			"propertyIds":       propertyIDs,
+			"cachedPropertyIds": cachedPropertyIDs,
+			"createdAt":         createdAt.Format(time.RFC3339),
+			"updatedAt":         updatedAt.Format(time.RFC3339),
+			"messageCount":      messageCount,
+		}
+
+		// Add last message if exists
+		if lastMsgContent != nil && lastMsgRole != nil && lastMsgAt != nil {
+			session["lastMessage"] = map[string]interface{}{
+				"role":      *lastMsgRole,
+				"content":   *lastMsgContent,
+				"createdAt": lastMsgAt.Format(time.RFC3339),
+			}
+		}
+
+		sessions = append(sessions, session)
 	}
 
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{
-		"success":  true,
 		"sessions": sessions,
+		"pagination": map[string]interface{}{
+			"total":   total,
+			"offset":  offset,
+			"limit":   limit,
+			"hasMore": offset+len(sessions) < total,
+		},
 	})
 }
 
@@ -688,19 +940,146 @@ func (h *Handler) QueueInvestmentPlan(w http.ResponseWriter, r *http.Request) {
 		req.MaxProperties = 5
 	}
 
-	// Build payload
-	payload := map[string]interface{}{
-		"locations":              req.Locations,
-		"budget":                 req.Budget,
-		"down_payment_percent":   req.DownPaymentPercent,
-		"strategy":               req.Strategy,
-		"risk_tolerance":         req.RiskTolerance,
-		"max_properties":         req.MaxProperties,
-		"include_portfolio":      req.IncludePortfolio,
+	// Extract downPaymentPercent from financialAssumptions (default 20%)
+	downPaymentPercent := 20.0
+	if req.FinancialAssumptions.DownPaymentPercent != nil {
+		downPaymentPercent = *req.FinancialAssumptions.DownPaymentPercent
 	}
 
+	// Extract riskTolerance from constraints (default "moderate")
+	riskTolerance := "moderate"
+	if req.Constraints != nil && req.Constraints.RiskTolerance != "" {
+		riskTolerance = req.Constraints.RiskTolerance
+	}
+
+	// Extract mortgageRate (default 7.0%)
+	mortgageRate := 7.0
+	if req.FinancialAssumptions.MortgageRate != nil {
+		mortgageRate = *req.FinancialAssumptions.MortgageRate
+	}
+
+	// Extract operatingExpenses (default 35%)
+	operatingExpenses := 35.0
+	if req.FinancialAssumptions.OperatingExpenses != nil {
+		operatingExpenses = *req.FinancialAssumptions.OperatingExpenses
+	}
+
+	// Build payload (compatible with worker expectations)
+	payload := map[string]interface{}{
+		"cache_key":            req.CacheKey,
+		"locations":            req.Locations,
+		"budget":               req.AvailableCapital, // Worker expects "budget"
+		"available_capital":    req.AvailableCapital,
+		"down_payment_percent": downPaymentPercent,
+		"mortgage_rate":        mortgageRate,
+		"operating_expenses":   operatingExpenses,
+		"strategy":             req.Strategy,
+		"risk_tolerance":       riskTolerance,
+		"max_properties":       req.MaxProperties,
+		"include_portfolio":    req.IncludePortfolio,
+		"include_suburbs":      req.IncludeSuburbs,
+		"force_refresh":        req.ForceRefresh,
+	}
+
+	// Add optional fields
 	if len(req.YearlyBudgets) > 0 {
 		payload["yearly_budgets"] = req.YearlyBudgets
+	}
+	if req.TargetPropertyValue != nil {
+		payload["target_property_value"] = *req.TargetPropertyValue
+	}
+	if len(req.RecommendedZipCodes) > 0 {
+		payload["recommended_zip_codes"] = req.RecommendedZipCodes
+	}
+	if req.ExpansionRadius != "" {
+		payload["expansion_radius"] = req.ExpansionRadius
+	}
+	if req.IncludeAllTowns {
+		payload["include_all_towns"] = req.IncludeAllTowns
+	}
+	if req.SearchFilters != nil {
+		payload["search_filters"] = req.SearchFilters
+	}
+	if req.MarketFilters != nil {
+		payload["market_filters"] = req.MarketFilters
+	}
+	if req.Constraints != nil {
+		payload["constraints"] = req.Constraints
+	}
+	if req.InvestorProfile != nil {
+		payload["investor_profile"] = req.InvestorProfile
+	}
+
+	// ADR-059: Selection mode - add pre-selected properties
+	// Convert to []map[string]interface{} for worker compatibility
+	if len(req.SelectedProperties) > 0 {
+		propsAsMap := make([]map[string]interface{}, len(req.SelectedProperties))
+		for i, sp := range req.SelectedProperties {
+			propsAsMap[i] = map[string]interface{}{
+				"id":            sp.ID,
+				"address":       sp.Address,
+				"city":          sp.City,
+				"state":         sp.State,
+				"zipCode":       sp.ZipCode,
+				"price":         sp.Price,
+				"beds":          sp.Beds,
+				"baths":         sp.Baths,
+				"sqft":          sp.Sqft,
+				"estimatedRent": sp.EstimatedRent,
+				"capRate":       sp.CapRate,
+				"yearBuilt":     sp.YearBuilt,
+				"propertyType":  sp.PropertyType,
+				"daysOnMarket":  sp.DaysOnMarket,
+				"imageUrl":      sp.ImageURL,
+				"listingUrl":    sp.ListingURL,
+			}
+		}
+		payload["selectedProperties"] = propsAsMap
+	}
+
+	// ADR-059: Reinvestment modeling parameters
+	if req.ReinvestSurplusCashFlows {
+		payload["reinvestSurplusCashFlows"] = req.ReinvestSurplusCashFlows
+	}
+	if req.ReinvestmentRate != nil {
+		payload["reinvestmentRate"] = *req.ReinvestmentRate
+	}
+	if req.ProjectionYears != nil {
+		payload["projectionYears"] = *req.ProjectionYears
+	}
+
+	// Store financial assumptions for cache/history
+	payload["financial_assumptions"] = map[string]interface{}{
+		"mortgageRate":       mortgageRate,
+		"downPaymentPercent": downPaymentPercent,
+		"operatingExpenses":  operatingExpenses,
+	}
+
+	// Check cache first (unless forceRefresh)
+	if !req.ForceRefresh {
+		cacheRecord, err := queries.New(h.db.Main).GetCacheByUserAndKey(ctx, queries.GetCacheByUserAndKeyParams{
+			UserId: user.UserID,
+			Key:    req.CacheKey,
+		})
+		if err == nil && cacheRecord.Content != "" {
+			h.logger.Info("investment planning cache hit",
+				"cache_key", req.CacheKey,
+				"user_id", user.UserID,
+			)
+
+			var cachedData map[string]interface{}
+			if err := json.Unmarshal([]byte(cacheRecord.Content), &cachedData); err == nil {
+				httputil.JSON(w, http.StatusOK, map[string]interface{}{
+					"success":     true,
+					"jobId":       cacheRecord.ID,
+					"responseKey": req.CacheKey,
+					"status":      "COMPLETED",
+					"cached":      true,
+					"plan":        normalizeInvestmentPlanResult(cachedData),
+				})
+				return
+			}
+		}
 	}
 
 	// Create job
@@ -714,28 +1093,57 @@ func (h *Handler) QueueInvestmentPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Generate SSE token for stream authentication (EventSource doesn't support headers)
+	sseToken, err := h.generateSSEToken(user.UserID, jobID, "")
+	if err != nil {
+		h.logger.Error("failed to generate SSE token", "error", err)
+		httputil.InternalError(w, fmt.Errorf("failed to generate stream token"))
+		return
+	}
+
 	h.logger.Info("investment planning queued",
 		"job_id", jobID,
 		"user_id", user.UserID,
+		"cache_key", req.CacheKey,
 		"locations", req.Locations,
 	)
 
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{
-		"success":   true,
-		"jobId":     jobID,
-		"streamUrl": fmt.Sprintf("/api/ai/investment-planning/stream?jobId=%s", jobID),
+		"success":     true,
+		"jobId":       jobID,
+		"responseKey": req.CacheKey,
+		"status":      "QUEUED",
+		"streamUrl":   fmt.Sprintf("/api/ai/investment-planning/stream?jobId=%s", jobID),
+		"sseToken":    sseToken,
 	})
 }
 
 // StreamInvestmentPlan streams investment planning results via SSE
 func (h *Handler) StreamInvestmentPlan(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
 	jobID := r.URL.Query().Get("jobId")
 	if jobID == "" {
 		httputil.BadRequest(w, "jobId required")
 		return
 	}
+
+	h.streamInvestmentPlanByID(w, r, jobID)
+}
+
+// StreamInvestmentPlanStatus streams investment planning results via SSE for the v1 contract.
+// GET /api/ai/investment-planning/status/{jobId}
+func (h *Handler) StreamInvestmentPlanStatus(w http.ResponseWriter, r *http.Request) {
+	jobID := chi.URLParam(r, "jobId")
+	if jobID == "" {
+		httputil.BadRequest(w, "jobId required")
+		return
+	}
+
+	h.streamInvestmentPlanByID(w, r, jobID)
+}
+
+// streamInvestmentPlanByID handles the shared SSE logic for investment planning streams.
+func (h *Handler) streamInvestmentPlanByID(w http.ResponseWriter, r *http.Request, jobID string) {
+	ctx := r.Context()
 
 	// Create SSE writer
 	sseWriter, err := sse.NewWriter(w)
@@ -748,42 +1156,263 @@ func (h *Handler) StreamInvestmentPlan(w http.ResponseWriter, r *http.Request) {
 	stopHeartbeat := sseWriter.StartHeartbeat(sse.HeartbeatInterval)
 	defer close(stopHeartbeat)
 
+	// Calculate dynamic timeout based on location count (matches www_v1)
+	// Base: 5 minutes + 30 seconds per location
+	timeout := 5 * time.Minute
+	if job, err := h.jobQueue.GetJob(jobID); err == nil {
+		if locations, ok := job.Payload["locations"].([]interface{}); ok {
+			timeout += 30 * time.Second * time.Duration(len(locations))
+		} else if locations, ok := job.Payload["locations"].([]string); ok {
+			timeout += 30 * time.Second * time.Duration(len(locations))
+		}
+	}
+
+	// Create context with dynamic timeout
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	// Subscribe to progress
 	progressChan := h.jobQueue.Subscribe(jobID)
 
 	// Forward events to SSE
+	// NOTE: Client uses eventSource.onmessage which only receives unnamed events.
+	// We must use WriteDataJSON (no event type) with status field in data to match www_v1 format.
 	for {
 		select {
 		case <-ctx.Done():
-			h.logger.Info("client disconnected", "job_id", jobID)
+			if ctx.Err() == context.DeadlineExceeded {
+				h.logger.Warn("investment planning stream timeout", "job_id", jobID, "timeout", timeout)
+				// Send unnamed error event with status field
+				sseWriter.WriteDataJSON(map[string]interface{}{
+					"jobId":   jobID,
+					"status":  "FAILED",
+					"error":   "Request timed out",
+					"message": "Request timed out",
+				})
+			} else {
+				h.logger.Info("client disconnected", "job_id", jobID)
+			}
 			return
 
 		case event, ok := <-progressChan:
 			if !ok {
-				// Job completed
+				// Channel closed - job completed, get final result
 				result, err := h.jobQueue.GetResult(jobID)
 				if err == nil && result.Status == queue.JobStatusCompleted {
-					sseWriter.WriteComplete(result.Data)
+					// Send completion in www_v1 format (unnamed event with status + plan)
+					sseWriter.WriteDataJSON(map[string]interface{}{
+						"jobId":    jobID,
+						"status":   "COMPLETED",
+						"progress": 100,
+						"message":  "Investment plan completed",
+						"plan":     normalizeInvestmentPlanResult(result.Data),
+					})
 				}
 				return
 			}
 
 			switch event.Stage {
 			case "completed":
-				sseWriter.WriteComplete(event.Data)
+				// Send completion in www_v1 format (unnamed event with status + plan)
+				sseWriter.WriteDataJSON(map[string]interface{}{
+					"jobId":    jobID,
+					"status":   "COMPLETED",
+					"progress": 100,
+					"message":  event.Message,
+					"plan":     normalizeInvestmentPlanResult(event.Data),
+				})
 				return
 			case "failed":
-				sseWriter.WriteError(event.Message)
+				// Send failure in www_v1 format (unnamed event with status + error)
+				sseWriter.WriteDataJSON(map[string]interface{}{
+					"jobId":   jobID,
+					"status":  "FAILED",
+					"error":   event.Message,
+					"message": event.Message,
+				})
 				return
 			default:
-				sseWriter.WriteEventJSON("progress", map[string]interface{}{
+				// Send progress in www_v1 format (unnamed event with PROCESSING status)
+				// Map internal stages to client status constants
+				clientStatus := "AGENT1_RUNNING"
+				switch event.Stage {
+				case "searching", "expanding_locations":
+					clientStatus = "AGENT1_RUNNING"
+				case "scoring", "analyzing":
+					clientStatus = "AGENT1_COMPLETE"
+				case "optimizing", "portfolio_optimization":
+					clientStatus = "AGENT2_RUNNING"
+				case "finalizing", "caching":
+					clientStatus = "STORING"
+				}
+				sseWriter.WriteDataJSON(map[string]interface{}{
+					"jobId":    jobID,
+					"status":   clientStatus,
 					"progress": event.Progress,
-					"stage":    event.Stage,
 					"message":  event.Message,
 				})
 			}
 		}
 	}
+}
+
+// CancelInvestmentPlan cancels a queued or running investment planning job.
+// POST /api/ai/investment-planning/{jobId}/cancel
+func (h *Handler) CancelInvestmentPlan(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserFromContext(r.Context())
+	if user == nil {
+		httputil.Error(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	jobID := chi.URLParam(r, "jobId")
+	if jobID == "" {
+		httputil.BadRequest(w, "jobId is required")
+		return
+	}
+
+	job, err := h.jobQueue.GetJob(jobID)
+	if err != nil {
+		httputil.NotFound(w, "job not found")
+		return
+	}
+
+	if job.UserID != user.UserID {
+		httputil.NotFound(w, "job not found")
+		return
+	}
+
+	if job.Type != queue.JobTypeInvestmentPlanning {
+		httputil.BadRequest(w, "invalid job type for cancellation")
+		return
+	}
+
+	if err := h.jobQueue.Cancel(jobID); err != nil {
+		httputil.BadRequest(w, err.Error())
+		return
+	}
+
+	h.logger.Info("investment planning job cancelled", "job_id", jobID, "user_id", user.UserID)
+
+	httputil.JSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"jobId":   jobID,
+		"status":  normalizeJobStatus(queue.JobStatusCancelled),
+		"message": "job cancelled",
+	})
+}
+
+// DeleteInvestmentPlan deletes an investment plan from cache and queue.
+// DELETE /api/ai/investment-planning/{jobId}
+func (h *Handler) DeleteInvestmentPlan(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user := middleware.GetUserFromContext(ctx)
+	if user == nil {
+		httputil.Error(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	jobID := chi.URLParam(r, "jobId")
+	if jobID == "" {
+		httputil.BadRequest(w, "jobId is required")
+		return
+	}
+
+	// Remove job from queue if it exists.
+	if job, err := h.jobQueue.GetJob(jobID); err == nil {
+		if job.UserID != user.UserID {
+			httputil.NotFound(w, "job not found")
+			return
+		}
+		if job.Type != queue.JobTypeInvestmentPlanning {
+			httputil.BadRequest(w, "invalid job type for deletion")
+			return
+		}
+
+		_ = h.jobQueue.Delete(jobID)
+	}
+
+	deletedID, deletedKey, err := h.deleteInvestmentPlanCache(ctx, user.UserID, jobID)
+	if err != nil {
+		h.logger.Error("failed to delete investment plan cache", "error", err)
+		httputil.InternalError(w, fmt.Errorf("failed to delete investment plan"))
+		return
+	}
+
+	if deletedID == "" && deletedKey == "" {
+		httputil.NotFound(w, "investment plan not found")
+		return
+	}
+
+	httputil.JSON(w, http.StatusOK, map[string]interface{}{
+		"success":   true,
+		"message":   "investment plan deleted",
+		"deletedId": deletedID,
+	})
+}
+
+type investmentPlanCacheRecord struct {
+	ID  string
+	Key string
+}
+
+func (h *Handler) deleteInvestmentPlanCache(ctx context.Context, userID, jobID string) (string, string, error) {
+	record, err := h.findInvestmentPlanCacheRecord(ctx, userID, jobID)
+	if err != nil {
+		return "", "", err
+	}
+	if record == nil {
+		return "", "", nil
+	}
+
+	if h.redis != nil {
+		// Use plain cache key (matches www_v1 responseCacheManager format).
+		// Also try the legacy "cache:{userID}:{key}" format for backwards compatibility.
+		if err := h.redis.Delete(ctx, record.Key); err != nil {
+			h.logger.Warn("failed to delete investment plan from Redis (plain key)", "error", err)
+		}
+		legacyCacheKey := fmt.Sprintf("cache:%s:%s", userID, record.Key)
+		if err := h.redis.Delete(ctx, legacyCacheKey); err != nil {
+			h.logger.Warn("failed to delete investment plan from Redis (legacy key)", "error", err)
+		}
+	}
+
+	_, err = h.db.Main.Exec(ctx, `DELETE FROM analysis_cache WHERE id = $1 AND "userId" = $2`, record.ID, userID)
+	if err != nil {
+		return "", "", err
+	}
+
+	return record.ID, record.Key, nil
+}
+
+func (h *Handler) findInvestmentPlanCacheRecord(ctx context.Context, userID, jobID string) (*investmentPlanCacheRecord, error) {
+	record := &investmentPlanCacheRecord{}
+
+	if strings.HasPrefix(jobID, "investment_plan") {
+		err := h.db.Main.QueryRow(ctx,
+			`SELECT id, key FROM analysis_cache WHERE key = $1 AND "userId" = $2`,
+			jobID, userID,
+		).Scan(&record.ID, &record.Key)
+		if err == nil {
+			return record, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+	}
+
+	err := h.db.Main.QueryRow(ctx,
+		`SELECT id, key FROM analysis_cache WHERE id = $1 AND "userId" = $2 AND key LIKE 'investment_plan_%'`,
+		jobID, userID,
+	).Scan(&record.ID, &record.Key)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return record, nil
 }
 
 // GetInvestmentPlan gets an investment plan by job ID
@@ -804,7 +1433,74 @@ func (h *Handler) GetInvestmentPlan(w http.ResponseWriter, r *http.Request) {
 	// Get job
 	job, err := h.jobQueue.GetJob(jobID)
 	if err != nil {
-		httputil.NotFound(w, "job not found")
+		record, recordErr := h.findInvestmentPlanCacheRecord(ctx, user.UserID, jobID)
+		if recordErr != nil {
+			h.logger.Error("failed to find investment plan cache record", "error", recordErr)
+			httputil.InternalError(w, fmt.Errorf("failed to load investment plan"))
+			return
+		}
+		if record == nil {
+			httputil.NotFound(w, "job not found")
+			return
+		}
+
+		cacheRecord, err := queries.New(h.db.Main).GetCacheByUserAndKey(ctx, queries.GetCacheByUserAndKeyParams{
+			UserId: user.UserID,
+			Key:    record.Key,
+		})
+		if err != nil {
+			h.logger.Error("failed to load investment plan cache", "error", err)
+			httputil.InternalError(w, fmt.Errorf("failed to load investment plan"))
+			return
+		}
+
+		var cachedData map[string]interface{}
+		if cacheRecord.Content != "" {
+			_ = json.Unmarshal([]byte(cacheRecord.Content), &cachedData)
+		}
+
+		result := normalizeInvestmentPlanResult(cachedData)
+
+		// Build request criteria from cache metadata
+		request := map[string]interface{}{}
+
+		// Extract locations from cache record's location field
+		if cacheRecord.Location != "" {
+			// Location is stored as "Peoria, IL; Chicago, IL"
+			locations := strings.Split(cacheRecord.Location, "; ")
+			request["locations"] = locations
+		}
+
+		// Extract strategy and capital from metricsData if available
+		if len(cacheRecord.MetricsData) > 0 {
+			var metricsData map[string]interface{}
+			if err := json.Unmarshal(cacheRecord.MetricsData, &metricsData); err == nil {
+				if strategy, ok := metricsData["strategy"]; ok {
+					request["strategy"] = strategy
+				}
+				if capital, ok := metricsData["availableCapital"]; ok {
+					request["availableCapital"] = capital
+				}
+			}
+		}
+
+		createdAt := cacheRecord.CreatedAt.Time
+		response := map[string]interface{}{
+			"success":     true,
+			"responseKey": record.Key,
+			"job": map[string]interface{}{
+				"id":          record.ID,
+				"responseKey": record.Key,
+				"status":      normalizeJobStatus(queue.JobStatusCompleted),
+				"progress":    float64(100),
+				"createdAt":   createdAt.Format(time.RFC3339),
+				"updatedAt":   createdAt.Format(time.RFC3339),
+				"result":      result,
+				"request":     request,
+			},
+		}
+
+		httputil.JSON(w, http.StatusOK, response)
 		return
 	}
 
@@ -823,16 +1519,18 @@ func (h *Handler) GetInvestmentPlan(w http.ResponseWriter, r *http.Request) {
 	response := map[string]interface{}{
 		"success": true,
 		"job": map[string]interface{}{
-			"id":        job.ID,
-			"status":    string(job.Status),
-			"createdAt": job.CreatedAt.Format(time.RFC3339),
-			"updatedAt": job.UpdatedAt.Format(time.RFC3339),
-			"request":   job.Payload,
+			"id":              job.ID,
+			"status":          normalizeJobStatus(job.Status),
+			"progress":        job.Progress,
+			"progressMessage": job.ProgressMessage,
+			"createdAt":       job.CreatedAt.Format(time.RFC3339),
+			"updatedAt":       job.UpdatedAt.Format(time.RFC3339),
+			"request":         job.Payload,
 		},
 	}
 
 	if result != nil {
-		response["job"].(map[string]interface{})["result"] = result.Data
+		response["job"].(map[string]interface{})["result"] = normalizeInvestmentPlanResult(result.Data)
 		response["job"].(map[string]interface{})["completedAt"] = result.CompletedAt.Format(time.RFC3339)
 	}
 
@@ -870,6 +1568,220 @@ type InvestmentPlanHistoryResponse struct {
 	} `json:"pagination"`
 }
 
+func parseBoundedIntQuery(r *http.Request, key string, defaultVal, minVal, maxVal int) int {
+	raw := r.URL.Query().Get(key)
+	if raw == "" {
+		return defaultVal
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return defaultVal
+	}
+	if n < minVal {
+		return minVal
+	}
+	if n > maxVal {
+		return maxVal
+	}
+	return n
+}
+
+func parseKeyForLocation(key string) string {
+	// Cache keys are client-provided: investment_plan_{city}_{st}_dp.._ir.._oe.._{strategy}
+	// or shorter format: investment_plan_{hash}
+	withoutPrefix := strings.TrimPrefix(key, "qry_investment_plan_")
+	withoutPrefix = strings.TrimPrefix(withoutPrefix, "investment_plan_")
+
+	parts := strings.Split(withoutPrefix, "_")
+	locationParts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if strings.HasPrefix(part, "dp") || strings.HasPrefix(part, "ir") || strings.HasPrefix(part, "oe") || len(part) == 16 {
+			break
+		}
+		locationParts = append(locationParts, part)
+	}
+
+	if len(locationParts) >= 2 {
+		cityParts := locationParts[:len(locationParts)-1]
+		state := strings.ToUpper(locationParts[len(locationParts)-1])
+		for i := range cityParts {
+			if cityParts[i] == "" {
+				continue
+			}
+			cityParts[i] = strings.ToUpper(cityParts[i][:1]) + cityParts[i][1:]
+		}
+		return strings.Join(cityParts, " ") + ", " + state
+	}
+
+	if len(locationParts) == 1 && strings.TrimSpace(locationParts[0]) != "" {
+		return locationParts[0]
+	}
+	return "Unknown Location"
+}
+
+func extractIntAfterPrefix(s, prefix string) (int, bool) {
+	idx := strings.Index(s, prefix)
+	if idx == -1 {
+		return 0, false
+	}
+	rest := s[idx+len(prefix):]
+	digits := make([]byte, 0, 8)
+	for i := 0; i < len(rest); i++ {
+		if rest[i] < '0' || rest[i] > '9' {
+			break
+		}
+		digits = append(digits, rest[i])
+	}
+	if len(digits) == 0 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(string(digits))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+func parseFinancialAssumptionsFromKey(key string) map[string]interface{} {
+	dp, dpOK := extractIntAfterPrefix(key, "dp")
+	ir, irOK := extractIntAfterPrefix(key, "ir")
+	oe, oeOK := extractIntAfterPrefix(key, "oe")
+	if !dpOK || !irOK || !oeOK {
+		return nil
+	}
+	return map[string]interface{}{
+		"downPaymentPercent": dp,
+		"mortgageRate":       float64(ir) / 100.0,
+		"operatingExpenses":  oe,
+	}
+}
+
+func getNumberField(m map[string]interface{}, key string) (float64, bool) {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return 0, false
+	}
+	switch t := v.(type) {
+	case float64:
+		return t, true
+	case float32:
+		return float64(t), true
+	case int:
+		return float64(t), true
+	case int64:
+		return float64(t), true
+	case json.Number:
+		f, err := t.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return f, true
+	default:
+		return 0, false
+	}
+}
+
+func getStringField(m map[string]interface{}, key string) (string, bool) {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return "", false
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", false
+	}
+	return s, true
+}
+
+func mapMetricsForHistory(metrics map[string]interface{}) map[string]interface{} {
+	if metrics == nil {
+		return nil
+	}
+
+	out := map[string]interface{}{
+		"propertyCount":        0,
+		"totalInvestment":      0,
+		"projectedReturn":      0.0,
+		"cashOnCashReturn":     0.0,
+		"annualCashFlow":       0,
+		"totalValue":           0,
+		"totalDebt":            0,
+		"sharpeRatio":          0.0,
+		"debtServiceCoverage":  0.0,
+		"diversificationScore": 0.0,
+		"totalROI":             0.0,
+		"locationCount":        0,
+	}
+
+	if n, ok := getNumberField(metrics, "propertyCount"); ok {
+		out["propertyCount"] = int(math.Round(n))
+	} else if n, ok := getNumberField(metrics, "property_count"); ok {
+		out["propertyCount"] = int(math.Round(n))
+	}
+
+	// Prefer v1 totalInvestment; fall back to Go-worker totalDownPayment.
+	if n, ok := getNumberField(metrics, "totalInvestment"); ok {
+		out["totalInvestment"] = int(math.Round(n))
+	} else if n, ok := getNumberField(metrics, "totalDownPayment"); ok {
+		out["totalInvestment"] = int(math.Round(n))
+	}
+
+	// v1 uses expectedAnnualReturn.
+	if n, ok := getNumberField(metrics, "expectedAnnualReturn"); ok {
+		out["projectedReturn"] = n
+	} else if n, ok := getNumberField(metrics, "projectedReturn"); ok {
+		out["projectedReturn"] = n
+	}
+
+	if n, ok := getNumberField(metrics, "cashOnCashReturn"); ok {
+		out["cashOnCashReturn"] = n
+	} else if n, ok := getNumberField(metrics, "avgCashOnCash"); ok {
+		out["cashOnCashReturn"] = n
+	} else if n, ok := getNumberField(metrics, "averageCashOnCash"); ok {
+		// Fallback for legacy cached data
+		out["cashOnCashReturn"] = n
+	}
+
+	if n, ok := getNumberField(metrics, "annualCashFlow"); ok {
+		out["annualCashFlow"] = int(math.Round(n))
+	} else if n, ok := getNumberField(metrics, "annualNetCashFlow"); ok {
+		out["annualCashFlow"] = int(math.Round(n))
+	}
+
+	if n, ok := getNumberField(metrics, "totalValue"); ok {
+		out["totalValue"] = int(math.Round(n))
+	} else if n, ok := getNumberField(metrics, "projectedValue"); ok {
+		out["totalValue"] = int(math.Round(n))
+	}
+
+	if n, ok := getNumberField(metrics, "totalDebt"); ok {
+		out["totalDebt"] = int(math.Round(n))
+	} else if n, ok := getNumberField(metrics, "totalLoanAmount"); ok {
+		out["totalDebt"] = int(math.Round(n))
+	}
+
+	// Additional metrics for portfolio view
+	if n, ok := getNumberField(metrics, "sharpeRatio"); ok {
+		out["sharpeRatio"] = n
+	}
+	if n, ok := getNumberField(metrics, "debtServiceCoverage"); ok {
+		out["debtServiceCoverage"] = n
+	} else if n, ok := getNumberField(metrics, "portfolioDscr"); ok {
+		out["debtServiceCoverage"] = n
+	}
+	if n, ok := getNumberField(metrics, "diversificationScore"); ok {
+		out["diversificationScore"] = n
+	}
+	if n, ok := getNumberField(metrics, "totalROI"); ok {
+		out["totalROI"] = n
+	}
+	if n, ok := getNumberField(metrics, "locationCount"); ok {
+		out["locationCount"] = int(math.Round(n))
+	}
+
+	return out
+}
+
 // GetInvestmentPlanHistory returns the user's investment planning history
 func (h *Handler) GetInvestmentPlanHistory(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -879,40 +1791,37 @@ func (h *Handler) GetInvestmentPlanHistory(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Parse pagination params
-	page := 1
-	if p := r.URL.Query().Get("page"); p != "" {
-		if val, err := fmt.Sscanf(p, "%d", &page); err == nil && val > 0 {
-			page = val
-		}
-	}
-	limit := 10
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if val, err := fmt.Sscanf(l, "%d", &limit); err == nil && val > 0 && val <= 50 {
-			limit = val
-		}
-	}
+	// Parse pagination params (fix: fmt.Sscanf returned the scanned-item count, not the parsed value).
+	page := parseBoundedIntQuery(r, "page", 1, 1, 10_000)
+	limit := parseBoundedIntQuery(r, "limit", 50, 1, 100)
 	offset := (page - 1) * limit
 
-	// Query investment planning records from analysis_cache table (Prisma @@map)
-	// Prisma uses camelCase column names (no @map directives in schema)
-	// Filter by feature = 'investment_planning'
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+
+	// Match www_v1 behavior:
+	// - feature = 'investment_planning'
+	// - supersededBy = null (only current versions)
+	// - order by lastAccessedAt desc
 	query := `
 		SELECT
 			id,
 			key,
 			"userId",
+			location,
 			metadata,
 			"metricsData",
-			'COMPLETED' as status,
-			"createdAt"
+			"investorProfile",
+			"lastAccessedAt"
 		FROM analysis_cache
-		WHERE "userId" = $1 AND feature = 'investment_planning'
-		ORDER BY "createdAt" DESC
+		WHERE "userId" = $1
+			AND feature = 'investment_planning'
+			AND "supersededBy" IS NULL
+			AND ($4 = '' OR location ILIKE '%' || $4 || '%')
+		ORDER BY "lastAccessedAt" DESC
 		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := h.db.Main.Query(ctx, query, user.UserID, limit, offset)
+	rows, err := h.db.Main.Query(ctx, query, user.UserID, limit, offset, search)
 	if err != nil {
 		h.logger.Error("failed to get investment plan history", "error", err)
 		// Return empty on error
@@ -938,57 +1847,55 @@ func (h *Handler) GetInvestmentPlanHistory(w http.ResponseWriter, r *http.Reques
 	plans := make([]InvestmentPlanHistoryItem, 0)
 	for rows.Next() {
 		var item InvestmentPlanHistoryItem
-		var criteriaData, metricsData *string
-		var createdAt time.Time
+		var location string
+		var metadataData, metricsData, investorProfileData *string
+		var lastAccessedAt time.Time
 
 		err := rows.Scan(
 			&item.ID,
 			&item.ResponseKey,
 			&item.UserID,
-			&criteriaData,
+			&location,
+			&metadataData,
 			&metricsData,
-			&item.Status,
-			&createdAt,
+			&investorProfileData,
+			&lastAccessedAt,
 		)
 		if err != nil {
 			h.logger.Warn("failed to scan plan history item", "error", err)
 			continue
 		}
 
-		item.CreatedAt = createdAt.Format(time.RFC3339)
+		item.Status = "COMPLETED"
+		item.CreatedAt = lastAccessedAt.Format(time.RFC3339)
 
-		// Parse criteria data
-		if criteriaData != nil && *criteriaData != "" {
-			var criteria map[string]interface{}
-			if json.Unmarshal([]byte(*criteriaData), &criteria) == nil {
-				if locations, ok := criteria["locations"].([]interface{}); ok {
-					item.Locations = make([]string, 0, len(locations))
-					for _, l := range locations {
-						if s, ok := l.(string); ok {
-							item.Locations = append(item.Locations, s)
-						}
-					}
-				}
-				if strategy, ok := criteria["strategy"].(string); ok {
-					item.Strategy = strategy
-				}
-				if capital, ok := criteria["availableCapital"].(float64); ok {
-					item.AvailableCapital = int(capital)
-				}
-				if budget, ok := criteria["budget"].(float64); ok {
-					item.AvailableCapital = int(budget)
-				}
-				if assumptions, ok := criteria["financialAssumptions"].(map[string]interface{}); ok {
-					item.FinancialAssumptions = assumptions
-				}
-			}
+		// Locations: prefer analysis_cache.location; fall back to key parsing.
+		if strings.TrimSpace(location) != "" {
+			item.Locations = strings.Split(location, "; ")
+		} else {
+			item.Locations = []string{parseKeyForLocation(item.ResponseKey)}
+		}
+
+		// Parse metadata (fallback for older rows).
+		var metadata map[string]interface{}
+		if metadataData != nil && *metadataData != "" {
+			_ = json.Unmarshal([]byte(*metadataData), &metadata)
 		}
 
 		// Parse metrics data
 		if metricsData != nil && *metricsData != "" {
 			var metrics map[string]interface{}
 			if json.Unmarshal([]byte(*metricsData), &metrics) == nil {
-				item.Metrics = metrics
+				// strategy/availableCapital are stored in metricsData by www_v1 for card display.
+				if s, ok := getStringField(metrics, "strategy"); ok && s != "" {
+					item.Strategy = s
+				}
+				if n, ok := getNumberField(metrics, "availableCapital"); ok {
+					item.AvailableCapital = int(math.Round(n))
+				}
+
+				item.Metrics = mapMetricsForHistory(metrics)
+
 				if zips, ok := metrics["recommendedZipCodes"].([]interface{}); ok {
 					item.RecommendedZipCodes = make([]string, 0, len(zips))
 					for _, z := range zips {
@@ -1000,12 +1907,56 @@ func (h *Handler) GetInvestmentPlanHistory(w http.ResponseWriter, r *http.Reques
 			}
 		}
 
+		// Fallbacks for strategy/capital from metadata.
+		if item.Strategy == "" && metadata != nil {
+			if s, ok := getStringField(metadata, "strategy"); ok && s != "" {
+				item.Strategy = s
+			}
+		}
+		if item.AvailableCapital == 0 && metadata != nil {
+			if n, ok := getNumberField(metadata, "availableCapital"); ok {
+				item.AvailableCapital = int(math.Round(n))
+			} else if n, ok := getNumberField(metadata, "budget"); ok {
+				item.AvailableCapital = int(math.Round(n))
+			}
+		}
+		if item.Strategy == "" {
+			item.Strategy = "balanced"
+		}
+
+		// Financial assumptions: prefer metadata, then investorProfile, then parse from key.
+		if metadata != nil {
+			if assumptions, ok := metadata["financialAssumptions"].(map[string]interface{}); ok {
+				item.FinancialAssumptions = assumptions
+			}
+		}
+		if item.FinancialAssumptions == nil && investorProfileData != nil && *investorProfileData != "" {
+			var profile map[string]interface{}
+			if json.Unmarshal([]byte(*investorProfileData), &profile) == nil {
+				item.FinancialAssumptions = map[string]interface{}{
+					"mortgageRate":       profile["mortgageRate"],
+					"downPaymentPercent": profile["downPaymentPercent"],
+					"operatingExpenses":  profile["operatingExpenses"],
+				}
+			}
+		}
+		if item.FinancialAssumptions == nil {
+			item.FinancialAssumptions = parseFinancialAssumptionsFromKey(item.ResponseKey)
+		}
+
 		plans = append(plans, item)
 	}
 
 	// Get total count
 	var total int
-	h.db.Main.QueryRow(ctx, `SELECT COUNT(*) FROM analysis_cache WHERE "userId" = $1 AND feature = 'investment_planning'`, user.UserID).Scan(&total)
+	_ = h.db.Main.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM analysis_cache
+		WHERE "userId" = $1
+			AND feature = 'investment_planning'
+			AND "supersededBy" IS NULL
+			AND ($2 = '' OR location ILIKE '%' || $2 || '%')
+	`, user.UserID, search).Scan(&total)
 
 	totalPages := total / limit
 	if total%limit > 0 {
@@ -1029,6 +1980,313 @@ func (h *Handler) GetInvestmentPlanHistory(w http.ResponseWriter, r *http.Reques
 	}
 
 	httputil.JSON(w, http.StatusOK, response)
+}
+
+// normalizeJobStatus converts lowercase job status to uppercase for client compatibility
+// Go backend uses lowercase (completed, failed, processing) but client expects uppercase (COMPLETED, FAILED, PROCESSING)
+func normalizeJobStatus(status queue.JobStatus) string {
+	return strings.ToUpper(string(status))
+}
+
+func normalizeInvestmentPlanResult(data interface{}) map[string]interface{} {
+	if data == nil {
+		return nil
+	}
+
+	switch v := data.(type) {
+	case map[string]interface{}:
+		return normalizeInvestmentPlanResultMap(v)
+	default:
+		blob, err := json.Marshal(v)
+		if err != nil {
+			return nil
+		}
+		var m map[string]interface{}
+		if err := json.Unmarshal(blob, &m); err != nil {
+			return nil
+		}
+		return normalizeInvestmentPlanResultMap(m)
+	}
+}
+
+// complianceFilter is a shared instance for filtering content
+var complianceFilter = compliance.NewFilter(compliance.FilterConfig{StrictMode: false})
+
+func normalizeInvestmentPlanResultMap(input map[string]interface{}) map[string]interface{} {
+	if input == nil {
+		return nil
+	}
+
+	out := map[string]interface{}{}
+
+	if raw, ok := input["selectedProperties"]; ok {
+		out["selectedProperties"] = normalizeInvestmentPlanProperties(raw)
+	} else if raw, ok := input["selected_properties"]; ok {
+		out["selectedProperties"] = normalizeInvestmentPlanProperties(raw)
+	}
+
+	if raw, ok := input["metrics"]; ok {
+		out["metrics"] = normalizeInvestmentPlanMetrics(raw)
+	}
+
+	if raw, ok := input["growthProjection"]; ok {
+		out["growthProjection"] = raw
+	} else if raw, ok := input["growth_projection"]; ok {
+		out["growthProjection"] = raw
+	}
+
+	if raw, ok := input["existingPortfolio"]; ok {
+		out["existingPortfolio"] = raw
+	} else if raw, ok := input["existing_portfolio"]; ok {
+		out["existingPortfolio"] = raw
+	}
+
+	if raw, ok := input["combinedMetrics"]; ok {
+		out["combinedMetrics"] = raw
+	} else if raw, ok := input["combined_metrics"]; ok {
+		out["combinedMetrics"] = raw
+	}
+
+	if raw, ok := input["multiYearPlan"]; ok {
+		out["multiYearPlan"] = raw
+	} else if raw, ok := input["multi_year_plan"]; ok {
+		out["multiYearPlan"] = raw
+	}
+
+	if raw, ok := input["marketFilters"]; ok {
+		out["marketFiltering"] = raw
+	} else if raw, ok := input["market_filters"]; ok {
+		out["marketFiltering"] = raw
+	}
+
+	if raw, ok := input["marketQuality"]; ok {
+		out["marketAnalysis"] = raw
+	} else if raw, ok := input["market_quality"]; ok {
+		out["marketAnalysis"] = raw
+	}
+
+	if raw, ok := input["concentration"]; ok {
+		out["concentration"] = raw
+	}
+
+	// ADR-059: Reinvestment analysis
+	if raw, ok := input["reinvestmentAnalysis"]; ok {
+		out["reinvestmentAnalysis"] = raw
+	} else if raw, ok := input["reinvestment_analysis"]; ok {
+		out["reinvestmentAnalysis"] = raw
+	}
+
+	// ADR-059: Property recommendations
+	if raw, ok := input["propertyRecommendations"]; ok {
+		out["propertyRecommendations"] = raw
+	} else if raw, ok := input["property_recommendations"]; ok {
+		out["propertyRecommendations"] = raw
+	}
+
+	// Apply compliance filtering to recommendations (ADR-051)
+	if raw, ok := input["recommendations"]; ok {
+		out["recommendations"] = filterRecommendations(raw)
+	}
+
+	// Apply compliance filtering to riskAnalysis.warnings
+	if raw, ok := input["riskAnalysis"]; ok {
+		out["riskAnalysis"] = filterRiskAnalysisWarnings(raw)
+	} else if raw, ok := input["risk_analysis"]; ok {
+		out["riskAnalysis"] = filterRiskAnalysisWarnings(raw)
+	}
+
+	// Preserve any other fields we don't explicitly map
+	for key, value := range input {
+		if _, exists := out[key]; exists {
+			continue
+		}
+		out[key] = value
+	}
+
+	return out
+}
+
+// filterRecommendations applies compliance filtering to recommendations array
+func filterRecommendations(raw interface{}) []string {
+	recs, ok := raw.([]interface{})
+	if !ok {
+		// Try string slice
+		if strRecs, ok := raw.([]string); ok {
+			filtered := make([]string, 0, len(strRecs))
+			for _, rec := range strRecs {
+				filteredRec, _ := complianceFilter.FilterContent(rec)
+				filtered = append(filtered, filteredRec)
+			}
+			return filtered
+		}
+		return nil
+	}
+
+	filtered := make([]string, 0, len(recs))
+	for _, rec := range recs {
+		if str, ok := rec.(string); ok {
+			filteredRec, _ := complianceFilter.FilterContent(str)
+			filtered = append(filtered, filteredRec)
+		}
+	}
+	return filtered
+}
+
+// filterRiskAnalysisWarnings applies compliance filtering to riskAnalysis.warnings
+func filterRiskAnalysisWarnings(raw interface{}) map[string]interface{} {
+	riskAnalysis, ok := raw.(map[string]interface{})
+	if !ok {
+		// Try to convert via JSON
+		blob, err := json.Marshal(raw)
+		if err != nil {
+			return nil
+		}
+		if err := json.Unmarshal(blob, &riskAnalysis); err != nil {
+			return nil
+		}
+	}
+
+	// Filter warnings array
+	if warnings, ok := riskAnalysis["warnings"]; ok {
+		if warningsSlice, ok := warnings.([]interface{}); ok {
+			filtered := make([]string, 0, len(warningsSlice))
+			for _, w := range warningsSlice {
+				if str, ok := w.(string); ok {
+					filteredW, _ := complianceFilter.FilterContent(str)
+					filtered = append(filtered, filteredW)
+				}
+			}
+			riskAnalysis["warnings"] = filtered
+		}
+	}
+
+	return riskAnalysis
+}
+
+func normalizeInvestmentPlanMetrics(raw interface{}) map[string]interface{} {
+	metrics := map[string]interface{}{}
+
+	blob, err := json.Marshal(raw)
+	if err != nil {
+		return metrics
+	}
+	if err := json.Unmarshal(blob, &metrics); err != nil {
+		return metrics
+	}
+
+	if _, ok := metrics["totalValue"]; !ok {
+		if v, ok := metrics["projectedValue"]; ok {
+			metrics["totalValue"] = v
+		}
+	}
+	if _, ok := metrics["cashOnCashReturn"]; !ok {
+		if v, ok := metrics["avgCashOnCash"]; ok {
+			metrics["cashOnCashReturn"] = v
+		}
+	}
+	// expectedAnnualReturn should come from the calculator (NOI / Cash Invested)
+	// Only fallback to avgCashOnCash if not present (legacy data)
+	if _, ok := metrics["expectedAnnualReturn"]; !ok {
+		// Fallback for legacy cached data without expectedAnnualReturn
+		if v, ok := metrics["avgCashOnCash"]; ok {
+			metrics["expectedAnnualReturn"] = v
+		}
+	}
+	if _, ok := metrics["averageCapRate"]; !ok {
+		if v, ok := metrics["avgCapRate"]; ok {
+			metrics["averageCapRate"] = v
+		}
+	}
+	if _, ok := metrics["propertyCount"]; !ok {
+		if v, ok := metrics["property_count"]; ok {
+			metrics["propertyCount"] = v
+		}
+	}
+
+	// Map monthlyCashFlow → netMonthlyCashFlow (client expects this name)
+	if _, ok := metrics["netMonthlyCashFlow"]; !ok {
+		if v, ok := metrics["monthlyCashFlow"]; ok {
+			metrics["netMonthlyCashFlow"] = v
+		}
+	}
+
+	return metrics
+}
+
+func normalizeInvestmentPlanProperties(raw interface{}) []interface{} {
+	var items []map[string]interface{}
+
+	blob, err := json.Marshal(raw)
+	if err != nil {
+		return []interface{}{}
+	}
+	if err := json.Unmarshal(blob, &items); err != nil {
+		return []interface{}{}
+	}
+
+	out := make([]interface{}, 0, len(items))
+	for _, item := range items {
+		if prop, ok := item["property"].(map[string]interface{}); ok {
+			normalized := map[string]interface{}{}
+			if id, ok := prop["id"]; ok {
+				normalized["zpid"] = id
+			} else if id, ok := prop["zpid"]; ok {
+				normalized["zpid"] = id
+			}
+			copyIfPresent(normalized, prop, "address", "address")
+			copyIfPresent(normalized, prop, "city", "city")
+			copyIfPresent(normalized, prop, "state", "state")
+			copyIfPresent(normalized, prop, "zipCode", "zipCode")
+			copyIfPresent(normalized, prop, "price", "price")
+			if beds, ok := prop["beds"]; ok {
+				normalized["bedrooms"] = beds
+			} else {
+				copyIfPresent(normalized, prop, "bedrooms", "bedrooms")
+			}
+			if baths, ok := prop["baths"]; ok {
+				normalized["bathrooms"] = baths
+			} else {
+				copyIfPresent(normalized, prop, "bathrooms", "bathrooms")
+			}
+			copyIfPresent(normalized, prop, "sqft", "sqft")
+			copyIfPresent(normalized, prop, "estimatedRent", "estimatedRent")
+			copyIfPresent(normalized, prop, "yearBuilt", "yearBuilt")
+			copyIfPresent(normalized, prop, "propertyType", "propertyType")
+			copyIfPresent(normalized, prop, "daysOnMarket", "daysOnMarket")
+			copyIfPresent(normalized, prop, "listingUrl", "listingUrl")
+
+			copyIfPresent(normalized, item, "capRate", "capRate")
+			if coc, ok := item["cashOnCash"]; ok {
+				normalized["cashOnCashReturn"] = coc
+			} else {
+				copyIfPresent(normalized, item, "cashOnCashReturn", "cashOnCashReturn")
+			}
+			copyIfPresent(normalized, item, "score", "score")
+			copyIfPresent(normalized, item, "aiScore", "aiScore")
+			copyIfPresent(normalized, item, "recommendation", "recommendation")
+			copyIfPresent(normalized, item, "riskLevel", "riskLevel")
+			if downPayment, ok := item["downPayment"]; ok {
+				normalized["investmentAmount"] = downPayment
+			} else {
+				copyIfPresent(normalized, item, "investmentAmount", "investmentAmount")
+			}
+			copyIfPresent(normalized, item, "loanAmount", "loanAmount")
+			copyIfPresent(normalized, item, "monthlyCashFlow", "monthlyCashFlow")
+
+			out = append(out, normalized)
+			continue
+		}
+
+		out = append(out, item)
+	}
+
+	return out
+}
+
+func copyIfPresent(dst map[string]interface{}, src map[string]interface{}, srcKey, dstKey string) {
+	if val, ok := src[srcKey]; ok {
+		dst[dstKey] = val
+	}
 }
 
 // ===============================
@@ -1182,7 +2440,7 @@ func (h *Handler) ListAnalysisJobs(w http.ResponseWriter, r *http.Request) {
 		if job.Type == queue.JobTypeMarketAnalysis {
 			analysisJobs = append(analysisJobs, map[string]interface{}{
 				"id":        job.ID,
-				"status":    string(job.Status),
+				"status":    normalizeJobStatus(job.Status),
 				"location":  job.Payload["location"],
 				"cacheKey":  job.Payload["cache_key"],
 				"createdAt": job.CreatedAt.Format(time.RFC3339),
@@ -1388,27 +2646,31 @@ func (h *Handler) InvalidateCache(w http.ResponseWriter, r *http.Request) {
 // ===============================
 
 // createChatSession creates a new evaluation chat session
-func (h *Handler) createChatSession(ctx context.Context, userID string, properties []PropertyInput, profile *InvestorProfile) (string, error) {
-	// Cache properties first
-	propertyIDs := make([]string, 0, len(properties))
+func (h *Handler) createChatSession(ctx context.Context, userID string, properties []PropertyInput, profile *InvestorProfile, portfolioSnapshot json.RawMessage) (string, error) {
+	// Cache properties first - track both listing IDs and cached IDs
+	listingIDs := make([]string, 0, len(properties))
+	cachedPropertyIDs := make([]string, 0, len(properties))
 	for _, p := range properties {
-		// Upsert property to cache
+		listingIDs = append(listingIDs, p.ID)
+
+		// Upsert property to cache - generate UUID for new records
+		propertyUUID := uuid.New().String()
 		var cachedID string
 		err := h.db.Main.QueryRow(ctx, `
-			INSERT INTO cached_properties (listing_id, provider, address, city, state, price, beds, baths, sqft, estimated_rent, cap_rate)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			INSERT INTO cached_properties (id, listing_id, provider, address, city, state, zip_code, price, beds, baths, sqft, estimated_rent, cap_rate, listing_url, image_url)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 			ON CONFLICT (listing_id) DO UPDATE SET last_used_at = NOW()
 			RETURNING id
-		`, p.ID, "discovery", p.Address, p.City, p.State, p.Price, p.Beds, p.Baths, p.Sqft, p.EstimatedRent, parseCapRate(p.CapRate)).Scan(&cachedID)
+		`, propertyUUID, p.ID, "discovery", p.Address, p.City, p.State, nilIfEmpty(p.ZipCode), p.Price, p.Beds, p.Baths, p.Sqft, p.EstimatedRent, parseCapRate(p.CapRate), nilIfEmpty(p.ListingUrl), nilIfEmpty(p.ImageUrl)).Scan(&cachedID)
 
 		if err != nil {
 			h.logger.Warn("failed to cache property", "error", err, "property_id", p.ID)
 			continue
 		}
-		propertyIDs = append(propertyIDs, cachedID)
+		cachedPropertyIDs = append(cachedPropertyIDs, cachedID)
 	}
 
-	// Create session
+	// Create session with all fields for parity with www_v1
 	var investorProfileJSON *string
 	if profile != nil {
 		b, _ := json.Marshal(profile)
@@ -1416,18 +2678,31 @@ func (h *Handler) createChatSession(ctx context.Context, userID string, properti
 		investorProfileJSON = &s
 	}
 
-	var sessionID string
-	err := h.db.Main.QueryRow(ctx, `
-		INSERT INTO evaluation_chat_sessions (user_id, cached_property_ids, investor_profile)
-		VALUES ($1, $2, $3)
-		RETURNING id
-	`, userID, propertyIDs, investorProfileJSON).Scan(&sessionID)
+	var portfolioSnapshotJSON *string
+	if len(portfolioSnapshot) > 0 {
+		s := string(portfolioSnapshot)
+		portfolioSnapshotJSON = &s
+	}
+
+	sessionID := uuid.New().String()
+	_, err := h.db.Main.Exec(ctx, `
+		INSERT INTO evaluation_chat_sessions (id, user_id, property_ids, cached_property_ids, investor_profile, portfolio_snapshot, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+	`, sessionID, userID, listingIDs, cachedPropertyIDs, investorProfileJSON, portfolioSnapshotJSON)
 
 	if err != nil {
 		return "", fmt.Errorf("failed to create session: %w", err)
 	}
 
 	return sessionID, nil
+}
+
+// nilIfEmpty returns nil if the string is empty, otherwise returns the string pointer
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // validateSessionOwnership checks if a session belongs to a user
@@ -1440,27 +2715,35 @@ func (h *Handler) validateSessionOwnership(ctx context.Context, sessionID, userI
 	return exists, err
 }
 
-// saveChatMessage saves a message to the database
-func (h *Handler) saveChatMessage(ctx context.Context, sessionID, role, content string, blocks []byte) error {
+// saveChatMessage saves a message to the database and returns the message ID
+func (h *Handler) saveChatMessage(ctx context.Context, sessionID, role, content string, blocks []byte, tokenUsage *TokenUsage) (string, error) {
 	var blocksJSON *string
 	if len(blocks) > 0 {
 		s := string(blocks)
 		blocksJSON = &s
 	}
 
+	var tokenUsageJSON *string
+	if tokenUsage != nil {
+		b, _ := json.Marshal(tokenUsage)
+		s := string(b)
+		tokenUsageJSON = &s
+	}
+
+	messageID := uuid.New().String()
 	_, err := h.db.Main.Exec(ctx, `
-		INSERT INTO evaluation_chat_messages (session_id, role, content, parsed_blocks)
-		VALUES ($1, $2, $3, $4)
-	`, sessionID, role, content, blocksJSON)
+		INSERT INTO evaluation_chat_messages (id, session_id, role, content, parsed_blocks, token_usage, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+	`, messageID, sessionID, role, content, blocksJSON, tokenUsageJSON)
 
 	if err != nil {
-		return fmt.Errorf("failed to save message: %w", err)
+		return "", fmt.Errorf("failed to save message: %w", err)
 	}
 
 	// Update session timestamp
 	h.db.Main.Exec(ctx, `UPDATE evaluation_chat_sessions SET updated_at = NOW() WHERE id = $1`, sessionID)
 
-	return nil
+	return messageID, nil
 }
 
 // getSessionHistory retrieves conversation history for a session
@@ -1526,4 +2809,78 @@ func parseCapRate(s string) *float64 {
 		return &v
 	}
 	return nil
+}
+
+// generateSSEToken creates a JWT token for SSE stream authentication
+// This is needed because EventSource doesn't support Authorization headers
+func (h *Handler) generateSSEToken(userID, jobID, sessionID string) (string, error) {
+	claims := jwt.MapClaims{
+		"userId":    userID,
+		"jobId":     jobID,
+		"sessionId": sessionID,
+		"exp":       time.Now().Add(30 * time.Minute).Unix(),
+		"iat":       time.Now().Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(h.cfg.JWT.Secret))
+}
+
+// getExpenseCalculator returns an expense calculator instance
+// Uses a singleton pattern for efficiency
+var expenseCalculator *expenses.Calculator
+
+func (h *Handler) getExpenseCalculator() *expenses.Calculator {
+	if expenseCalculator == nil {
+		expenseCalculator = expenses.NewCalculator()
+	}
+	return expenseCalculator
+}
+
+// buildMarketExpenseContext creates market expense context for the AI prompt
+// Provides state-level expense rate information for the properties being evaluated
+func (h *Handler) buildMarketExpenseContext(properties []PropertyInput) string {
+	if len(properties) == 0 {
+		return ""
+	}
+
+	// Get unique states from properties
+	statesSeen := make(map[string]bool)
+	var states []string
+	for _, p := range properties {
+		if p.State != "" && !statesSeen[p.State] {
+			statesSeen[p.State] = true
+			states = append(states, p.State)
+		}
+	}
+
+	if len(states) == 0 {
+		return ""
+	}
+
+	calc := h.getExpenseCalculator()
+	if calc == nil {
+		return ""
+	}
+
+	var context strings.Builder
+	context.WriteString("MARKET EXPENSE CHARACTERISTICS:\n")
+
+	for _, state := range states {
+		defaults := calc.GetMarketDefaults(state)
+		context.WriteString(fmt.Sprintf("\n%s Market:\n", state))
+		context.WriteString(fmt.Sprintf("  - Property Tax Rate: %.2f%% of home value\n", defaults.PropertyTaxRate))
+		context.WriteString(fmt.Sprintf("  - Insurance Rate: %.2f%% of home value\n", defaults.InsuranceRate))
+		if len(defaults.InsuranceRisk) > 0 {
+			context.WriteString(fmt.Sprintf("  - Insurance Risk Factors: %s\n", strings.Join(defaults.InsuranceRisk, ", ")))
+		}
+		context.WriteString(fmt.Sprintf("  - Typical Maintenance: %.1f%% of home value\n", defaults.MaintenanceRate))
+		context.WriteString(fmt.Sprintf("  - Typical Vacancy: %.1f%% of rent\n", defaults.VacancyRate))
+		context.WriteString(fmt.Sprintf("  - Property Management: %.1f%% of rent\n", defaults.PropertyMgmtRate))
+		if defaults.Notes != "" {
+			context.WriteString(fmt.Sprintf("  - Note: %s\n", defaults.Notes))
+		}
+	}
+
+	return context.String()
 }

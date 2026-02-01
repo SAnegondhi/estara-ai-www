@@ -85,14 +85,15 @@ func (r *MetroReader) GetLatestData(ctx context.Context, metroName, regionType s
 	}
 
 	// Query the metro_time_series table with JSONB columns
+	// Note: zhvf_data is ZHVI forecast (not zhvi_forecast_data)
+	// No ZORI forecast column exists in this table
 	query := `
 		SELECT
 			metro_region_id,
 			metro_name,
 			COALESCE(zhvi_data, '{}'::jsonb),
 			COALESCE(zori_data, '{}'::jsonb),
-			COALESCE(zhvi_forecast_data, '{}'::jsonb),
-			COALESCE(zori_forecast_data, '{}'::jsonb)
+			COALESCE(zhvf_data, '{}'::jsonb)
 		FROM metro_time_series
 		WHERE metro_name ILIKE $1
 		LIMIT 1
@@ -103,8 +104,7 @@ func (r *MetroReader) GetLatestData(ctx context.Context, metroName, regionType s
 		name             string
 		zhviDataJSON     []byte
 		zoriDataJSON     []byte
-		zhviForecastJSON []byte
-		zoriForecastJSON []byte
+		zhvfDataJSON     []byte
 	)
 
 	err := r.db.QueryRow(ctx, query, metroName).Scan(
@@ -112,8 +112,7 @@ func (r *MetroReader) GetLatestData(ctx context.Context, metroName, regionType s
 		&name,
 		&zhviDataJSON,
 		&zoriDataJSON,
-		&zhviForecastJSON,
-		&zoriForecastJSON,
+		&zhvfDataJSON,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -132,8 +131,8 @@ func (r *MetroReader) GetLatestData(ctx context.Context, metroName, regionType s
 
 	data.ZHVI, data.Date = extractLatestValue(zhviDataJSON)
 	data.ZORI, _ = extractLatestValue(zoriDataJSON)
-	data.ZHVIForecast, _ = extractLatestValue(zhviForecastJSON)
-	data.ZORIForecast, _ = extractLatestValue(zoriForecastJSON)
+	data.ZHVIForecast, _ = extractLatestValue(zhvfDataJSON)
+	// No ZORI forecast available in the database
 
 	r.logger.Debug("fetched metro data",
 		"region", name,
@@ -147,26 +146,26 @@ func (r *MetroReader) GetLatestData(ctx context.Context, metroName, regionType s
 
 // GetLatestDataByID returns the most recent data for a metro by region ID
 func (r *MetroReader) GetLatestDataByID(ctx context.Context, regionID int) (*MetroData, error) {
+	// Note: zhvf_data is ZHVI forecast (not zhvi_forecast_data)
+	// No ZORI forecast column exists in this table
 	query := `
 		SELECT
 			metro_region_id,
 			metro_name,
 			COALESCE(zhvi_data, '{}'::jsonb),
 			COALESCE(zori_data, '{}'::jsonb),
-			COALESCE(zhvi_forecast_data, '{}'::jsonb),
-			COALESCE(zori_forecast_data, '{}'::jsonb)
+			COALESCE(zhvf_data, '{}'::jsonb)
 		FROM metro_time_series
 		WHERE metro_region_id = $1
 		LIMIT 1
 	`
 
 	var (
-		id               int
-		name             string
-		zhviDataJSON     []byte
-		zoriDataJSON     []byte
-		zhviForecastJSON []byte
-		zoriForecastJSON []byte
+		id           int
+		name         string
+		zhviDataJSON []byte
+		zoriDataJSON []byte
+		zhvfDataJSON []byte
 	)
 
 	err := r.db.QueryRow(ctx, query, regionID).Scan(
@@ -174,8 +173,7 @@ func (r *MetroReader) GetLatestDataByID(ctx context.Context, regionID int) (*Met
 		&name,
 		&zhviDataJSON,
 		&zoriDataJSON,
-		&zhviForecastJSON,
-		&zoriForecastJSON,
+		&zhvfDataJSON,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -193,8 +191,8 @@ func (r *MetroReader) GetLatestDataByID(ctx context.Context, regionID int) (*Met
 
 	data.ZHVI, data.Date = extractLatestValue(zhviDataJSON)
 	data.ZORI, _ = extractLatestValue(zoriDataJSON)
-	data.ZHVIForecast, _ = extractLatestValue(zhviForecastJSON)
-	data.ZORIForecast, _ = extractLatestValue(zoriForecastJSON)
+	data.ZHVIForecast, _ = extractLatestValue(zhvfDataJSON)
+	// No ZORI forecast available in the database
 
 	return data, nil
 }
@@ -279,17 +277,18 @@ func (r *MetroReader) GetTimeSeries(ctx context.Context, metroName, regionType s
 }
 
 // GetCityMetroMapping returns the metro mapping for a city
-// Uses the city_market_cache table from www_v1
+// Uses the city_market_cache table joined with metro_time_series for metro name
 func (r *MetroReader) GetCityMetroMapping(ctx context.Context, city, stateCode string) (*CityMetroMapping, error) {
-	// Try city_market_cache first which has metro info
+	// Join city_market_cache with metro_time_series to get metro name
 	query := `
 		SELECT
-			city,
-			state_code,
-			metro,
-			COALESCE(metro_region_id, 0)
-		FROM city_market_cache
-		WHERE city ILIKE $1 AND state_code = $2
+			c.city,
+			c.state,
+			COALESCE(m.metro_name, ''),
+			COALESCE(c.metro_region_id, 0)
+		FROM city_market_cache c
+		LEFT JOIN metro_time_series m ON c.metro_region_id = m.metro_region_id
+		WHERE c.city ILIKE $1 AND c.state = $2
 		LIMIT 1
 	`
 
@@ -319,18 +318,20 @@ func (r *MetroReader) GetCityMetroMapping(ctx context.Context, city, stateCode s
 // GetMarketData returns market data for a city, falling back to metro if needed
 func (r *MetroReader) GetMarketData(ctx context.Context, city, stateCode string) (*MetroData, error) {
 	// First try city_market_cache for cached city data
+	// Join with metro_time_series to get metro name
 	cacheQuery := `
 		SELECT
-			COALESCE(metro_region_id, 0),
-			city,
-			state_code,
-			metro,
-			COALESCE(median_home_value, 0),
-			COALESCE(median_rent, 0),
-			COALESCE(yoy_change, 0),
-			updated_at
-		FROM city_market_cache
-		WHERE city ILIKE $1 AND state_code = $2
+			COALESCE(c.metro_region_id, 0),
+			c.city,
+			c.state,
+			COALESCE(m.metro_name, ''),
+			COALESCE(c.median_home_price, 0),
+			COALESCE(c.median_rent, 0),
+			COALESCE(c.price_yoy_change, 0),
+			c.last_updated
+		FROM city_market_cache c
+		LEFT JOIN metro_time_series m ON c.metro_region_id = m.metro_region_id
+		WHERE c.city ILIKE $1 AND c.state = $2
 		LIMIT 1
 	`
 
@@ -339,10 +340,10 @@ func (r *MetroReader) GetMarketData(ctx context.Context, city, stateCode string)
 		cityName        string
 		state           string
 		metroName       string
-		medianHomeValue float64
+		medianHomePrice float64
 		medianRent      float64
-		yoyChange       float64
-		updatedAt       time.Time
+		priceYoyChange  float64
+		lastUpdated     time.Time
 	)
 
 	err := r.db.QueryRow(ctx, cacheQuery, city, stateCode).Scan(
@@ -350,12 +351,12 @@ func (r *MetroReader) GetMarketData(ctx context.Context, city, stateCode string)
 		&cityName,
 		&state,
 		&metroName,
-		&medianHomeValue,
+		&medianHomePrice,
 		&medianRent,
-		&yoyChange,
-		&updatedAt,
+		&priceYoyChange,
+		&lastUpdated,
 	)
-	if err == nil && medianHomeValue > 0 {
+	if err == nil && medianHomePrice > 0 {
 		// Return cached city data
 		return &MetroData{
 			RegionID:   metroRegionID,
@@ -363,8 +364,8 @@ func (r *MetroReader) GetMarketData(ctx context.Context, city, stateCode string)
 			RegionType: "city",
 			StateCode:  state,
 			Metro:      metroName,
-			Date:       updatedAt,
-			ZHVI:       medianHomeValue,
+			Date:       lastUpdated,
+			ZHVI:       medianHomePrice,
 			ZORI:       medianRent,
 		}, nil
 	}
