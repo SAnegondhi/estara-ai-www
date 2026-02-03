@@ -227,6 +227,9 @@ type PortfolioMetrics struct {
 
 	// 5-year projection for portfolio view (derived from GrowthProjection)
 	FiveYearProjection *FiveYearProjectionData `json:"fiveYearProjection,omitempty"`
+
+	// Projection assumptions for transparency (appreciation rate, rent growth, etc.)
+	ProjectionAssumptions *ProjectionAssumptions `json:"projectionAssumptions,omitempty"`
 }
 
 // FiveYearProjectionData holds simplified 5-year projection for client display
@@ -246,14 +249,15 @@ type YearProjectionData struct {
 
 // GrowthProjection holds portfolio growth projections over time
 type GrowthProjection struct {
-	Years             int                `json:"years"`
-	YearlyData        []YearlyProjection `json:"yearlyData"`
-	FinalValue        int                `json:"finalValue"`
-	FinalEquity       int                `json:"finalEquity"`
-	FinalCashFlow     int                `json:"finalCashFlow"`
-	TotalAppreciation int                `json:"totalAppreciation"`
-	TotalCashFlow     int                `json:"totalCashFlow"`
-	CAGR              float64            `json:"cagr"` // Compound Annual Growth Rate
+	Years             int                    `json:"years"`
+	YearlyData        []YearlyProjection     `json:"yearlyData"`
+	FinalValue        int                    `json:"finalValue"`
+	FinalEquity       int                    `json:"finalEquity"`
+	FinalCashFlow     int                    `json:"finalCashFlow"`
+	TotalAppreciation int                    `json:"totalAppreciation"`
+	TotalCashFlow     int                    `json:"totalCashFlow"`
+	CAGR              float64                `json:"cagr"`                   // Compound Annual Growth Rate
+	Assumptions       *ProjectionAssumptions `json:"assumptions,omitempty"` // All assumptions used with sources
 }
 
 // YearlyProjection holds projected values for a specific year
@@ -561,6 +565,7 @@ type ReinvestmentAnalysis struct {
 	ReinvestScenario  []YearlyProjection `json:"reinvestScenario"`
 	CumulativeDiff    ReinvestmentDiff   `json:"cumulativeDifference"`
 	CompoundedReturns CompoundedReturns  `json:"compoundedReturns"`
+	Assumptions       *ProjectionAssumptions `json:"assumptions,omitempty"` // All assumptions used with sources
 }
 
 // ReinvestmentDiff holds the cumulative difference at key years
@@ -581,6 +586,51 @@ type CompoundedReturns struct {
 	TotalReinvested         int `json:"totalReinvested"`
 	AdditionalPropertyValue int `json:"additionalPropertyValue"`
 	AdditionalCashFlow      int `json:"additionalCashFlow"`
+}
+
+// ProjectionAssumptions captures all assumptions used in projections for transparency
+type ProjectionAssumptions struct {
+	// Financing assumptions
+	MortgageRate   float64 `json:"mortgageRate"`   // Annual interest rate (%)
+	MortgageSource string  `json:"mortgageSource"` // "FRED 30Y Fixed" or "Default (7%)"
+	DownPaymentPct float64 `json:"downPaymentPct"` // Down payment percentage (e.g., 0.20 for 20%)
+	LoanTermYears  int     `json:"loanTermYears"`  // Loan term in years (e.g., 30)
+
+	// Growth rate assumptions
+	AppreciationRate   float64 `json:"appreciationRate"`   // Annual property appreciation (%)
+	AppreciationSource string  `json:"appreciationSource"` // "Market Data 5Y CAGR" or "Default (3%)"
+	RentGrowthRate     float64 `json:"rentGrowthRate"`     // Annual rent growth (%)
+	RentGrowthSource   string  `json:"rentGrowthSource"`   // "Market Data 5Y CAGR" or "Default (2%)"
+
+	// Expense assumptions (for acquisitions)
+	ExpenseRatio         float64                       `json:"expenseRatio"`         // Total expenses as % of rent
+	ExpenseSource        string                        `json:"expenseSource"`        // "State-specific calculation" or "Default (50%)"
+	ExpenseBreakdown     *ProjectionExpenseBreakdown   `json:"expenseBreakdown,omitempty"`
+
+	// Acquisition assumptions
+	AcquisitionPrice       int    `json:"acquisitionPrice"`       // Price used for simulated acquisitions
+	AcquisitionPriceSource string `json:"acquisitionPriceSource"` // "Market Data Median" or "Portfolio Average"
+	AcquisitionRent        int    `json:"acquisitionRent"`        // Monthly rent used for simulated acquisitions
+	AcquisitionRentSource  string `json:"acquisitionRentSource"`  // "Market Data Median" or "Portfolio Average"
+	AcquisitionLocation    string `json:"acquisitionLocation"`    // Target location for acquisitions
+
+	// Data quality indicators
+	OverallConfidence float64  `json:"overallConfidence"` // 0-100 confidence score
+	DataQualityNotes  []string `json:"dataQualityNotes"`  // List of data quality warnings/notes
+}
+
+// ProjectionExpenseBreakdown provides detailed expense rate breakdown for transparency
+type ProjectionExpenseBreakdown struct {
+	PropertyTaxRate  float64 `json:"propertyTaxRate"`  // % of home value
+	PropertyTaxState string  `json:"propertyTaxState"` // State used for tax rate
+	InsuranceRate    float64 `json:"insuranceRate"`    // % of home value
+	InsuranceState   string  `json:"insuranceState"`   // State used for insurance rate
+	MaintenanceRate  float64 `json:"maintenanceRate"`  // % of home value
+	MaintenanceAge   string  `json:"maintenanceAge"`   // Age category: "new", "modern", "established", "older", "historic"
+	VacancyRate      float64 `json:"vacancyRate"`      // % of rent
+	VacancySource    string  `json:"vacancySource"`    // "FRED Local" or "National Average"
+	ManagementRate   float64 `json:"managementRate"`   // % of rent
+	MarketClass      string  `json:"marketClass"`      // "A", "B", or "C"
 }
 
 // DivestAnalysisResult holds the result of analyzing a property for divest

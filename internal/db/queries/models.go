@@ -363,6 +363,21 @@ type PasswordResetToken struct {
 	UpdatedAt pgtype.Timestamp `json:"updatedAt"`
 }
 
+// Size-based FIFO cache for individual property details (ADR-061)
+type PropertyCache struct {
+	ID int32 `json:"id"`
+	// Unique cache key in format property_read:{provider}:{propertyID}
+	CacheKey   string `json:"cache_key"`
+	Provider   string `json:"provider"`
+	PropertyID string `json:"property_id"`
+	// Full property data as JSONB (providers.Property struct)
+	Content        json.RawMessage  `json:"content"`
+	CreatedAt      pgtype.Timestamp `json:"created_at"`
+	LastAccessedAt pgtype.Timestamp `json:"last_accessed_at"`
+	// Number of times this cache entry has been read
+	AccessCount int32 `json:"access_count"`
+}
+
 type Receipt struct {
 	ID                    string           `json:"id"`
 	InvoiceId             string           `json:"invoiceId"`

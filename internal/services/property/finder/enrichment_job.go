@@ -58,10 +58,11 @@ type EnrichmentUpdate struct {
 
 // EnrichmentJobManager manages background enrichment jobs
 type EnrichmentJobManager struct {
-	cache       *cache.HybridCache
-	providers   []providers.Provider
-	concurrency int
-	logger      *slog.Logger
+	cache         *cache.HybridCache   // Used for job status caching
+	propertyCache *cache.PropertyCache // Used for property read caching (size-based FIFO, ADR-061)
+	providers     []providers.Provider
+	concurrency   int
+	logger        *slog.Logger
 
 	// Track active jobs for SSE subscribers
 	mu          sync.RWMutex
@@ -69,17 +70,18 @@ type EnrichmentJobManager struct {
 }
 
 // NewEnrichmentJobManager creates a new job manager
-func NewEnrichmentJobManager(cache *cache.HybridCache, providerList []providers.Provider, concurrency int) *EnrichmentJobManager {
+func NewEnrichmentJobManager(hybridCache *cache.HybridCache, propertyCache *cache.PropertyCache, providerList []providers.Provider, concurrency int) *EnrichmentJobManager {
 	if concurrency <= 0 {
 		concurrency = defaultEnrichmentConcurrency
 	}
 
 	return &EnrichmentJobManager{
-		cache:       cache,
-		providers:   providerList,
-		concurrency: concurrency,
-		logger:      slog.Default().With("component", "enrichment_job_manager"),
-		subscribers: make(map[string][]chan EnrichmentUpdate),
+		cache:         hybridCache,
+		propertyCache: propertyCache,
+		providers:     providerList,
+		concurrency:   concurrency,
+		logger:        slog.Default().With("component", "enrichment_job_manager"),
+		subscribers:   make(map[string][]chan EnrichmentUpdate),
 	}
 }
 
@@ -93,7 +95,23 @@ func (m *EnrichmentJobManager) buildPropertyCacheKey(providerName, propertyID st
 
 // getCachedProperty retrieves a property from cache if it exists and is enriched
 func (m *EnrichmentJobManager) getCachedProperty(ctx context.Context, providerName, propertyID string) (*providers.Property, bool) {
-	if m.cache == nil || propertyID == "" {
+	if propertyID == "" {
+		return nil, false
+	}
+
+	// Try PropertyCache first (size-based FIFO, ADR-061)
+	if m.propertyCache != nil {
+		prop, err := m.propertyCache.Get(ctx, providerName, propertyID)
+		if err == nil && prop != nil {
+			// Check if property is enriched (has yearBuilt or other enrichment data)
+			isEnriched := prop.YearBuilt > 0 || prop.EstimatedRent > 0 || prop.LotSize > 0
+			return prop, isEnriched
+		}
+		return nil, false
+	}
+
+	// Fallback to HybridCache
+	if m.cache == nil {
 		return nil, false
 	}
 
@@ -115,7 +133,7 @@ func (m *EnrichmentJobManager) getCachedProperty(ctx context.Context, providerNa
 
 // cacheProperty stores an enriched property in cache
 func (m *EnrichmentJobManager) cacheProperty(ctx context.Context, prop *providers.Property) {
-	if m.cache == nil || prop == nil || prop.ID == "" {
+	if prop == nil || prop.ID == "" {
 		return
 	}
 
@@ -124,9 +142,20 @@ func (m *EnrichmentJobManager) cacheProperty(ctx context.Context, prop *provider
 		providerName = "hasdata"
 	}
 
-	cacheKey := m.buildPropertyCacheKey(providerName, prop.ID)
-	if err := m.cache.Set(ctx, "", cacheKey, "property_read", prop, propertyReadCacheTTL); err != nil {
-		m.logger.Warn("failed to cache enriched property", "propertyId", prop.ID, "error", err)
+	// Prefer PropertyCache (size-based FIFO, ADR-061) if available
+	if m.propertyCache != nil {
+		if err := m.propertyCache.Set(ctx, providerName, prop.ID, prop); err != nil {
+			m.logger.Warn("failed to cache enriched property (PropertyCache)", "propertyId", prop.ID, "error", err)
+		}
+		return
+	}
+
+	// Fallback to HybridCache with TTL
+	if m.cache != nil {
+		cacheKey := m.buildPropertyCacheKey(providerName, prop.ID)
+		if err := m.cache.Set(ctx, "", cacheKey, "property_read", prop, propertyReadCacheTTL); err != nil {
+			m.logger.Warn("failed to cache enriched property (HybridCache)", "propertyId", prop.ID, "error", err)
+		}
 	}
 }
 

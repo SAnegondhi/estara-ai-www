@@ -17,8 +17,11 @@ import (
 
 const (
 	// Cache settings
+	// Property search cache TTL: 24 hours to match upstream data freshness
+	// (third-party portals like Zillow/Realtor.com update every 12-24 hours)
+	// See ADR-061 for rationale
 	propertyCacheKeyPrefix = "properties:"
-	propertyCacheTTL       = 15 * time.Minute
+	propertyCacheTTL       = 24 * time.Hour
 	propertyReadCacheKeyPrefix = "property_read:"
 	propertyReadCacheTTL       = 24 * time.Hour
 
@@ -38,6 +41,9 @@ const (
 type OrchestratorConfig struct {
 	Providers []providers.Provider
 	Cache     *cache.HybridCache
+	// PropertyCache is the size-based cache for individual property reads (ADR-061)
+	// If nil, falls back to using Cache (HybridCache) with TTL-based caching
+	PropertyCache *cache.PropertyCache
 	// PriorityOrder defines the order to try providers (provider names)
 	PriorityOrder []string
 	// ConcurrentFallback if true, tries multiple providers concurrently
@@ -49,7 +55,8 @@ type OrchestratorConfig struct {
 // Orchestrator coordinates property searches across multiple providers
 type Orchestrator struct {
 	providers              []providers.Provider
-	cache                  *cache.HybridCache
+	cache                  *cache.HybridCache    // Used for property search caching (24h TTL)
+	propertyCache          *cache.PropertyCache  // Used for property read caching (size-based FIFO, ADR-061)
 	priorityOrder          map[string]int
 	concurrentFallback     bool
 	enrichmentConcurrency  int
@@ -142,6 +149,7 @@ func NewOrchestrator(cfg OrchestratorConfig) *Orchestrator {
 	orch := &Orchestrator{
 		providers:             sortedProviders,
 		cache:                 cfg.Cache,
+		propertyCache:         cfg.PropertyCache,
 		priorityOrder:         priorityOrder,
 		concurrentFallback:    cfg.ConcurrentFallback,
 		enrichmentConcurrency: enrichmentConcurrency,
@@ -150,7 +158,8 @@ func NewOrchestrator(cfg OrchestratorConfig) *Orchestrator {
 	}
 
 	// Initialize enrichment job manager for async enrichment
-	orch.enrichmentJobManager = NewEnrichmentJobManager(cfg.Cache, sortedProviders, enrichmentConcurrency)
+	// Pass PropertyCache for size-based caching (ADR-061), fallback to HybridCache
+	orch.enrichmentJobManager = NewEnrichmentJobManager(cfg.Cache, cfg.PropertyCache, sortedProviders, enrichmentConcurrency)
 
 	return orch
 }
@@ -640,7 +649,23 @@ func (o *Orchestrator) SearchWithStreaming(
 
 // getCachedEnrichedProperty retrieves a cached property if it exists and is enriched
 func (o *Orchestrator) getCachedEnrichedProperty(ctx context.Context, providerName, propertyID string) (*providers.Property, bool) {
-	if o.cache == nil || propertyID == "" {
+	if propertyID == "" {
+		return nil, false
+	}
+
+	// Try PropertyCache first (size-based FIFO, ADR-061)
+	if o.propertyCache != nil {
+		prop, err := o.propertyCache.Get(ctx, providerName, propertyID)
+		if err == nil && prop != nil {
+			// If property is in cache, it's already enriched (Rule 2: all properties are
+			// enriched via Property API before caching)
+			return prop, true
+		}
+		return nil, false
+	}
+
+	// Fallback to HybridCache
+	if o.cache == nil {
 		return nil, false
 	}
 
@@ -824,9 +849,10 @@ func (o *Orchestrator) buildPropertyReadCacheKey(providerName, propertyID string
 	return propertyReadCacheKeyPrefix + normalizeString(providerName) + ":" + propertyID
 }
 
-// cachePropertyRead stores a single property read result with a 24h TTL.
+// cachePropertyRead stores a single property read result.
+// Uses PropertyCache (size-based FIFO, ADR-061) if available, otherwise falls back to HybridCache with TTL.
 func (o *Orchestrator) cachePropertyRead(ctx context.Context, providerName string, property *providers.Property) {
-	if o.cache == nil || property == nil || property.ID == "" {
+	if property == nil || property.ID == "" {
 		return
 	}
 
@@ -834,26 +860,56 @@ func (o *Orchestrator) cachePropertyRead(ctx context.Context, providerName strin
 		providerName = property.ProviderName
 	}
 
-	cacheKey := o.buildPropertyReadCacheKey(providerName, property.ID)
-	if err := o.cache.Set(ctx, "", cacheKey, "property_read", property, propertyReadCacheTTL); err != nil {
-		o.logger.Warn("failed to cache property read", "error", err)
-	}
-}
-
-// cachePropertyReads stores multiple property reads with a 24h TTL.
-func (o *Orchestrator) cachePropertyReads(ctx context.Context, providerName string, properties []providers.Property) {
-	if o.cache == nil || len(properties) == 0 {
+	// Prefer PropertyCache (size-based) if available
+	if o.propertyCache != nil {
+		if err := o.propertyCache.Set(ctx, providerName, property.ID, property); err != nil {
+			o.logger.Warn("failed to cache property read (PropertyCache)", "error", err)
+		}
 		return
 	}
 
-	for i := range properties {
-		o.cachePropertyRead(ctx, providerName, &properties[i])
+	// Fallback to HybridCache with TTL
+	if o.cache != nil {
+		cacheKey := o.buildPropertyReadCacheKey(providerName, property.ID)
+		if err := o.cache.Set(ctx, "", cacheKey, "property_read", property, propertyReadCacheTTL); err != nil {
+			o.logger.Warn("failed to cache property read (HybridCache)", "error", err)
+		}
+	}
+}
+
+// cachePropertyReads stores multiple property reads.
+// Uses PropertyCache (size-based FIFO, ADR-061) if available for batch efficiency.
+func (o *Orchestrator) cachePropertyReads(ctx context.Context, providerName string, properties []providers.Property) {
+	if len(properties) == 0 {
+		return
+	}
+
+	// Prefer PropertyCache batch method if available
+	if o.propertyCache != nil {
+		if err := o.propertyCache.SetBatch(ctx, providerName, properties); err != nil {
+			o.logger.Warn("failed to batch cache property reads", "error", err, "count", len(properties))
+		}
+		return
+	}
+
+	// Fallback to HybridCache (individual calls)
+	if o.cache != nil {
+		for i := range properties {
+			o.cachePropertyRead(ctx, providerName, &properties[i])
+		}
 	}
 }
 
 // GetProperty retrieves a single property by ID
 func (o *Orchestrator) GetProperty(ctx context.Context, providerName, propertyID string) (*providers.Property, error) {
-	if o.cache != nil {
+	// Try PropertyCache first (size-based FIFO, ADR-061)
+	if o.propertyCache != nil {
+		prop, err := o.propertyCache.Get(ctx, providerName, propertyID)
+		if err == nil && prop != nil {
+			return prop, nil
+		}
+	} else if o.cache != nil {
+		// Fallback to HybridCache
 		cacheKey := o.buildPropertyReadCacheKey(providerName, propertyID)
 		if cached, err := o.cache.Get(ctx, "", cacheKey); err == nil && cached != nil {
 			var property providers.Property

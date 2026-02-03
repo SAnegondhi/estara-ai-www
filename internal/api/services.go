@@ -6,6 +6,7 @@ import (
 
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/db/postgres"
+	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 	"github.com/estara-ai/www/internal/services/ai/agents"
 	"github.com/estara-ai/www/internal/services/ai/anthropic"
@@ -29,6 +30,7 @@ type Services struct {
 	JobQueue       *queue.Queue
 	WorkerPool     *queue.WorkerPool
 	HybridCache    *cache.HybridCache
+	PropertyCache  *cache.PropertyCache // Size-based FIFO cache for property reads (ADR-061)
 	Anthropic      *anthropic.Client
 }
 
@@ -48,6 +50,19 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 	if cfg.Redis != nil && cfg.DB != nil && cfg.DB.Main != nil {
 		services.HybridCache = cache.NewHybridCache(cfg.Redis, cfg.DB.Main)
 		logger.Info("hybrid cache initialized")
+
+		// Create property cache (size-based FIFO for property reads, ADR-061)
+		services.PropertyCache = cache.NewPropertyCache(
+			cfg.Redis,
+			queries.New(cfg.DB.Main),
+			logger,
+			cache.PropertyCacheConfig{
+				L1MaxSize:  50000,  // Redis max entries
+				L2MaxSize:  500000, // Postgres max entries
+				EvictBatch: 1000,   // Entries to evict when full
+			},
+		)
+		logger.Info("property cache initialized (size-based FIFO)")
 	}
 
 	// Create Anthropic client
@@ -109,6 +124,7 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 		services.PropertyFinder = finder.NewOrchestrator(finder.OrchestratorConfig{
 			Providers:             providerList,
 			Cache:                 services.HybridCache,
+			PropertyCache:         services.PropertyCache, // Size-based FIFO cache (ADR-061)
 			PriorityOrder:         cfg.Config.Property.Priority,
 			EnrichmentConcurrency: cfg.Config.Property.EnrichmentConcurrency,
 		})

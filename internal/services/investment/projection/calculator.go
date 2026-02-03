@@ -1,7 +1,9 @@
 package projection
 
 import (
+	"fmt"
 	"math"
+	"strings"
 
 	"github.com/estara-ai/www/internal/services/investment"
 	"github.com/estara-ai/www/internal/services/investment/expenses"
@@ -118,7 +120,262 @@ func (c *Calculator) CalculateGrowth(properties []investment.PropertyInPortfolio
 		TotalAppreciation: totalAppreciation,
 		TotalCashFlow:     cumulativeCashFlow,
 		CAGR:              cagr,
+		// No assumptions - use CalculateGrowthWithMarketData for transparent assumptions
 	}
+}
+
+// CalculateGrowthWithMarketData projects portfolio value using location-specific market data
+// and returns transparent assumptions for each rate used
+func (c *Calculator) CalculateGrowthWithMarketData(
+	properties []investment.PropertyInPortfolio,
+	years int,
+	marketQuality []investment.LocationMarketAnalysis,
+	mortgageRate float64,
+) *investment.GrowthProjection {
+	if len(properties) == 0 || years <= 0 {
+		return &investment.GrowthProjection{
+			Years:      years,
+			YearlyData: []investment.YearlyProjection{},
+		}
+	}
+
+	// Build market data lookup
+	marketLookup := make(map[string]*investment.LocationMarketAnalysis, len(marketQuality))
+	for i := range marketQuality {
+		key := strings.ToLower(marketQuality[i].Location)
+		marketLookup[key] = &marketQuality[i]
+	}
+
+	// Calculate per-property appreciation and rent growth rates
+	type propertyRates struct {
+		appreciationRate float64
+		rentGrowthRate   float64
+		location         string
+	}
+	rates := make([]propertyRates, len(properties))
+	hasMarketData := false
+
+	for i, p := range properties {
+		location := strings.ToLower(fmt.Sprintf("%s, %s", p.Property.City, p.Property.State))
+		rates[i].location = location
+
+		// Get appreciation rate
+		if marketData, ok := marketLookup[location]; ok && marketData.PriceGrowth5Y != nil {
+			// Convert 5-year growth to annual CAGR
+			totalGrowth := *marketData.PriceGrowth5Y / 100
+			if totalGrowth > -1 {
+				rates[i].appreciationRate = (math.Pow(1+totalGrowth, 0.2) - 1)
+				hasMarketData = true
+			} else {
+				rates[i].appreciationRate = c.config.AppreciationRate
+			}
+		} else {
+			rates[i].appreciationRate = c.config.AppreciationRate
+		}
+
+		// Get rent growth rate
+		if marketData, ok := marketLookup[location]; ok && marketData.RentGrowth5Y != nil {
+			totalGrowth := *marketData.RentGrowth5Y / 100
+			if totalGrowth > -1 {
+				rates[i].rentGrowthRate = (math.Pow(1+totalGrowth, 0.2) - 1)
+				hasMarketData = true
+			} else {
+				rates[i].rentGrowthRate = c.config.RentGrowthRate
+			}
+		} else {
+			rates[i].rentGrowthRate = c.config.RentGrowthRate
+		}
+	}
+
+	// Calculate weighted average rates for assumptions display
+	totalValue := 0
+	weightedAppreciation := 0.0
+	weightedRentGrowth := 0.0
+	for i, p := range properties {
+		totalValue += p.Property.Price
+		weightedAppreciation += float64(p.Property.Price) * rates[i].appreciationRate
+		weightedRentGrowth += float64(p.Property.Price) * rates[i].rentGrowthRate
+	}
+	avgAppreciationRate := weightedAppreciation / float64(totalValue)
+	avgRentGrowthRate := weightedRentGrowth / float64(totalValue)
+
+	// Calculate initial totals
+	initialValue := 0
+	initialLoanBalance := 0
+	initialEquity := 0
+	initialAnnualCashFlow := 0
+
+	for _, p := range properties {
+		initialValue += p.Property.Price
+		initialLoanBalance += p.LoanAmount
+		initialEquity += p.DownPayment
+		initialAnnualCashFlow += p.MonthlyCashFlow * 12
+	}
+
+	// Track per-property current values
+	propertyValues := make([]float64, len(properties))
+	propertyRents := make([]float64, len(properties))
+	for i, p := range properties {
+		propertyValues[i] = float64(p.Property.Price)
+		propertyRents[i] = float64(p.Property.EstimatedRent * 12) // Annual rent
+	}
+
+	yearlyData := make([]investment.YearlyProjection, years)
+	cumulativeCashFlow := 0
+	totalAppreciation := 0
+	currentLoanBalance := float64(initialLoanBalance)
+
+	effectiveMortgageRate := mortgageRate
+	if effectiveMortgageRate == 0 {
+		effectiveMortgageRate = 7.0 // Default
+	}
+
+	for year := 1; year <= years; year++ {
+		yearAppreciation := 0.0
+		currentValue := 0.0
+
+		// Apply per-property appreciation
+		for i := range properties {
+			appreciation := propertyValues[i] * rates[i].appreciationRate
+			propertyValues[i] += appreciation
+			yearAppreciation += appreciation
+			currentValue += propertyValues[i]
+		}
+		totalAppreciation += int(yearAppreciation)
+
+		// Calculate principal paydown
+		annualPrincipalPaydown := c.calculateAnnualPrincipalPaydown(
+			float64(initialLoanBalance),
+			effectiveMortgageRate/100,
+			c.config.LoanTermYears,
+			year,
+		)
+		currentLoanBalance -= annualPrincipalPaydown
+
+		// Calculate equity
+		equity := currentValue - currentLoanBalance
+
+		// Apply per-property rent growth and calculate cash flow
+		annualCashFlow := 0.0
+		for i, p := range properties {
+			propertyRents[i] *= (1 + rates[i].rentGrowthRate)
+			// Simplified: monthly cash flow grows proportionally
+			monthlyCashFlow := float64(p.MonthlyCashFlow) * math.Pow(1+rates[i].rentGrowthRate, float64(year))
+			annualCashFlow += monthlyCashFlow * 12
+		}
+		cumulativeCashFlow += int(annualCashFlow)
+
+		yearlyData[year-1] = investment.YearlyProjection{
+			Year:               year,
+			PortfolioValue:     int(currentValue),
+			Equity:             int(equity),
+			LoanBalance:        int(currentLoanBalance),
+			AnnualCashFlow:     int(annualCashFlow),
+			CumulativeCashFlow: cumulativeCashFlow,
+			Appreciation:       int(yearAppreciation),
+		}
+	}
+
+	// Calculate CAGR
+	finalValue := yearlyData[years-1].PortfolioValue
+	cagr := c.calculateCAGR(float64(initialValue), float64(finalValue), years)
+
+	// Build assumptions
+	assumptions := c.buildGrowthAssumptions(
+		properties, avgAppreciationRate, avgRentGrowthRate,
+		effectiveMortgageRate, hasMarketData,
+	)
+
+	return &investment.GrowthProjection{
+		Years:             years,
+		YearlyData:        yearlyData,
+		FinalValue:        finalValue,
+		FinalEquity:       yearlyData[years-1].Equity,
+		FinalCashFlow:     yearlyData[years-1].AnnualCashFlow,
+		TotalAppreciation: totalAppreciation,
+		TotalCashFlow:     cumulativeCashFlow,
+		CAGR:              cagr,
+		Assumptions:       assumptions,
+	}
+}
+
+// buildGrowthAssumptions creates transparent assumptions for growth projections
+func (c *Calculator) buildGrowthAssumptions(
+	properties []investment.PropertyInPortfolio,
+	avgAppreciationRate float64,
+	avgRentGrowthRate float64,
+	mortgageRate float64,
+	hasMarketData bool,
+) *investment.ProjectionAssumptions {
+	assumptions := &investment.ProjectionAssumptions{
+		// Growth rates
+		AppreciationRate: avgAppreciationRate * 100, // Convert to percentage
+		RentGrowthRate:   avgRentGrowthRate * 100,
+
+		// Financing (for context)
+		MortgageRate:   mortgageRate,
+		LoanTermYears:  c.config.LoanTermYears,
+		DownPaymentPct: 0.20, // Standard assumption
+
+		// Data quality
+		DataQualityNotes: []string{},
+	}
+
+	// Set sources
+	if hasMarketData {
+		assumptions.AppreciationSource = "Market Data 5Y CAGR (portfolio-weighted)"
+		assumptions.RentGrowthSource = "Market Data 5Y CAGR (portfolio-weighted)"
+		assumptions.OverallConfidence = 85
+	} else {
+		assumptions.AppreciationSource = fmt.Sprintf("Default (%.1f%%)", c.config.AppreciationRate*100)
+		assumptions.RentGrowthSource = fmt.Sprintf("Default (%.1f%%)", c.config.RentGrowthRate*100)
+		assumptions.OverallConfidence = 60
+		assumptions.DataQualityNotes = append(assumptions.DataQualityNotes,
+			"Using default growth rates (market data unavailable)")
+	}
+
+	// Mortgage rate source
+	if mortgageRate != 7.0 {
+		assumptions.MortgageSource = "FRED 30Y Fixed"
+	} else {
+		assumptions.MortgageSource = "Default (7%)"
+	}
+
+	// Calculate expense ratio from config
+	assumptions.ExpenseRatio = c.config.ExpenseRatio * 100
+	assumptions.ExpenseSource = fmt.Sprintf("Default (%.0f%%)", c.config.ExpenseRatio*100)
+
+	// Acquisition assumptions (from portfolio)
+	if len(properties) > 0 {
+		totalPrice := 0
+		totalRent := 0
+		for _, p := range properties {
+			totalPrice += p.Property.Price
+			totalRent += p.Property.EstimatedRent
+		}
+		assumptions.AcquisitionPrice = totalPrice / len(properties)
+		assumptions.AcquisitionRent = totalRent / len(properties)
+		assumptions.AcquisitionPriceSource = "Portfolio Average"
+		assumptions.AcquisitionRentSource = "Portfolio Average"
+
+		// Most common location
+		locationCounts := make(map[string]int)
+		for _, p := range properties {
+			loc := fmt.Sprintf("%s, %s", p.Property.City, p.Property.State)
+			locationCounts[loc]++
+		}
+		var mostCommon string
+		maxCount := 0
+		for loc, count := range locationCounts {
+			if count > maxCount {
+				maxCount = count
+				mostCommon = loc
+			}
+		}
+		assumptions.AcquisitionLocation = mostCommon
+	}
+
+	return assumptions
 }
 
 // CalculateMetrics computes portfolio-level metrics

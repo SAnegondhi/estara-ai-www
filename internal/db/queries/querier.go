@@ -24,6 +24,8 @@ type Querier interface {
 	CountEarlyAccess(ctx context.Context) (int64, error)
 	CountExpiredCache(ctx context.Context) (int64, error)
 	CountPendingEarlyAccess(ctx context.Context) (int64, error)
+	// Returns the total number of entries in the property cache
+	CountPropertyCache(ctx context.Context) (int64, error)
 	CountSessionActivitiesByType(ctx context.Context, arg CountSessionActivitiesByTypeParams) (int64, error)
 	CountSessionEvaluations(ctx context.Context, discoverysessionid string) (int64, error)
 	CountSessionProperties(ctx context.Context, discoverysessionid string) (int64, error)
@@ -92,6 +94,12 @@ type Querier interface {
 	DeleteExpiredSilentLoginSessions(ctx context.Context) error
 	DeleteExpiredSnapshots(ctx context.Context) error
 	DeleteExpiredSystemAlerts(ctx context.Context) error
+	// Deletes the oldest N entries from the cache (FIFO eviction)
+	DeleteOldestPropertyCache(ctx context.Context, limit int32) (int64, error)
+	// Deletes all cache entries for a specific provider
+	DeletePropertyCacheByProvider(ctx context.Context, provider string) (int64, error)
+	// Deletes a specific property from the cache
+	DeletePropertyFromCache(ctx context.Context, cacheKey string) error
 	DeleteScenario(ctx context.Context, id string) error
 	DeleteScenarioByIDAndUser(ctx context.Context, arg DeleteScenarioByIDAndUserParams) error
 	DeleteSessionEvaluations(ctx context.Context, discoverysessionid string) error
@@ -116,6 +124,8 @@ type Querier interface {
 	GetCacheByID(ctx context.Context, id string) (AnalysisCache, error)
 	GetCacheByKey(ctx context.Context, key string) (AnalysisCache, error)
 	GetCacheByUserAndKey(ctx context.Context, arg GetCacheByUserAndKeyParams) (AnalysisCache, error)
+	// Used for investment plans which shouldn't expire like ephemeral cached data
+	GetCacheByUserAndKeyNoExpiry(ctx context.Context, arg GetCacheByUserAndKeyNoExpiryParams) (AnalysisCache, error)
 	GetCacheStats(ctx context.Context) (GetCacheStatsRow, error)
 	// Checkout Evidence Queries
 	GetCheckoutEvidenceByPaymentIntent(ctx context.Context, stripepaymentintentid pgtype.Text) (CheckoutEvidence, error)
@@ -154,6 +164,14 @@ type Querier interface {
 	GetPasswordResetTokenByToken(ctx context.Context, token string) (PasswordResetToken, error)
 	GetPasswordResetTokensByUser(ctx context.Context, arg GetPasswordResetTokensByUserParams) ([]PasswordResetToken, error)
 	GetPendingInvestorReports(ctx context.Context, limit int32) ([]InvestorReport, error)
+	// Retrieves a property by provider and property ID
+	GetPropertyByProviderAndID(ctx context.Context, arg GetPropertyByProviderAndIDParams) (PropertyCache, error)
+	// Returns cache statistics for monitoring
+	GetPropertyCacheStats(ctx context.Context) (GetPropertyCacheStatsRow, error)
+	// Property Cache Queries
+	// ADR-061: Size-based FIFO cache for individual property reads
+	// Retrieves a single property from cache by its cache key
+	GetPropertyFromCache(ctx context.Context, cacheKey string) (PropertyCache, error)
 	// Receipt Queries
 	GetReceiptByID(ctx context.Context, id string) (Receipt, error)
 	GetReceiptByInvoiceID(ctx context.Context, invoiceid string) (Receipt, error)
@@ -270,6 +288,8 @@ type Querier interface {
 	UpdateInvestorReportData(ctx context.Context, arg UpdateInvestorReportDataParams) (InvestorReport, error)
 	UpdateInvestorReportStatus(ctx context.Context, arg UpdateInvestorReportStatusParams) (InvestorReport, error)
 	UpdateInvoiceStatus(ctx context.Context, arg UpdateInvoiceStatusParams) error
+	// Updates access timestamp and increments access count
+	UpdatePropertyCacheAccess(ctx context.Context, cacheKey string) error
 	UpdateRenewalNotificationDelivered(ctx context.Context, id string) error
 	UpdateRenewalNotificationOpened(ctx context.Context, id string) error
 	UpdateReportPackConsumptionHistory(ctx context.Context, arg UpdateReportPackConsumptionHistoryParams) error
@@ -287,6 +307,8 @@ type Querier interface {
 	UpdateUserSubscription(ctx context.Context, arg UpdateUserSubscriptionParams) error
 	UpdateUserUpdatedAt(ctx context.Context, id string) error
 	UpsertCache(ctx context.Context, arg UpsertCacheParams) (AnalysisCache, error)
+	// Inserts or updates a property in the cache
+	UpsertPropertyCache(ctx context.Context, arg UpsertPropertyCacheParams) error
 	UpsertSystemAlert(ctx context.Context, arg UpsertSystemAlertParams) (SystemAlert, error)
 	UpsertUserAnalysisPreference(ctx context.Context, arg UpsertUserAnalysisPreferenceParams) (UserAnalysisPreference, error)
 }
