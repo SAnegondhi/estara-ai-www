@@ -241,6 +241,49 @@ func (q *Queries) GetCacheByUserAndKey(ctx context.Context, arg GetCacheByUserAn
 	return i, err
 }
 
+const GetCacheByUserAndKeyNoExpiry = `-- name: GetCacheByUserAndKeyNoExpiry :one
+SELECT id, key, "userId", location, feature, prompt, "promptHash", complexity, "investorProfile", "marketData", content, "fullReport", "metricsData", "narrativeData", metadata, "createdAt", "expiresAt", "lastAccessedAt", "accessCount", "supersededBy", "supersededAt", "cacheHits", "generationCost", "savingsGenerated" FROM analysis_cache
+WHERE "userId" = $1 AND key = $2
+`
+
+type GetCacheByUserAndKeyNoExpiryParams struct {
+	UserId string `json:"userId"`
+	Key    string `json:"key"`
+}
+
+// Used for investment plans which shouldn't expire like ephemeral cached data
+func (q *Queries) GetCacheByUserAndKeyNoExpiry(ctx context.Context, arg GetCacheByUserAndKeyNoExpiryParams) (AnalysisCache, error) {
+	row := q.db.QueryRow(ctx, GetCacheByUserAndKeyNoExpiry, arg.UserId, arg.Key)
+	var i AnalysisCache
+	err := row.Scan(
+		&i.ID,
+		&i.Key,
+		&i.UserId,
+		&i.Location,
+		&i.Feature,
+		&i.Prompt,
+		&i.PromptHash,
+		&i.Complexity,
+		&i.InvestorProfile,
+		&i.MarketData,
+		&i.Content,
+		&i.FullReport,
+		&i.MetricsData,
+		&i.NarrativeData,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.LastAccessedAt,
+		&i.AccessCount,
+		&i.SupersededBy,
+		&i.SupersededAt,
+		&i.CacheHits,
+		&i.GenerationCost,
+		&i.SavingsGenerated,
+	)
+	return i, err
+}
+
 const GetCacheStats = `-- name: GetCacheStats :one
 SELECT
     COUNT(*) as total_entries,

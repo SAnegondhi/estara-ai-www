@@ -143,7 +143,7 @@ func (w *InvestmentPlanningWorker) Process(
 	// ADR-059: Model cash flow reinvestment if enabled
 	if params.ReinvestSurplusCashFlows && len(result.SelectedProperties) > 0 {
 		w.reportProgress(progress, job.ID, 80, "Modeling cash flow reinvestment")
-		reinvestAnalysis, err := w.modelReinvestment(params, result.SelectedProperties, mortgageRate)
+		reinvestAnalysis, err := w.modelReinvestment(ctx, params, result.SelectedProperties, mortgageRate, result.MarketQuality)
 		if err != nil {
 			w.logger.Warn("failed to model reinvestment", "error", err)
 		} else {
@@ -157,7 +157,18 @@ func (w *InvestmentPlanningWorker) Process(
 	if projectionYears <= 0 {
 		projectionYears = 10
 	}
-	result.GrowthProjection = *w.calculator.CalculateGrowth(result.SelectedProperties, projectionYears)
+	// Use market-aware projection with transparent assumptions
+	result.GrowthProjection = *w.calculator.CalculateGrowthWithMarketData(
+		result.SelectedProperties,
+		projectionYears,
+		result.MarketQuality,
+		mortgageRate*100, // Convert from decimal to percentage
+	)
+
+	// Copy projection assumptions to metrics for easy access in UI
+	if result.GrowthProjection.Assumptions != nil {
+		result.Metrics.ProjectionAssumptions = result.GrowthProjection.Assumptions
+	}
 
 	// Fetch and calculate existing portfolio metrics (90%)
 	existingPortfolio, err := w.fetchExistingPortfolio(ctx, job.UserID)
@@ -392,22 +403,121 @@ func (w *InvestmentPlanningWorker) processSelectionMode(
 
 // modelReinvestment creates reinvestment analysis using the ReinvestmentModeler
 func (w *InvestmentPlanningWorker) modelReinvestment(
+	ctx context.Context,
 	params *ExtendedPlanningParams,
 	properties []investment.PropertyInPortfolio,
 	mortgageRate float64,
+	marketQuality []investment.LocationMarketAnalysis,
 ) (*investment.ReinvestmentAnalysis, error) {
 	reinvestParams := analysis.ReinvestmentParams{
 		Properties:        properties,
+		MarketQuality:     marketQuality, // Pass market data for location-specific rates
+		YearlyBudgets:     params.YearlyBudgets, // Pass multi-year budgets for future acquisitions
 		ReinvestmentRate:  params.ReinvestmentRate,
 		ProjectionYears:   params.ProjectionYears,
 		MortgageRate:      mortgageRate,
 		DownPaymentPct:    params.DownPaymentPct,
-		AppreciationRate:  3.0, // Default 3%
-		RentGrowthRate:    2.0, // Default 2%
+		AppreciationRate:  3.0, // Default 3% - fallback if no market data
+		RentGrowthRate:    2.0, // Default 2% - fallback if no market data
 		OperatingExpenses: 0.5, // Default 50%
 	}
 
+	// Determine target acquisition location from portfolio
+	if len(properties) > 0 {
+		targetCity, targetState := w.getMostCommonLocation(properties)
+		if targetCity != "" && targetState != "" {
+			// Fetch market data for acquisition assumptions
+			acquisitionMarket := w.fetchAcquisitionMarketData(ctx, targetCity, targetState)
+			if acquisitionMarket != nil {
+				reinvestParams.AcquisitionMarket = acquisitionMarket
+				w.logger.Info("using market data for acquisition assumptions",
+					"targetCity", targetCity,
+					"targetState", targetState,
+					"medianPrice", acquisitionMarket.MedianHomePrice,
+					"medianRent", acquisitionMarket.MedianRent,
+				)
+			}
+		}
+	}
+
+	w.logger.Info("modeling reinvestment with yearly budgets",
+		"propertyCount", len(properties),
+		"yearlyBudgetCount", len(params.YearlyBudgets),
+		"reinvestmentRate", params.ReinvestmentRate,
+		"projectionYears", params.ProjectionYears,
+		"hasAcquisitionMarket", reinvestParams.AcquisitionMarket != nil,
+	)
+
 	return w.reinvestmentModeler.ModelReinvestment(reinvestParams)
+}
+
+// getMostCommonLocation returns the most common city and state from a portfolio
+func (w *InvestmentPlanningWorker) getMostCommonLocation(properties []investment.PropertyInPortfolio) (string, string) {
+	locationCounts := make(map[string]int)
+	locationMap := make(map[string][2]string) // key -> [city, state]
+
+	for _, p := range properties {
+		key := strings.ToLower(fmt.Sprintf("%s, %s", p.Property.City, p.Property.State))
+		locationCounts[key]++
+		locationMap[key] = [2]string{p.Property.City, p.Property.State}
+	}
+
+	var mostCommonKey string
+	maxCount := 0
+	for key, count := range locationCounts {
+		if count > maxCount {
+			maxCount = count
+			mostCommonKey = key
+		}
+	}
+
+	if mostCommonKey != "" {
+		loc := locationMap[mostCommonKey]
+		return loc[0], loc[1]
+	}
+	return "", ""
+}
+
+// fetchAcquisitionMarketData fetches market data for simulated acquisitions
+func (w *InvestmentPlanningWorker) fetchAcquisitionMarketData(ctx context.Context, city, state string) *analysis.AcquisitionMarketData {
+	if w.market == nil {
+		return nil
+	}
+
+	marketData, err := w.market.GetMarketData(ctx, city, state)
+	if err != nil {
+		w.logger.Warn("failed to fetch market data for acquisitions",
+			"city", city,
+			"state", state,
+			"error", err,
+		)
+		return nil
+	}
+
+	result := &analysis.AcquisitionMarketData{
+		TargetCity:  city,
+		TargetState: state,
+	}
+
+	// Set values if available (only if positive)
+	if marketData.MedianHomePrice > 0 {
+		price := marketData.MedianHomePrice
+		result.MedianHomePrice = &price
+	}
+	if marketData.MedianRent > 0 {
+		rent := marketData.MedianRent
+		result.MedianRent = &rent
+	}
+	if marketData.VacancyRate > 0 {
+		vacancy := marketData.VacancyRate
+		result.VacancyRate = &vacancy
+	}
+	if marketData.MortgageRate30 > 0 {
+		mortgage := marketData.MortgageRate30
+		result.MortgageRate = &mortgage
+	}
+
+	return result
 }
 
 // parseJobParams extracts investment planning parameters from job payload

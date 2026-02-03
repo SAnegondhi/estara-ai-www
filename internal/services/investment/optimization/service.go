@@ -81,8 +81,19 @@ func (s *Service) Optimize(ctx context.Context, req investment.OptimizationReque
 
 	marketQuality := CalculateMarketQualityScores(locationMarketData)
 
+	// Pre-score and limit properties before AI scoring to prevent timeout
+	// AI scoring can handle ~100 properties within reasonable time
+	const maxPropertiesForAI = 100
+	investorProfile := investment.InvestorProfile{
+		RiskTolerance:     req.RiskTolerance,
+		Strategy:          req.Strategy,
+		AvailableCapital:  req.Budget,
+		InvestmentHorizon: "5-10 years", // Default
+	}
+	preScoredProperties := preScoreAndLimitProperties(filteredProperties, investorProfile, maxPropertiesForAI, s.logger)
+
 	// Score properties using AI
-	scoredProperties, err := s.ScoreProperties(ctx, filteredProperties, investment.InvestorProfile{
+	scoredProperties, err := s.ScoreProperties(ctx, preScoredProperties, investment.InvestorProfile{
 		RiskTolerance:     req.RiskTolerance,
 		Strategy:          req.Strategy,
 		AvailableCapital:  req.Budget,
@@ -235,7 +246,11 @@ func (s *Service) OptimizeMultiYear(ctx context.Context, req investment.MultiYea
 		InvestmentHorizon: fmt.Sprintf("%d years", len(req.YearlyBudgets)),
 	}
 
-	scoredProperties, err := s.ScoreProperties(ctx, filteredProperties, profile, req.ExistingPortfolio)
+	// Pre-score and limit properties before AI scoring to prevent timeout
+	const maxPropertiesForAI = 100
+	preScoredProperties := preScoreAndLimitProperties(filteredProperties, profile, maxPropertiesForAI, s.logger)
+
+	scoredProperties, err := s.ScoreProperties(ctx, preScoredProperties, profile, req.ExistingPortfolio)
 	if err != nil {
 		return nil, fmt.Errorf("failed to score properties: %w", err)
 	}
@@ -1099,18 +1114,157 @@ func filterByRecommendation(properties []investment.ScoredProperty) []investment
 	return filtered
 }
 
+// preScoreAndLimitProperties uses algorithmic scoring to pre-filter properties
+// before sending to AI scoring. This prevents timeout issues when too many
+// properties (e.g., 900+) would be sent to the AI.
+// Returns at most maxCount properties, sorted by algorithmic score.
+func preScoreAndLimitProperties(
+	properties []investment.Property,
+	profile investment.InvestorProfile,
+	maxCount int,
+	logger *slog.Logger,
+) []investment.Property {
+	if len(properties) <= maxCount {
+		return properties
+	}
+
+	logger.Info("pre-scoring properties to limit AI input",
+		"input_count", len(properties),
+		"max_count", maxCount,
+	)
+
+	// Score each property algorithmically
+	type scoredProp struct {
+		prop  investment.Property
+		score float64
+	}
+	scored := make([]scoredProp, 0, len(properties))
+
+	for _, prop := range properties {
+		score := calculateQuickScore(prop, profile)
+		scored = append(scored, scoredProp{prop: prop, score: score})
+	}
+
+	// Sort by score descending
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+
+	// Take top N
+	result := make([]investment.Property, 0, maxCount)
+	for i := 0; i < maxCount && i < len(scored); i++ {
+		result = append(result, scored[i].prop)
+	}
+
+	logger.Info("pre-scoring complete",
+		"output_count", len(result),
+		"top_score", scored[0].score,
+		"cutoff_score", scored[min(maxCount-1, len(scored)-1)].score,
+	)
+
+	return result
+}
+
+// calculateQuickScore provides a fast algorithmic score for a property
+// without using AI. Used for pre-filtering before AI scoring.
+func calculateQuickScore(prop investment.Property, profile investment.InvestorProfile) float64 {
+	score := 50.0 // Base score
+
+	// 1. Gross yield score (most important for investment)
+	if prop.Price > 0 && prop.EstimatedRent > 0 {
+		grossYield := (float64(prop.EstimatedRent) * 12 / float64(prop.Price)) * 100
+		// Good yield is 6-12%, excellent is >12%
+		if grossYield >= 12 {
+			score += 30
+		} else if grossYield >= 8 {
+			score += 20
+		} else if grossYield >= 6 {
+			score += 10
+		} else if grossYield < 4 {
+			score -= 10 // Penalize very low yield
+		}
+	}
+
+	// 2. Price per square foot (value indicator)
+	if prop.Sqft > 0 {
+		pricePerSqft := float64(prop.Price) / float64(prop.Sqft)
+		// Lower $/sqft generally indicates better value
+		if pricePerSqft < 100 {
+			score += 15
+		} else if pricePerSqft < 150 {
+			score += 10
+		} else if pricePerSqft < 200 {
+			score += 5
+		} else if pricePerSqft > 400 {
+			score -= 10 // Penalize expensive markets
+		}
+	}
+
+	// 3. Days on market (motivated seller indicator)
+	if prop.DaysOnMarket > 60 {
+		score += 10 // Potential negotiating room
+	} else if prop.DaysOnMarket > 30 {
+		score += 5
+	}
+	if prop.DaysOnMarket > 0 && prop.DaysOnMarket < 7 {
+		score += 5 // Hot property, desirable
+	}
+
+	// 4. Property size bonus (family rentals)
+	if prop.Beds >= 3 {
+		score += 5 // Family-friendly
+	}
+	if prop.Sqft >= 1500 {
+		score += 5
+	}
+
+	// 5. Strategy-specific adjustments
+	switch profile.Strategy {
+	case investment.StrategyCashFlow:
+		// Cash flow investors prioritize yield
+		if prop.Price > 0 && prop.EstimatedRent > 0 {
+			grossYield := (float64(prop.EstimatedRent) * 12 / float64(prop.Price)) * 100
+			if grossYield >= 10 {
+				score += 10 // Extra bonus for high yield
+			}
+		}
+	case investment.StrategyAppreciation:
+		// Appreciation investors prefer lower entry price in growing markets
+		if prop.Price < 200000 {
+			score += 10 // Lower entry = more appreciation potential
+		}
+	case investment.StrategyRiskAdjusted:
+		// Risk-adjusted prefers moderate yield and price
+		if prop.Price >= 150000 && prop.Price <= 350000 {
+			score += 10 // Sweet spot for stability
+		}
+	}
+
+	// Cap score to reasonable range
+	if score > 100 {
+		score = 100
+	}
+	if score < 0 {
+		score = 0
+	}
+
+	return score
+}
+
 // filterByDataQuality removes properties with unrealistic data that indicates
 // bad data quality or distressed properties that shouldn't be recommended.
-// Thresholds:
-// - Price < $40,000: Likely distressed/uninhabitable
+// Uses metro-aware minimum prices:
+// - Large metros (Chicago, NYC, LA, etc.): $100,000 minimum
+// - Medium markets: $75,000 minimum
+// - Small cities: $50,000 minimum
+// Other thresholds:
 // - Price-to-rent ratio < 6: Unrealistic (normal is 12-20x annual rent)
 // - Implied cap rate > 20%: Unrealistic (normal is 4-10%)
 // - No rent estimate: Cannot evaluate
 func filterByDataQuality(properties []investment.Property) []investment.Property {
 	const (
-		minPrice          = 40000  // $40k minimum
-		minPriceToRent    = 6.0    // Minimum price / annual rent ratio
-		maxImpliedCapRate = 20.0   // Maximum cap rate percentage
+		minPriceToRent    = 6.0  // Minimum price / annual rent ratio
+		maxImpliedCapRate = 20.0 // Maximum cap rate percentage
 	)
 
 	filtered := make([]investment.Property, 0, len(properties))
@@ -1120,7 +1274,8 @@ func filterByDataQuality(properties []investment.Property) []investment.Property
 			continue
 		}
 
-		// Skip very cheap properties (likely distressed)
+		// Get metro-aware minimum price
+		minPrice := getMinimumPrice(p.City, p.State)
 		if p.Price < minPrice {
 			continue
 		}
@@ -1153,6 +1308,75 @@ func filterByDataQuality(properties []investment.Property) []investment.Property
 	}
 
 	return filtered
+}
+
+// getMinimumPrice returns the minimum acceptable price based on location.
+// Large metros have higher minimums due to higher cost of living.
+func getMinimumPrice(city, state string) int {
+	// Large metros - $100K minimum
+	largeMetros := map[string]bool{
+		"chicago":       true,
+		"new york":      true,
+		"los angeles":   true,
+		"san francisco": true,
+		"seattle":       true,
+		"boston":        true,
+		"denver":        true,
+		"miami":         true,
+		"atlanta":       true,
+		"dallas":        true,
+		"houston":       true,
+		"phoenix":       true,
+		"san diego":     true,
+		"austin":        true,
+		"nashville":     true,
+		"portland":      true,
+		"minneapolis":   true,
+		"tampa":         true,
+		"orlando":       true,
+		"charlotte":     true,
+		"raleigh":       true,
+		"san antonio":   true,
+		"philadelphia":  true,
+		"washington":    true,
+	}
+
+	// High cost states - $100K minimum for any city
+	highCostStates := map[string]bool{
+		"CA": true, "NY": true, "MA": true, "WA": true,
+		"CO": true, "HI": true, "NJ": true, "CT": true,
+	}
+
+	cityLower := strings.ToLower(city)
+
+	// Check if large metro
+	if largeMetros[cityLower] {
+		return 100000
+	}
+
+	// Check if high-cost state
+	if highCostStates[strings.ToUpper(state)] {
+		return 100000
+	}
+
+	// Medium markets (state capitals, college towns, etc.) - $75K minimum
+	mediumMarkets := map[string]bool{
+		"indianapolis": true, "columbus": true, "jacksonville": true,
+		"memphis": true, "louisville": true, "baltimore": true,
+		"milwaukee": true, "albuquerque": true, "tucson": true,
+		"fresno": true, "sacramento": true, "kansas city": true,
+		"las vegas": true, "cleveland": true, "cincinnati": true,
+		"pittsburgh": true, "st louis": true, "san jose": true,
+		"oklahoma city": true, "omaha": true, "richmond": true,
+		"new orleans": true, "salt lake city": true, "boise": true,
+	}
+
+	if mediumMarkets[cityLower] {
+		return 75000
+	}
+
+	// Small cities - $50K minimum (but not too low)
+	return 50000
 }
 
 // Simple power function to avoid importing math for this

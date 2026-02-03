@@ -1056,8 +1056,9 @@ func (h *Handler) QueueInvestmentPlan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check cache first (unless forceRefresh)
+	// Investment plans don't expire like ephemeral cached data
 	if !req.ForceRefresh {
-		cacheRecord, err := queries.New(h.db.Main).GetCacheByUserAndKey(ctx, queries.GetCacheByUserAndKeyParams{
+		cacheRecord, err := queries.New(h.db.Main).GetCacheByUserAndKeyNoExpiry(ctx, queries.GetCacheByUserAndKeyNoExpiryParams{
 			UserId: user.UserID,
 			Key:    req.CacheKey,
 		})
@@ -1444,7 +1445,8 @@ func (h *Handler) GetInvestmentPlan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		cacheRecord, err := queries.New(h.db.Main).GetCacheByUserAndKey(ctx, queries.GetCacheByUserAndKeyParams{
+		// Investment plans don't expire like ephemeral cached data
+		cacheRecord, err := queries.New(h.db.Main).GetCacheByUserAndKeyNoExpiry(ctx, queries.GetCacheByUserAndKeyNoExpiryParams{
 			UserId: user.UserID,
 			Key:    record.Key,
 		})

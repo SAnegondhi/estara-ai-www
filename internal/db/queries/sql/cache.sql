@@ -6,6 +6,11 @@ WHERE key = $1 AND "expiresAt" > NOW();
 SELECT * FROM analysis_cache
 WHERE "userId" = $1 AND key = $2 AND "expiresAt" > NOW();
 
+-- name: GetCacheByUserAndKeyNoExpiry :one
+-- Used for investment plans which shouldn't expire like ephemeral cached data
+SELECT * FROM analysis_cache
+WHERE "userId" = $1 AND key = $2;
+
 -- name: GetCacheByID :one
 SELECT * FROM analysis_cache WHERE id = $1;
 
