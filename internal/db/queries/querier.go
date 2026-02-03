@@ -15,6 +15,8 @@ type Querier interface {
 	AutoArchiveOldSessions(ctx context.Context) error
 	CancelInsightAccess(ctx context.Context, id string) (InsightAccess, error)
 	CancelSubscription(ctx context.Context, arg CancelSubscriptionParams) error
+	// Returns count of valid (non-expired) cache entries
+	CountAIScoringCache(ctx context.Context) (int64, error)
 	CountActiveAlertsBySeverity(ctx context.Context) ([]CountActiveAlertsBySeverityRow, error)
 	CountAllCache(ctx context.Context) (int64, error)
 	CountAuditLogsByEventType(ctx context.Context, arg CountAuditLogsByEventTypeParams) ([]CountAuditLogsByEventTypeRow, error)
@@ -85,6 +87,8 @@ type Querier interface {
 	DeleteCacheByUserID(ctx context.Context, userid string) error
 	DeleteCacheOlderThan(ctx context.Context, createdat pgtype.Timestamp) (int64, error)
 	DeleteEmailVerificationCodesByEmail(ctx context.Context, email string) error
+	// Removes expired cache entries (called by cron job)
+	DeleteExpiredAIScoringCache(ctx context.Context) (int64, error)
 	DeleteExpiredAdminSessions(ctx context.Context) error
 	DeleteExpiredCache(ctx context.Context) (int64, error)
 	DeleteExpiredEmailVerificationCodes(ctx context.Context) error
@@ -110,6 +114,11 @@ type Querier interface {
 	DismissSystemAlert(ctx context.Context, id string) error
 	DismissSystemAlertByKey(ctx context.Context, alertkey string) error
 	EnableAdminTwoFactor(ctx context.Context, userid string) error
+	// ADR-064: AI Scoring Cache Queries
+	// Retrieves cached AI scoring if not expired
+	GetAIScoringCache(ctx context.Context, cacheKey string) (AiScoringCache, error)
+	// Retrieves cached AI scoring by properties hash (for debugging)
+	GetAIScoringCacheByHash(ctx context.Context, propertiesHash string) (AiScoringCache, error)
 	GetActiveSilentLoginSessionsByUser(ctx context.Context, userid string) ([]SilentLoginSession, error)
 	GetActivityLink(ctx context.Context, arg GetActivityLinkParams) (DiscoverySessionActivity, error)
 	GetAdminAuditLogByID(ctx context.Context, id string) (AdminAuditLog, error)
@@ -306,6 +315,8 @@ type Querier interface {
 	UpdateUserStripeCustomer(ctx context.Context, arg UpdateUserStripeCustomerParams) error
 	UpdateUserSubscription(ctx context.Context, arg UpdateUserSubscriptionParams) error
 	UpdateUserUpdatedAt(ctx context.Context, id string) error
+	// Inserts or updates AI scoring cache entry
+	UpsertAIScoringCache(ctx context.Context, arg UpsertAIScoringCacheParams) error
 	UpsertCache(ctx context.Context, arg UpsertCacheParams) (AnalysisCache, error)
 	// Inserts or updates a property in the cache
 	UpsertPropertyCache(ctx context.Context, arg UpsertPropertyCacheParams) error

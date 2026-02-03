@@ -183,13 +183,28 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 	// Create and start worker pool for job processing
 	if services.JobQueue != nil {
 		// Create optimization service for investment planning
+		// ADR-064: Use NewServiceWithDB to enable AI scoring cache
 		var optimizer *optimization.Service
 		if services.Anthropic != nil {
-			optimizer = optimization.NewService(
-				services.Anthropic,
-				services.MarketData,
-				services.HybridCache,
-			)
+			if cfg.DB != nil && cfg.DB.Main != nil {
+				// With database access for AI scoring cache (ADR-064)
+				optimizer = optimization.NewServiceWithDB(
+					services.Anthropic,
+					services.MarketData,
+					services.HybridCache,
+					cfg.DB.Main,
+					cfg.Redis,
+				)
+				logger.Info("optimization service initialized with AI scoring cache")
+			} else {
+				// Fallback: without database (no caching)
+				optimizer = optimization.NewService(
+					services.Anthropic,
+					services.MarketData,
+					services.HybridCache,
+				)
+				logger.Warn("optimization service initialized without AI scoring cache (no database)")
+			}
 		}
 
 		// Create investment planning worker and register with queue

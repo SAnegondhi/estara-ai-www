@@ -47,6 +47,18 @@ type AdminTwoFactor struct {
 	UpdatedAt   pgtype.Timestamp `json:"updatedAt"`
 }
 
+type AiScoringCache struct {
+	ID               int32            `json:"id"`
+	CacheKey         string           `json:"cache_key"`
+	PropertiesHash   string           `json:"properties_hash"`
+	Strategy         string           `json:"strategy"`
+	RiskTolerance    string           `json:"risk_tolerance"`
+	ScoredProperties json.RawMessage  `json:"scored_properties"`
+	PropertyCount    int32            `json:"property_count"`
+	CreatedAt        pgtype.Timestamp `json:"created_at"`
+	ExpiresAt        pgtype.Timestamp `json:"expires_at"`
+}
+
 type AnalysisCache struct {
 	ID               string           `json:"id"`
 	Key              string           `json:"key"`

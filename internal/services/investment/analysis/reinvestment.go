@@ -177,6 +177,12 @@ func (m *ReinvestmentModeler) applyDefaults(params ReinvestmentParams) Reinvestm
 		}
 	}
 
+	// BUG FIX: ReinvestmentRate was not being defaulted, causing reinvestScenario
+	// to be identical to baseScenario (no cash flow was being reinvested)
+	if params.ReinvestmentRate == 0 {
+		params.ReinvestmentRate = defaults.ReinvestmentRate
+	}
+
 	return params
 }
 

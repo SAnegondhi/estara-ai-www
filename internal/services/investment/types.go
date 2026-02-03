@@ -94,6 +94,12 @@ type InvestmentPlanningResult struct {
 	Mode                    PlanningMode             `json:"mode,omitempty"`
 	PropertyRecommendations []PropertyRecommendation `json:"propertyRecommendations,omitempty"`
 	ReinvestmentAnalysis    *ReinvestmentAnalysis    `json:"reinvestmentAnalysis,omitempty"`
+
+	// ADR-063: Unified Portfolio Projection Engine
+	// User's original inputs stored for transparency
+	UserAssumptions *UserFinancialAssumptions `json:"userAssumptions,omitempty"`
+	// All 3 scenario projections computed by backend (single source of truth)
+	ScenarioProjections *ScenarioProjections `json:"scenarioProjections,omitempty"`
 }
 
 // LocationAllocation represents allocation breakdown by location
@@ -642,4 +648,79 @@ type DivestAnalysisResult struct {
 	Scores             PropertyRecommendationScores `json:"scores"`
 	EstimatedProceeds  int                          `json:"estimatedProceeds,omitempty"`
 	BetterAlternatives []Property                   `json:"betterAlternatives,omitempty"`
+}
+
+// ============================================================================
+// ADR-063: Unified Portfolio Projection Engine
+// ============================================================================
+
+// UserFinancialAssumptions stores the user's input values for transparency
+// These are what the user entered in the form, separate from what was actually
+// used in calculations (which may be overridden by state-specific data)
+type UserFinancialAssumptions struct {
+	MortgageRate       float64 `json:"mortgageRate"`       // User's entered mortgage rate (%)
+	DownPaymentPercent float64 `json:"downPaymentPercent"` // User's entered down payment (%)
+	OperatingExpenses  float64 `json:"operatingExpenses"`  // User's entered op expenses (%)
+	LoanTermYears      int     `json:"loanTermYears"`      // Loan term (default 30)
+	TargetCashFlow     int     `json:"targetCashFlow,omitempty"` // User's target monthly cash flow
+}
+
+// ExpandedYearProjection has all metrics needed for detailed display
+// This replaces the minimal YearProjectionData structure
+type ExpandedYearProjection struct {
+	Year               int     `json:"year"`
+	PortfolioValue     int     `json:"value"`             // Total property value
+	Equity             int     `json:"equity"`            // Value - loan balance
+	LoanBalance        int     `json:"loanBalance"`       // Remaining mortgage
+	AnnualCashFlow     int     `json:"cashFlow"`          // Annual cash flow after expenses (before tax)
+	NetOperatingIncome int     `json:"noi"`               // NOI (rent - operating expenses)
+	GrossRent          int     `json:"grossRent"`         // Total annual rent before vacancy
+	OperatingExpenses  int     `json:"operatingExpenses"` // Total operating expenses
+	DebtService        int     `json:"debtService"`       // Annual mortgage payments
+	InterestExpense    int     `json:"interestExpense"`   // Interest portion of debt service (deductible)
+	PrincipalPayment   int     `json:"principalPayment"`  // Principal portion of debt service
+	Depreciation       int     `json:"depreciation"`      // Annual depreciation (value/27.5 for residential)
+	TaxableIncome      int     `json:"taxableIncome"`     // NOI - interest - depreciation
+	IncomeTaxes        int     `json:"incomeTaxes"`       // Taxable income × tax rate (if positive)
+	CashFlowAfterTax   int     `json:"cashFlowAfterTax"`  // Cash flow - income taxes
+	CashOnCash         float64 `json:"cashOnCash"`        // Cash flow / down payment (%)
+	CapRate            float64 `json:"capRate"`           // NOI / value (%)
+	EquityMultiple     float64 `json:"equityMultiple"`    // Current equity / initial investment
+	CumulativeCashFlow int     `json:"cumulativeCashFlow"` // Total cash flow to date
+	Appreciation       int     `json:"appreciation"`      // Value gain this year
+}
+
+// ScenarioProjections contains all 3 scenarios computed by backend
+// This is the single source of truth - client should not recalculate
+type ScenarioProjections struct {
+	Base        []ExpandedYearProjection `json:"base"`
+	Optimistic  []ExpandedYearProjection `json:"optimistic"`
+	Pessimistic []ExpandedYearProjection `json:"pessimistic"`
+	Assumptions *ProjectionAssumptions   `json:"assumptions"`
+	Summary     *ScenarioSummary         `json:"summary,omitempty"`
+}
+
+// ScenarioSummary provides quick comparison across scenarios
+type ScenarioSummary struct {
+	// Base scenario final values
+	BaseFinalValue    int     `json:"baseFinalValue"`
+	BaseFinalEquity   int     `json:"baseFinalEquity"`
+	BaseTotalCashFlow int     `json:"baseTotalCashFlow"`
+	BaseCAGR          float64 `json:"baseCAGR"`
+
+	// Optimistic scenario final values
+	OptimisticFinalValue    int     `json:"optimisticFinalValue"`
+	OptimisticFinalEquity   int     `json:"optimisticFinalEquity"`
+	OptimisticTotalCashFlow int     `json:"optimisticTotalCashFlow"`
+	OptimisticCAGR          float64 `json:"optimisticCAGR"`
+
+	// Pessimistic scenario final values
+	PessimisticFinalValue    int     `json:"pessimisticFinalValue"`
+	PessimisticFinalEquity   int     `json:"pessimisticFinalEquity"`
+	PessimisticTotalCashFlow int     `json:"pessimisticTotalCashFlow"`
+	PessimisticCAGR          float64 `json:"pessimisticCAGR"`
+
+	// Scenario multipliers used
+	OptimisticMultiplier  float64 `json:"optimisticMultiplier"`  // e.g., 1.15 for +15%
+	PessimisticMultiplier float64 `json:"pessimisticMultiplier"` // e.g., 0.85 for -15%
 }

@@ -2,19 +2,29 @@ package optimization
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/estara-ai/www/internal/db/postgres"
+	"github.com/estara-ai/www/internal/db/queries"
+	redisClient "github.com/estara-ai/www/internal/db/redis"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/estara-ai/www/internal/services/ai/anthropic"
 	"github.com/estara-ai/www/internal/services/cache"
 	"github.com/estara-ai/www/internal/services/investment"
 	"github.com/estara-ai/www/internal/services/investment/projection"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
 )
+
+// AI scoring cache TTL - matches property search cache (ADR-061, ADR-064)
+const aiScoringCacheTTL = 24 * time.Hour
 
 // Service provides portfolio optimization with AI-driven property scoring
 type Service struct {
@@ -23,6 +33,10 @@ type Service struct {
 	cache      *cache.HybridCache
 	calculator *projection.Calculator
 	logger     *slog.Logger
+	// ADR-064: AI scoring cache
+	db      *postgres.Pool
+	redis   *redisClient.Client
+	queries *queries.Queries
 }
 
 // NewService creates a new optimization service
@@ -37,6 +51,26 @@ func NewService(
 		cache:      cache,
 		calculator: projection.NewCalculator(nil),
 		logger:     slog.Default().With("component", "portfolio_optimization"),
+	}
+}
+
+// NewServiceWithDB creates a new optimization service with database access for AI scoring cache (ADR-064)
+func NewServiceWithDB(
+	client *anthropic.Client,
+	market *aggregator.Aggregator,
+	cache *cache.HybridCache,
+	db *postgres.Pool,
+	redis *redisClient.Client,
+) *Service {
+	return &Service{
+		client:     client,
+		market:     market,
+		cache:      cache,
+		calculator: projection.NewCalculator(nil),
+		logger:     slog.Default().With("component", "portfolio_optimization"),
+		db:         db,
+		redis:      redis,
+		queries:    queries.New(db),
 	}
 }
 
@@ -161,6 +195,7 @@ func (s *Service) Optimize(ctx context.Context, req investment.OptimizationReque
 }
 
 // ScoreProperties uses AI to evaluate properties on buyability, rentability, ROI
+// ADR-064: Results are cached for 24 hours to avoid redundant API calls
 func (s *Service) ScoreProperties(
 	ctx context.Context,
 	properties []investment.Property,
@@ -171,10 +206,23 @@ func (s *Service) ScoreProperties(
 		return []investment.ScoredProperty{}, nil
 	}
 
-	s.logger.Info("scoring properties with AI",
+	// ADR-064: Check cache first (if database is configured)
+	cacheKey := s.buildScoringCacheKey(properties, profile)
+	if s.queries != nil {
+		if cached, err := s.getScoringFromCache(ctx, cacheKey); err == nil && len(cached) > 0 {
+			s.logger.Info("AI scoring cache hit",
+				"cache_key", cacheKey,
+				"property_count", len(cached),
+			)
+			return cached, nil
+		}
+	}
+
+	s.logger.Info("scoring properties with AI (cache miss)",
 		"property_count", len(properties),
 		"strategy", profile.Strategy,
 		"risk_tolerance", profile.RiskTolerance,
+		"cache_key", cacheKey,
 	)
 
 	// Build prompt for AI evaluation
@@ -192,10 +240,131 @@ func (s *Service) ScoreProperties(
 		s.logger.Warn("failed to parse AI scoring response, using fallback scoring",
 			"error", err,
 		)
-		return s.fallbackScoring(properties, profile), nil
+		scored = s.fallbackScoring(properties, profile)
+	}
+
+	// ADR-064: Cache the result (if database is configured)
+	if s.queries != nil && len(scored) > 0 {
+		if err := s.cacheScoringResult(ctx, cacheKey, scored, properties, profile); err != nil {
+			s.logger.Warn("failed to cache AI scoring result", "error", err)
+		}
 	}
 
 	return scored, nil
+}
+
+// buildScoringCacheKey creates a deterministic cache key for AI scoring results
+// Key format: ai_score:{properties_hash}:{strategy}:{risk_tolerance}
+func (s *Service) buildScoringCacheKey(properties []investment.Property, profile investment.InvestorProfile) string {
+	// Sort property IDs for deterministic hash
+	ids := make([]string, len(properties))
+	for i, p := range properties {
+		ids[i] = p.ID
+	}
+	sort.Strings(ids)
+
+	// Create hash of property IDs
+	h := sha256.New()
+	h.Write([]byte(strings.Join(ids, ",")))
+	propertiesHash := hex.EncodeToString(h.Sum(nil))[:16] // First 16 chars for brevity
+
+	return fmt.Sprintf("ai_score:%s:%s:%s", propertiesHash, profile.Strategy, profile.RiskTolerance)
+}
+
+// getScoringFromCache retrieves cached AI scoring results
+func (s *Service) getScoringFromCache(ctx context.Context, cacheKey string) ([]investment.ScoredProperty, error) {
+	if s.queries == nil {
+		return nil, fmt.Errorf("database not configured")
+	}
+
+	// Try Redis first (L1)
+	if s.redis != nil {
+		if data, err := s.redis.Client.Get(ctx, cacheKey).Bytes(); err == nil && len(data) > 0 {
+			var scored []investment.ScoredProperty
+			if err := json.Unmarshal(data, &scored); err == nil {
+				return scored, nil
+			}
+		}
+	}
+
+	// Try PostgreSQL (L2)
+	cached, err := s.queries.GetAIScoringCache(ctx, cacheKey)
+	if err != nil {
+		return nil, err
+	}
+
+	var scored []investment.ScoredProperty
+	if err := json.Unmarshal(cached.ScoredProperties, &scored); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal cached scores: %w", err)
+	}
+
+	// Backfill Redis cache
+	if s.redis != nil {
+		data, _ := json.Marshal(scored)
+		if cached.ExpiresAt.Valid {
+			ttl := time.Until(cached.ExpiresAt.Time)
+			if ttl > 0 {
+				s.redis.Client.Set(ctx, cacheKey, data, ttl)
+			}
+		}
+	}
+
+	return scored, nil
+}
+
+// cacheScoringResult stores AI scoring results in cache
+func (s *Service) cacheScoringResult(
+	ctx context.Context,
+	cacheKey string,
+	scored []investment.ScoredProperty,
+	properties []investment.Property,
+	profile investment.InvestorProfile,
+) error {
+	if s.queries == nil {
+		return fmt.Errorf("database not configured")
+	}
+
+	// Serialize scored properties
+	data, err := json.Marshal(scored)
+	if err != nil {
+		return fmt.Errorf("failed to marshal scored properties: %w", err)
+	}
+
+	// Extract properties hash from cache key
+	parts := strings.Split(cacheKey, ":")
+	propertiesHash := ""
+	if len(parts) >= 2 {
+		propertiesHash = parts[1]
+	}
+
+	expiresAt := time.Now().Add(aiScoringCacheTTL)
+
+	// Store in PostgreSQL (L2)
+	err = s.queries.UpsertAIScoringCache(ctx, queries.UpsertAIScoringCacheParams{
+		CacheKey:         cacheKey,
+		PropertiesHash:   propertiesHash,
+		Strategy:         string(profile.Strategy),
+		RiskTolerance:    string(profile.RiskTolerance),
+		ScoredProperties: data,
+		PropertyCount:    int32(len(properties)),
+		ExpiresAt:        pgtype.Timestamp{Time: expiresAt, Valid: true},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to cache in database: %w", err)
+	}
+
+	// Store in Redis (L1)
+	if s.redis != nil {
+		s.redis.Client.Set(ctx, cacheKey, data, aiScoringCacheTTL)
+	}
+
+	s.logger.Info("cached AI scoring result",
+		"cache_key", cacheKey,
+		"property_count", len(scored),
+		"expires_at", expiresAt,
+	)
+
+	return nil
 }
 
 // OptimizeMultiYear plans acquisitions across multiple years

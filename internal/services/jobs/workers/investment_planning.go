@@ -170,6 +170,54 @@ func (w *InvestmentPlanningWorker) Process(
 		result.Metrics.ProjectionAssumptions = result.GrowthProjection.Assumptions
 	}
 
+	// ADR-063: Store user's financial assumptions for transparency
+	userAssumptions := &investment.UserFinancialAssumptions{
+		MortgageRate:       mortgageRate * 100, // Store as percentage (e.g., 7.0)
+		DownPaymentPercent: params.DownPaymentPct * 100, // Store as percentage (e.g., 25.0)
+		OperatingExpenses:  50.0, // Default 50% - TODO: extract from params if provided
+		LoanTermYears:      30,   // Default 30 years
+	}
+	// Extract user-provided operating expenses if available
+	if opExp, ok := job.Payload["operatingExpenses"].(float64); ok && opExp > 0 {
+		userAssumptions.OperatingExpenses = opExp
+	}
+	result.UserAssumptions = userAssumptions
+
+	// ADR-063: Generate all 3 scenario projections (base, optimistic, pessimistic)
+	// This is the single source of truth - client should NOT recalculate
+	w.reportProgress(progress, job.ID, 87, "Generating scenario projections")
+	scenarioYears := 5 // Standard 5-year projections for scenario comparison
+	if projectionYears < scenarioYears {
+		scenarioYears = projectionYears
+	}
+	result.ScenarioProjections = w.calculator.CalculateAllScenarios(
+		result.SelectedProperties,
+		scenarioYears,
+		result.MarketQuality,
+		userAssumptions,
+	)
+
+	// ADR-063: Verify CoC consistency between Metrics and ScenarioProjections Year 1
+	if result.ScenarioProjections != nil && len(result.ScenarioProjections.Base) > 0 {
+		metricsCoC := result.Metrics.AvgCashOnCash
+		projectionCoC := result.ScenarioProjections.Base[0].CashOnCash
+		diff := metricsCoC - projectionCoC
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > 0.01 { // More than 0.01% difference is suspicious
+			w.logger.Warn("CoC DISCREPANCY DETECTED between Metrics and Projection Year 1",
+				"metricsAvgCashOnCash", metricsCoC,
+				"projectionYear1CashOnCash", projectionCoC,
+				"difference", diff,
+				"metricsAnnualCashFlow", result.Metrics.AnnualCashFlow,
+				"metricsTotalDownPayment", result.Metrics.TotalDownPayment,
+				"projectionYear1CashFlow", result.ScenarioProjections.Base[0].AnnualCashFlow,
+				"propertyCount", len(result.SelectedProperties),
+			)
+		}
+	}
+
 	// Fetch and calculate existing portfolio metrics (90%)
 	existingPortfolio, err := w.fetchExistingPortfolio(ctx, job.UserID)
 	if err != nil {
@@ -188,7 +236,7 @@ func (w *InvestmentPlanningWorker) Process(
 	w.reportProgress(progress, job.ID, 95, "Caching results")
 	// Note: Handler stores "cache_key" (snake_case) in payload
 	if cacheKey, ok := job.Payload["cache_key"].(string); ok && cacheKey != "" {
-		if err := w.cacheResult(ctx, job.UserID, cacheKey, params, result); err != nil {
+		if err := w.cacheResult(ctx, job.UserID, cacheKey, params, result, mortgageRate); err != nil {
 			w.logger.Warn("failed to cache result", "error", err)
 		}
 	}
@@ -219,6 +267,9 @@ func (w *InvestmentPlanningWorker) Process(
 		"mode":                     result.Mode,
 		"property_recommendations": result.PropertyRecommendations,
 		"reinvestment_analysis":    result.ReinvestmentAnalysis,
+		// ADR-063: Unified Portfolio Projection Engine
+		"user_assumptions":      result.UserAssumptions,
+		"scenario_projections":  result.ScenarioProjections,
 	}
 
 	return &queue.JobResult{
@@ -960,6 +1011,7 @@ func (w *InvestmentPlanningWorker) cacheResult(
 	cacheKey string,
 	params *ExtendedPlanningParams,
 	result *investment.InvestmentPlanningResult,
+	mortgageRate float64,
 ) error {
 	if w.cache == nil {
 		return nil
@@ -998,6 +1050,18 @@ func (w *InvestmentPlanningWorker) cacheResult(
 		"monthlyCashFlow":      result.Metrics.MonthlyCashFlow,
 		"portfolioDscr":        result.Metrics.PortfolioDSCR,
 		"fiveYearProjection":   result.Metrics.FiveYearProjection,
+		// User-set parameters for refresh (preserve all input params)
+		"riskTolerance":            string(params.RiskTolerance),
+		"downPaymentPct":           params.DownPaymentPct,
+		"mortgageRate":             mortgageRate * 100, // Store as percentage (e.g., 7.0 for 7%)
+		"operatingExpensesPct":     50.0,               // Default 50% operating expenses
+		"reinvestSurplusCashFlows": params.ReinvestSurplusCashFlows,
+		"reinvestmentRate":         params.ReinvestmentRate,
+		"projectionYears":          params.ProjectionYears,
+		// Multi-year budget data
+		"yearlyBudgets":            params.YearlyBudgets,
+		"includeSuburbs":           params.IncludeSuburbs,
+		"maxProperties":            params.MaxProperties,
 	}
 
 	opts := cache.InvestmentPlanCacheOptions{

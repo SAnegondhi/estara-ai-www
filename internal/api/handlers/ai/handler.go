@@ -1695,6 +1695,18 @@ func getStringField(m map[string]interface{}, key string) (string, bool) {
 	return s, true
 }
 
+func getBoolField(m map[string]interface{}, key string) (bool, bool) {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return false, false
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return false, false
+	}
+	return b, true
+}
+
 func mapMetricsForHistory(metrics map[string]interface{}) map[string]interface{} {
 	if metrics == nil {
 		return nil
@@ -1779,6 +1791,43 @@ func mapMetricsForHistory(metrics map[string]interface{}) map[string]interface{}
 	}
 	if n, ok := getNumberField(metrics, "locationCount"); ok {
 		out["locationCount"] = int(math.Round(n))
+	}
+
+	// User-set parameters for refresh (stored by worker)
+	if s, ok := getStringField(metrics, "riskTolerance"); ok && s != "" {
+		out["riskTolerance"] = s
+	}
+	if n, ok := getNumberField(metrics, "downPaymentPct"); ok {
+		out["downPaymentPct"] = n
+	}
+	if n, ok := getNumberField(metrics, "mortgageRate"); ok {
+		out["mortgageRate"] = n
+	}
+	if n, ok := getNumberField(metrics, "operatingExpensesPct"); ok {
+		out["operatingExpensesPct"] = n
+	}
+	if b, ok := getBoolField(metrics, "reinvestSurplusCashFlows"); ok {
+		out["reinvestSurplusCashFlows"] = b
+	}
+	if n, ok := getNumberField(metrics, "reinvestmentRate"); ok {
+		out["reinvestmentRate"] = n
+	}
+	if n, ok := getNumberField(metrics, "projectionYears"); ok {
+		out["projectionYears"] = int(math.Round(n))
+	}
+	if n, ok := getNumberField(metrics, "avgMarketHeat"); ok {
+		out["avgMarketHeat"] = int(math.Round(n))
+	}
+
+	// Multi-year and additional params
+	if yearlyBudgets, ok := metrics["yearlyBudgets"]; ok && yearlyBudgets != nil {
+		out["yearlyBudgets"] = yearlyBudgets
+	}
+	if b, ok := getBoolField(metrics, "includeSuburbs"); ok {
+		out["includeSuburbs"] = b
+	}
+	if n, ok := getNumberField(metrics, "maxProperties"); ok {
+		out["maxProperties"] = int(math.Round(n))
 	}
 
 	return out
