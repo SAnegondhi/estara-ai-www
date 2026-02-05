@@ -25,6 +25,12 @@ type Config struct {
 	CORS     CORSConfig
 	Email    EmailConfig
 	Stripe   StripeConfig
+	Security SecurityConfig
+}
+
+// SecurityConfig holds security-related configuration
+type SecurityConfig struct {
+	CheckoutEncryptionKey string `mapstructure:"CHECKOUT_ENCRYPTION_KEY"`
 }
 
 // StripeConfig holds Stripe payment configuration
@@ -292,6 +298,10 @@ func Load() (*Config, error) {
 		PriceAPIInvestor:       v.GetString("STRIPE_PRICE_AAPI_INVESTOR"),
 		PriceAPIAllocator:      v.GetString("STRIPE_PRICE_AAPI_ALLOCATOR"),
 		PriceOverageReport:     v.GetString("STRIPE_PRICE_OVERAGE_REPORT"),
+	}
+
+	cfg.Security = SecurityConfig{
+		CheckoutEncryptionKey: v.GetString("CHECKOUT_ENCRYPTION_KEY"),
 	}
 
 	// Validate required configuration

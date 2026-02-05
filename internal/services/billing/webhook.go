@@ -17,6 +17,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/estara-ai/www/internal/config"
+	"github.com/estara-ai/www/internal/crypto"
 	"github.com/estara-ai/www/internal/db/postgres"
 	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/email"
@@ -200,8 +201,23 @@ func (s *WebhookService) handleGuestCheckoutCompleted(ctx context.Context, sessi
 		return fmt.Errorf("failed to check for existing user: %w", err)
 	}
 
+	// Decrypt password (encrypted by website before storing in Stripe metadata)
+	var plainPassword string
+	if s.cfg.Security.CheckoutEncryptionKey != "" {
+		decrypted, err := crypto.DecryptPassword(pendingPassword, s.cfg.Security.CheckoutEncryptionKey)
+		if err != nil {
+			s.logger.Error("failed to decrypt password", "error", err)
+			return fmt.Errorf("failed to decrypt password: %w", err)
+		}
+		plainPassword = decrypted
+	} else {
+		// Fallback for backwards compatibility (no encryption key configured)
+		s.logger.Warn("CHECKOUT_ENCRYPTION_KEY not set - using password as-is (insecure)")
+		plainPassword = pendingPassword
+	}
+
 	// Hash password
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(pendingPassword), 12)
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(plainPassword), 12)
 	if err != nil {
 		s.logger.Error("failed to hash password", "error", err)
 		return fmt.Errorf("failed to hash password: %w", err)
