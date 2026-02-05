@@ -24,6 +24,7 @@ import (
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/db/postgres"
+	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 )
 
@@ -105,6 +106,12 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	if svc.MarketData != nil {
 		handlers.Market.SetAggregator(svc.MarketData)
 	}
+
+	// Inject services into portfolio handler
+	if svc.PropertyFinder != nil {
+		handlers.Portfolio.SetPropertyFinder(svc.PropertyFinder)
+	}
+	handlers.Portfolio.SetQueries(queries.New(db.Main))
 
 	// Health check (no auth required)
 	r.Get("/health", handlers.Auth.Health)
@@ -289,10 +296,20 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 
 		r.Get("/", handlers.Portfolio.List)
 		r.Post("/", handlers.Portfolio.Create)
+		r.Get("/metrics", handlers.Portfolio.GetMetrics)
+		r.Get("/recommendations", handlers.Portfolio.GetRecommendations)
 		r.Get("/projections", handlers.Portfolio.GetProjections)
+		r.Post("/lookup", handlers.Portfolio.Lookup)
+		r.Get("/snapshots", handlers.Portfolio.GetSnapshots)
 		r.Get("/{id}", handlers.Portfolio.Get)
 		r.Put("/{id}", handlers.Portfolio.Update)
 		r.Delete("/{id}", handlers.Portfolio.Delete)
+
+		// Property-level endpoints
+		r.Get("/{id}/adjustments", handlers.Portfolio.GetAdjustments)
+		r.Post("/{id}/adjustments", handlers.Portfolio.CreateAdjustment)
+		r.Get("/{id}/baseline-changes", handlers.Portfolio.GetBaselineChanges)
+		r.Post("/{id}/baseline-changes", handlers.Portfolio.CreateBaselineChange)
 	})
 
 	// Investor Reports

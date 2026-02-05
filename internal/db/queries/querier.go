@@ -26,6 +26,8 @@ type Querier interface {
 	CountEarlyAccess(ctx context.Context) (int64, error)
 	CountExpiredCache(ctx context.Context) (int64, error)
 	CountPendingEarlyAccess(ctx context.Context) (int64, error)
+	// Count snapshots for a user
+	CountPortfolioSnapshots(ctx context.Context, userID string) (int64, error)
 	// Returns the total number of entries in the property cache
 	CountPropertyCache(ctx context.Context) (int64, error)
 	CountSessionActivitiesByType(ctx context.Context, arg CountSessionActivitiesByTypeParams) (int64, error)
@@ -64,7 +66,13 @@ type Querier interface {
 	CreateInsightAccess(ctx context.Context, arg CreateInsightAccessParams) (InsightAccess, error)
 	CreateInvestorReport(ctx context.Context, arg CreateInvestorReportParams) (InvestorReport, error)
 	CreateInvoice(ctx context.Context, arg CreateInvoiceParams) (Invoice, error)
+	// Create or update an adjustment for a property/month/type combination
+	CreateOrUpdateAdjustment(ctx context.Context, arg CreateOrUpdateAdjustmentParams) (V2PortfolioAdjustment, error)
+	// Create or update a baseline change for a property/field/effective_date combination
+	CreateOrUpdateBaselineChange(ctx context.Context, arg CreateOrUpdateBaselineChangeParams) (V2BaselineChange, error)
 	CreatePasswordResetToken(ctx context.Context, arg CreatePasswordResetTokenParams) (PasswordResetToken, error)
+	// Create a new portfolio snapshot
+	CreatePortfolioSnapshot(ctx context.Context, arg CreatePortfolioSnapshotParams) (V2PortfolioSnapshot, error)
 	CreateReceipt(ctx context.Context, arg CreateReceiptParams) (Receipt, error)
 	// Renewal Notification Queries
 	CreateRenewalNotification(ctx context.Context, arg CreateRenewalNotificationParams) (RenewalNotification, error)
@@ -78,9 +86,13 @@ type Querier interface {
 	DeactivateSilentLoginSession(ctx context.Context, id string) error
 	DeactivateUserSilentLoginSessions(ctx context.Context, userid string) error
 	DeleteActivityLink(ctx context.Context, arg DeleteActivityLinkParams) error
+	// Delete an adjustment by ID
+	DeleteAdjustment(ctx context.Context, id string) error
 	DeleteAdminTwoFactor(ctx context.Context, userid string) error
 	DeleteAllExpiredCache(ctx context.Context) (int64, error)
 	DeleteAuditLogsOlderThan(ctx context.Context, timestamp pgtype.Timestamp) error
+	// Delete a baseline change by ID
+	DeleteBaselineChange(ctx context.Context, id string) error
 	DeleteCacheByFeature(ctx context.Context, feature string) (int64, error)
 	DeleteCacheByKey(ctx context.Context, key string) error
 	DeleteCacheByUserAndKey(ctx context.Context, arg DeleteCacheByUserAndKeyParams) error
@@ -100,6 +112,8 @@ type Querier interface {
 	DeleteExpiredSystemAlerts(ctx context.Context) error
 	// Deletes the oldest N entries from the cache (FIFO eviction)
 	DeleteOldestPropertyCache(ctx context.Context, limit int32) (int64, error)
+	// Delete all snapshots for a user (for regeneration)
+	DeletePortfolioSnapshots(ctx context.Context, userID string) error
 	// Deletes all cache entries for a specific provider
 	DeletePropertyCacheByProvider(ctx context.Context, provider string) (int64, error)
 	// Deletes a specific property from the cache
@@ -144,6 +158,8 @@ type Querier interface {
 	GetContactSubmissionByID(ctx context.Context, id string) (ContactSubmission, error)
 	GetDiscoverySession(ctx context.Context, id string) (DiscoverySession, error)
 	GetDiscoverySessionByUser(ctx context.Context, arg GetDiscoverySessionByUserParams) (DiscoverySession, error)
+	// Get the earliest purchase date from portfolio properties for backfill
+	GetEarliestPropertyDate(ctx context.Context, userID string) (interface{}, error)
 	GetEarlyAccessByEmail(ctx context.Context, email string) (EarlyAccess, error)
 	// Early Access (Waitlist)
 	GetEarlyAccessByID(ctx context.Context, id string) (EarlyAccess, error)
@@ -166,13 +182,30 @@ type Querier interface {
 	// Invoice Queries
 	GetInvoiceByID(ctx context.Context, id string) (Invoice, error)
 	GetInvoiceByStripeID(ctx context.Context, stripeinvoiceid string) (Invoice, error)
+	// Get the most recent baseline change for a property/field before a given date
+	GetLatestBaselineChange(ctx context.Context, arg GetLatestBaselineChangeParams) (V2BaselineChange, error)
 	GetLatestEmailVerificationCode(ctx context.Context, email string) (EmailVerificationCode, error)
+	// Get the most recent snapshot for a user
+	GetLatestPortfolioSnapshot(ctx context.Context, userID string) (V2PortfolioSnapshot, error)
 	GetLatestSnapshotByEmail(ctx context.Context, email pgtype.Text) (SnapshotRequest, error)
 	GetPasswordResetTokenByID(ctx context.Context, id string) (PasswordResetToken, error)
 	// Password Reset Token Queries
 	GetPasswordResetTokenByToken(ctx context.Context, token string) (PasswordResetToken, error)
 	GetPasswordResetTokensByUser(ctx context.Context, arg GetPasswordResetTokensByUserParams) ([]PasswordResetToken, error)
 	GetPendingInvestorReports(ctx context.Context, limit int32) ([]InvestorReport, error)
+	// Portfolio Snapshots SQLC Queries
+	// Get portfolio snapshots for a user within a date range
+	GetPortfolioSnapshots(ctx context.Context, arg GetPortfolioSnapshotsParams) ([]V2PortfolioSnapshot, error)
+	// ============================================
+	// Portfolio Adjustments Queries
+	// ============================================
+	// Get all adjustments for a property ordered by month descending
+	GetPropertyAdjustments(ctx context.Context, propertyID string) ([]V2PortfolioAdjustment, error)
+	// ============================================
+	// Baseline Changes Queries
+	// ============================================
+	// Get all baseline changes for a property ordered by effective date descending
+	GetPropertyBaselineChanges(ctx context.Context, propertyID string) ([]V2BaselineChange, error)
 	// Retrieves a property by provider and property ID
 	GetPropertyByProviderAndID(ctx context.Context, arg GetPropertyByProviderAndIDParams) (PropertyCache, error)
 	// Returns cache statistics for monitoring

@@ -567,3 +567,68 @@ type UserAnalysisPreference struct {
 	CreatedAt pgtype.Timestamp `json:"createdAt"`
 	UpdatedAt pgtype.Timestamp `json:"updatedAt"`
 }
+
+type V2BaselineChange struct {
+	ID            string           `json:"id"`
+	PropertyID    string           `json:"property_id"`
+	Field         string           `json:"field"`
+	EffectiveDate pgtype.Timestamp `json:"effective_date"`
+	NewValue      float64          `json:"new_value"`
+	PreviousValue pgtype.Float8    `json:"previous_value"`
+	Note          pgtype.Text      `json:"note"`
+	CreatedAt     pgtype.Timestamp `json:"created_at"`
+	UpdatedAt     pgtype.Timestamp `json:"updated_at"`
+}
+
+type V2PortfolioAdjustment struct {
+	ID         string           `json:"id"`
+	PropertyID string           `json:"property_id"`
+	Month      pgtype.Timestamp `json:"month"`
+	Type       string           `json:"type"`
+	Amount     float64          `json:"amount"`
+	Note       pgtype.Text      `json:"note"`
+	CreatedAt  pgtype.Timestamp `json:"created_at"`
+	UpdatedAt  pgtype.Timestamp `json:"updated_at"`
+}
+
+type V2PortfolioProperty struct {
+	ID              string           `json:"id"`
+	UserID          string           `json:"user_id"`
+	Address         string           `json:"address"`
+	City            string           `json:"city"`
+	State           string           `json:"state"`
+	ZipCode         pgtype.Text      `json:"zip_code"`
+	PropertyType    pgtype.Text      `json:"property_type"`
+	Bedrooms        pgtype.Int4      `json:"bedrooms"`
+	Bathrooms       pgtype.Float8    `json:"bathrooms"`
+	Sqft            pgtype.Int4      `json:"sqft"`
+	YearBuilt       pgtype.Int4      `json:"year_built"`
+	PurchasePrice   float64          `json:"purchase_price"`
+	PurchaseDate    pgtype.Timestamp `json:"purchase_date"`
+	CurrentValue    float64          `json:"current_value"`
+	MonthlyRent     float64          `json:"monthly_rent"`
+	VacancyRate     pgtype.Float8    `json:"vacancy_rate"`
+	Expenses        []byte           `json:"expenses"`
+	MortgageBalance float64          `json:"mortgage_balance"`
+	MortgageRate    float64          `json:"mortgage_rate"`
+	MortgagePayment float64          `json:"mortgage_payment"`
+	Status          string           `json:"status"`
+	PropertyStatus  string           `json:"property_status"`
+	Notes           pgtype.Text      `json:"notes"`
+	CreatedAt       pgtype.Timestamp `json:"created_at"`
+	UpdatedAt       pgtype.Timestamp `json:"updated_at"`
+}
+
+type V2PortfolioSnapshot struct {
+	ID               string           `json:"id"`
+	UserID           string           `json:"user_id"`
+	SnapshotDate     pgtype.Timestamp `json:"snapshot_date"`
+	TotalValue       float64          `json:"total_value"`
+	TotalEquity      float64          `json:"total_equity"`
+	TotalDebt        float64          `json:"total_debt"`
+	MonthlyCashFlow  float64          `json:"monthly_cash_flow"`
+	PortfolioCapRate float64          `json:"portfolio_cap_rate"`
+	PropertyCount    int32            `json:"property_count"`
+	MetricsJson      []byte           `json:"metrics_json"`
+	CreatedAt        pgtype.Timestamp `json:"created_at"`
+}

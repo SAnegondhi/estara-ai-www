@@ -1252,3 +1252,189 @@ func normalizeString(s string) string {
 	}
 	return result
 }
+
+// PropertyLookupResult contains the result of a property address lookup
+type PropertyLookupResult struct {
+	Success           bool              `json:"success"`
+	Property          *providers.Property `json:"property,omitempty"`
+	Error             string            `json:"error,omitempty"`
+	AttemptedProviders []string         `json:"attemptedProviders,omitempty"`
+	ProviderName      string            `json:"providerName,omitempty"`
+}
+
+// GetPropertyByAddress looks up property details by address
+// Uses HasData provider to fetch property valuation data from Zillow
+func (o *Orchestrator) GetPropertyByAddress(ctx context.Context, address, city, state string) (*PropertyLookupResult, error) {
+	o.logger.Info("looking up property by address",
+		"address", address,
+		"city", city,
+		"state", state,
+	)
+
+	// Find HasData provider
+	var hasDataProvider *providers.HasDataProvider
+	for _, p := range o.providers {
+		if hdp, ok := p.(*providers.HasDataProvider); ok && hdp.IsEnabled() {
+			hasDataProvider = hdp
+			break
+		}
+	}
+
+	if hasDataProvider == nil {
+		return &PropertyLookupResult{
+			Success: false,
+			Error:   "Property lookup service is temporarily unavailable",
+		}, nil
+	}
+
+	// Build a Zillow search URL for the address
+	// Format: https://www.zillow.com/homes/123-Main-St-Austin-TX_rb/
+	formattedAddress := formatAddressForZillow(address, city, state)
+	zillowURL := fmt.Sprintf("https://www.zillow.com/homes/%s_rb/", formattedAddress)
+
+	o.logger.Debug("fetching property from Zillow",
+		"zillowURL", zillowURL,
+	)
+
+	// Use HasData to fetch property details
+	propData, err := hasDataProvider.GetPropertyByURL(ctx, zillowURL)
+	if err != nil {
+		o.logger.Error("failed to fetch property from provider",
+			"error", err,
+			"address", address,
+		)
+		return &PropertyLookupResult{
+			Success:           false,
+			Error:             "Property not found. Please verify the address and try again.",
+			AttemptedProviders: []string{"hasdata"},
+		}, nil
+	}
+
+	// Convert to Property
+	property := convertHasDataToProperty(propData, address, city, state)
+
+	return &PropertyLookupResult{
+		Success:           true,
+		Property:          property,
+		ProviderName:      "hasdata",
+		AttemptedProviders: []string{"hasdata"},
+	}, nil
+}
+
+// formatAddressForZillow converts address components to Zillow URL format
+// "123 Main St", "Austin", "TX" -> "123-Main-St-Austin-TX"
+func formatAddressForZillow(address, city, state string) string {
+	// Combine all parts
+	fullAddress := fmt.Sprintf("%s-%s-%s", address, city, state)
+
+	// Replace spaces and special characters with dashes
+	result := ""
+	for _, c := range fullAddress {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			result += string(c)
+		} else if c == ' ' || c == ',' || c == '.' || c == '#' {
+			if len(result) > 0 && result[len(result)-1] != '-' {
+				result += "-"
+			}
+		}
+	}
+
+	// Remove trailing dash
+	result = strings.TrimSuffix(result, "-")
+
+	return result
+}
+
+// convertHasDataToProperty converts HasData property API response to Property
+func convertHasDataToProperty(data *providers.HasDataPropertyAPIProperty, address, city, state string) *providers.Property {
+	if data == nil {
+		return nil
+	}
+
+	// Extract address components from nested address object or use provided values
+	propAddress := address
+	propCity := city
+	propState := state
+	propZipCode := ""
+
+	if data.Address != nil {
+		if data.Address.StreetAddress != "" {
+			propAddress = data.Address.StreetAddress
+		}
+		if data.Address.City != "" {
+			propCity = data.Address.City
+		}
+		if data.Address.State != "" {
+			propState = data.Address.State
+		}
+		propZipCode = data.Address.Zipcode
+	}
+
+	// Get beds (prefer Bedrooms, fall back to Beds)
+	beds := data.Bedrooms
+	if beds == 0 {
+		beds = data.Beds
+	}
+
+	// Get baths (prefer Bathrooms, fall back to Baths)
+	baths := data.Bathrooms
+	if baths == 0 {
+		baths = data.Baths
+	}
+
+	// Get sqft (prefer LivingArea, fall back to Area)
+	sqft := data.LivingArea
+	if sqft == 0 {
+		sqft = data.Area
+	}
+
+	// Get price (prefer Zestimate if available, else Price)
+	price := data.Price
+	if data.Zestimate > 0 {
+		price = data.Zestimate
+	}
+
+	prop := &providers.Property{
+		ID:            fmt.Sprintf("%d", data.Zpid),
+		ProviderID:    fmt.Sprintf("%d", data.Zpid),
+		ProviderName:  "hasdata",
+		Address:       propAddress,
+		City:          propCity,
+		State:         propState,
+		ZipCode:       propZipCode,
+		Latitude:      data.Latitude,
+		Longitude:     data.Longitude,
+		Price:         price,
+		Beds:          beds,
+		Baths:         baths,
+		Sqft:          sqft,
+		LotSize:       data.LotSize,
+		YearBuilt:     data.YearBuilt,
+		PropertyType:  parsePropertyType(data.PropertyType),
+		EstimatedRent: data.RentZestimate,
+		ListingURL:    data.URL,
+		FetchedAt:     time.Now(),
+		Source:        "zillow",
+	}
+
+	return prop
+}
+
+// parsePropertyType converts string to PropertyType
+func parsePropertyType(s string) providers.PropertyType {
+	s = strings.ToLower(s)
+	switch {
+	case strings.Contains(s, "single") || strings.Contains(s, "house"):
+		return providers.PropertyTypeSingleFamily
+	case strings.Contains(s, "condo"):
+		return providers.PropertyTypeCondo
+	case strings.Contains(s, "town"):
+		return providers.PropertyTypeTownhouse
+	case strings.Contains(s, "multi"):
+		return providers.PropertyTypeMultiFamily
+	case strings.Contains(s, "land"):
+		return providers.PropertyTypeLand
+	default:
+		return providers.PropertyTypeOther
+	}
+}

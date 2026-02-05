@@ -692,16 +692,62 @@ type hasDataPropertyAPIResponse struct {
 	Property        hasDataPropertyAPIProperty `json:"property,omitempty"`
 }
 
-// hasDataPropertyAPIProperty contains the nested property data from Property API
+// HasDataPropertyAPIProperty contains the nested property data from Property API
 // Field names match the API response exactly (case-sensitive JSON)
-type hasDataPropertyAPIProperty struct {
-	YearBuilt     int     `json:"yearBuilt"`
-	LivingArea    int     `json:"livingArea"`    // Square feet (primary)
-	Area          int     `json:"area"`          // Square feet (alias)
-	LotSize       int     `json:"lotSize"`
-	LotAreaValue  float64 `json:"lotAreaValue"`  // Alternative lot size field (can be decimal)
-	RentZestimate int     `json:"rentZestimate"`
+// Exported for use in orchestrator.GetPropertyByAddress
+type HasDataPropertyAPIProperty struct {
+	// Identifiers
+	Zpid int `json:"zpid"`
+	URL  string `json:"url"`
+
+	// Address (nested object)
+	Address *HasDataPropertyAddress `json:"address,omitempty"`
+
+	// Coordinates
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+
+	// Price info
+	Price         int `json:"price"`
+	Zestimate     int `json:"zestimate"`
+	RentZestimate int `json:"rentZestimate"`
+
+	// Property details
+	PropertyType string  `json:"propertyType"`
+	HomeType     string  `json:"homeType"`
+	Bedrooms     int     `json:"bedrooms"`
+	Beds         int     `json:"beds"`      // Alias
+	Bathrooms    float64 `json:"bathrooms"`
+	Baths        float64 `json:"baths"`     // Alias
+	LivingArea   int     `json:"livingArea"`
+	Area         int     `json:"area"`      // Alias
+	LotSize      int     `json:"lotSize"`
+	LotAreaValue float64 `json:"lotAreaValue"`
+	YearBuilt    int     `json:"yearBuilt"`
+
+	// Listing info
+	Status       string `json:"status"`
+	HomeStatus   string `json:"homeStatus"`
+	DaysOnZillow int    `json:"daysOnZillow"`
+
+	// Financial
+	TaxAssessedValue         float64 `json:"taxAssessedValue"`
+	AnnualHomeownersInsurance float64 `json:"annualHomeownersInsurance"`
+	MonthlyHoaFee            float64 `json:"monthlyHoaFee"`
 }
+
+// HasDataPropertyAddress represents address in Property API response
+type HasDataPropertyAddress struct {
+	StreetAddress string `json:"streetAddress"`
+	City          string `json:"city"`
+	State         string `json:"state"`
+	Zipcode       string `json:"zipcode"`
+	Neighborhood  string `json:"neighborhood"`
+	County        string `json:"county"`
+}
+
+// Legacy type alias for backward compatibility with enrichment code
+type hasDataPropertyAPIProperty = HasDataPropertyAPIProperty
 
 // GetPropertyByURL fetches property details using the HasData Property API
 // This is used for yearBuilt enrichment since Listing API no longer returns yearBuilt
