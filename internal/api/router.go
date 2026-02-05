@@ -485,14 +485,17 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 
 	// Website APIs (public and protected)
 	r.Route("/api/website", func(r chi.Router) {
-		// Public endpoints (no auth required)
-		r.Get("/pricing", handlers.Website.GetPricingConfig)
-		r.Post("/free-snapshot", handlers.Website.CreateFreeSnapshot)
-		r.Get("/order-status", handlers.Website.GetOrderStatus)
-		r.Post("/guest-session", handlers.Website.CreateGuestSession)
-		r.Post("/checkout", handlers.Website.CreateCheckout) // Public for signup flow
+		// Public endpoints (no auth required, but rate limited)
+		r.Group(func(r chi.Router) {
+			r.Use(rateLimiter.Limit)
+			r.Get("/pricing", handlers.Website.GetPricingConfig)
+			r.Post("/free-snapshot", handlers.Website.CreateFreeSnapshot)
+			r.Get("/order-status", handlers.Website.GetOrderStatus)
+			r.Post("/guest-session", handlers.Website.CreateGuestSession)
+			r.Post("/checkout", handlers.Website.CreateCheckout) // Public for signup flow
+		})
 
-		// Protected website endpoints
+		// Protected website endpoints (auth + rate limited)
 		r.Group(func(r chi.Router) {
 			r.Use(authMiddleware.Authenticate)
 			r.Use(rateLimiter.Limit)
