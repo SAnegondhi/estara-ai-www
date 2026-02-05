@@ -83,6 +83,72 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 	return i, err
 }
 
+const CreateUserWithPassword = `-- name: CreateUserWithPassword :one
+INSERT INTO users (
+    id, email, password, "firstName", "lastName", role,
+    "subscriptionTier", "stripeCustomerId", "createdAt", "updatedAt"
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW()
+) RETURNING id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason"
+`
+
+type CreateUserWithPasswordParams struct {
+	ID               string      `json:"id"`
+	Email            string      `json:"email"`
+	Password         pgtype.Text `json:"password"`
+	FirstName        pgtype.Text `json:"firstName"`
+	LastName         pgtype.Text `json:"lastName"`
+	Role             interface{} `json:"role"`
+	SubscriptionTier pgtype.Text `json:"subscriptionTier"`
+	StripeCustomerId pgtype.Text `json:"stripeCustomerId"`
+}
+
+// Creates a user with password hash and Stripe customer ID (for guest checkout signup)
+func (q *Queries) CreateUserWithPassword(ctx context.Context, arg CreateUserWithPasswordParams) (User, error) {
+	row := q.db.QueryRow(ctx, CreateUserWithPassword,
+		arg.ID,
+		arg.Email,
+		arg.Password,
+		arg.FirstName,
+		arg.LastName,
+		arg.Role,
+		arg.SubscriptionTier,
+		arg.StripeCustomerId,
+	)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Email,
+		&i.FirstName,
+		&i.LastName,
+		&i.StripeCustomerId,
+		&i.Role,
+		&i.HasDataTier,
+		&i.Password,
+		&i.Theme,
+		&i.SubscriptionTier,
+		&i.Phone,
+		&i.StreetAddress,
+		&i.City,
+		&i.State,
+		&i.ZipCode,
+		&i.InvestorProfile,
+		&i.IapPlatform,
+		&i.IapProductId,
+		&i.IapReceiptData,
+		&i.IapExpiresAt,
+		&i.IapLastValidated,
+		&i.AppleOriginalTransactionId,
+		&i.AppleEnvironment,
+		&i.SuspendedAt,
+		&i.SuspendedBy,
+		&i.SuspendReason,
+	)
+	return i, err
+}
+
 const DeleteUser = `-- name: DeleteUser :exec
 DELETE FROM users WHERE id = $1
 `
@@ -455,6 +521,23 @@ WHERE id = $1
 
 func (q *Queries) UnsuspendUser(ctx context.Context, id string) error {
 	_, err := q.db.Exec(ctx, UnsuspendUser, id)
+	return err
+}
+
+const UpdateUserPassword = `-- name: UpdateUserPassword :exec
+UPDATE users SET
+    password = $2,
+    "updatedAt" = NOW()
+WHERE id = $1
+`
+
+type UpdateUserPasswordParams struct {
+	ID       string      `json:"id"`
+	Password pgtype.Text `json:"password"`
+}
+
+func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error {
+	_, err := q.db.Exec(ctx, UpdateUserPassword, arg.ID, arg.Password)
 	return err
 }
 

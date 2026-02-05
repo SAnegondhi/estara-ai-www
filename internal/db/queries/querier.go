@@ -83,6 +83,8 @@ type Querier interface {
 	CreateSubscription(ctx context.Context, arg CreateSubscriptionParams) (Subscription, error)
 	CreateSystemAlert(ctx context.Context, arg CreateSystemAlertParams) (SystemAlert, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	// Creates a user with password hash and Stripe customer ID (for guest checkout signup)
+	CreateUserWithPassword(ctx context.Context, arg CreateUserWithPasswordParams) (User, error)
 	DeactivateSilentLoginSession(ctx context.Context, id string) error
 	DeactivateUserSilentLoginSessions(ctx context.Context, userid string) error
 	DeleteActivityLink(ctx context.Context, arg DeleteActivityLinkParams) error
@@ -343,6 +345,7 @@ type Querier interface {
 	UpdateSubscriptionPeriod(ctx context.Context, arg UpdateSubscriptionPeriodParams) error
 	UpdateSubscriptionStatus(ctx context.Context, arg UpdateSubscriptionStatusParams) error
 	UpdateSubscriptionTier(ctx context.Context, arg UpdateSubscriptionTierParams) error
+	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
 	UpdateUserRole(ctx context.Context, arg UpdateUserRoleParams) error
 	UpdateUserStripeCustomer(ctx context.Context, arg UpdateUserStripeCustomerParams) error

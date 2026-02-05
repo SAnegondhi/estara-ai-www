@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stripe/stripe-go/v76"
 	"github.com/stripe/stripe-go/v76/webhook"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/db/postgres"
@@ -94,13 +96,19 @@ func (s *WebhookService) handleCheckoutSessionCompleted(ctx context.Context, eve
 		"session_id", session.ID,
 		"customer_id", session.Customer.ID,
 		"payment_status", session.PaymentStatus,
+		"signup_type", session.Metadata["signupType"],
 	)
 
-	// Get user ID from metadata
+	// Check if this is a guest checkout (new user signup with payment)
+	signupType := session.Metadata["signupType"]
+	if signupType == "guest_checkout" {
+		return s.handleGuestCheckoutCompleted(ctx, &session, ipAddress, userAgent)
+	}
+
+	// Existing user checkout flow
 	userID := session.Metadata["userId"]
 	if userID == "" {
 		s.logger.Warn("checkout session missing userId metadata", "session_id", session.ID)
-		// Try to find user by email
 	}
 
 	// Record billing audit log
@@ -126,6 +134,153 @@ func (s *WebhookService) handleCheckoutSessionCompleted(ctx context.Context, eve
 	}
 
 	return nil
+}
+
+// handleGuestCheckoutCompleted handles guest checkout - creates user AFTER successful payment
+// This mirrors the www_v1 handleGuestCheckoutCompleted function
+func (s *WebhookService) handleGuestCheckoutCompleted(ctx context.Context, session *stripe.CheckoutSession, ipAddress, userAgent string) error {
+	// Extract user data from metadata
+	pendingEmail := session.Metadata["pendingEmail"]
+	pendingPassword := session.Metadata["pendingPassword"]
+	pendingFirstName := session.Metadata["pendingFirstName"]
+	pendingLastName := session.Metadata["pendingLastName"]
+	tier := session.Metadata["tier"]
+
+	if pendingEmail == "" || pendingPassword == "" {
+		s.logger.Error("guest checkout missing required signup data",
+			"session_id", session.ID,
+			"has_email", pendingEmail != "",
+			"has_password", pendingPassword != "",
+		)
+		return fmt.Errorf("missing required signup data in session metadata")
+	}
+
+	s.logger.Info("guest checkout payment successful - creating user account",
+		"email", pendingEmail,
+		"tier", tier,
+	)
+
+	q := queries.New(s.db.Main)
+
+	// Normalize email
+	userEmail := strings.ToLower(strings.TrimSpace(pendingEmail))
+
+	// Check if user already exists (edge case - duplicate webhook)
+	existingUser, err := q.GetUserByEmail(ctx, userEmail)
+	if err == nil {
+		s.logger.Warn("user already exists - updating subscription",
+			"email", userEmail,
+			"user_id", existingUser.ID,
+		)
+
+		// Update subscription for existing user
+		if session.Subscription != nil {
+			if err := s.createOrUpdateSubscription(ctx, existingUser.ID, session.Subscription.ID, session.Customer.ID); err != nil {
+				s.logger.Error("failed to update subscription for existing user", "error", err)
+				return err
+			}
+		}
+
+		// Record audit log
+		eventData, _ := json.Marshal(session)
+		s.recordAuditLog(ctx, queries.CreateBillingAuditLogParams{
+			ID:               uuid.New().String(),
+			UserId:           pgtype.Text{String: existingUser.ID, Valid: true},
+			StripeCustomerId: pgtype.Text{String: session.Customer.ID, Valid: session.Customer != nil},
+			EventType:        "CHECKOUT_COMPLETED",
+			EventData:        eventData,
+			IpAddress:        pgtype.Text{String: ipAddress, Valid: ipAddress != ""},
+			UserAgent:        pgtype.Text{String: userAgent, Valid: userAgent != ""},
+		})
+
+		return nil
+	}
+
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("failed to check for existing user: %w", err)
+	}
+
+	// Hash password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(pendingPassword), 12)
+	if err != nil {
+		s.logger.Error("failed to hash password", "error", err)
+		return fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	// Create user
+	userID := uuid.New().String()
+	stripeCustomerID := ""
+	if session.Customer != nil {
+		stripeCustomerID = session.Customer.ID
+	}
+
+	// Map tier to subscription tier
+	subscriptionTier := s.mapTierToSubscriptionTier(tier)
+
+	newUser, err := q.CreateUserWithPassword(ctx, queries.CreateUserWithPasswordParams{
+		ID:               userID,
+		Email:            userEmail,
+		Password:         pgtype.Text{String: string(hashedPassword), Valid: true},
+		FirstName:        pgtype.Text{String: strings.TrimSpace(pendingFirstName), Valid: pendingFirstName != ""},
+		LastName:         pgtype.Text{String: strings.TrimSpace(pendingLastName), Valid: pendingLastName != ""},
+		Role:             "USER",
+		SubscriptionTier: pgtype.Text{String: subscriptionTier, Valid: true},
+		StripeCustomerId: pgtype.Text{String: stripeCustomerID, Valid: stripeCustomerID != ""},
+	})
+	if err != nil {
+		s.logger.Error("failed to create user", "error", err, "email", userEmail)
+		return fmt.Errorf("failed to create user: %w", err)
+	}
+
+	s.logger.Info("user created successfully",
+		"user_id", newUser.ID,
+		"email", userEmail,
+		"tier", subscriptionTier,
+	)
+
+	// Create subscription record
+	if session.Subscription != nil {
+		if err := s.createOrUpdateSubscription(ctx, newUser.ID, session.Subscription.ID, stripeCustomerID); err != nil {
+			s.logger.Error("failed to create subscription", "error", err)
+			return err
+		}
+	}
+
+	// Record audit log
+	eventData, _ := json.Marshal(session)
+	s.recordAuditLog(ctx, queries.CreateBillingAuditLogParams{
+		ID:               uuid.New().String(),
+		UserId:           pgtype.Text{String: newUser.ID, Valid: true},
+		StripeCustomerId: pgtype.Text{String: stripeCustomerID, Valid: stripeCustomerID != ""},
+		EventType:        "CHECKOUT_COMPLETED",
+		EventData:        eventData,
+		IpAddress:        pgtype.Text{String: ipAddress, Valid: ipAddress != ""},
+		UserAgent:        pgtype.Text{String: userAgent, Valid: userAgent != ""},
+	})
+
+	// Send welcome/subscription activated email
+	emailSvc := email.NewService(s.cfg)
+	if _, err := emailSvc.SendSubscriptionActivated(userEmail, pendingFirstName); err != nil {
+		s.logger.Warn("failed to send welcome email", "error", err, "email", userEmail)
+	}
+
+	return nil
+}
+
+// mapTierToSubscriptionTier maps checkout tier to database subscription tier
+func (s *WebhookService) mapTierToSubscriptionTier(tier string) string {
+	switch tier {
+	case "PROFESSIONAL_ACCESS", "professional":
+		return "professional"
+	case "INVESTOR_ACCESS", "investor":
+		return "investor"
+	case "AAPI_INVESTOR":
+		return "aapi_investor"
+	case "AAPI_ALLOCATOR":
+		return "aapi_allocator"
+	default:
+		return "professional" // Default tier
+	}
 }
 
 func (s *WebhookService) handleCheckoutSessionExpired(ctx context.Context, event *stripe.Event, ipAddress, userAgent string) error {

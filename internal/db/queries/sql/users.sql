@@ -15,6 +15,21 @@ INSERT INTO users (
     $1, $2, $3, $4, $5, $6, NOW(), NOW()
 ) RETURNING *;
 
+-- name: CreateUserWithPassword :one
+-- Creates a user with password hash and Stripe customer ID (for guest checkout signup)
+INSERT INTO users (
+    id, email, password, "firstName", "lastName", role,
+    "subscriptionTier", "stripeCustomerId", "createdAt", "updatedAt"
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW()
+) RETURNING *;
+
+-- name: UpdateUserPassword :exec
+UPDATE users SET
+    password = $2,
+    "updatedAt" = NOW()
+WHERE id = $1;
+
 -- name: UpdateUserUpdatedAt :exec
 UPDATE users SET "updatedAt" = NOW() WHERE id = $1;
 
