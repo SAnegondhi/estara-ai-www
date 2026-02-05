@@ -1,0 +1,44 @@
+# Environment files (contain secrets)
+.env
+.env.local
+.env.test
+.env.production
+.env.*.local
+
+# Keep example files
+!.env.example
+!.env.test.example
+
+# Binary and build artifacts
+/www
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
