@@ -116,6 +116,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 
 	// Health check (no auth required)
 	r.Get("/health", handlers.Auth.Health)
+	r.Get("/api/health", handlers.Auth.Health) // Alias for Railway health checks
 
 	// Anti-scraping endpoints (no auth required)
 	r.Get("/robots.txt", handleRobotsTxt)
