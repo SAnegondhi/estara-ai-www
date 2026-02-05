@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -115,6 +116,10 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 
 	// Health check (no auth required)
 	r.Get("/health", handlers.Auth.Health)
+
+	// Anti-scraping endpoints (no auth required)
+	r.Get("/robots.txt", handleRobotsTxt)
+	r.Get("/llms.txt", handleLLMsTxt)
 
 	// Auth routes (no auth required for login)
 	r.Route("/api/auth", func(r chi.Router) {
@@ -507,4 +512,65 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	})
 
 	return r
+}
+
+// handleRobotsTxt blocks all crawlers from indexing the API
+func handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=86400") // Cache for 24 hours
+
+	robotsTxt := `# Estara AI API - No indexing allowed
+User-agent: *
+Disallow: /
+
+# Block AI/LLM crawlers explicitly
+User-agent: GPTBot
+Disallow: /
+
+User-agent: ChatGPT-User
+Disallow: /
+
+User-agent: CCBot
+Disallow: /
+
+User-agent: anthropic-ai
+Disallow: /
+
+User-agent: Claude-Web
+Disallow: /
+
+User-agent: Google-Extended
+Disallow: /
+
+User-agent: FacebookBot
+Disallow: /
+
+User-agent: Bytespider
+Disallow: /
+
+User-agent: Amazonbot
+Disallow: /
+
+User-agent: Applebot-Extended
+Disallow: /
+`
+	w.Write([]byte(robotsTxt))
+}
+
+// handleLLMsTxt explicitly denies AI training on API content
+func handleLLMsTxt(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=86400") // Cache for 24 hours
+
+	llmsTxt := `# Estara AI API - AI Crawler Policy
+# This API does not permit AI/LLM training or scraping
+
+User-agent: *
+Disallow: /
+
+# This content is proprietary and not available for AI training.
+# Unauthorized access attempts will be logged and blocked.
+# For inquiries, contact: support@estara-ai.com
+`
+	w.Write([]byte(llmsTxt))
 }

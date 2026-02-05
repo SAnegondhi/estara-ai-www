@@ -28,6 +28,9 @@ func SecurityHeaders(cfg *config.Config) func(http.Handler) http.Handler {
 			// Permissions Policy (disable unnecessary features)
 			w.Header().Set("Permissions-Policy", "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()")
 
+			// Block all indexing and scraping (API server should never be indexed)
+			w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet, noimageindex")
+
 			// Only add HSTS in production
 			if cfg.IsProduction() {
 				// HTTP Strict Transport Security (1 year, include subdomains)
