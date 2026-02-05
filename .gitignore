@@ -4,6 +4,7 @@
 .env.test
 .env.production
 .env.*.local
+railway.env
 
 # Keep example files
 !.env.example
