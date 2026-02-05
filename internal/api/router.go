@@ -144,7 +144,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		// Protected auth routes
 		r.Group(func(r chi.Router) {
 			r.Use(authMiddleware.Authenticate)
-			r.Get("/me", handlers.Auth.GetCurrentUser)
+			r.Get("/me", handlers.Auth.Me) // ADR-066: Returns user, entitlements, and CSRF token
 			r.Post("/logout", handlers.Auth.Logout)
 			r.Post("/update-password", handlers.Auth.UpdatePassword)
 		})

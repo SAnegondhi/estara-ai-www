@@ -264,20 +264,26 @@ func (m *AuthMiddleware) DecodeTokenWithoutValidation(tokenString string) (*Clai
 	return claims, nil
 }
 
-// extractBearerToken extracts the token from Authorization header
+// extractBearerToken extracts the token from cookie, Authorization header, or query param
+// ADR-066: Priority order: Cookie > Authorization header > Query param
 func extractBearerToken(r *http.Request) string {
+	// PRIMARY: Try httpOnly cookie first (ADR-066)
+	if token := GetAccessToken(r); token != "" {
+		return token
+	}
+
+	// FALLBACK: Authorization header (backward compatibility during migration)
 	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		// Also check query param for SSE connections
-		return r.URL.Query().Get("token")
+	if auth != "" {
+		parts := strings.SplitN(auth, " ", 2)
+		if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
+			return parts[1]
+		}
 	}
 
-	parts := strings.SplitN(auth, " ", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
-		return ""
-	}
-
-	return parts[1]
+	// FALLBACK: Query param for SSE connections
+	// Note: SSE with cookies still uses query param for CSRF validation
+	return r.URL.Query().Get("token")
 }
 
 // GetUserFromContext retrieves the user claims from context

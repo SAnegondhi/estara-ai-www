@@ -50,11 +50,12 @@ type LoginRequest struct {
 
 // LoginResponse represents a login response
 type LoginResponse struct {
-	Success      bool         `json:"success"`
-	Token        string       `json:"token"`
-	RefreshToken string       `json:"refreshToken,omitempty"`
-	User         UserResponse `json:"user"`
+	Success      bool          `json:"success"`
+	Token        string        `json:"token"`                   // Kept for backward compatibility during migration
+	RefreshToken string        `json:"refreshToken,omitempty"`  // Kept for backward compatibility
+	User         UserResponse  `json:"user"`
 	Entitlements *Entitlements `json:"entitlements"`
+	CSRFToken    string        `json:"csrfToken,omitempty"`     // ADR-066: CSRF token for cookie-based auth
 }
 
 // UserResponse represents user data in responses
@@ -105,9 +106,11 @@ type RefreshRequest struct {
 
 // RefreshResponse represents a token refresh response
 type RefreshResponse struct {
-	Success      bool         `json:"success"`
-	Token        string       `json:"token"`
+	Success      bool          `json:"success"`
+	Token        string        `json:"token"`           // Kept for backward compatibility
+	User         *UserResponse `json:"user,omitempty"`  // ADR-066: Include user data
 	Entitlements *Entitlements `json:"entitlements"`
+	CSRFToken    string        `json:"csrfToken,omitempty"` // ADR-066: CSRF token
 }
 
 // Rate limiting constants
@@ -262,12 +265,19 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	// Update last login
 	_ = h.updateLastLogin(ctx, user.ID)
 
+	// ADR-066: Set httpOnly cookies for authentication
+	secure := !h.cfg.IsDevelopment()
+	middleware.SetAuthCookies(w, accessToken, refreshToken, secure)
+
+	// ADR-066: Set CSRF cookie and get token for response
+	csrfToken := middleware.SetCSRFCookie(w, secure, h.cfg.Security.CSRFTokenLength)
+
 	// Build response
 	tier := strings.TrimPrefix(v2Quota.Tier, "V2_")
 	response := LoginResponse{
 		Success:      true,
-		Token:        accessToken,
-		RefreshToken: refreshToken,
+		Token:        accessToken,    // Kept for backward compatibility during migration
+		RefreshToken: refreshToken,   // Kept for backward compatibility during migration
 		User: UserResponse{
 			ID:              user.ID,
 			Email:           email,
@@ -277,6 +287,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 			Theme:           getStringOrDefault(user.Theme, "estara"),
 		},
 		Entitlements: entitlements,
+		CSRFToken:    csrfToken,      // ADR-066: CSRF token for cookie-based auth
 	}
 
 	h.logger.Info("login successful", "user_id", user.ID, "email", email)
@@ -288,14 +299,17 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Get token from Authorization header (can be expired)
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-		httputil.Unauthorized(w, "Authorization header required")
-		return
+	// ADR-066: Try cookie first, fall back to Authorization header
+	token := middleware.GetAccessToken(r)
+	if token == "" {
+		// Fall back to Authorization header for backward compatibility
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			httputil.Unauthorized(w, "Authorization required")
+			return
+		}
+		token = strings.TrimPrefix(authHeader, "Bearer ")
 	}
-
-	token := strings.TrimPrefix(authHeader, "Bearer ")
 
 	// Decode token to get user ID (even if expired)
 	claims, err := h.auth.DecodeTokenWithoutValidation(token)
@@ -343,10 +357,30 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ADR-066: Set httpOnly cookie with new access token
+	secure := !h.cfg.IsDevelopment()
+	middleware.SetAccessCookie(w, newToken, secure)
+
+	// ADR-066: Refresh CSRF token
+	csrfToken := middleware.SetCSRFCookie(w, secure, h.cfg.Security.CSRFTokenLength)
+
+	// Build user response for ADR-066
+	tier := strings.TrimPrefix(v2Quota.Tier, "V2_")
+	userResponse := &UserResponse{
+		ID:               user.ID,
+		Email:            user.Email,
+		FirstName:        user.FirstName,
+		LastName:         user.LastName,
+		SubscriptionTier: strings.ToLower(tier),
+		Theme:            getStringOrDefault(user.Theme, "estara"),
+	}
+
 	response := RefreshResponse{
 		Success:      true,
-		Token:        newToken,
+		Token:        newToken,      // Kept for backward compatibility
+		User:         userResponse,  // ADR-066: Include user data
 		Entitlements: entitlements,
+		CSRFToken:    csrfToken,     // ADR-066: CSRF token
 	}
 
 	h.logger.Info("token refreshed", "user_id", user.ID)
@@ -392,9 +426,64 @@ func (h *Handler) GetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	httputil.Success(w, response)
 }
 
+// Me returns the current authenticated user with entitlements and refreshes CSRF token
+// ADR-066: Used for checking auth status on page load with cookie-based authentication
+func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	claims := middleware.GetUserFromContext(ctx)
+	if claims == nil {
+		httputil.Unauthorized(w, "not authenticated")
+		return
+	}
+
+	// Look up full user details from database
+	user, err := h.getUserByID(ctx, claims.UserID)
+	if err != nil {
+		h.logger.Warn("user not found", "user_id", claims.UserID)
+		httputil.NotFound(w, "User not found")
+		return
+	}
+
+	// Get V2 quota for entitlements
+	v2Quota, _ := h.getV2Quota(ctx, user.ID)
+	var entitlements *Entitlements
+	tier := "free"
+	if v2Quota != nil {
+		tier = strings.ToLower(strings.TrimPrefix(v2Quota.Tier, "V2_"))
+		entitlements = h.buildEntitlements(user, v2Quota)
+	}
+
+	// ADR-066: Refresh CSRF token
+	secure := !h.cfg.IsDevelopment()
+	csrfToken := middleware.SetCSRFCookie(w, secure, h.cfg.Security.CSRFTokenLength)
+
+	response := struct {
+		User         UserResponse  `json:"user"`
+		Entitlements *Entitlements `json:"entitlements,omitempty"`
+		CSRFToken    string        `json:"csrfToken"`
+	}{
+		User: UserResponse{
+			ID:               user.ID,
+			Email:            user.Email,
+			FirstName:        user.FirstName,
+			LastName:         user.LastName,
+			SubscriptionTier: tier,
+			Theme:            getStringOrDefault(user.Theme, "estara"),
+		},
+		Entitlements: entitlements,
+		CSRFToken:    csrfToken,
+	}
+
+	httputil.JSON(w, http.StatusOK, response)
+}
+
 // Logout invalidates the user's session
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
-	// For stateless JWT, logout is handled client-side by discarding the token
+	// ADR-066: Clear all authentication cookies
+	middleware.ClearAuthCookies(w)
+
+	// For stateless JWT, logout is handled by clearing cookies
 	// If we need to blacklist tokens, we would add them to Redis here
 	httputil.Success(w, map[string]string{"message": "logged out successfully"})
 }

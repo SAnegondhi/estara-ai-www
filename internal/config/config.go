@@ -31,6 +31,10 @@ type Config struct {
 // SecurityConfig holds security-related configuration
 type SecurityConfig struct {
 	CheckoutEncryptionKey string `mapstructure:"CHECKOUT_ENCRYPTION_KEY"`
+	// ADR-066: Cookie-based authentication
+	CookieDomain    string `mapstructure:"COOKIE_DOMAIN"`
+	CookieSecure    bool   `mapstructure:"COOKIE_SECURE"`
+	CSRFTokenLength int    `mapstructure:"CSRF_TOKEN_LENGTH"`
 }
 
 // StripeConfig holds Stripe payment configuration
@@ -357,6 +361,11 @@ func setDefaults(v *viper.Viper) {
 	// Email defaults
 	v.SetDefault("EMAIL_FROM_ADDRESS", "noreply@estara-ai.com")
 	v.SetDefault("EMAIL_FROM_NAME", "Estara AI")
+
+	// Security defaults (ADR-066)
+	v.SetDefault("COOKIE_DOMAIN", "")       // Empty = exact host match (__Host- prefix)
+	v.SetDefault("COOKIE_SECURE", true)     // Always true in production
+	v.SetDefault("CSRF_TOKEN_LENGTH", 32)   // 32 bytes = 256 bits
 }
 
 // Validate checks required configuration values
