@@ -490,6 +490,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Post("/free-snapshot", handlers.Website.CreateFreeSnapshot)
 		r.Get("/order-status", handlers.Website.GetOrderStatus)
 		r.Post("/guest-session", handlers.Website.CreateGuestSession)
+		r.Post("/checkout", handlers.Website.CreateCheckout) // Public for signup flow
 
 		// Protected website endpoints
 		r.Group(func(r chi.Router) {
@@ -497,7 +498,6 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 			r.Use(rateLimiter.Limit)
 
 			r.Post("/generate-report", handlers.Website.GenerateReport)
-			r.Post("/checkout", handlers.Website.CreateCheckout)
 			r.Get("/insight-access/status", handlers.Website.GetInsightAccessStatus)
 			r.Get("/reports/{id}", handlers.Website.GetReport)
 		})
