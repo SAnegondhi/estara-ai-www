@@ -429,7 +429,7 @@ INSERT INTO renewal_notifications (
     "emailContent", "recipientEmail", "renewalDate", "renewalAmount",
     "sendgridMessageId", delivered, "deliveredAt", opened, "openedAt"
 ) VALUES (
-    $1, $2, $3, $4, NOW(), $5, $6, $7, $8, $9, false, NULL, false, NULL
+    $1, $2, $3, $4, NOW(), $5, $6, $7, $8, $9, $10, $11, false, NULL
 ) RETURNING id, "userId", "subscriptionId", "emailType", "sentAt", "emailContent", "recipientEmail", "renewalDate", "renewalAmount", "sendgridMessageId", delivered, "deliveredAt", opened, "openedAt"
 `
 
@@ -443,6 +443,8 @@ type CreateRenewalNotificationParams struct {
 	RenewalDate       pgtype.Timestamp `json:"renewalDate"`
 	RenewalAmount     pgtype.Numeric   `json:"renewalAmount"`
 	SendgridMessageId pgtype.Text      `json:"sendgridMessageId"`
+	Delivered         bool             `json:"delivered"`
+	DeliveredAt       pgtype.Timestamp `json:"deliveredAt"`
 }
 
 // Renewal Notification Queries
@@ -457,6 +459,8 @@ func (q *Queries) CreateRenewalNotification(ctx context.Context, arg CreateRenew
 		arg.RenewalDate,
 		arg.RenewalAmount,
 		arg.SendgridMessageId,
+		arg.Delivered,
+		arg.DeliveredAt,
 	)
 	var i RenewalNotification
 	err := row.Scan(
@@ -1599,6 +1603,26 @@ func (q *Queries) MarkBillingCycleProcessed(ctx context.Context, id string) erro
 	return err
 }
 
+const UpdateInvoicePaid = `-- name: UpdateInvoicePaid :exec
+UPDATE invoices SET
+    status = 'PAID',
+    "paidAt" = $2,
+    "amountPaid" = $3,
+    "updatedAt" = NOW()
+WHERE "stripeInvoiceId" = $1
+`
+
+type UpdateInvoicePaidParams struct {
+	StripeInvoiceId string           `json:"stripeInvoiceId"`
+	PaidAt          pgtype.Timestamp `json:"paidAt"`
+	AmountPaid      int32            `json:"amountPaid"`
+}
+
+func (q *Queries) UpdateInvoicePaid(ctx context.Context, arg UpdateInvoicePaidParams) error {
+	_, err := q.db.Exec(ctx, UpdateInvoicePaid, arg.StripeInvoiceId, arg.PaidAt, arg.AmountPaid)
+	return err
+}
+
 const UpdateInvoiceStatus = `-- name: UpdateInvoiceStatus :exec
 UPDATE invoices SET
     status = $2,
@@ -1621,6 +1645,38 @@ func (q *Queries) UpdateInvoiceStatus(ctx context.Context, arg UpdateInvoiceStat
 		arg.Status,
 		arg.PaidAt,
 		arg.AmountPaid,
+	)
+	return err
+}
+
+const UpdateInvoiceStatusByStripeID = `-- name: UpdateInvoiceStatusByStripeID :exec
+UPDATE invoices SET
+    status = $2,
+    "hostedInvoiceUrl" = COALESCE($3, "hostedInvoiceUrl"),
+    "invoicePdfUrl" = COALESCE($4, "invoicePdfUrl"),
+    "emailSentAt" = $5,
+    "emailDelivered" = COALESCE($6, "emailDelivered"),
+    "updatedAt" = NOW()
+WHERE "stripeInvoiceId" = $1
+`
+
+type UpdateInvoiceStatusByStripeIDParams struct {
+	StripeInvoiceId  string           `json:"stripeInvoiceId"`
+	Status           interface{}      `json:"status"`
+	HostedInvoiceUrl pgtype.Text      `json:"hostedInvoiceUrl"`
+	InvoicePdfUrl    pgtype.Text      `json:"invoicePdfUrl"`
+	EmailSentAt      pgtype.Timestamp `json:"emailSentAt"`
+	EmailDelivered   bool             `json:"emailDelivered"`
+}
+
+func (q *Queries) UpdateInvoiceStatusByStripeID(ctx context.Context, arg UpdateInvoiceStatusByStripeIDParams) error {
+	_, err := q.db.Exec(ctx, UpdateInvoiceStatusByStripeID,
+		arg.StripeInvoiceId,
+		arg.Status,
+		arg.HostedInvoiceUrl,
+		arg.InvoicePdfUrl,
+		arg.EmailSentAt,
+		arg.EmailDelivered,
 	)
 	return err
 }
@@ -1702,4 +1758,111 @@ type UpdateSubscriptionTierParams struct {
 func (q *Queries) UpdateSubscriptionTier(ctx context.Context, arg UpdateSubscriptionTierParams) error {
 	_, err := q.db.Exec(ctx, UpdateSubscriptionTier, arg.ID, arg.Tier, arg.StripePriceId)
 	return err
+}
+
+const UpsertInvoice = `-- name: UpsertInvoice :one
+INSERT INTO invoices (
+    id, "stripeInvoiceId", "stripeCustomerId", "stripeSubscriptionId", "userId",
+    "invoiceNumber", status, subtotal, "taxAmount", total, "amountPaid", "amountDue",
+    currency, "dueDate", "paidAt", "periodStart", "periodEnd",
+    "hostedInvoiceUrl", "invoicePdfUrl", description, "productType",
+    "emailSentAt", "emailDelivered", "createdAt", "updatedAt"
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+    $18, $19, $20, $21, $22, $23, NOW(), NOW()
+)
+ON CONFLICT ("stripeInvoiceId") DO UPDATE SET
+    status = EXCLUDED.status,
+    subtotal = EXCLUDED.subtotal,
+    "taxAmount" = EXCLUDED."taxAmount",
+    total = EXCLUDED.total,
+    "amountPaid" = EXCLUDED."amountPaid",
+    "amountDue" = EXCLUDED."amountDue",
+    "hostedInvoiceUrl" = COALESCE(EXCLUDED."hostedInvoiceUrl", invoices."hostedInvoiceUrl"),
+    "invoicePdfUrl" = COALESCE(EXCLUDED."invoicePdfUrl", invoices."invoicePdfUrl"),
+    "updatedAt" = NOW()
+RETURNING id, "stripeInvoiceId", "stripeCustomerId", "stripeSubscriptionId", "userId", "invoiceNumber", status, subtotal, "taxAmount", total, "amountPaid", "amountDue", currency, "createdAt", "dueDate", "paidAt", "periodStart", "periodEnd", "hostedInvoiceUrl", "invoicePdfUrl", description, "productType", "emailSentAt", "emailDelivered", "updatedAt"
+`
+
+type UpsertInvoiceParams struct {
+	ID                   string           `json:"id"`
+	StripeInvoiceId      string           `json:"stripeInvoiceId"`
+	StripeCustomerId     string           `json:"stripeCustomerId"`
+	StripeSubscriptionId pgtype.Text      `json:"stripeSubscriptionId"`
+	UserId               string           `json:"userId"`
+	InvoiceNumber        pgtype.Text      `json:"invoiceNumber"`
+	Status               interface{}      `json:"status"`
+	Subtotal             int32            `json:"subtotal"`
+	TaxAmount            int32            `json:"taxAmount"`
+	Total                int32            `json:"total"`
+	AmountPaid           int32            `json:"amountPaid"`
+	AmountDue            int32            `json:"amountDue"`
+	Currency             string           `json:"currency"`
+	DueDate              pgtype.Timestamp `json:"dueDate"`
+	PaidAt               pgtype.Timestamp `json:"paidAt"`
+	PeriodStart          pgtype.Timestamp `json:"periodStart"`
+	PeriodEnd            pgtype.Timestamp `json:"periodEnd"`
+	HostedInvoiceUrl     pgtype.Text      `json:"hostedInvoiceUrl"`
+	InvoicePdfUrl        pgtype.Text      `json:"invoicePdfUrl"`
+	Description          pgtype.Text      `json:"description"`
+	ProductType          interface{}      `json:"productType"`
+	EmailSentAt          pgtype.Timestamp `json:"emailSentAt"`
+	EmailDelivered       bool             `json:"emailDelivered"`
+}
+
+func (q *Queries) UpsertInvoice(ctx context.Context, arg UpsertInvoiceParams) (Invoice, error) {
+	row := q.db.QueryRow(ctx, UpsertInvoice,
+		arg.ID,
+		arg.StripeInvoiceId,
+		arg.StripeCustomerId,
+		arg.StripeSubscriptionId,
+		arg.UserId,
+		arg.InvoiceNumber,
+		arg.Status,
+		arg.Subtotal,
+		arg.TaxAmount,
+		arg.Total,
+		arg.AmountPaid,
+		arg.AmountDue,
+		arg.Currency,
+		arg.DueDate,
+		arg.PaidAt,
+		arg.PeriodStart,
+		arg.PeriodEnd,
+		arg.HostedInvoiceUrl,
+		arg.InvoicePdfUrl,
+		arg.Description,
+		arg.ProductType,
+		arg.EmailSentAt,
+		arg.EmailDelivered,
+	)
+	var i Invoice
+	err := row.Scan(
+		&i.ID,
+		&i.StripeInvoiceId,
+		&i.StripeCustomerId,
+		&i.StripeSubscriptionId,
+		&i.UserId,
+		&i.InvoiceNumber,
+		&i.Status,
+		&i.Subtotal,
+		&i.TaxAmount,
+		&i.Total,
+		&i.AmountPaid,
+		&i.AmountDue,
+		&i.Currency,
+		&i.CreatedAt,
+		&i.DueDate,
+		&i.PaidAt,
+		&i.PeriodStart,
+		&i.PeriodEnd,
+		&i.HostedInvoiceUrl,
+		&i.InvoicePdfUrl,
+		&i.Description,
+		&i.ProductType,
+		&i.EmailSentAt,
+		&i.EmailDelivered,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

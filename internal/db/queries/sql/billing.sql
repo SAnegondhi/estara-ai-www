@@ -92,6 +92,47 @@ UPDATE invoices SET
     "updatedAt" = NOW()
 WHERE id = $1;
 
+-- name: UpdateInvoiceStatusByStripeID :exec
+UPDATE invoices SET
+    status = $2,
+    "hostedInvoiceUrl" = COALESCE($3, "hostedInvoiceUrl"),
+    "invoicePdfUrl" = COALESCE($4, "invoicePdfUrl"),
+    "emailSentAt" = $5,
+    "emailDelivered" = COALESCE($6, "emailDelivered"),
+    "updatedAt" = NOW()
+WHERE "stripeInvoiceId" = $1;
+
+-- name: UpdateInvoicePaid :exec
+UPDATE invoices SET
+    status = 'PAID',
+    "paidAt" = $2,
+    "amountPaid" = $3,
+    "updatedAt" = NOW()
+WHERE "stripeInvoiceId" = $1;
+
+-- name: UpsertInvoice :one
+INSERT INTO invoices (
+    id, "stripeInvoiceId", "stripeCustomerId", "stripeSubscriptionId", "userId",
+    "invoiceNumber", status, subtotal, "taxAmount", total, "amountPaid", "amountDue",
+    currency, "dueDate", "paidAt", "periodStart", "periodEnd",
+    "hostedInvoiceUrl", "invoicePdfUrl", description, "productType",
+    "emailSentAt", "emailDelivered", "createdAt", "updatedAt"
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+    $18, $19, $20, $21, $22, $23, NOW(), NOW()
+)
+ON CONFLICT ("stripeInvoiceId") DO UPDATE SET
+    status = EXCLUDED.status,
+    subtotal = EXCLUDED.subtotal,
+    "taxAmount" = EXCLUDED."taxAmount",
+    total = EXCLUDED.total,
+    "amountPaid" = EXCLUDED."amountPaid",
+    "amountDue" = EXCLUDED."amountDue",
+    "hostedInvoiceUrl" = COALESCE(EXCLUDED."hostedInvoiceUrl", invoices."hostedInvoiceUrl"),
+    "invoicePdfUrl" = COALESCE(EXCLUDED."invoicePdfUrl", invoices."invoicePdfUrl"),
+    "updatedAt" = NOW()
+RETURNING *;
+
 -- name: ListUserInvoices :many
 SELECT * FROM invoices
 WHERE "userId" = $1
@@ -231,7 +272,7 @@ INSERT INTO renewal_notifications (
     "emailContent", "recipientEmail", "renewalDate", "renewalAmount",
     "sendgridMessageId", delivered, "deliveredAt", opened, "openedAt"
 ) VALUES (
-    $1, $2, $3, $4, NOW(), $5, $6, $7, $8, $9, false, NULL, false, NULL
+    $1, $2, $3, $4, NOW(), $5, $6, $7, $8, $9, $10, $11, false, NULL
 ) RETURNING *;
 
 -- name: UpdateRenewalNotificationDelivered :exec

@@ -269,3 +269,19 @@ func (c *StripeClient) GetPriceIDForProduct(productType ProductType) string {
 		return ""
 	}
 }
+
+// GetTierFromPriceID returns the subscription tier for a given price ID
+func (c *StripeClient) GetTierFromPriceID(priceID string) SubscriptionTier {
+	switch priceID {
+	case c.cfg.PriceInvestorAccess:
+		return TierInvestor
+	case c.cfg.PriceProfessionalAccess:
+		return TierProfessional
+	case c.cfg.PriceAPIInvestor:
+		return TierAPIInvestor
+	case c.cfg.PriceAPIAllocator:
+		return TierAPIAllocator
+	default:
+		return TierInvestor // Default to investor tier
+	}
+}

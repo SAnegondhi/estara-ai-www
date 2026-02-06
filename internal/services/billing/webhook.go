@@ -71,6 +71,12 @@ func (s *WebhookService) HandleEvent(ctx context.Context, event *stripe.Event, i
 		return s.handleSubscriptionDeleted(ctx, event, ipAddress, userAgent)
 	case "customer.subscription.trial_will_end":
 		return s.handleTrialWillEnd(ctx, event, ipAddress, userAgent)
+	case "invoice.created":
+		return s.handleInvoiceCreated(ctx, event, ipAddress, userAgent)
+	case "invoice.finalized":
+		return s.handleInvoiceFinalized(ctx, event, ipAddress, userAgent)
+	case "invoice.upcoming":
+		return s.handleInvoiceUpcoming(ctx, event, ipAddress, userAgent)
 	case "invoice.payment_succeeded":
 		return s.handleInvoicePaymentSucceeded(ctx, event, ipAddress, userAgent)
 	case "invoice.payment_failed":
@@ -274,9 +280,13 @@ func (s *WebhookService) handleGuestCheckoutCompleted(ctx context.Context, sessi
 		UserAgent:        pgtype.Text{String: userAgent, Valid: userAgent != ""},
 	})
 
-	// Send welcome/subscription activated email
+	// ADR-067: Send rich welcome email with tier features and app link
 	emailSvc := email.NewService(s.cfg)
-	if _, err := emailSvc.SendSubscriptionActivated(userEmail, pendingFirstName); err != nil {
+	if _, err := emailSvc.SendWelcomeEmail(email.WelcomeEmailParams{
+		To:        userEmail,
+		FirstName: pendingFirstName,
+		Tier:      tier,
+	}); err != nil {
 		s.logger.Warn("failed to send welcome email", "error", err, "email", userEmail)
 	}
 
@@ -334,9 +344,21 @@ func (s *WebhookService) handleSubscriptionCreated(ctx context.Context, event *s
 	)
 
 	if user, err := s.findUserForStripe(ctx, subscription.Customer.ID, subscription.ID); err == nil && user != nil {
+		// Determine tier from subscription price
+		tier := string(TierInvestor)
+		if subscription.Items != nil && len(subscription.Items.Data) > 0 && subscription.Items.Data[0].Price != nil {
+			stripeClient := NewStripeClient(&s.cfg.Stripe)
+			tier = string(stripeClient.GetTierFromPriceID(subscription.Items.Data[0].Price.ID))
+		}
+
+		// ADR-067: Send rich welcome email with tier features and app link
 		emailSvc := email.NewService(s.cfg)
-		if _, err := emailSvc.SendSubscriptionActivated(user.Email, s.userFirstName(user)); err != nil {
-			s.logger.Warn("failed to send subscription created email", "error", err)
+		if _, err := emailSvc.SendWelcomeEmail(email.WelcomeEmailParams{
+			To:        user.Email,
+			FirstName: s.userFirstName(user),
+			Tier:      tier,
+		}); err != nil {
+			s.logger.Warn("failed to send welcome email", "error", err)
 		}
 	} else if err != nil {
 		s.logger.Warn("failed to resolve user for subscription created email", "error", err)
@@ -502,6 +524,267 @@ func (s *WebhookService) handleTrialWillEnd(ctx context.Context, event *stripe.E
 	})
 }
 
+// ADR-067: Invoice event handlers for billing completeness
+
+func (s *WebhookService) handleInvoiceCreated(ctx context.Context, event *stripe.Event, ipAddress, userAgent string) error {
+	var invoice stripe.Invoice
+	if err := json.Unmarshal(event.Data.Raw, &invoice); err != nil {
+		return fmt.Errorf("failed to parse invoice: %w", err)
+	}
+
+	customerID := ""
+	if invoice.Customer != nil {
+		customerID = invoice.Customer.ID
+	}
+	subscriptionID := ""
+	if invoice.Subscription != nil {
+		subscriptionID = invoice.Subscription.ID
+	}
+
+	s.logger.Info("invoice created",
+		"invoice_id", invoice.ID,
+		"invoice_number", invoice.Number,
+		"amount_due", invoice.AmountDue,
+	)
+
+	// Create/update invoice record in database
+	if err := s.createInvoiceRecord(ctx, &invoice); err != nil {
+		s.logger.Error("failed to create invoice record", "error", err)
+	}
+
+	// Record billing audit log
+	eventData, _ := json.Marshal(invoice)
+	return s.recordAuditLog(ctx, queries.CreateBillingAuditLogParams{
+		ID:                   uuid.New().String(),
+		StripeCustomerId:     pgtype.Text{String: customerID, Valid: customerID != ""},
+		StripeSubscriptionId: pgtype.Text{String: subscriptionID, Valid: subscriptionID != ""},
+		StripeInvoiceId:      pgtype.Text{String: invoice.ID, Valid: true},
+		EventType:            "INVOICE_CREATED",
+		EventData:            eventData,
+		IpAddress:            pgtype.Text{String: ipAddress, Valid: ipAddress != ""},
+		UserAgent:            pgtype.Text{String: userAgent, Valid: userAgent != ""},
+	})
+}
+
+func (s *WebhookService) handleInvoiceFinalized(ctx context.Context, event *stripe.Event, ipAddress, userAgent string) error {
+	var invoice stripe.Invoice
+	if err := json.Unmarshal(event.Data.Raw, &invoice); err != nil {
+		return fmt.Errorf("failed to parse invoice: %w", err)
+	}
+
+	customerID := ""
+	if invoice.Customer != nil {
+		customerID = invoice.Customer.ID
+	}
+	subscriptionID := ""
+	if invoice.Subscription != nil {
+		subscriptionID = invoice.Subscription.ID
+	}
+
+	s.logger.Info("invoice finalized",
+		"invoice_id", invoice.ID,
+		"invoice_number", invoice.Number,
+		"amount_due", invoice.AmountDue,
+	)
+
+	q := queries.New(s.db.Main)
+
+	// Update invoice status to OPEN and set URLs
+	if err := q.UpdateInvoiceStatusByStripeID(ctx, queries.UpdateInvoiceStatusByStripeIDParams{
+		StripeInvoiceId: invoice.ID,
+		Status:          "open",
+		HostedInvoiceUrl: pgtype.Text{
+			String: invoice.HostedInvoiceURL,
+			Valid:  invoice.HostedInvoiceURL != "",
+		},
+		InvoicePdfUrl: pgtype.Text{
+			String: invoice.InvoicePDF,
+			Valid:  invoice.InvoicePDF != "",
+		},
+		EmailSentAt:    pgtype.Timestamp{Valid: false}, // Will update after email sent
+		EmailDelivered: false,
+	}); err != nil {
+		s.logger.Warn("failed to update invoice status", "error", err)
+	}
+
+	// Send invoice email to user
+	if user, err := s.findUserForStripe(ctx, customerID, subscriptionID); err == nil && user != nil {
+		emailSvc := email.NewService(s.cfg)
+
+		invoiceNumber := invoice.Number
+		if invoiceNumber == "" {
+			invoiceNumber = invoice.ID
+		}
+
+		var dueDate *time.Time
+		if invoice.DueDate > 0 {
+			t := time.Unix(invoice.DueDate, 0)
+			dueDate = &t
+		}
+
+		result, err := emailSvc.SendInvoiceEmail(email.InvoiceEmailParams{
+			To:            user.Email,
+			FirstName:     s.userFirstName(user),
+			InvoiceNumber: invoiceNumber,
+			Amount:        invoice.AmountDue,
+			Currency:      string(invoice.Currency),
+			DueDate:       dueDate,
+			InvoiceURL:    invoice.HostedInvoiceURL,
+			PDFURL:        invoice.InvoicePDF,
+		})
+		if err != nil {
+			s.logger.Warn("failed to send invoice email", "error", err)
+		} else if result != nil && result.Success {
+			// Update invoice with email sent timestamp
+			if err := q.UpdateInvoiceStatusByStripeID(ctx, queries.UpdateInvoiceStatusByStripeIDParams{
+				StripeInvoiceId: invoice.ID,
+				Status:          "open",
+				HostedInvoiceUrl: pgtype.Text{
+					String: invoice.HostedInvoiceURL,
+					Valid:  invoice.HostedInvoiceURL != "",
+				},
+				InvoicePdfUrl: pgtype.Text{
+					String: invoice.InvoicePDF,
+					Valid:  invoice.InvoicePDF != "",
+				},
+				EmailSentAt: pgtype.Timestamp{
+					Time:  time.Now(),
+					Valid: true,
+				},
+				EmailDelivered: true,
+			}); err != nil {
+				s.logger.Warn("failed to update invoice email sent", "error", err)
+			}
+		}
+	} else if err != nil {
+		s.logger.Warn("failed to resolve user for invoice email", "error", err)
+	}
+
+	// Record billing audit log
+	eventData, _ := json.Marshal(invoice)
+	return s.recordAuditLog(ctx, queries.CreateBillingAuditLogParams{
+		ID:                   uuid.New().String(),
+		StripeCustomerId:     pgtype.Text{String: customerID, Valid: customerID != ""},
+		StripeSubscriptionId: pgtype.Text{String: subscriptionID, Valid: subscriptionID != ""},
+		StripeInvoiceId:      pgtype.Text{String: invoice.ID, Valid: true},
+		EventType:            "INVOICE_FINALIZED",
+		EventData:            eventData,
+		IpAddress:            pgtype.Text{String: ipAddress, Valid: ipAddress != ""},
+		UserAgent:            pgtype.Text{String: userAgent, Valid: userAgent != ""},
+	})
+}
+
+func (s *WebhookService) handleInvoiceUpcoming(ctx context.Context, event *stripe.Event, ipAddress, userAgent string) error {
+	var invoice stripe.Invoice
+	if err := json.Unmarshal(event.Data.Raw, &invoice); err != nil {
+		return fmt.Errorf("failed to parse invoice: %w", err)
+	}
+
+	customerID := ""
+	if invoice.Customer != nil {
+		customerID = invoice.Customer.ID
+	}
+	subscriptionID := ""
+	if invoice.Subscription != nil {
+		subscriptionID = invoice.Subscription.ID
+	}
+
+	s.logger.Info("invoice upcoming",
+		"invoice_id", invoice.ID,
+		"amount_due", invoice.AmountDue,
+		"period_end", time.Unix(invoice.PeriodEnd, 0),
+	)
+
+	q := queries.New(s.db.Main)
+
+	// Send renewal reminder email and create record for chargeback protection
+	if user, err := s.findUserForStripe(ctx, customerID, subscriptionID); err == nil && user != nil {
+		emailSvc := email.NewService(s.cfg)
+
+		// Get tier/plan name from subscription
+		planName := "Subscription"
+		if invoice.Subscription != nil {
+			sub, err := q.GetSubscriptionByStripeID(ctx, pgtype.Text{
+				String: invoice.Subscription.ID,
+				Valid:  true,
+			})
+			if err == nil {
+				if tier, ok := sub.Tier.(string); ok && tier != "" {
+					planName = tier
+				}
+			}
+		}
+
+		renewalDate := time.Unix(invoice.PeriodEnd, 0)
+
+		result, err := emailSvc.SendRenewalReminder(email.RenewalReminderParams{
+			To:          user.Email,
+			FirstName:   s.userFirstName(user),
+			RenewalDate: renewalDate,
+			Amount:      invoice.AmountDue,
+			Currency:    string(invoice.Currency),
+			PlanName:    planName,
+			ManageURL:   s.cfg.Server.ClientURL + "/settings/subscription",
+		})
+		if err != nil {
+			s.logger.Warn("failed to send renewal reminder email", "error", err)
+		}
+
+		// Create renewal notification record for chargeback protection
+		delivered := result != nil && result.Success
+		deliveredAt := pgtype.Timestamp{}
+		if delivered {
+			deliveredAt = pgtype.Timestamp{Time: time.Now(), Valid: true}
+		}
+
+		emailContent := fmt.Sprintf("Renewal reminder: %s - $%.2f on %s",
+			planName, float64(invoice.AmountDue)/100, renewalDate.Format("January 2, 2006"))
+
+		// Convert amount to pgtype.Numeric
+		renewalAmount := pgtype.Numeric{}
+		_ = renewalAmount.Scan(fmt.Sprintf("%.2f", float64(invoice.AmountDue)/100))
+
+		if _, err := q.CreateRenewalNotification(ctx, queries.CreateRenewalNotificationParams{
+			ID:               uuid.New().String(),
+			UserId:           user.ID,
+			SubscriptionId:   subscriptionID,
+			EmailType:        "REMINDER_7_DAY",
+			EmailContent:     emailContent,
+			RecipientEmail:   user.Email,
+			RenewalDate:      pgtype.Timestamp{Time: renewalDate, Valid: true},
+			RenewalAmount:    renewalAmount,
+			SendgridMessageId: pgtype.Text{
+				String: func() string {
+					if result != nil {
+						return result.MessageID
+					}
+					return ""
+				}(),
+				Valid: result != nil && result.MessageID != "",
+			},
+			Delivered:   delivered,
+			DeliveredAt: deliveredAt,
+		}); err != nil {
+			s.logger.Warn("failed to create renewal notification record", "error", err)
+		}
+	} else if err != nil {
+		s.logger.Warn("failed to resolve user for renewal reminder", "error", err)
+	}
+
+	// Record billing audit log
+	eventData, _ := json.Marshal(invoice)
+	return s.recordAuditLog(ctx, queries.CreateBillingAuditLogParams{
+		ID:                   uuid.New().String(),
+		StripeCustomerId:     pgtype.Text{String: customerID, Valid: customerID != ""},
+		StripeSubscriptionId: pgtype.Text{String: subscriptionID, Valid: subscriptionID != ""},
+		StripeInvoiceId:      pgtype.Text{String: invoice.ID, Valid: true},
+		EventType:            "INVOICE_UPCOMING",
+		EventData:            eventData,
+		IpAddress:            pgtype.Text{String: ipAddress, Valid: ipAddress != ""},
+		UserAgent:            pgtype.Text{String: userAgent, Valid: userAgent != ""},
+	})
+}
+
 func (s *WebhookService) handleInvoicePaymentSucceeded(ctx context.Context, event *stripe.Event, ipAddress, userAgent string) error {
 	var invoice stripe.Invoice
 	if err := json.Unmarshal(event.Data.Raw, &invoice); err != nil {
@@ -522,18 +805,116 @@ func (s *WebhookService) handleInvoicePaymentSucceeded(ctx context.Context, even
 		"amount_paid", invoice.AmountPaid,
 	)
 
-	// Create invoice record
+	q := queries.New(s.db.Main)
+
+	// Create/update invoice record
 	if err := s.createInvoiceRecord(ctx, &invoice); err != nil {
 		s.logger.Error("failed to create invoice record", "error", err)
 	}
 
+	// Update invoice as paid
+	paidAt := time.Now()
+	if invoice.StatusTransitions != nil && invoice.StatusTransitions.PaidAt > 0 {
+		paidAt = time.Unix(invoice.StatusTransitions.PaidAt, 0)
+	}
+	if err := q.UpdateInvoicePaid(ctx, queries.UpdateInvoicePaidParams{
+		StripeInvoiceId: invoice.ID,
+		PaidAt:          pgtype.Timestamp{Time: paidAt, Valid: true},
+		AmountPaid:      int32(invoice.AmountPaid),
+	}); err != nil {
+		s.logger.Warn("failed to update invoice as paid", "error", err)
+	}
+
+	// ADR-067: Create receipt record and send detailed receipt email
 	if user, err := s.findUserForStripe(ctx, customerID, subscriptionID); err == nil && user != nil {
+		// Get invoice record ID for receipt foreign key
+		invoiceRecord, err := q.GetInvoiceByStripeID(ctx, invoice.ID)
+		if err != nil {
+			s.logger.Warn("could not find invoice record for receipt", "error", err)
+		}
+
+		// Extract payment details from charge
+		var cardBrand, cardLast4, receiptURL, paymentIntentID, chargeID string
+		if invoice.Charge != nil {
+			chargeID = invoice.Charge.ID
+			receiptURL = invoice.Charge.ReceiptURL
+			if invoice.Charge.PaymentMethodDetails != nil && invoice.Charge.PaymentMethodDetails.Card != nil {
+				cardBrand = string(invoice.Charge.PaymentMethodDetails.Card.Brand)
+				cardLast4 = invoice.Charge.PaymentMethodDetails.Card.Last4
+			}
+		}
+		if invoice.PaymentIntent != nil {
+			paymentIntentID = invoice.PaymentIntent.ID
+		}
+
+		// Generate receipt number
+		receiptNumber := fmt.Sprintf("REC-%s", invoice.ID[len(invoice.ID)-8:])
+
+		// Product description
+		description := "Estara AI Subscription"
+		if invoice.Lines != nil && len(invoice.Lines.Data) > 0 && invoice.Lines.Data[0].Description != "" {
+			description = invoice.Lines.Data[0].Description
+		}
+
+		// Create receipt record
+		if invoiceRecord.ID != "" {
+			if _, err := q.CreateReceipt(ctx, queries.CreateReceiptParams{
+				ID:        uuid.New().String(),
+				InvoiceId: invoiceRecord.ID,
+				UserId:    user.ID,
+				StripeChargeId: pgtype.Text{
+					String: chargeID,
+					Valid:  chargeID != "",
+				},
+				StripePaymentIntentId: pgtype.Text{
+					String: paymentIntentID,
+					Valid:  paymentIntentID != "",
+				},
+				ReceiptNumber: receiptNumber,
+				Amount:        int32(invoice.AmountPaid),
+				Currency:      string(invoice.Currency),
+				PaymentMethod: pgtype.Text{
+					String: func() string {
+						if cardBrand != "" && cardLast4 != "" {
+							return fmt.Sprintf("%s ending in %s", cardBrand, cardLast4)
+						}
+						return "Card"
+					}(),
+					Valid: true,
+				},
+				CardBrand: pgtype.Text{String: cardBrand, Valid: cardBrand != ""},
+				CardLast4: pgtype.Text{String: cardLast4, Valid: cardLast4 != ""},
+				PaidAt:    pgtype.Timestamp{Time: paidAt, Valid: true},
+				StripeReceiptUrl: pgtype.Text{
+					String: receiptURL,
+					Valid:  receiptURL != "",
+				},
+				EmailSentAt:        pgtype.Timestamp{Valid: false},
+				EmailDelivered:     false,
+				ProductDescription: description,
+			}); err != nil {
+				s.logger.Warn("failed to create receipt record", "error", err)
+			}
+		}
+
+		// Send detailed receipt email
 		emailSvc := email.NewService(s.cfg)
-		if _, err := emailSvc.SendPaymentSucceeded(user.Email, s.userFirstName(user), invoice.AmountPaid, string(invoice.Currency), invoice.HostedInvoiceURL); err != nil {
-			s.logger.Warn("failed to send payment success email", "error", err)
+		if _, err := emailSvc.SendReceiptEmail(email.ReceiptEmailParams{
+			To:            user.Email,
+			FirstName:     s.userFirstName(user),
+			ReceiptNumber: receiptNumber,
+			Amount:        invoice.AmountPaid,
+			Currency:      string(invoice.Currency),
+			CardBrand:     cardBrand,
+			CardLast4:     cardLast4,
+			PaidAt:        paidAt,
+			ReceiptURL:    receiptURL,
+			Description:   description,
+		}); err != nil {
+			s.logger.Warn("failed to send receipt email", "error", err)
 		}
 	} else if err != nil {
-		s.logger.Warn("failed to resolve user for payment success email", "error", err)
+		s.logger.Warn("failed to resolve user for receipt email", "error", err)
 	}
 
 	// Record billing audit log

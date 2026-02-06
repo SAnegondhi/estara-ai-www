@@ -331,7 +331,9 @@ type Querier interface {
 	UpdateInvestorReportAllocation(ctx context.Context, arg UpdateInvestorReportAllocationParams) error
 	UpdateInvestorReportData(ctx context.Context, arg UpdateInvestorReportDataParams) (InvestorReport, error)
 	UpdateInvestorReportStatus(ctx context.Context, arg UpdateInvestorReportStatusParams) (InvestorReport, error)
+	UpdateInvoicePaid(ctx context.Context, arg UpdateInvoicePaidParams) error
 	UpdateInvoiceStatus(ctx context.Context, arg UpdateInvoiceStatusParams) error
+	UpdateInvoiceStatusByStripeID(ctx context.Context, arg UpdateInvoiceStatusByStripeIDParams) error
 	// Updates access timestamp and increments access count
 	UpdatePropertyCacheAccess(ctx context.Context, cacheKey string) error
 	UpdateRenewalNotificationDelivered(ctx context.Context, id string) error
@@ -354,6 +356,7 @@ type Querier interface {
 	// Inserts or updates AI scoring cache entry
 	UpsertAIScoringCache(ctx context.Context, arg UpsertAIScoringCacheParams) error
 	UpsertCache(ctx context.Context, arg UpsertCacheParams) (AnalysisCache, error)
+	UpsertInvoice(ctx context.Context, arg UpsertInvoiceParams) (Invoice, error)
 	// Inserts or updates a property in the cache
 	UpsertPropertyCache(ctx context.Context, arg UpsertPropertyCacheParams) error
 	UpsertSystemAlert(ctx context.Context, arg UpsertSystemAlertParams) (SystemAlert, error)
