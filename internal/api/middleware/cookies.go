@@ -23,8 +23,10 @@ const (
 )
 
 // SetAuthCookies sets httpOnly access and refresh token cookies
+// ADR-066: Uses SameSite=None for cross-origin auth (insight.estara-ai.com → api.estara-ai.com)
 func SetAuthCookies(w http.ResponseWriter, accessToken, refreshToken string, secure bool) {
 	// Access token cookie - 24 hours
+	// SameSite=None required for cross-origin requests, but requires Secure=true
 	http.SetCookie(w, &http.Cookie{
 		Name:     AccessCookieName,
 		Value:    accessToken,
@@ -32,7 +34,7 @@ func SetAuthCookies(w http.ResponseWriter, accessToken, refreshToken string, sec
 		MaxAge:   86400, // 24 hours
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteNoneMode,
 	})
 
 	// Refresh token cookie - 7 days, restricted to auth path
@@ -43,7 +45,7 @@ func SetAuthCookies(w http.ResponseWriter, accessToken, refreshToken string, sec
 		MaxAge:   604800, // 7 days
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteNoneMode,
 	})
 }
 
@@ -56,7 +58,7 @@ func SetAccessCookie(w http.ResponseWriter, accessToken string, secure bool) {
 		MaxAge:   86400, // 24 hours
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteNoneMode,
 	})
 }
 
@@ -71,7 +73,7 @@ func SetCSRFCookie(w http.ResponseWriter, secure bool, tokenLength int) string {
 		MaxAge:   86400, // 24 hours
 		HttpOnly: false, // Must be readable by JavaScript
 		Secure:   secure,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteNoneMode,
 	})
 
 	return token
