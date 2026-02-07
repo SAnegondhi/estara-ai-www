@@ -9,6 +9,8 @@ import (
 
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
+	"github.com/estara-ai/www/internal/services/market/bls"
+	"github.com/estara-ai/www/internal/services/market/census"
 	"github.com/estara-ai/www/internal/services/market/fred"
 	"github.com/estara-ai/www/internal/services/market/trends"
 	"github.com/estara-ai/www/pkg/httputil"
@@ -19,7 +21,9 @@ type Handler struct {
 	cfg           *config.Config
 	aggregator    *aggregator.Aggregator
 	trendsService *trends.Service
-	fredService   *fred.Service // Centralized FRED service with smart caching
+	fredService   *fred.Service   // Centralized FRED service with smart caching
+	censusService *census.Service // Census demographics service (ADR-068 Phase 2)
+	blsService    *bls.Service    // BLS labor market service (ADR-068 Phase 3)
 	logger        *slog.Logger
 }
 
@@ -44,6 +48,16 @@ func (h *Handler) SetTrendsService(svc *trends.Service) {
 // SetFREDService sets the FRED service (for dependency injection)
 func (h *Handler) SetFREDService(svc *fred.Service) {
 	h.fredService = svc
+}
+
+// SetCensusService sets the Census service (for dependency injection)
+func (h *Handler) SetCensusService(svc *census.Service) {
+	h.censusService = svc
+}
+
+// SetBLSService sets the BLS service (for dependency injection)
+func (h *Handler) SetBLSService(svc *bls.Service) {
+	h.blsService = svc
 }
 
 // MortgageRateResponse represents the mortgage rate response
@@ -345,5 +359,221 @@ func (h *Handler) SynthesizeTrends(w http.ResponseWriter, r *http.Request) {
 			"confidence":     0.5,
 			"generatedAt":    time.Now().Format(time.RFC3339),
 		},
+	})
+}
+
+// =============================================================================
+// Census Demographics Endpoints (ADR-068 Phase 2)
+// =============================================================================
+
+// DemographicsResponse represents the demographics response
+type DemographicsResponse struct {
+	Success bool `json:"success"`
+
+	// Demographics
+	Population            int64   `json:"population"`
+	MedianHouseholdIncome float64 `json:"medianHouseholdIncome"`
+	PerCapitaIncome       float64 `json:"perCapitaIncome"`
+	PovertyRate           float64 `json:"povertyRate"`
+	MedianAge             float64 `json:"medianAge"`
+	HouseholdCount        int64   `json:"householdCount"`
+
+	// Geographic context
+	City   string `json:"city"`
+	County string `json:"county,omitempty"`
+	State  string `json:"state"`
+	Level  string `json:"level"` // "place", "county", or "state"
+
+	// Metadata
+	DataYear    int    `json:"dataYear"`
+	LastUpdated string `json:"lastUpdated"`
+	NextRefresh string `json:"nextRefresh"`
+	Source      string `json:"source"`
+	Message     string `json:"message"`
+}
+
+// GetDemographics returns Census demographics for a city/state
+// GET /api/market-data/demographics?city=Austin&state=TX
+func (h *Handler) GetDemographics(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	city := r.URL.Query().Get("city")
+	state := r.URL.Query().Get("state")
+
+	if state == "" {
+		httputil.BadRequest(w, "state parameter is required")
+		return
+	}
+
+	h.logger.Info("fetching demographics", "city", city, "state", state)
+
+	if h.censusService == nil || !h.censusService.IsConfigured() {
+		httputil.JSON(w, http.StatusOK, DemographicsResponse{
+			Success: false,
+			Message: "Census service not configured",
+		})
+		return
+	}
+
+	data, err := h.censusService.GetDemographics(ctx, city, state)
+	if err != nil {
+		h.logger.Error("failed to fetch demographics", "error", err, "city", city, "state", state)
+		httputil.JSON(w, http.StatusInternalServerError, DemographicsResponse{
+			Success: false,
+			Message: "Failed to fetch demographics: " + err.Error(),
+		})
+		return
+	}
+
+	httputil.JSON(w, http.StatusOK, DemographicsResponse{
+		Success:               true,
+		Population:            data.Population,
+		MedianHouseholdIncome: data.MedianHouseholdIncome,
+		PerCapitaIncome:       data.PerCapitaIncome,
+		PovertyRate:           data.PovertyRate,
+		MedianAge:             data.MedianAge,
+		HouseholdCount:        data.HouseholdCount,
+		City:                  data.City,
+		County:                data.County,
+		State:                 data.State,
+		Level:                 data.Level,
+		DataYear:              data.DataYear,
+		LastUpdated:           data.LastUpdated.Format(time.RFC3339),
+		NextRefresh:           data.NextRefresh.Format(time.RFC3339),
+		Source:                data.Source,
+		Message:               "Demographics fetched successfully",
+	})
+}
+
+// =============================================================================
+// BLS Labor Market Endpoints (ADR-068 Phase 3)
+// =============================================================================
+
+// LaborDataResponse represents the labor market response
+type LaborDataResponse struct {
+	Success bool `json:"success"`
+
+	// CPI Inflation
+	CPIAllItems float64 `json:"cpiAllItems"`
+	CPIShelter  float64 `json:"cpiShelter"`
+	CPIRent     float64 `json:"cpiRent"`
+
+	// National Employment
+	UnemploymentRate        float64 `json:"unemploymentRate"`
+	LaborForceParticipation float64 `json:"laborForceParticipation"`
+	AverageHourlyEarnings   float64 `json:"averageHourlyEarnings"`
+	ConstructionEmployment  float64 `json:"constructionEmployment"`
+	JobOpenings             float64 `json:"jobOpenings"`
+
+	// State-level (when requested)
+	StateUnemploymentRate float64 `json:"stateUnemploymentRate,omitempty"`
+	StateEmployment       float64 `json:"stateEmployment,omitempty"`
+	State                 string  `json:"state,omitempty"`
+
+	// Metadata
+	AsOfDate    string `json:"asOfDate"`
+	AsOfPeriod  string `json:"asOfPeriod"`
+	LastUpdated string `json:"lastUpdated"`
+	NextRefresh string `json:"nextRefresh"`
+	Source      string `json:"source"`
+	Message     string `json:"message"`
+}
+
+// GetLaborData returns BLS national labor market data
+// GET /api/market-data/labor
+func (h *Handler) GetLaborData(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	h.logger.Debug("fetching national labor data from BLS")
+
+	if h.blsService == nil || !h.blsService.IsConfigured() {
+		httputil.JSON(w, http.StatusOK, LaborDataResponse{
+			Success: false,
+			Message: "BLS service not configured",
+		})
+		return
+	}
+
+	data, err := h.blsService.GetNationalData(ctx)
+	if err != nil {
+		h.logger.Error("failed to fetch labor data", "error", err)
+		httputil.JSON(w, http.StatusInternalServerError, LaborDataResponse{
+			Success: false,
+			Message: "Failed to fetch labor data: " + err.Error(),
+		})
+		return
+	}
+
+	httputil.JSON(w, http.StatusOK, LaborDataResponse{
+		Success:                 true,
+		CPIAllItems:             data.CPIAllItems,
+		CPIShelter:              data.CPIShelter,
+		CPIRent:                 data.CPIRent,
+		UnemploymentRate:        data.UnemploymentRate,
+		LaborForceParticipation: data.LaborForceParticipation,
+		AverageHourlyEarnings:   data.AverageHourlyEarnings,
+		ConstructionEmployment:  data.ConstructionEmployment,
+		JobOpenings:             data.JobOpenings,
+		AsOfDate:                data.AsOfDate,
+		AsOfPeriod:              data.AsOfPeriod,
+		LastUpdated:             data.LastUpdated.Format(time.RFC3339),
+		NextRefresh:             data.NextRefresh.Format(time.RFC3339),
+		Source:                  data.Source,
+		Message:                 "Labor data fetched successfully",
+	})
+}
+
+// GetStateLaborData returns BLS state-level labor market data
+// GET /api/market-data/labor/state/{state}
+func (h *Handler) GetStateLaborData(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Extract state from URL path (e.g., /api/market-data/labor/state/TX)
+	state := r.PathValue("state")
+	if state == "" {
+		httputil.BadRequest(w, "state parameter is required")
+		return
+	}
+
+	h.logger.Info("fetching state labor data", "state", state)
+
+	if h.blsService == nil || !h.blsService.IsConfigured() {
+		httputil.JSON(w, http.StatusOK, LaborDataResponse{
+			Success: false,
+			Message: "BLS service not configured",
+		})
+		return
+	}
+
+	// Get combined national + state data
+	data, err := h.blsService.GetCombinedData(ctx, state)
+	if err != nil {
+		h.logger.Error("failed to fetch state labor data", "error", err, "state", state)
+		httputil.JSON(w, http.StatusInternalServerError, LaborDataResponse{
+			Success: false,
+			Message: "Failed to fetch state labor data: " + err.Error(),
+		})
+		return
+	}
+
+	httputil.JSON(w, http.StatusOK, LaborDataResponse{
+		Success:                 true,
+		CPIAllItems:             data.CPIAllItems,
+		CPIShelter:              data.CPIShelter,
+		CPIRent:                 data.CPIRent,
+		UnemploymentRate:        data.UnemploymentRate,
+		LaborForceParticipation: data.LaborForceParticipation,
+		AverageHourlyEarnings:   data.AverageHourlyEarnings,
+		ConstructionEmployment:  data.ConstructionEmployment,
+		JobOpenings:             data.JobOpenings,
+		StateUnemploymentRate:   data.StateUnemploymentRate,
+		StateEmployment:         data.StateEmployment,
+		State:                   data.State,
+		AsOfDate:                data.AsOfDate,
+		AsOfPeriod:              data.AsOfPeriod,
+		LastUpdated:             data.LastUpdated.Format(time.RFC3339),
+		NextRefresh:             data.NextRefresh.Format(time.RFC3339),
+		Source:                  data.Source,
+		Message:                 "State labor data fetched successfully",
 	})
 }

@@ -115,8 +115,10 @@ type PropertyConfig struct {
 
 // MarketConfig holds market data configuration
 type MarketConfig struct {
-	FREDAPIKey string `mapstructure:"FRED_API_KEY"`
-	CacheTTL   time.Duration
+	FREDAPIKey   string `mapstructure:"FRED_API_KEY"`
+	CensusAPIKey string `mapstructure:"CENSUS_API_KEY"`
+	BLSAPIKey    string `mapstructure:"BLS_API_KEY"`
+	CacheTTL     time.Duration
 }
 
 // CronConfig holds cron job configuration
@@ -246,8 +248,10 @@ func Load() (*Config, error) {
 
 	// Market config
 	cfg.Market = MarketConfig{
-		FREDAPIKey: v.GetString("FRED_API_KEY"),
-		CacheTTL:   6 * time.Hour,
+		FREDAPIKey:   v.GetString("FRED_API_KEY"),
+		CensusAPIKey: v.GetString("CENSUS_API_KEY"),
+		BLSAPIKey:    v.GetString("BLS_API_KEY"),
+		CacheTTL:     6 * time.Hour,
 	}
 
 	// Cron config

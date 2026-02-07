@@ -16,6 +16,8 @@ import (
 	"github.com/estara-ai/www/internal/services/jobs/queue"
 	"github.com/estara-ai/www/internal/services/jobs/workers"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
+	"github.com/estara-ai/www/internal/services/market/bls"
+	"github.com/estara-ai/www/internal/services/market/census"
 	"github.com/estara-ai/www/internal/services/market/estimation"
 	"github.com/estara-ai/www/internal/services/market/fred"
 	"github.com/estara-ai/www/internal/services/market/timeseries"
@@ -27,7 +29,9 @@ import (
 type Services struct {
 	PropertyFinder *finder.Orchestrator
 	MarketData     *aggregator.Aggregator
-	FREDService    *fred.Service // Centralized FRED economic data service
+	FREDService    *fred.Service     // Centralized FRED economic data service (ADR-068 Phase 1)
+	CensusService  *census.Service   // Census demographics service (ADR-068 Phase 2)
+	BLSService     *bls.Service      // BLS labor market service (ADR-068 Phase 3)
 	ChatAgent      *agents.EvaluationChatAgent
 	JobQueue       *queue.Queue
 	WorkerPool     *queue.WorkerPool
@@ -166,6 +170,34 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 
 		// Also create legacy client for aggregator compatibility
 		fredClient = timeseries.NewFREDClient(cfg.Config.Market.FREDAPIKey, cfg.Redis)
+	}
+
+	// Initialize Census service if API key is configured (ADR-068 Phase 2)
+	if cfg.Config.Market.CensusAPIKey != "" {
+		var q *queries.Queries
+		if cfg.DB != nil && cfg.DB.Main != nil {
+			q = queries.New(cfg.DB.Main)
+		}
+
+		services.CensusService = census.NewService(cfg.Config.Market.CensusAPIKey, cfg.Redis, q)
+		logger.Info("Census service initialized",
+			"l1Cache", cfg.Redis != nil,
+			"l2Cache", q != nil,
+		)
+	}
+
+	// Initialize BLS service if API key is configured (ADR-068 Phase 3)
+	if cfg.Config.Market.BLSAPIKey != "" {
+		var q *queries.Queries
+		if cfg.DB != nil && cfg.DB.Main != nil {
+			q = queries.New(cfg.DB.Main)
+		}
+
+		services.BLSService = bls.NewService(cfg.Config.Market.BLSAPIKey, cfg.Redis, q)
+		logger.Info("BLS service initialized",
+			"l1Cache", cfg.Redis != nil,
+			"l2Cache", q != nil,
+		)
 	}
 
 	// Initialize AI estimator if Anthropic client is available

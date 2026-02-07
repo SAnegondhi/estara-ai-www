@@ -110,6 +110,12 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	if svc.FREDService != nil {
 		handlers.Market.SetFREDService(svc.FREDService)
 	}
+	if svc.CensusService != nil {
+		handlers.Market.SetCensusService(svc.CensusService)
+	}
+	if svc.BLSService != nil {
+		handlers.Market.SetBLSService(svc.BLSService)
+	}
 
 	// Inject services into portfolio handler
 	if svc.PropertyFinder != nil {
@@ -244,10 +250,20 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Use(authMiddleware.Authenticate)
 		r.Use(rateLimiter.Limit)
 
+		// FRED economic data (ADR-068 Phase 1)
 		r.Get("/mortgage-rate", handlers.Market.GetMortgageRate)
 		r.Get("/investment-rates", handlers.Market.GetInvestmentRates)
-		r.Get("/economic-rates", handlers.Market.GetEconomicRates) // All FRED economic data
-		r.Get("/", handlers.Market.GetMarketData)                  // GET /api/market-data?city=Austin&state=TX
+		r.Get("/economic-rates", handlers.Market.GetEconomicRates)
+
+		// Census demographics (ADR-068 Phase 2)
+		r.Get("/demographics", handlers.Market.GetDemographics) // ?city=Austin&state=TX
+
+		// BLS labor market (ADR-068 Phase 3)
+		r.Get("/labor", handlers.Market.GetLaborData)                 // National labor data
+		r.Get("/labor/state/{state}", handlers.Market.GetStateLaborData) // State labor data
+
+		// Aggregated market data
+		r.Get("/", handlers.Market.GetMarketData) // GET /api/market-data?city=Austin&state=TX
 	})
 
 	// Market Trends API (protected)
