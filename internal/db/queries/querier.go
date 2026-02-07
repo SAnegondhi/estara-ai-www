@@ -112,6 +112,7 @@ type Querier interface {
 	DeleteExpiredSilentLoginSessions(ctx context.Context) error
 	DeleteExpiredSnapshots(ctx context.Context) error
 	DeleteExpiredSystemAlerts(ctx context.Context) error
+	DeleteExpiredSystemCache(ctx context.Context) (int64, error)
 	// Deletes the oldest N entries from the cache (FIFO eviction)
 	DeleteOldestPropertyCache(ctx context.Context, limit int32) (int64, error)
 	// Delete all snapshots for a user (for regeneration)
@@ -124,6 +125,7 @@ type Querier interface {
 	DeleteScenarioByIDAndUser(ctx context.Context, arg DeleteScenarioByIDAndUserParams) error
 	DeleteSessionEvaluations(ctx context.Context, discoverysessionid string) error
 	DeleteSessionProperties(ctx context.Context, discoverysessionid string) error
+	DeleteSystemCache(ctx context.Context, key string) error
 	DeleteUser(ctx context.Context, id string) error
 	DeleteUserAnalysisPreference(ctx context.Context, arg DeleteUserAnalysisPreferenceParams) error
 	DisableAdminTwoFactor(ctx context.Context, userid string) error
@@ -241,6 +243,12 @@ type Querier interface {
 	// System Alerts Queries
 	GetSystemAlertByID(ctx context.Context, id string) (SystemAlert, error)
 	GetSystemAlertByKey(ctx context.Context, alertkey string) (SystemAlert, error)
+	// System Cache Queries
+	// For global data like FRED economic rates (not user-specific)
+	GetSystemCache(ctx context.Context, key string) (SystemCache, error)
+	// Used when we want stale data as fallback
+	GetSystemCacheIgnoreExpiry(ctx context.Context, key string) (SystemCache, error)
+	GetSystemCacheStats(ctx context.Context) (GetSystemCacheStatsRow, error)
 	// User Analysis Preferences Queries
 	GetUserAnalysisPreference(ctx context.Context, arg GetUserAnalysisPreferenceParams) (UserAnalysisPreference, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
@@ -360,6 +368,7 @@ type Querier interface {
 	// Inserts or updates a property in the cache
 	UpsertPropertyCache(ctx context.Context, arg UpsertPropertyCacheParams) error
 	UpsertSystemAlert(ctx context.Context, arg UpsertSystemAlertParams) (SystemAlert, error)
+	UpsertSystemCache(ctx context.Context, arg UpsertSystemCacheParams) (SystemCache, error)
 	UpsertUserAnalysisPreference(ctx context.Context, arg UpsertUserAnalysisPreferenceParams) (UserAnalysisPreference, error)
 }
 

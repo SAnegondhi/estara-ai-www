@@ -9,7 +9,7 @@ import (
 
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
-	"github.com/estara-ai/www/internal/services/market/timeseries"
+	"github.com/estara-ai/www/internal/services/market/fred"
 	"github.com/estara-ai/www/internal/services/market/trends"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -19,25 +19,16 @@ type Handler struct {
 	cfg           *config.Config
 	aggregator    *aggregator.Aggregator
 	trendsService *trends.Service
-	fredClient    *timeseries.FREDClient
+	fredService   *fred.Service // Centralized FRED service with smart caching
 	logger        *slog.Logger
 }
 
 // NewHandler creates a new market data handler
 func NewHandler(cfg *config.Config) *Handler {
-	h := &Handler{
+	return &Handler{
 		cfg:    cfg,
 		logger: slog.Default().With("component", "market_handler"),
 	}
-
-	// Initialize FRED client if API key is available
-	// Note: Redis passed as nil here - main FRED usage via aggregator has caching
-	if cfg.Market.FREDAPIKey != "" {
-		h.fredClient = timeseries.NewFREDClient(cfg.Market.FREDAPIKey, nil)
-		h.logger.Info("FRED client initialized")
-	}
-
-	return h
 }
 
 // SetAggregator sets the market data aggregator (for dependency injection)
@@ -48,6 +39,11 @@ func (h *Handler) SetAggregator(agg *aggregator.Aggregator) {
 // SetTrendsService sets the trends service (for dependency injection)
 func (h *Handler) SetTrendsService(svc *trends.Service) {
 	h.trendsService = svc
+}
+
+// SetFREDService sets the FRED service (for dependency injection)
+func (h *Handler) SetFREDService(svc *fred.Service) {
+	h.fredService = svc
 }
 
 // MortgageRateResponse represents the mortgage rate response
@@ -62,10 +58,10 @@ type MortgageRateResponse struct {
 func (h *Handler) GetMortgageRate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	h.logger.Info("fetching mortgage rate from FRED")
+	h.logger.Debug("fetching mortgage rate from FRED service")
 
-	if h.fredClient == nil || !h.fredClient.IsConfigured() {
-		h.logger.Warn("FRED client not configured")
+	if h.fredService == nil || !h.fredService.IsConfigured() {
+		h.logger.Warn("FRED service not configured")
 		httputil.JSON(w, http.StatusOK, MortgageRateResponse{
 			Success: true,
 			Rate:    nil,
@@ -74,9 +70,9 @@ func (h *Handler) GetMortgageRate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rates, err := h.fredClient.GetMortgageRates(ctx)
+	rate, err := h.fredService.GetMortgageRate(ctx)
 	if err != nil {
-		h.logger.Error("failed to fetch mortgage rates", "error", err)
+		h.logger.Error("failed to fetch mortgage rate", "error", err)
 		httputil.JSON(w, http.StatusOK, MortgageRateResponse{
 			Success: true,
 			Rate:    nil,
@@ -85,7 +81,7 @@ func (h *Handler) GetMortgageRate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if rates == nil || rates.Rate30Year == 0 {
+	if rate == 0 {
 		h.logger.Warn("no mortgage rate data available from FRED")
 		httputil.JSON(w, http.StatusOK, MortgageRateResponse{
 			Success: true,
@@ -95,10 +91,10 @@ func (h *Handler) GetMortgageRate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logger.Info("mortgage rate fetched", "rate", rates.Rate30Year)
+	h.logger.Debug("mortgage rate fetched", "rate", rate)
 	httputil.JSON(w, http.StatusOK, MortgageRateResponse{
 		Success: true,
-		Rate:    &rates.Rate30Year,
+		Rate:    &rate,
 		Message: "Mortgage rate fetched successfully",
 	})
 }
@@ -117,25 +113,97 @@ type InvestmentRatesResponse struct {
 func (h *Handler) GetInvestmentRates(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	h.logger.Info("fetching investment rates")
+	h.logger.Debug("fetching investment rates from FRED service")
 
 	response := InvestmentRatesResponse{
 		Success: true,
 		Message: "Investment rates fetched",
 	}
 
-	if h.fredClient != nil && h.fredClient.IsConfigured() {
-		// Get mortgage rates
-		rates, err := h.fredClient.GetMortgageRates(ctx)
+	if h.fredService != nil && h.fredService.IsConfigured() {
+		// Get all rates from centralized service (uses smart caching)
+		rates, err := h.fredService.GetAllRates(ctx)
 		if err != nil {
-			h.logger.Warn("failed to fetch mortgage rates", "error", err)
+			h.logger.Warn("failed to fetch rates from FRED service", "error", err)
 		} else if rates != nil {
-			response.MortgageRate30 = rates.Rate30Year
-			response.MortgageRate15 = rates.Rate15Year
+			response.MortgageRate30 = rates.MortgageRate30Year
+			response.MortgageRate15 = rates.MortgageRate15Year
+			response.Unemployment = rates.UnemploymentRate
 		}
 	}
 
 	httputil.JSON(w, http.StatusOK, response)
+}
+
+// EconomicRatesResponse represents all economic rates with metadata
+type EconomicRatesResponse struct {
+	Success bool `json:"success"`
+
+	// Mortgage rates
+	MortgageRate30 float64 `json:"mortgageRate30"`
+	MortgageRate15 float64 `json:"mortgageRate15"`
+	MortgageDate   string  `json:"mortgageDate,omitempty"`
+
+	// Labor market
+	Unemployment     float64 `json:"unemployment"`
+	UnemploymentDate string  `json:"unemploymentDate,omitempty"`
+
+	// Inflation
+	Inflation     float64 `json:"inflation"`
+	InflationDate string  `json:"inflationDate,omitempty"`
+
+	// Housing
+	RentalVacancy     float64 `json:"rentalVacancy"`
+	RentalVacancyDate string  `json:"rentalVacancyDate,omitempty"`
+
+	// Metadata
+	LastUpdated string `json:"lastUpdated"`
+	NextRefresh string `json:"nextRefresh"`
+	Source      string `json:"source"`
+	Message     string `json:"message"`
+}
+
+// GetEconomicRates returns all cached economic rates with metadata
+// GET /api/market-data/economic-rates
+func (h *Handler) GetEconomicRates(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	h.logger.Debug("fetching all economic rates from FRED service")
+
+	if h.fredService == nil || !h.fredService.IsConfigured() {
+		httputil.JSON(w, http.StatusOK, EconomicRatesResponse{
+			Success: false,
+			Message: "FRED service not configured",
+		})
+		return
+	}
+
+	rates, err := h.fredService.GetAllRates(ctx)
+	if err != nil {
+		h.logger.Error("failed to fetch economic rates", "error", err)
+		httputil.JSON(w, http.StatusInternalServerError, EconomicRatesResponse{
+			Success: false,
+			Message: "Failed to fetch economic rates",
+		})
+		return
+	}
+
+	httputil.JSON(w, http.StatusOK, EconomicRatesResponse{
+		Success:           true,
+		MortgageRate30:    rates.MortgageRate30Year,
+		MortgageRate15:    rates.MortgageRate15Year,
+		MortgageDate:      rates.MortgageRateDate.Format(time.RFC3339),
+		Unemployment:      rates.UnemploymentRate,
+		UnemploymentDate:  rates.UnemploymentRateDate.Format(time.RFC3339),
+		Inflation:         rates.InflationRate,
+		InflationDate:     rates.InflationRateDate.Format(time.RFC3339),
+		RentalVacancy:     rates.RentalVacancyRate,
+		RentalVacancyDate: rates.RentalVacancyRateDate.Format(time.RFC3339),
+		LastUpdated:       rates.LastUpdated.Format(time.RFC3339),
+		NextRefresh:       rates.NextRefresh.Format(time.RFC3339),
+		Source:            rates.Source,
+		Message:           "Economic rates fetched successfully",
+	})
 }
 
 // GetMarketData returns aggregated market data for a location

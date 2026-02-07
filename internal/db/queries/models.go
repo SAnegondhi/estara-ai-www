@@ -6,6 +6,7 @@ package queries
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -524,6 +525,15 @@ type SystemAlert struct {
 	ExpiresAt       pgtype.Timestamp `json:"expiresAt"`
 	CreatedAt       pgtype.Timestamp `json:"createdAt"`
 	UpdatedAt       pgtype.Timestamp `json:"updatedAt"`
+}
+
+// System-wide cache for global data like FRED economic rates. Not user-specific.
+type SystemCache struct {
+	Key       string          `json:"key"`
+	Value     json.RawMessage `json:"value"`
+	ExpiresAt time.Time       `json:"expires_at"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }
 
 type User struct {

@@ -107,6 +107,9 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	if svc.MarketData != nil {
 		handlers.Market.SetAggregator(svc.MarketData)
 	}
+	if svc.FREDService != nil {
+		handlers.Market.SetFREDService(svc.FREDService)
+	}
 
 	// Inject services into portfolio handler
 	if svc.PropertyFinder != nil {
@@ -243,7 +246,8 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 
 		r.Get("/mortgage-rate", handlers.Market.GetMortgageRate)
 		r.Get("/investment-rates", handlers.Market.GetInvestmentRates)
-		r.Get("/", handlers.Market.GetMarketData) // GET /api/market-data?city=Austin&state=TX
+		r.Get("/economic-rates", handlers.Market.GetEconomicRates) // All FRED economic data
+		r.Get("/", handlers.Market.GetMarketData)                  // GET /api/market-data?city=Austin&state=TX
 	})
 
 	// Market Trends API (protected)

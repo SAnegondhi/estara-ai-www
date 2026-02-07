@@ -17,6 +17,7 @@ import (
 	"github.com/estara-ai/www/internal/services/jobs/workers"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
 	"github.com/estara-ai/www/internal/services/market/estimation"
+	"github.com/estara-ai/www/internal/services/market/fred"
 	"github.com/estara-ai/www/internal/services/market/timeseries"
 	"github.com/estara-ai/www/internal/services/property/finder"
 	"github.com/estara-ai/www/internal/services/property/providers"
@@ -26,6 +27,7 @@ import (
 type Services struct {
 	PropertyFinder *finder.Orchestrator
 	MarketData     *aggregator.Aggregator
+	FREDService    *fred.Service // Centralized FRED economic data service
 	ChatAgent      *agents.EvaluationChatAgent
 	JobQueue       *queue.Queue
 	WorkerPool     *queue.WorkerPool
@@ -145,11 +147,25 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 		logger.Info("metro reader initialized")
 	}
 
-	// Initialize FRED client if API key is configured
-	// Pass Redis client for 7-day caching to avoid rate limits (www v2 parity with www_v1)
+	// Initialize FRED service if API key is configured
+	// Centralized service with three-tier caching: L0 (memory) -> L1 (Redis) -> L2 (PostgreSQL)
 	if cfg.Config.Market.FREDAPIKey != "" {
+		// Get queries for L2 PostgreSQL cache
+		var q *queries.Queries
+		if cfg.DB != nil && cfg.DB.Main != nil {
+			q = queries.New(cfg.DB.Main)
+		}
+
+		services.FREDService = fred.NewService(cfg.Config.Market.FREDAPIKey, cfg.Redis, q)
+		// Start background refresh for proactive data updates
+		services.FREDService.StartBackgroundRefresh(ctx)
+		logger.Info("FRED service initialized with background refresh",
+			"l1Cache", cfg.Redis != nil,
+			"l2Cache", q != nil,
+		)
+
+		// Also create legacy client for aggregator compatibility
 		fredClient = timeseries.NewFREDClient(cfg.Config.Market.FREDAPIKey, cfg.Redis)
-		logger.Info("FRED client initialized", "caching", cfg.Redis != nil)
 	}
 
 	// Initialize AI estimator if Anthropic client is available
