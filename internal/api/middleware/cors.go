@@ -26,7 +26,7 @@ func NewCORSMiddleware(cfg *config.Config) func(http.Handler) http.Handler {
 	return cors.Handler(cors.Options{
 		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
-		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Request-ID", "Accept", "Origin"},
+		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Request-ID", "X-CSRF-Token", "Accept", "Origin"},
 		ExposedHeaders:   []string{"X-Request-ID", "X-RateLimit-Limit", "X-RateLimit-Remaining", "Retry-After"},
 		AllowCredentials: cfg.CORS.AllowCredentials,
 		MaxAge:           86400, // 24 hours
