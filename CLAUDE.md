@@ -115,6 +115,49 @@ Avoid these common mistakes:
 
 ---
 
+## DATABASE MIGRATIONS
+
+**Automatic Migrations**: SQL migrations run automatically on server startup.
+
+### Adding New Migrations
+
+1. Create SQL file in `internal/db/postgres/migrations/`
+2. Name format: `YYYYMMDD_description.sql` (e.g., `20260207_add_system_cache.sql`)
+3. Migrations are embedded at compile time and run in alphabetical order
+4. Each migration runs in a transaction with automatic rollback on failure
+
+### Migration Tracking
+
+- Applied migrations are tracked in `schema_migrations` table
+- Only pending migrations are executed on startup
+- Safe to restart server - already-applied migrations are skipped
+
+### Example Migration
+
+```sql
+-- Migration: 20260207_add_system_cache
+-- Description: Adds system_cache table for L2 caching
+-- Author: Claude
+-- Date: 2026-02-07
+
+CREATE TABLE IF NOT EXISTS system_cache (
+    key TEXT PRIMARY KEY,
+    value JSONB NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_system_cache_expires_at ON system_cache(expires_at);
+```
+
+### Key Files
+
+- `internal/db/postgres/migrate.go` - Migration runner (uses Go embed)
+- `internal/db/postgres/migrations/*.sql` - Migration SQL files
+
+---
+
 ## DBQ - DATABASE QUERY TOOL (MANDATORY FOR DEBUGGING)
 
 **CRITICAL**: All debug and test database queries MUST use the `dbq` tool. Do NOT use raw `psql` commands.

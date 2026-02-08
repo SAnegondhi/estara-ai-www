@@ -21,6 +21,7 @@ import (
 	"github.com/estara-ai/www/internal/services/investment"
 	"github.com/estara-ai/www/internal/services/investment/projection"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
+	"github.com/estara-ai/www/internal/services/market/economics"
 )
 
 // AI scoring cache TTL - matches property search cache (ADR-061, ADR-064)
@@ -37,6 +38,9 @@ type Service struct {
 	db      *postgres.Pool
 	redis   *redisClient.Client
 	queries *queries.Queries
+	// ADR-069: Economic data integration
+	economics       economics.Provider
+	enhancedScorer  *EconomicsEnhancedScorer
 }
 
 // NewService creates a new optimization service
@@ -71,6 +75,29 @@ func NewServiceWithDB(
 		db:         db,
 		redis:      redis,
 		queries:    queries.New(db),
+	}
+}
+
+// NewServiceWithEconomics creates a new optimization service with economic data integration (ADR-069)
+func NewServiceWithEconomics(
+	client *anthropic.Client,
+	market *aggregator.Aggregator,
+	cache *cache.HybridCache,
+	db *postgres.Pool,
+	redis *redisClient.Client,
+	econ economics.Provider,
+) *Service {
+	return &Service{
+		client:         client,
+		market:         market,
+		cache:          cache,
+		calculator:     projection.NewCalculator(nil),
+		logger:         slog.Default().With("component", "portfolio_optimization"),
+		db:             db,
+		redis:          redis,
+		queries:        queries.New(db),
+		economics:      econ,
+		enhancedScorer: NewEconomicsEnhancedScorer(econ),
 	}
 }
 
@@ -113,7 +140,8 @@ func (s *Service) Optimize(ctx context.Context, req investment.OptimizationReque
 		}
 	}
 
-	marketQuality := CalculateMarketQualityScores(locationMarketData)
+	// ADR-069: Use enhanced scorer with economic data if available
+	marketQuality := s.calculateMarketQualityScores(ctx, locationMarketData)
 
 	// Pre-score and limit properties before AI scoring to prevent timeout
 	// AI scoring can handle ~100 properties within reasonable time
@@ -192,6 +220,42 @@ func (s *Service) Optimize(ctx context.Context, req investment.OptimizationReque
 		DiversificationAnalysis: diversificationAnalysis,
 		Recommendations:         recommendations,
 	}, nil
+}
+
+// calculateMarketQualityScores computes market quality for each location
+// ADR-069: Uses enhanced scorer with live economic data when available
+func (s *Service) calculateMarketQualityScores(ctx context.Context, locationMarketData map[string]*aggregator.MarketData) []investment.LocationMarketAnalysis {
+	results := make([]investment.LocationMarketAnalysis, 0, len(locationMarketData))
+
+	// Use enhanced scorer if economic data is available
+	if s.enhancedScorer != nil {
+		for location, data := range locationMarketData {
+			// Parse city, state from location string (format: "City, ST")
+			city, state := parseLocation(location)
+			analysis := s.enhancedScorer.BuildEnhancedLocationMarketAnalysis(ctx, city, state, location, data)
+			results = append(results, analysis)
+		}
+		s.logger.Debug("used enhanced scorer with economic data", "locations", len(results))
+		return results
+	}
+
+	// Fallback to standard scoring without economic data
+	for location, data := range locationMarketData {
+		results = append(results, BuildLocationMarketAnalysis(location, data))
+	}
+	return results
+}
+
+// parseLocation extracts city and state from location string (e.g., "Phoenix, AZ")
+func parseLocation(location string) (city, state string) {
+	parts := strings.Split(location, ", ")
+	if len(parts) >= 2 {
+		city = parts[0]
+		state = parts[len(parts)-1]
+	} else if len(parts) == 1 {
+		city = parts[0]
+	}
+	return city, state
 }
 
 // ScoreProperties uses AI to evaluate properties on buyability, rentability, ROI

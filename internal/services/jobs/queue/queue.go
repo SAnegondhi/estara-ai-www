@@ -297,6 +297,22 @@ func (q *Queue) Fail(jobID string, err error) error {
 	return nil
 }
 
+// skipJob returns a job to processing state without failing it
+// Used when worker pool has no handler for a job type that should be handled elsewhere
+func (q *Queue) skipJob(job *Job) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	// Keep job in "processing" state - it will be handled by HTTP endpoint
+	// Don't put back in pending queue to avoid worker pool picking it up again
+	job.UpdatedAt = time.Now()
+
+	q.logger.Debug("job skipped by worker pool",
+		"job_id", job.ID,
+		"type", job.Type,
+	)
+}
+
 // Cancel cancels a pending or processing job
 func (q *Queue) Cancel(jobID string) error {
 	q.mu.Lock()

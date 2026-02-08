@@ -648,18 +648,25 @@ func (p *HasDataProvider) mapListingStatus(status ListingStatus) string {
 }
 
 // parsePropertyType converts HasData property type to standard format
+// HasData/Zillow API returns: house, townhome, condo, multiFamily, lot, apartment, manufactured
 func (p *HasDataProvider) parsePropertyType(s string) PropertyType {
+	if s == "" {
+		return PropertyTypeOther
+	}
 	s = strings.ToLower(s)
 	switch {
 	case strings.Contains(s, "single") || strings.Contains(s, "house"):
 		return PropertyTypeSingleFamily
-	case strings.Contains(s, "condo"):
+	case strings.Contains(s, "manufactured") || strings.Contains(s, "mobile"):
+		return PropertyTypeSingleFamily // Manufactured/mobile homes classified as single family
+	case strings.Contains(s, "condo") || strings.Contains(s, "cooperative") || strings.Contains(s, "co-op"):
 		return PropertyTypeCondo
 	case strings.Contains(s, "town"):
 		return PropertyTypeTownhouse
-	case strings.Contains(s, "multi") || strings.Contains(s, "duplex"):
+	case strings.Contains(s, "multi") || strings.Contains(s, "duplex") || strings.Contains(s, "triplex") ||
+		strings.Contains(s, "fourplex") || strings.Contains(s, "quadplex") || strings.Contains(s, "apartment"):
 		return PropertyTypeMultiFamily
-	case strings.Contains(s, "land"):
+	case strings.Contains(s, "land") || strings.Contains(s, "lot"):
 		return PropertyTypeLand
 	default:
 		return PropertyTypeOther

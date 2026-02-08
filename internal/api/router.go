@@ -88,13 +88,13 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		Auth:          auth.NewHandler(authMiddleware, db, redis, cfg),
 		App:           app.NewHandler(db, cfg),
 		Discover:      discover.NewHandler(db, redis, cfg, svc.PropertyFinder, svc.MarketData),
-		AI:            ai.NewHandler(db, redis, cfg, svc.ChatAgent, svc.JobQueue),
+		AI:            ai.NewHandler(db, redis, cfg, svc.ChatAgent, svc.JobQueue, svc.EconomicsAggregator),
 		Portfolio:     portfolio.NewHandler(db, cfg),
 		Admin:         admin.NewHandler(db, redis, cfg),
 		Cron:          cron.NewHandler(db, redis, cfg),
 		Location:      location.NewHandler(db, redis, cfg),
 		Market:        market.NewHandler(cfg),
-		Report:        report.NewHandler(db, cfg),
+		Report:        report.NewHandlerWithEconomics(db, cfg, svc.EconomicsAggregator),
 		Billing:       billing.NewHandler(db, cfg),
 		IAP:           iap.NewHandler(ctx, db, cfg),
 		Website:       website.NewHandler(db, cfg),
@@ -115,6 +115,9 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	}
 	if svc.BLSService != nil {
 		handlers.Market.SetBLSService(svc.BLSService)
+	}
+	if svc.EconomicsAggregator != nil {
+		handlers.Market.SetEconomicsAggregator(svc.EconomicsAggregator)
 	}
 
 	// Inject services into portfolio handler
@@ -259,8 +262,11 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Get("/demographics", handlers.Market.GetDemographics) // ?city=Austin&state=TX
 
 		// BLS labor market (ADR-068 Phase 3)
-		r.Get("/labor", handlers.Market.GetLaborData)                 // National labor data
+		r.Get("/labor", handlers.Market.GetLaborData)                    // National labor data
 		r.Get("/labor/state/{state}", handlers.Market.GetStateLaborData) // State labor data
+
+		// Unified economics (ADR-068 Phase 4)
+		r.Get("/economics", handlers.Market.GetUnifiedEconomics) // ?city=Austin&state=TX&medianHomePrice=450000
 
 		// Aggregated market data
 		r.Get("/", handlers.Market.GetMarketData) // GET /api/market-data?city=Austin&state=TX

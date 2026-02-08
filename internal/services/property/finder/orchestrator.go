@@ -1422,17 +1422,23 @@ func convertHasDataToProperty(data *providers.HasDataPropertyAPIProperty, addres
 
 // parsePropertyType converts string to PropertyType
 func parsePropertyType(s string) providers.PropertyType {
+	if s == "" {
+		return providers.PropertyTypeOther
+	}
 	s = strings.ToLower(s)
 	switch {
 	case strings.Contains(s, "single") || strings.Contains(s, "house"):
 		return providers.PropertyTypeSingleFamily
-	case strings.Contains(s, "condo"):
+	case strings.Contains(s, "manufactured") || strings.Contains(s, "mobile"):
+		return providers.PropertyTypeSingleFamily // Manufactured/mobile homes classified as single family
+	case strings.Contains(s, "condo") || strings.Contains(s, "cooperative") || strings.Contains(s, "co-op"):
 		return providers.PropertyTypeCondo
 	case strings.Contains(s, "town"):
 		return providers.PropertyTypeTownhouse
-	case strings.Contains(s, "multi"):
+	case strings.Contains(s, "multi") || strings.Contains(s, "duplex") || strings.Contains(s, "triplex") ||
+		strings.Contains(s, "fourplex") || strings.Contains(s, "quadplex") || strings.Contains(s, "apartment"):
 		return providers.PropertyTypeMultiFamily
-	case strings.Contains(s, "land"):
+	case strings.Contains(s, "land") || strings.Contains(s, "lot"):
 		return providers.PropertyTypeLand
 	default:
 		return providers.PropertyTypeOther

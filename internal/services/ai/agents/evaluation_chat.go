@@ -159,6 +159,7 @@ var blockPatterns = []blockPattern{
 	{blockType: "insight", start: "[INSIGHT]", end: "[/INSIGHT]"},
 	{blockType: "stress_test", start: "[STRESS_TEST]", end: "[/STRESS_TEST]"},
 	{blockType: "metrics", start: "[METRICS]", end: "[/METRICS]"},
+	{blockType: "scenario_comparison", start: "[SCENARIO_COMPARISON]", end: "[/SCENARIO_COMPARISON]"},
 	{blockType: "comparison", start: "[COMPARISON]", end: "[/COMPARISON]"},
 	{blockType: "disclaimer", start: "[DISCLAIMER]", end: "[/DISCLAIMER]"},
 }
@@ -167,18 +168,22 @@ var blockPatterns = []blockPattern{
 func (p *StreamingBlockParser) AddChunk(chunk string) (newBlocks []ChatBlock, partialText string) {
 	p.buffer += chunk
 
+	// Use uppercase buffer for case-insensitive matching
+	upperBuffer := strings.ToUpper(p.buffer)
+
 	// Try to extract complete blocks
 	foundBlock := true
 	for foundBlock {
 		foundBlock = false
 
 		for _, pattern := range blockPatterns {
-			startIdx := strings.Index(p.buffer, pattern.start)
+			// Case-insensitive search using uppercase buffer
+			startIdx := strings.Index(upperBuffer, pattern.start)
 			if startIdx == -1 {
 				continue
 			}
 
-			endIdx := strings.Index(p.buffer[startIdx:], pattern.end)
+			endIdx := strings.Index(upperBuffer[startIdx:], pattern.end)
 			if endIdx == -1 {
 				continue
 			}
@@ -196,7 +201,7 @@ func (p *StreamingBlockParser) AddChunk(chunk string) (newBlocks []ChatBlock, pa
 				}
 			}
 
-			// Extract block content
+			// Extract block content from original buffer (preserves case)
 			blockContent := strings.TrimSpace(p.buffer[startIdx+len(pattern.start) : endIdx])
 			rawBlock := p.buffer[startIdx : endIdx+len(pattern.end)]
 
@@ -207,6 +212,7 @@ func (p *StreamingBlockParser) AddChunk(chunk string) (newBlocks []ChatBlock, pa
 
 			// Update buffer - remove processed content
 			p.buffer = p.buffer[endIdx+len(pattern.end):]
+			upperBuffer = strings.ToUpper(p.buffer) // Update uppercase buffer
 			foundBlock = true
 			break
 		}
@@ -215,10 +221,11 @@ func (p *StreamingBlockParser) AddChunk(chunk string) (newBlocks []ChatBlock, pa
 	p.completedBlocks = append(p.completedBlocks, newBlocks...)
 
 	// Calculate partial text (text safe to emit)
-	// Find earliest potential block start marker
+	// Find earliest potential block start marker (case-insensitive)
+	upperBuffer = strings.ToUpper(p.buffer)
 	minBlockStart := -1
 	for _, pattern := range blockPatterns {
-		idx := strings.Index(p.buffer, pattern.start)
+		idx := strings.Index(upperBuffer, pattern.start)
 		if idx != -1 && (minBlockStart == -1 || idx < minBlockStart) {
 			minBlockStart = idx
 		}
@@ -228,11 +235,12 @@ func (p *StreamingBlockParser) AddChunk(chunk string) (newBlocks []ChatBlock, pa
 		// Text before next block marker is safe
 		partialText = p.buffer[:minBlockStart]
 	} else if minBlockStart == -1 {
-		// No block markers found - check for partial marker starts
+		// No block markers found - check for partial marker starts (case-insensitive)
+		upperEnd := strings.ToUpper(p.buffer)
 		markerStarts := []string{"[IN", "[ST", "[ME", "[DI", "[CO", "["}
 		endsWithPartialMarker := false
 		for _, start := range markerStarts {
-			if strings.HasSuffix(p.buffer, start) {
+			if strings.HasSuffix(upperEnd, start) {
 				endsWithPartialMarker = true
 				partialText = p.buffer[:len(p.buffer)-len(start)]
 				break
@@ -416,13 +424,14 @@ func (a *EvaluationChatAgent) buildMessages(req ChatRequest, propertiesContext, 
 func parseBlocks(response string) []ChatBlock {
 	blocks := make([]ChatBlock, 0)
 
-	// Define block patterns
+	// Define block patterns (case-insensitive with (?i) flag)
 	blockPatterns := map[string]*regexp.Regexp{
-		"insight":     regexp.MustCompile(`(?s)\[INSIGHT\](.*?)\[/INSIGHT\]`),
-		"stress_test": regexp.MustCompile(`(?s)\[STRESS_TEST\](.*?)\[/STRESS_TEST\]`),
-		"metrics":     regexp.MustCompile(`(?s)\[METRICS\](.*?)\[/METRICS\]`),
-		"comparison":  regexp.MustCompile(`(?s)\[COMPARISON\](.*?)\[/COMPARISON\]`),
-		"disclaimer":  regexp.MustCompile(`(?s)\[DISCLAIMER\](.*?)\[/DISCLAIMER\]`),
+		"insight":             regexp.MustCompile(`(?si)\[INSIGHT\](.*?)\[/INSIGHT\]`),
+		"stress_test":         regexp.MustCompile(`(?si)\[STRESS_TEST\](.*?)\[/STRESS_TEST\]`),
+		"metrics":             regexp.MustCompile(`(?si)\[METRICS\](.*?)\[/METRICS\]`),
+		"scenario_comparison": regexp.MustCompile(`(?si)\[SCENARIO_COMPARISON\](.*?)\[/SCENARIO_COMPARISON\]`),
+		"comparison":          regexp.MustCompile(`(?si)\[COMPARISON\](.*?)\[/COMPARISON\]`),
+		"disclaimer":          regexp.MustCompile(`(?si)\[DISCLAIMER\](.*?)\[/DISCLAIMER\]`),
 	}
 
 	for blockType, pattern := range blockPatterns {
@@ -455,6 +464,8 @@ func parseBlock(blockType, content string) ChatBlock {
 		block.Content = parseMetricsBlock(content)
 	case "comparison":
 		block.Content = parseComparisonBlock(content)
+	case "scenario_comparison":
+		block.Content = parseScenarioComparisonBlock(content)
 	case "disclaimer":
 		block.Content = map[string]interface{}{
 			"text": strings.TrimSpace(content),
@@ -569,6 +580,64 @@ func parseComparisonBlock(content string) map[string]interface{} {
 		}
 	}
 
+	return result
+}
+
+// parseScenarioComparisonBlock parses a scenario comparison table block
+// This provides 3-scenario analysis (Conservative/Base/Optimistic) similar to Quick Evaluations
+func parseScenarioComparisonBlock(content string) map[string]interface{} {
+	result := make(map[string]interface{})
+	scenarios := make([]map[string]interface{}, 0)
+	var assumptions []string
+
+	lines := strings.Split(content, "\n")
+	inAssumptions := false
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+
+		// Parse property address
+		if strings.HasPrefix(line, "Property:") {
+			result["property"] = strings.TrimSpace(strings.TrimPrefix(line, "Property:"))
+			continue
+		}
+
+		// Check if we're in assumptions section
+		if strings.HasPrefix(line, "Assumptions:") {
+			inAssumptions = true
+			continue
+		}
+
+		// Parse assumptions
+		if inAssumptions && strings.HasPrefix(line, "-") {
+			assumptions = append(assumptions, strings.TrimSpace(strings.TrimPrefix(line, "-")))
+			continue
+		}
+
+		// Parse table rows (skip header and separator)
+		if strings.HasPrefix(line, "|") && !strings.Contains(line, "---") {
+			parts := strings.Split(line, "|")
+			if len(parts) >= 5 {
+				metric := strings.TrimSpace(parts[1])
+				conservative := strings.TrimSpace(parts[2])
+				base := strings.TrimSpace(parts[3])
+				optimistic := strings.TrimSpace(parts[4])
+
+				// Skip header row
+				if metric != "" && metric != "Metric" {
+					scenarios = append(scenarios, map[string]interface{}{
+						"metric":       metric,
+						"conservative": conservative,
+						"base":         base,
+						"optimistic":   optimistic,
+					})
+				}
+			}
+		}
+	}
+
+	result["scenarios"] = scenarios
+	result["assumptions"] = assumptions
 	return result
 }
 

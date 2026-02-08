@@ -127,6 +127,12 @@ func NewDB(ctx context.Context, cfg *config.Config) (*DB, error) {
 	}
 	db.Main = mainPool
 
+	// Run pending migrations on main database
+	if err := RunMigrations(ctx, mainPool); err != nil {
+		slog.Warn("failed to run migrations", "error", err)
+		// Don't fail startup - migrations might already be applied
+	}
+
 	// Connect to market database (optional)
 	if cfg.MarketDB.URL != "" {
 		marketPool, err := NewPool(ctx, cfg.MarketDB, "market")

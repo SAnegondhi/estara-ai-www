@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
 	"github.com/estara-ai/www/internal/services/market/bls"
 	"github.com/estara-ai/www/internal/services/market/census"
+	"github.com/estara-ai/www/internal/services/market/economics"
 	"github.com/estara-ai/www/internal/services/market/fred"
 	"github.com/estara-ai/www/internal/services/market/trends"
 	"github.com/estara-ai/www/pkg/httputil"
@@ -18,13 +20,14 @@ import (
 
 // Handler handles market data HTTP requests
 type Handler struct {
-	cfg           *config.Config
-	aggregator    *aggregator.Aggregator
-	trendsService *trends.Service
-	fredService   *fred.Service   // Centralized FRED service with smart caching
-	censusService *census.Service // Census demographics service (ADR-068 Phase 2)
-	blsService    *bls.Service    // BLS labor market service (ADR-068 Phase 3)
-	logger        *slog.Logger
+	cfg                  *config.Config
+	aggregator           *aggregator.Aggregator
+	trendsService        *trends.Service
+	fredService          *fred.Service          // Centralized FRED service with smart caching
+	censusService        *census.Service        // Census demographics service (ADR-068 Phase 2)
+	blsService           *bls.Service           // BLS labor market service (ADR-068 Phase 3)
+	economicsAggregator  *economics.Aggregator  // Unified economic data aggregator (ADR-068 Phase 4)
+	logger               *slog.Logger
 }
 
 // NewHandler creates a new market data handler
@@ -58,6 +61,11 @@ func (h *Handler) SetCensusService(svc *census.Service) {
 // SetBLSService sets the BLS service (for dependency injection)
 func (h *Handler) SetBLSService(svc *bls.Service) {
 	h.blsService = svc
+}
+
+// SetEconomicsAggregator sets the economics aggregator (for dependency injection)
+func (h *Handler) SetEconomicsAggregator(agg *economics.Aggregator) {
+	h.economicsAggregator = agg
 }
 
 // MortgageRateResponse represents the mortgage rate response
@@ -575,5 +583,148 @@ func (h *Handler) GetStateLaborData(w http.ResponseWriter, r *http.Request) {
 		NextRefresh:             data.NextRefresh.Format(time.RFC3339),
 		Source:                  data.Source,
 		Message:                 "State labor data fetched successfully",
+	})
+}
+
+// =============================================================================
+// Unified Economics Endpoint (ADR-068 Phase 4)
+// =============================================================================
+
+// MarketEconomicsResponse represents the unified economics response
+type MarketEconomicsResponse struct {
+	Success bool `json:"success"`
+
+	// Location context
+	City  string `json:"city"`
+	State string `json:"state"`
+
+	// From FRED (national rates)
+	MortgageRate30Year   float64 `json:"mortgageRate30Year"`
+	MortgageRate15Year   float64 `json:"mortgageRate15Year"`
+	NationalUnemployment float64 `json:"nationalUnemployment"`
+	InflationRate        float64 `json:"inflationRate"`
+	RentalVacancyRate    float64 `json:"rentalVacancyRate"`
+
+	// From Census (city/state demographics)
+	Population            int64   `json:"population"`
+	MedianHouseholdIncome float64 `json:"medianHouseholdIncome"`
+	PerCapitaIncome       float64 `json:"perCapitaIncome"`
+	PovertyRate           float64 `json:"povertyRate"`
+	MedianAge             float64 `json:"medianAge"`
+	HouseholdCount        int64   `json:"householdCount"`
+	DemographicLevel      string  `json:"demographicLevel"` // "place", "county", or "state"
+
+	// From BLS (labor market)
+	StateUnemploymentRate   float64 `json:"stateUnemploymentRate"`
+	StateEmployment         float64 `json:"stateEmployment"` // thousands
+	CPIShelter              float64 `json:"cpiShelter"`
+	CPIRent                 float64 `json:"cpiRent"`
+	AverageHourlyEarnings   float64 `json:"averageHourlyEarnings"`
+	ConstructionEmployment  float64 `json:"constructionEmployment"` // thousands
+	JobOpenings             float64 `json:"jobOpenings"`            // thousands
+	LaborForceParticipation float64 `json:"laborForceParticipation"`
+
+	// Calculated Metrics (when medianHomePrice provided)
+	PriceToIncomeRatio float64 `json:"priceToIncomeRatio,omitempty"`
+	AffordabilityIndex float64 `json:"affordabilityIndex,omitempty"`
+
+	// Metadata
+	LastUpdated string            `json:"lastUpdated"`
+	Sources     map[string]string `json:"sources"` // {\"fred\": \"2026-02-07\", \"census\": \"2022\", \"bls\": \"2026-01\"}
+	Errors      []string          `json:"errors,omitempty"`
+	Message     string            `json:"message"`
+}
+
+// GetUnifiedEconomics returns unified economic data from FRED, Census, and BLS
+// GET /api/market-data/economics?city=Austin&state=TX&medianHomePrice=450000
+func (h *Handler) GetUnifiedEconomics(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	city := r.URL.Query().Get("city")
+	state := r.URL.Query().Get("state")
+
+	if state == "" {
+		httputil.BadRequest(w, "state parameter is required")
+		return
+	}
+
+	h.logger.Info("fetching unified economics", "city", city, "state", state)
+
+	if h.economicsAggregator == nil || !h.economicsAggregator.IsConfigured() {
+		httputil.JSON(w, http.StatusOK, MarketEconomicsResponse{
+			Success: false,
+			Message: "Economics aggregator not configured (no data sources available)",
+		})
+		return
+	}
+
+	// Check for optional median home price for calculated metrics
+	var medianHomePrice float64
+	if priceStr := r.URL.Query().Get("medianHomePrice"); priceStr != "" {
+		if price, err := strconv.ParseFloat(priceStr, 64); err == nil && price > 0 {
+			medianHomePrice = price
+		}
+	}
+
+	var data *economics.MarketEconomics
+	var err error
+
+	if medianHomePrice > 0 {
+		data, err = h.economicsAggregator.GetMarketEconomicsWithPrice(ctx, city, state, medianHomePrice)
+	} else {
+		data, err = h.economicsAggregator.GetMarketEconomics(ctx, city, state)
+	}
+
+	if err != nil {
+		h.logger.Error("failed to fetch unified economics", "error", err, "city", city, "state", state)
+		httputil.JSON(w, http.StatusInternalServerError, MarketEconomicsResponse{
+			Success: false,
+			Message: "Failed to fetch unified economics: " + err.Error(),
+		})
+		return
+	}
+
+	httputil.JSON(w, http.StatusOK, MarketEconomicsResponse{
+		Success: true,
+
+		// Location
+		City:  data.City,
+		State: data.State,
+
+		// FRED
+		MortgageRate30Year:   data.MortgageRate30Year,
+		MortgageRate15Year:   data.MortgageRate15Year,
+		NationalUnemployment: data.NationalUnemployment,
+		InflationRate:        data.InflationRate,
+		RentalVacancyRate:    data.RentalVacancyRate,
+
+		// Census
+		Population:            data.Population,
+		MedianHouseholdIncome: data.MedianHouseholdIncome,
+		PerCapitaIncome:       data.PerCapitaIncome,
+		PovertyRate:           data.PovertyRate,
+		MedianAge:             data.MedianAge,
+		HouseholdCount:        data.HouseholdCount,
+		DemographicLevel:      data.DemographicLevel,
+
+		// BLS
+		StateUnemploymentRate:   data.StateUnemploymentRate,
+		StateEmployment:         data.StateEmployment,
+		CPIShelter:              data.CPIShelter,
+		CPIRent:                 data.CPIRent,
+		AverageHourlyEarnings:   data.AverageHourlyEarnings,
+		ConstructionEmployment:  data.ConstructionEmployment,
+		JobOpenings:             data.JobOpenings,
+		LaborForceParticipation: data.LaborForceParticipation,
+
+		// Calculated
+		PriceToIncomeRatio: data.PriceToIncomeRatio,
+		AffordabilityIndex: data.AffordabilityIndex,
+
+		// Metadata
+		LastUpdated: data.LastUpdated.Format(time.RFC3339),
+		Sources:     data.Sources,
+		Errors:      data.Errors,
+		Message:     "Unified economics data fetched successfully",
 	})
 }

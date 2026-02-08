@@ -17,6 +17,7 @@ import (
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/db/postgres"
 	"github.com/estara-ai/www/internal/db/queries"
+	"github.com/estara-ai/www/internal/services/market/economics"
 )
 
 var (
@@ -58,9 +59,11 @@ const (
 
 // InvestorReportService handles investor report operations
 type InvestorReportService struct {
-	db     *postgres.DB
-	cfg    *config.Config
-	logger *slog.Logger
+	db              *postgres.DB
+	cfg             *config.Config
+	logger          *slog.Logger
+	// ADR-069: Economic backdrop service for reports
+	economicBackdrop *EconomicBackdropService
 }
 
 // NewInvestorReportService creates a new investor report service
@@ -70,6 +73,24 @@ func NewInvestorReportService(db *postgres.DB, cfg *config.Config) *InvestorRepo
 		cfg:    cfg,
 		logger: slog.Default().With("component", "investor_report_service"),
 	}
+}
+
+// NewInvestorReportServiceWithEconomics creates a service with economic data integration (ADR-069)
+func NewInvestorReportServiceWithEconomics(db *postgres.DB, cfg *config.Config, econ economics.Provider) *InvestorReportService {
+	s := NewInvestorReportService(db, cfg)
+	if econ != nil {
+		s.economicBackdrop = NewEconomicBackdropService(econ)
+	}
+	return s
+}
+
+// GetEconomicBackdrop generates economic backdrop for a report
+// ADR-069: Provides current economic conditions for report context
+func (s *InvestorReportService) GetEconomicBackdrop(ctx context.Context, city, state string, medianHomePrice float64) (*EconomicBackdrop, error) {
+	if s.economicBackdrop == nil {
+		return nil, nil
+	}
+	return s.economicBackdrop.GenerateBackdrop(ctx, city, state, medianHomePrice)
 }
 
 // InvestorReport represents an investor report for API responses

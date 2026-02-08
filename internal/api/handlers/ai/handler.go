@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	context2 "context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"github.com/estara-ai/www/internal/services/ai/prompts"
 	"github.com/estara-ai/www/internal/services/investment/expenses"
 	"github.com/estara-ai/www/internal/services/jobs/queue"
+	"github.com/estara-ai/www/internal/services/market/economics"
 	"github.com/estara-ai/www/pkg/httputil"
 	"github.com/estara-ai/www/pkg/sse"
 )
@@ -41,6 +43,9 @@ type Handler struct {
 	chatAgent *agents.EvaluationChatAgent
 	jobQueue  *queue.Queue
 	logger    *slog.Logger
+	// ADR-069: Economic data provider for AI prompts
+	economics     *economics.Aggregator
+	econContext   *prompts.EconomicContextBuilder
 }
 
 // NewHandler creates a new AI handler
@@ -50,8 +55,9 @@ func NewHandler(
 	cfg *config.Config,
 	chatAgent *agents.EvaluationChatAgent,
 	jobQueue *queue.Queue,
+	econ *economics.Aggregator,
 ) *Handler {
-	return &Handler{
+	h := &Handler{
 		db:        db,
 		redis:     redis,
 		cfg:       cfg,
@@ -59,7 +65,13 @@ func NewHandler(
 		chatAgent: chatAgent,
 		jobQueue:  jobQueue,
 		logger:    slog.Default().With("component", "ai_handler"),
+		economics: econ,
 	}
+	// ADR-069: Initialize economic context builder if economics aggregator is available
+	if econ != nil {
+		h.econContext = prompts.NewEconomicContextBuilder(econ)
+	}
+	return h
 }
 
 // ===============================
@@ -327,6 +339,7 @@ func (h *Handler) QueueEvaluationChat(w http.ResponseWriter, r *http.Request) {
 					TotalMonthly:     exp.TotalMonthly,
 					ExpenseRatio:     exp.ExpenseRatio,
 					NOI:              exp.NOI,
+					MonthlyNOI:       exp.NOI / 12, // Monthly pre-financing cash flow
 					CapRate:          exp.CapRate,
 				}
 			} else {
@@ -2890,18 +2903,30 @@ func (h *Handler) getExpenseCalculator() *expenses.Calculator {
 
 // buildMarketExpenseContext creates market expense context for the AI prompt
 // Provides state-level expense rate information for the properties being evaluated
+// ADR-069: Now includes live economic data (FRED/Census/BLS)
 func (h *Handler) buildMarketExpenseContext(properties []PropertyInput) string {
 	if len(properties) == 0 {
 		return ""
 	}
 
-	// Get unique states from properties
+	// Get unique cities/states from properties
+	type location struct {
+		city  string
+		state string
+	}
+	locationsSeen := make(map[location]bool)
 	statesSeen := make(map[string]bool)
 	var states []string
+	var locations []location
 	for _, p := range properties {
 		if p.State != "" && !statesSeen[p.State] {
 			statesSeen[p.State] = true
 			states = append(states, p.State)
+		}
+		loc := location{city: p.City, state: p.State}
+		if p.City != "" && p.State != "" && !locationsSeen[loc] {
+			locationsSeen[loc] = true
+			locations = append(locations, loc)
 		}
 	}
 
@@ -2909,27 +2934,41 @@ func (h *Handler) buildMarketExpenseContext(properties []PropertyInput) string {
 		return ""
 	}
 
-	calc := h.getExpenseCalculator()
-	if calc == nil {
-		return ""
+	var context strings.Builder
+
+	// ADR-069: Add economic conditions context first (if available)
+	if h.econContext != nil && len(locations) > 0 {
+		// Use the first location for economic context
+		loc := locations[0]
+		econCtx := h.econContext.BuildEconomicContext(
+			context2.Background(),
+			loc.city,
+			loc.state,
+			0, // No median home price for general context
+		)
+		context.WriteString(econCtx)
+		context.WriteString("\n\n")
 	}
 
-	var context strings.Builder
-	context.WriteString("MARKET EXPENSE CHARACTERISTICS:\n")
+	// Add expense characteristics
+	calc := h.getExpenseCalculator()
+	if calc != nil {
+		context.WriteString("MARKET EXPENSE CHARACTERISTICS:\n")
 
-	for _, state := range states {
-		defaults := calc.GetMarketDefaults(state)
-		context.WriteString(fmt.Sprintf("\n%s Market:\n", state))
-		context.WriteString(fmt.Sprintf("  - Property Tax Rate: %.2f%% of home value\n", defaults.PropertyTaxRate))
-		context.WriteString(fmt.Sprintf("  - Insurance Rate: %.2f%% of home value\n", defaults.InsuranceRate))
-		if len(defaults.InsuranceRisk) > 0 {
-			context.WriteString(fmt.Sprintf("  - Insurance Risk Factors: %s\n", strings.Join(defaults.InsuranceRisk, ", ")))
-		}
-		context.WriteString(fmt.Sprintf("  - Typical Maintenance: %.1f%% of home value\n", defaults.MaintenanceRate))
-		context.WriteString(fmt.Sprintf("  - Typical Vacancy: %.1f%% of rent\n", defaults.VacancyRate))
-		context.WriteString(fmt.Sprintf("  - Property Management: %.1f%% of rent\n", defaults.PropertyMgmtRate))
-		if defaults.Notes != "" {
-			context.WriteString(fmt.Sprintf("  - Note: %s\n", defaults.Notes))
+		for _, state := range states {
+			defaults := calc.GetMarketDefaults(state)
+			context.WriteString(fmt.Sprintf("\n%s Market:\n", state))
+			context.WriteString(fmt.Sprintf("  - Property Tax Rate: %.2f%% of home value\n", defaults.PropertyTaxRate))
+			context.WriteString(fmt.Sprintf("  - Insurance Rate: %.2f%% of home value\n", defaults.InsuranceRate))
+			if len(defaults.InsuranceRisk) > 0 {
+				context.WriteString(fmt.Sprintf("  - Insurance Risk Factors: %s\n", strings.Join(defaults.InsuranceRisk, ", ")))
+			}
+			context.WriteString(fmt.Sprintf("  - Typical Maintenance: %.1f%% of home value\n", defaults.MaintenanceRate))
+			context.WriteString(fmt.Sprintf("  - Typical Vacancy: %.1f%% of rent\n", defaults.VacancyRate))
+			context.WriteString(fmt.Sprintf("  - Property Management: %.1f%% of rent\n", defaults.PropertyMgmtRate))
+			if defaults.Notes != "" {
+				context.WriteString(fmt.Sprintf("  - Note: %s\n", defaults.Notes))
+			}
 		}
 	}
 

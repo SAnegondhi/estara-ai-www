@@ -14,6 +14,7 @@ import (
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/db/postgres"
+	"github.com/estara-ai/www/internal/services/market/economics"
 	"github.com/estara-ai/www/internal/services/pdf"
 	"github.com/estara-ai/www/internal/services/reports"
 	"github.com/estara-ai/www/pkg/httputil"
@@ -33,6 +34,16 @@ func NewHandler(db *postgres.DB, cfg *config.Config) *Handler {
 		db:      db,
 		cfg:     cfg,
 		service: reports.NewInvestorReportService(db, cfg),
+		logger:  slog.Default().With("component", "report_handler"),
+	}
+}
+
+// NewHandlerWithEconomics creates a report handler with economic data integration (ADR-069)
+func NewHandlerWithEconomics(db *postgres.DB, cfg *config.Config, econ economics.Provider) *Handler {
+	return &Handler{
+		db:      db,
+		cfg:     cfg,
+		service: reports.NewInvestorReportServiceWithEconomics(db, cfg, econ),
 		logger:  slog.Default().With("component", "report_handler"),
 	}
 }

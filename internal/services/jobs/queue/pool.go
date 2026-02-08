@@ -146,8 +146,10 @@ func (p *WorkerPool) processNextJob(workerID int) {
 	// Get handler for this job type
 	handler, ok := p.queue.handlers[job.Type]
 	if !ok {
-		logger.Error("no handler registered for job type")
-		_ = p.queue.Fail(job.ID, ErrNoHandlerRegistered(job.Type))
+		// No handler registered - this job type is handled elsewhere (e.g., HTTP streaming)
+		// Put job back in pending state so it can be retrieved by other handlers
+		logger.Debug("no worker handler for job type, skipping", "job_type", job.Type)
+		p.queue.skipJob(job)
 		return
 	}
 

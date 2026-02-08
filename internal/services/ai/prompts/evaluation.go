@@ -10,7 +10,8 @@ CAPABILITIES:
 - Calculate key investment metrics
 - Provide market context and insights
 
-OUTPUT FORMAT - Use these tagged blocks for structured output:
+OUTPUT FORMAT - Use these tagged blocks for structured output.
+IMPORTANT: Only use blocks that are relevant to the user's question. Do NOT include all blocks in every response.
 
 [INSIGHT]
 Title: <headline>
@@ -19,6 +20,7 @@ Confidence: high|medium|low
 Summary: <1-2 sentences>
 Details: <detailed analysis>
 [/INSIGHT]
+USE WHEN: Any analysis - opportunities, risks, observations. Can use multiple INSIGHTs per response.
 
 [STRESS_TEST]
 Scenario: mild_recession|severe_recession|interest_rate_shock|local_downturn|custom
@@ -27,22 +29,25 @@ RentImpact: <percentage, e.g., -10%>
 CashFlowImpact: <monthly dollar change, e.g., -$350/mo>
 Narrative: <explanation>
 [/STRESS_TEST]
+USE WHEN: User explicitly asks for stress test, downside analysis, "what if" scenarios, or risk assessment under adverse conditions. Do NOT include stress tests for general overview, metrics, or cash flow questions.
 
 STRESS TEST CALCULATION GUIDANCE:
 For each scenario, calculate realistic impacts using these assumptions:
 - Default financing: 80% LTV, 30-year fixed mortgage
 - Current mortgage rate: Use market rate from context, or assume 7%
+- Use the <monthly_cash_flow> from each property's operating_expenses as the baseline
 
 Scenario-specific calculations:
-- mild_recession: ValueImpact -10%, RentImpact -5%, calculate reduced NOI
-- severe_recession: ValueImpact -20%, RentImpact -15%, VacancyIncrease +10%
+- mild_recession: ValueImpact -10%, RentImpact -5%, CashFlowImpact = monthly_cash_flow * -0.05
+- severe_recession: ValueImpact -20%, RentImpact -15%, CashFlowImpact = monthly_cash_flow * -0.15
 - interest_rate_shock: ValueImpact 0%, RentImpact 0%, CashFlowImpact = increased monthly payment
   * Calculate: For +200bps rate increase, recalculate monthly P&I at new rate
   * Example: $200K property at 80% LTV ($160K loan): 7% vs 9% = ~$180/mo increase
-- local_downturn: ValueImpact -15%, RentImpact -10%, based on local market factors
+- local_downturn: ValueImpact -15%, RentImpact -10%, CashFlowImpact = monthly_cash_flow * -0.10
 
-IMPORTANT: Always provide non-zero values for CashFlowImpact. For interest_rate_shock,
-calculate the increased debt service cost per month even if value/rent unchanged.
+IMPORTANT: Always provide non-zero values for CashFlowImpact based on the property's
+<monthly_cash_flow>. Calculate the dollar amount impact, not just the percentage.
+Example: If monthly_cash_flow is $500/mo and RentImpact is -10%, CashFlowImpact = -$50/mo.
 
 [METRICS]
 | Metric | Value | Rating |
@@ -53,6 +58,30 @@ calculate the increased debt service cost per month even if value/rent unchanged
 | Gross Yield | X.X% | good|fair|poor |
 | Price/SqFt | $XXX | good|fair|poor |
 [/METRICS]
+USE WHEN: User asks for investment overview, metrics summary, or property evaluation. Good for "tell me about" or "analyze" questions.
+
+[SCENARIO_COMPARISON]
+Property: <address>
+| Metric | Conservative | Base | Optimistic |
+|--------|--------------|------|------------|
+| Monthly Cash Flow | $XXX | $XXX | $XXX |
+| Annual Cash Flow | $X,XXX | $X,XXX | $X,XXX |
+| Cash-on-Cash Return | X.X% | X.X% | X.X% |
+| Cap Rate | X.X% | X.X% | X.X% |
+| 5-Year IRR | X.X% | X.X% | X.X% |
+Assumptions:
+- Conservative: 8% vacancy, 1% rent growth
+- Base: 5% vacancy, 2% rent growth
+- Optimistic: 3% vacancy, 3% rent growth
+[/SCENARIO_COMPARISON]
+USE WHEN: User asks for "quick metrics", "scenario comparison", "3-scenario analysis", or wants to compare conservative/base/optimistic outcomes. This replaces the old Quick Evaluation feature.
+
+SCENARIO CALCULATION GUIDANCE:
+When generating scenario comparisons, use these assumption ranges:
+- Conservative: Higher vacancy (7-10%), lower rent growth (0-1.5%), higher expense ratio
+- Base: Market vacancy (4-6%), market rent growth (2-3%), standard expenses
+- Optimistic: Lower vacancy (2-4%), higher rent growth (3-4%), efficient operations
+Use the property's <monthly_cash_flow> as the Base case starting point, then adjust for each scenario.
 
 [COMPARISON]
 Property: <address>
@@ -61,10 +90,12 @@ vs Portfolio Average:
 - Cash Flow: +/-$XXX/mo
 - Risk Level: higher|similar|lower
 [/COMPARISON]
+USE WHEN: User asks about portfolio impact, comparison to existing holdings, or diversification.
 
 [DISCLAIMER]
 <SEC-compliant disclaimer>
 [/DISCLAIMER]
+USE WHEN: Always include at the end of responses that contain projections, metrics, or investment analysis.
 
 COMPLIANCE REQUIREMENTS (ADR-044):
 - Use neutral language: "data indicates", "analysis shows", "trends suggest"
@@ -205,6 +236,7 @@ func BuildPropertyContext(properties []PropertyContext) string {
 			result += "      <total_monthly>$" + formatFloat(exp.TotalMonthly) + "/month</total_monthly>\n"
 			result += "      <expense_ratio>" + formatFloat(exp.ExpenseRatio) + "% of rent</expense_ratio>\n"
 			result += "      <noi>$" + formatFloat(exp.NOI) + "/year</noi>\n"
+			result += "      <monthly_cash_flow>$" + formatFloat(exp.MonthlyNOI) + "/month</monthly_cash_flow>\n"
 			result += "      <calculated_cap_rate>" + formatFloat(exp.CapRate) + "%</calculated_cap_rate>\n"
 			result += "    </operating_expenses>\n"
 		}
@@ -244,7 +276,8 @@ type PropertyExpenses struct {
 	TotalAnnual      float64 `json:"totalAnnual"`      // Total annual expenses
 	TotalMonthly     float64 `json:"totalMonthly"`     // Total monthly expenses
 	ExpenseRatio     float64 `json:"expenseRatio"`     // % of gross rent
-	NOI              float64 `json:"noi"`              // Net Operating Income
+	NOI              float64 `json:"noi"`              // Net Operating Income (annual)
+	MonthlyNOI       float64 `json:"monthlyNOI"`       // Monthly NOI (pre-financing cash flow)
 	CapRate          float64 `json:"capRate"`          // Calculated cap rate
 }
 

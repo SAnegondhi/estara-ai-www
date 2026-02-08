@@ -18,6 +18,7 @@ import (
 	"github.com/estara-ai/www/internal/services/market/aggregator"
 	"github.com/estara-ai/www/internal/services/market/bls"
 	"github.com/estara-ai/www/internal/services/market/census"
+	"github.com/estara-ai/www/internal/services/market/economics"
 	"github.com/estara-ai/www/internal/services/market/estimation"
 	"github.com/estara-ai/www/internal/services/market/fred"
 	"github.com/estara-ai/www/internal/services/market/timeseries"
@@ -27,17 +28,18 @@ import (
 
 // Services holds all application service dependencies
 type Services struct {
-	PropertyFinder *finder.Orchestrator
-	MarketData     *aggregator.Aggregator
-	FREDService    *fred.Service     // Centralized FRED economic data service (ADR-068 Phase 1)
-	CensusService  *census.Service   // Census demographics service (ADR-068 Phase 2)
-	BLSService     *bls.Service      // BLS labor market service (ADR-068 Phase 3)
-	ChatAgent      *agents.EvaluationChatAgent
-	JobQueue       *queue.Queue
-	WorkerPool     *queue.WorkerPool
-	HybridCache    *cache.HybridCache
-	PropertyCache  *cache.PropertyCache // Size-based FIFO cache for property reads (ADR-061)
-	Anthropic      *anthropic.Client
+	PropertyFinder       *finder.Orchestrator
+	MarketData           *aggregator.Aggregator
+	FREDService          *fred.Service        // Centralized FRED economic data service (ADR-068 Phase 1)
+	CensusService        *census.Service      // Census demographics service (ADR-068 Phase 2)
+	BLSService           *bls.Service         // BLS labor market service (ADR-068 Phase 3)
+	EconomicsAggregator  *economics.Aggregator // Unified economic data aggregator (ADR-068 Phase 4)
+	ChatAgent            *agents.EvaluationChatAgent
+	JobQueue             *queue.Queue
+	WorkerPool           *queue.WorkerPool
+	HybridCache          *cache.HybridCache
+	PropertyCache        *cache.PropertyCache // Size-based FIFO cache for property reads (ADR-061)
+	Anthropic            *anthropic.Client
 }
 
 // ServiceConfig holds configuration for creating services
@@ -200,6 +202,19 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 		)
 	}
 
+	// Initialize Economics Aggregator (ADR-068 Phase 4)
+	// Combines FRED, Census, and BLS data into unified MarketEconomics structure
+	services.EconomicsAggregator = economics.NewAggregator(
+		services.FREDService,
+		services.CensusService,
+		services.BLSService,
+	)
+	if services.EconomicsAggregator.IsConfigured() {
+		logger.Info("economics aggregator initialized",
+			"sources", services.EconomicsAggregator.AvailableSources(),
+		)
+	}
+
 	// Initialize AI estimator if Anthropic client is available
 	if services.Anthropic != nil {
 		aiEstimator = estimation.NewAIEstimator(services.Anthropic)
@@ -232,18 +247,20 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 	if services.JobQueue != nil {
 		// Create optimization service for investment planning
 		// ADR-064: Use NewServiceWithDB to enable AI scoring cache
+		// ADR-069: Use NewServiceWithEconomics for live economic data
 		var optimizer *optimization.Service
 		if services.Anthropic != nil {
 			if cfg.DB != nil && cfg.DB.Main != nil {
-				// With database access for AI scoring cache (ADR-064)
-				optimizer = optimization.NewServiceWithDB(
+				// With database access for AI scoring cache (ADR-064) and economics (ADR-069)
+				optimizer = optimization.NewServiceWithEconomics(
 					services.Anthropic,
 					services.MarketData,
 					services.HybridCache,
 					cfg.DB.Main,
 					cfg.Redis,
+					services.EconomicsAggregator,
 				)
-				logger.Info("optimization service initialized with AI scoring cache")
+				logger.Info("optimization service initialized with AI scoring cache and economics")
 			} else {
 				// Fallback: without database (no caching)
 				optimizer = optimization.NewService(
@@ -266,6 +283,10 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 		})
 		services.JobQueue.RegisterHandler(queue.JobTypeInvestmentPlanning, investmentWorker.GetHandler())
 		logger.Info("investment planning worker registered")
+
+		// Note: evaluation_chat jobs are NOT registered with the worker pool
+		// They are processed via HTTP SSE streaming in StreamEvaluationChat handler
+		// Worker pool will skip jobs without handlers (keeps them in processing state)
 
 		// Create and start worker pool
 		services.WorkerPool = queue.NewWorkerPool(services.JobQueue, queue.WorkerPoolConfig{
