@@ -63,6 +63,26 @@ type MetroTimeSeries struct {
 	UpdatedAt        time.Time        `json:"updatedAt"`
 }
 
+// RedfinMetrics represents one month's Redfin data for a metro area.
+// Stored in metro_time_series.redfin_data as {"YYYY-MM": {fields...}}.
+type RedfinMetrics struct {
+	HomesSold          int     `json:"homesSold"`
+	HomesSoldYoy       float64 `json:"homesSoldYoy"`
+	Inventory          int     `json:"inventory"`
+	MedianDom          int     `json:"medianDom"`
+	MedianListPrice    float64 `json:"medianListPrice"`
+	MedianListPriceYoy float64 `json:"medianListPriceYoy"`
+	MedianSalePrice    float64 `json:"medianSalePrice"`
+	MedianSalePriceYoy float64 `json:"medianSalePriceYoy"`
+	MedianPpsf         float64 `json:"medianPpsf"`
+	MonthsOfSupply     float64 `json:"monthsOfSupply"`
+	NewListings        int     `json:"newListings"`
+	AvgSaleToList      float64 `json:"avgSaleToList"`
+	SoldAboveList      float64 `json:"soldAboveList"`
+	PriceDrops         float64 `json:"priceDrops"`
+	OffMarketIn2Weeks  float64 `json:"offMarketIn2Weeks"`
+}
+
 // MetroReader reads Zillow time series data from PostgreSQL
 // Handles www_v1's JSONB-based schema where data is stored as {"YYYY-MM": value}
 type MetroReader struct {
@@ -267,8 +287,8 @@ func (r *MetroReader) GetTimeSeries(ctx context.Context, metroName, regionType s
 			RegionType: regionType,
 			Metro:      name,
 			Date:       date,
-			ZHVI:       float64(zhviMap[dateStr]),
-			ZORI:       float64(zoriMap[dateStr]),
+			ZHVI:       zhviMap[dateStr],
+			ZORI:       zoriMap[dateStr],
 		}
 		series = append(series, data)
 	}
@@ -439,11 +459,11 @@ func (r *MetroReader) GetYearOverYearChange(ctx context.Context, regionID int) (
 	var zhviYoY, zoriYoY float64
 
 	if yearAgoZHVI, ok := zhviMap[yearAgoKey]; ok && yearAgoZHVI > 0 {
-		zhviYoY = (currentZHVI - float64(yearAgoZHVI)) / float64(yearAgoZHVI) * 100
+		zhviYoY = (currentZHVI - yearAgoZHVI) / yearAgoZHVI * 100
 	}
 
 	if yearAgoZORI, ok := zoriMap[yearAgoKey]; ok && yearAgoZORI > 0 {
-		zoriYoY = (currentZORI - float64(yearAgoZORI)) / float64(yearAgoZORI) * 100
+		zoriYoY = (currentZORI - yearAgoZORI) / yearAgoZORI * 100
 	}
 
 	return &YearOverYearData{
@@ -527,18 +547,49 @@ type CitySnapshot struct {
 	PriceToIncomeRatio    float64 `json:"priceToIncomeRatio"`
 	DataQualityScore      int     `json:"dataQualityScore"`
 	LastUpdated           time.Time `json:"lastUpdated"`
+
+	// Redfin-sourced fields (from metro_time_series.redfin_data, metro-level)
+	RedfinDate         time.Time `json:"redfinDate"`         // Date of Redfin data point
+	NewListings        int       `json:"newListings"`
+	MedianSalePrice    float64   `json:"medianSalePrice"`
+	MedianSalePriceYoy  float64   `json:"medianSalePriceYoy"`
+	RedfinListPrice     float64   `json:"redfinListPrice"`     // Redfin median list price (metro)
+	RedfinListPriceYoy  float64   `json:"redfinListPriceYoy"`
+	MedianPpsf         float64   `json:"medianPpsf"`
+	AvgSaleToList      float64   `json:"avgSaleToList"`
+	SoldAboveList      float64   `json:"soldAboveList"`
+	PriceDrops         float64   `json:"priceDrops"`
+	OffMarketIn2Weeks  float64   `json:"offMarketIn2Weeks"`
+	HasRedfinData      bool      `json:"hasRedfinData"`
 }
 
-// NationalData holds national ZHVI/ZORI benchmark data (ADR-074)
+// NationalData holds national ZHVI/ZORI and Redfin benchmark data (ADR-074)
 type NationalData struct {
 	ZHVI         float64   `json:"zhvi"`
 	ZORI         float64   `json:"zori"`
 	ZHVIForecast float64   `json:"zhviForecast"`
 	GrossYield   float64   `json:"grossYield"` // Derived: (ZORI*12)/ZHVI
 	Date         time.Time `json:"date"`
+
+	// Redfin national metrics
+	RedfinDate        time.Time `json:"redfinDate"`
+	Inventory         int       `json:"inventory"`
+	MonthsOfSupply    float64   `json:"monthsOfSupply"`
+	MedianDom         int       `json:"medianDom"`
+	HomesSold         int       `json:"homesSold"`
+	NewListings       int       `json:"newListings"`
+	MedianSalePrice   float64   `json:"medianSalePrice"`
+	AvgSaleToList     float64   `json:"avgSaleToList"`
+	SoldAboveList     float64   `json:"soldAboveList"`
+	PriceDrops        float64   `json:"priceDrops"`
+	OffMarketIn2Weeks float64   `json:"offMarketIn2Weeks"`
+	HasRedfinData     bool      `json:"hasRedfinData"`
 }
 
-// GetCitySnapshot returns all city_market_cache fields for a city (ADR-074)
+// GetCitySnapshot returns all city_market_cache fields for a city, merged with
+// Redfin metro data from metro_time_series.redfin_data (ADR-074).
+// City-level data from city_market_cache is primary; Redfin metro data backfills
+// any NULL/zero fields and provides additional competitive indicators.
 func (r *MetroReader) GetCitySnapshot(ctx context.Context, city, stateCode string) (*CitySnapshot, error) {
 	query := `
 		SELECT
@@ -559,7 +610,8 @@ func (r *MetroReader) GetCitySnapshot(ctx context.Context, city, stateCode strin
 			COALESCE(c.employment_growth_rate, 0), COALESCE(c.market_heat_index, 0),
 			COALESCE(c.market_temperature, ''), COALESCE(c.affordability_index, 0),
 			COALESCE(c.affordability_burden, ''), COALESCE(c.price_to_income_ratio, 0),
-			c.data_quality_score, c.last_updated
+			c.data_quality_score, c.last_updated,
+			COALESCE(m.redfin_data, '{}'::jsonb)
 		FROM city_market_cache c
 		LEFT JOIN metro_time_series m ON c.metro_region_id = m.metro_region_id
 		WHERE c.city ILIKE $1 AND c.state = $2
@@ -567,6 +619,7 @@ func (r *MetroReader) GetCitySnapshot(ctx context.Context, city, stateCode strin
 	`
 
 	var s CitySnapshot
+	var redfinJSON []byte
 	err := r.db.QueryRow(ctx, query, city, stateCode).Scan(
 		&s.City, &s.State, &s.MetroRegionID, &s.MetroName,
 		&s.MedianHomePrice, &s.MedianPricePerSqft,
@@ -586,6 +639,7 @@ func (r *MetroReader) GetCitySnapshot(ctx context.Context, city, stateCode strin
 		&s.MarketTemperature, &s.AffordabilityIndex,
 		&s.AffordabilityBurden, &s.PriceToIncomeRatio,
 		&s.DataQualityScore, &s.LastUpdated,
+		&redfinJSON,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -594,28 +648,68 @@ func (r *MetroReader) GetCitySnapshot(ctx context.Context, city, stateCode strin
 		return nil, err
 	}
 
+	// Merge Redfin metro data: backfill NULLs and add Redfin-only fields
+	rf, rfDate := parseRedfinLatest(redfinJSON)
+	if rf != nil {
+		s.HasRedfinData = true
+		s.RedfinDate = rfDate
+
+		// Backfill city_market_cache NULLs with Redfin metro data
+		if s.InventoryCount == 0 && rf.Inventory > 0 {
+			s.InventoryCount = rf.Inventory
+		}
+		if s.MonthsOfSupply == 0 && rf.MonthsOfSupply > 0 {
+			s.MonthsOfSupply = rf.MonthsOfSupply
+		}
+		if s.MedianDaysOnMarket == 0 && rf.MedianDom > 0 {
+			s.MedianDaysOnMarket = rf.MedianDom
+		}
+		if s.HomesSold == 0 && rf.HomesSold > 0 {
+			s.HomesSold = rf.HomesSold
+		}
+
+		// Redfin-only competitive indicators (always set when available)
+		s.NewListings = rf.NewListings
+		s.MedianSalePrice = rf.MedianSalePrice
+		s.MedianSalePriceYoy = rf.MedianSalePriceYoy
+		s.RedfinListPrice = rf.MedianListPrice
+		s.RedfinListPriceYoy = rf.MedianListPriceYoy
+		s.MedianPpsf = rf.MedianPpsf
+		s.AvgSaleToList = rf.AvgSaleToList
+		s.SoldAboveList = rf.SoldAboveList
+		s.PriceDrops = rf.PriceDrops
+		s.OffMarketIn2Weeks = rf.OffMarketIn2Weeks
+	}
+
 	r.logger.Debug("fetched city snapshot",
 		"city", city, "state", stateCode,
 		"quality", s.DataQualityScore,
+		"hasRedfin", s.HasRedfinData,
 	)
 
 	return &s, nil
 }
 
-// GetNationalData returns national ZHVI/ZORI from metro_time_series (metro_region_id=0)
+// GetNationalData returns national ZHVI/ZORI and Redfin data from metro_time_series.
+// Queries both convention row (metro_region_id=0) and Zillow's national row (102001),
+// preferring the most complete row for Zillow data. Redfin national data is at metro_region_id=0.
 func (r *MetroReader) GetNationalData(ctx context.Context) (*NationalData, error) {
-	query := `
+	// Zillow row: prefer the row with more complete data
+	zillowQuery := `
 		SELECT
 			COALESCE(zhvi_data, '{}'::jsonb),
 			COALESCE(zori_data, '{}'::jsonb),
 			COALESCE(zhvf_data, '{}'::jsonb)
 		FROM metro_time_series
-		WHERE metro_region_id = 0
+		WHERE metro_region_id IN (0, 102001)
+		ORDER BY
+			(CASE WHEN zori_data IS NOT NULL THEN 1 ELSE 0 END) +
+			(CASE WHEN zhvi_data IS NOT NULL THEN 1 ELSE 0 END) DESC
 		LIMIT 1
 	`
 
 	var zhviJSON, zoriJSON, zhvfJSON []byte
-	err := r.db.QueryRow(ctx, query).Scan(&zhviJSON, &zoriJSON, &zhvfJSON)
+	err := r.db.QueryRow(ctx, zillowQuery).Scan(&zhviJSON, &zoriJSON, &zhvfJSON)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -632,10 +726,38 @@ func (r *MetroReader) GetNationalData(ctx context.Context) (*NationalData, error
 		data.GrossYield = (data.ZORI * 12 / data.ZHVI) * 100
 	}
 
+	// Redfin national data is at metro_region_id=0
+	redfinQuery := `
+		SELECT COALESCE(redfin_data, '{}'::jsonb)
+		FROM metro_time_series
+		WHERE metro_region_id = 0 AND redfin_data IS NOT NULL
+		LIMIT 1
+	`
+	var redfinJSON []byte
+	err = r.db.QueryRow(ctx, redfinQuery).Scan(&redfinJSON)
+	if err == nil {
+		rf, rfDate := parseRedfinLatest(redfinJSON)
+		if rf != nil {
+			data.HasRedfinData = true
+			data.RedfinDate = rfDate
+			data.Inventory = rf.Inventory
+			data.MonthsOfSupply = rf.MonthsOfSupply
+			data.MedianDom = rf.MedianDom
+			data.HomesSold = rf.HomesSold
+			data.NewListings = rf.NewListings
+			data.MedianSalePrice = rf.MedianSalePrice
+			data.AvgSaleToList = rf.AvgSaleToList
+			data.SoldAboveList = rf.SoldAboveList
+			data.PriceDrops = rf.PriceDrops
+			data.OffMarketIn2Weeks = rf.OffMarketIn2Weeks
+		}
+	}
+
 	r.logger.Debug("fetched national data",
 		"zhvi", data.ZHVI,
 		"zori", data.ZORI,
 		"grossYield", data.GrossYield,
+		"hasRedfin", data.HasRedfinData,
 	)
 
 	return data, nil
@@ -644,8 +766,8 @@ func (r *MetroReader) GetNationalData(ctx context.Context) (*NationalData, error
 // Helper functions for parsing JSONB time-series data
 
 // parseJSONBData parses JSONB bytes into a map of date -> value
-func parseJSONBData(data []byte) map[string]int64 {
-	result := make(map[string]int64)
+func parseJSONBData(data []byte) map[string]float64 {
+	result := make(map[string]float64)
 	if len(data) == 0 {
 		return result
 	}
@@ -684,4 +806,40 @@ func extractLatestValue(data []byte) (float64, time.Time) {
 	}
 
 	return float64(dataMap[latestKey]), date
+}
+
+// parseRedfinLatest extracts the most recent month's Redfin metrics from JSONB.
+// redfin_data format: {"2024-01": {homesSold: 245, inventory: 890, ...}, "2024-02": {...}}
+func parseRedfinLatest(data []byte) (*RedfinMetrics, time.Time) {
+	if len(data) == 0 {
+		return nil, time.Time{}
+	}
+
+	// First parse as map of date -> raw JSON
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, time.Time{}
+	}
+	if len(raw) == 0 {
+		return nil, time.Time{}
+	}
+
+	// Find latest date key
+	var latestKey string
+	for key := range raw {
+		if key > latestKey {
+			latestKey = key
+		}
+	}
+
+	var metrics RedfinMetrics
+	if err := json.Unmarshal(raw[latestKey], &metrics); err != nil {
+		return nil, time.Time{}
+	}
+
+	date, err := time.Parse("2006-01", latestKey)
+	if err != nil {
+		return &metrics, time.Now()
+	}
+	return &metrics, date
 }

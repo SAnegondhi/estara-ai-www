@@ -35,13 +35,24 @@ type DataPayload struct {
 	MortgageRate30      float64
 	YieldToMortgageSpread float64
 
-	// Supply/Demand (from city snapshot)
+	// Supply/Demand (from city snapshot + Redfin metro data)
 	InventoryCount     int
 	MonthsOfSupply     float64
 	MedianDaysOnMarket int
 	MarketTemperature  string
 	VacancyRate        float64
 	HomesSold          int
+	NewListings        int
+
+	// Competitive Indicators (from Redfin metro data)
+	MedianSalePrice    float64
+	MedianSalePriceYoy float64
+	MedianPpsf         float64
+	AvgSaleToList      float64
+	SoldAboveList      float64 // Fraction of homes sold above list price
+	PriceDrops         float64 // Fraction of listings with price drops
+	OffMarketIn2Weeks  float64 // Fraction going off-market within 2 weeks
+	HasRedfinData      bool
 
 	// Demographics (from economics aggregator)
 	Population            int64
@@ -66,11 +77,18 @@ type DataPayload struct {
 	HudFMR3BR           float64
 	HudFMR4BR           float64
 
-	// National benchmarks
+	// National benchmarks (Zillow + Redfin)
 	NationalZHVI           float64
 	NationalZORI           float64
 	NationalGrossYield     float64
 	NationalMortgage30     float64
+	NationalInventory      int
+	NationalMonthsOfSupply float64
+	NationalMedianDom      int
+	NationalHomesSold      int
+	NationalAvgSaleToList  float64
+	NationalSoldAboveList  float64
+	NationalPriceDrops     float64
 
 	// Data quality
 	TotalFields        int
@@ -110,7 +128,7 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 		City:           city,
 		State:          state,
 		DerivedMetrics: []string{"gross yield", "net yield range", "CAGRs", "price-to-income", "rent-to-income", "yield-to-mortgage spread"},
-		MissingData:    []string{"zip-level submarket data", "observed cap rates", "transaction volume"},
+		MissingData:    []string{"zip-level submarket data", "observed cap rates"},
 		LaggedData:     []string{},
 	}
 
@@ -213,11 +231,20 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 		p.NationalZHVI = nat.ZHVI
 		p.NationalZORI = nat.ZORI
 		p.NationalGrossYield = nat.GrossYield
+		if nat.HasRedfinData {
+			p.NationalInventory = nat.Inventory
+			p.NationalMonthsOfSupply = nat.MonthsOfSupply
+			p.NationalMedianDom = nat.MedianDom
+			p.NationalHomesSold = nat.HomesSold
+			p.NationalAvgSaleToList = nat.AvgSaleToList
+			p.NationalSoldAboveList = nat.SoldAboveList
+			p.NationalPriceDrops = nat.PriceDrops
+		}
 	}()
 
 	wg.Wait()
 
-	// Merge city snapshot data
+	// Merge city snapshot data (city_market_cache + Redfin metro backfill)
 	if snapshot != nil {
 		p.MedianHomePrice = int(snapshot.MedianHomePrice)
 		p.MedianRent = int(snapshot.MedianRent)
@@ -229,6 +256,7 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 		p.MarketTemperature = snapshot.MarketTemperature
 		p.VacancyRate = snapshot.VacancyRate
 		p.HomesSold = snapshot.HomesSold
+		p.NewListings = snapshot.NewListings
 		p.AffordabilityIndex = snapshot.AffordabilityIndex
 		p.AffordabilityBurden = snapshot.AffordabilityBurden
 		p.HudFMR0BR = snapshot.HudFMR0BR
@@ -236,6 +264,19 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 		p.HudFMR2BR = snapshot.HudFMR2BR
 		p.HudFMR3BR = snapshot.HudFMR3BR
 		p.HudFMR4BR = snapshot.HudFMR4BR
+
+		// Redfin competitive indicators
+		if snapshot.HasRedfinData {
+			p.HasRedfinData = true
+			p.MedianSalePrice = snapshot.MedianSalePrice
+			p.MedianSalePriceYoy = snapshot.MedianSalePriceYoy
+			p.MedianPpsf = snapshot.MedianPpsf
+			p.AvgSaleToList = snapshot.AvgSaleToList
+			p.SoldAboveList = snapshot.SoldAboveList
+			p.PriceDrops = snapshot.PriceDrops
+			p.OffMarketIn2Weeks = snapshot.OffMarketIn2Weeks
+			p.RealSources = append(p.RealSources, "Redfin")
+		}
 	}
 
 	// Merge economics data
@@ -313,14 +354,28 @@ func (b *DataPayloadBuilder) FormatAsXML(p *DataPayload) string {
 	sb.WriteString("  </HOUSING_MARKET>\n")
 
 	sb.WriteString("\n  <SUPPLY_DEMAND>\n")
-	writeXMLField(&sb, "inventory_count", fmtInt(p.InventoryCount), "Zillow/Redfin", "high", p.InventoryCount > 0)
-	writeXMLField(&sb, "months_of_supply", fmt.Sprintf("%.1f", p.MonthsOfSupply), "Zillow/Redfin", "high", p.MonthsOfSupply > 0)
-	writeXMLField(&sb, "median_days_on_market", fmtInt(p.MedianDaysOnMarket), "Zillow/Redfin", "high", p.MedianDaysOnMarket > 0)
-	writeXMLField(&sb, "market_temperature", p.MarketTemperature, "Zillow/Redfin", "high", p.MarketTemperature != "")
-	writeXMLField(&sb, "vacancy_rate", fmtPct(p.VacancyRate), "Zillow/Redfin", "medium", p.VacancyRate > 0)
-	writeXMLField(&sb, "homes_sold", fmtInt(p.HomesSold), "Zillow/Redfin", "high", p.HomesSold > 0)
+	writeXMLField(&sb, "inventory_count", fmtInt(p.InventoryCount), "Redfin", "high", p.InventoryCount > 0)
+	writeXMLField(&sb, "months_of_supply", fmt.Sprintf("%.1f", p.MonthsOfSupply), "Redfin", "high", p.MonthsOfSupply > 0)
+	writeXMLField(&sb, "median_days_on_market", fmtInt(p.MedianDaysOnMarket), "Redfin", "high", p.MedianDaysOnMarket > 0)
+	writeXMLField(&sb, "market_temperature", p.MarketTemperature, "Zillow Research", "high", p.MarketTemperature != "")
+	writeXMLField(&sb, "vacancy_rate", fmtPct(p.VacancyRate), "Zillow Research", "medium", p.VacancyRate > 0)
+	writeXMLField(&sb, "homes_sold", fmtInt(p.HomesSold), "Redfin", "high", p.HomesSold > 0)
+	writeXMLField(&sb, "new_listings", fmtInt(p.NewListings), "Redfin", "high", p.NewListings > 0)
 	sb.WriteString("    <building_permits>See TAX_REGULATORY_INSURANCE section below for web-sourced supply pipeline data</building_permits>\n")
 	sb.WriteString("  </SUPPLY_DEMAND>\n")
+
+	// Competitive indicators from Redfin
+	if p.HasRedfinData {
+		sb.WriteString("\n  <COMPETITIVE_INDICATORS>\n")
+		writeXMLField(&sb, "median_sale_price", fmtDollarF(p.MedianSalePrice), "Redfin", "high", p.MedianSalePrice > 0)
+		writeXMLField(&sb, "median_sale_price_yoy", fmtPct(p.MedianSalePriceYoy*100), "Redfin", "high", p.MedianSalePriceYoy != 0)
+		writeXMLField(&sb, "median_price_per_sqft", fmtDollarF(p.MedianPpsf), "Redfin", "high", p.MedianPpsf > 0)
+		writeXMLField(&sb, "avg_sale_to_list_ratio", fmt.Sprintf("%.1f%%", p.AvgSaleToList*100), "Redfin", "high", p.AvgSaleToList > 0)
+		writeXMLField(&sb, "sold_above_list_pct", fmt.Sprintf("%.1f%%", p.SoldAboveList*100), "Redfin", "high", p.SoldAboveList > 0)
+		writeXMLField(&sb, "price_drops_pct", fmt.Sprintf("%.1f%%", p.PriceDrops*100), "Redfin", "high", p.PriceDrops > 0)
+		writeXMLField(&sb, "off_market_in_2_weeks_pct", fmt.Sprintf("%.1f%%", p.OffMarketIn2Weeks*100), "Redfin", "high", p.OffMarketIn2Weeks > 0)
+		sb.WriteString("  </COMPETITIVE_INDICATORS>\n")
+	}
 
 	sb.WriteString("\n  <DEMOGRAPHICS>\n")
 	if p.DemographicLevel != "" {
@@ -358,6 +413,13 @@ func (b *DataPayloadBuilder) FormatAsXML(p *DataPayload) string {
 	writeXMLDerived(&sb, "national_gross_yield", fmtPct(p.NationalGrossYield), "(national_ZORI*12)/national_ZHVI", "medium", p.NationalGrossYield > 0)
 	writeXMLField(&sb, "national_unemployment", fmtPct(p.NationalUnemployment), "FRED", "high", p.NationalUnemployment > 0)
 	writeXMLField(&sb, "national_mortgage_30y", fmtPct(p.NationalMortgage30), "FRED", "high", p.NationalMortgage30 > 0)
+	writeXMLField(&sb, "national_inventory", fmtInt(p.NationalInventory), "Redfin (national)", "high", p.NationalInventory > 0)
+	writeXMLField(&sb, "national_months_of_supply", fmt.Sprintf("%.1f", p.NationalMonthsOfSupply), "Redfin (national)", "high", p.NationalMonthsOfSupply > 0)
+	writeXMLField(&sb, "national_median_dom", fmtInt(p.NationalMedianDom), "Redfin (national)", "high", p.NationalMedianDom > 0)
+	writeXMLField(&sb, "national_homes_sold", fmtInt(p.NationalHomesSold), "Redfin (national)", "high", p.NationalHomesSold > 0)
+	writeXMLField(&sb, "national_avg_sale_to_list", fmt.Sprintf("%.1f%%", p.NationalAvgSaleToList*100), "Redfin (national)", "high", p.NationalAvgSaleToList > 0)
+	writeXMLField(&sb, "national_sold_above_list", fmt.Sprintf("%.1f%%", p.NationalSoldAboveList*100), "Redfin (national)", "high", p.NationalSoldAboveList > 0)
+	writeXMLField(&sb, "national_price_drops", fmt.Sprintf("%.1f%%", p.NationalPriceDrops*100), "Redfin (national)", "high", p.NationalPriceDrops > 0)
 	sb.WriteString("  </NATIONAL_BENCHMARKS>\n")
 
 	// Data quality
@@ -412,6 +474,15 @@ func (b *DataPayloadBuilder) computeDataQuality(p *DataPayload) {
 		{"hud_fmr_2br", p.HudFMR2BR > 0},
 		{"national_zhvi", p.NationalZHVI > 0},
 		{"national_zori", p.NationalZORI > 0},
+		// Redfin competitive indicators
+		{"median_sale_price", p.MedianSalePrice > 0},
+		{"avg_sale_to_list", p.AvgSaleToList > 0},
+		{"sold_above_list", p.SoldAboveList > 0},
+		{"price_drops", p.PriceDrops > 0},
+		{"new_listings", p.NewListings > 0},
+		// National Redfin benchmarks
+		{"national_inventory", p.NationalInventory > 0},
+		{"national_months_of_supply", p.NationalMonthsOfSupply > 0},
 	}
 
 	p.TotalFields = len(checks)

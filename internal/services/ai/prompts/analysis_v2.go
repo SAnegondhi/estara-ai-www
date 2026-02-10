@@ -21,16 +21,17 @@ BANNED LANGUAGE:
 - Any superlative without supporting data: "best", "worst", "highest", "lowest" (unless compared to a specific benchmark)
 
 CONFIDENCE FRAMEWORK:
-- HIGH: Direct observation from authoritative source (Zillow, FRED, Census, BLS)
+- HIGH: Direct observation from authoritative source (Zillow, Redfin, FRED, Census, BLS)
 - MEDIUM: Derived calculation from high-confidence inputs (gross yield, CAGRs, spreads)
 - LOW: Estimated range or proxy (net yield range, market temperature interpretation)
 - FLAG: Web-researched data that could not be independently verified — user must confirm
 
 SOURCE FORMATTING:
-- When citing a data source, wrap the source name in backticks for visual distinction: ` + "`" + `Zillow ZHVI` + "`" + `, ` + "`" + `FRED` + "`" + `, ` + "`" + `Census ACS` + "`" + `, ` + "`" + `BLS` + "`" + `, ` + "`" + `HUD` + "`" + `
-- In tables, source column cells must use backticks: | ` + "`" + `Zillow ZHVI` + "`" + ` |
-- For web-sourced items, cite as: ` + "`" + `Source Name` + "`" + ` followed by the URL if available
-- For unverified items, cite as: ` + "`" + `Unverified` + "`" + ` — user should confirm
+- ONLY use backticks for data source names when citing them (e.g., ` + "`" + `Zillow ZHVI` + "`" + `, ` + "`" + `Redfin` + "`" + `, ` + "`" + `FRED` + "`" + `, ` + "`" + `Census ACS` + "`" + `, ` + "`" + `BLS` + "`" + `, ` + "`" + `HUD` + "`" + `)
+- Do NOT use backticks for any other purpose — not for emphasis, values, metrics, labels, or general text
+- In tables, Source column cells should use backticks: | ` + "`" + `Zillow ZHVI` + "`" + ` |
+- In prose, use backticks only when attributing data: "median rent of $1,601/mo (` + "`" + `Zillow ZORI` + "`" + `)"
+- For unverified items: "unverified — user should confirm" (no backticks)
 
 OUTPUT FORMAT: Produce a markdown report with these sections (in order). Use ## for section headers, ### for subsections, and markdown tables where specified.
 
@@ -40,7 +41,7 @@ Quantitative summary table:
 
 | Metric | Value | vs National | Source | Confidence |
 |--------|-------|-------------|--------|------------|
-(One row per key metric from DATA_PAYLOAD: home price, rent, gross yield, mortgage, unemployment, price CAGR, rent CAGR, vacancy)
+(One row per key metric from DATA_PAYLOAD: home price, rent, gross yield, mortgage, unemployment, price CAGR, rent CAGR, vacancy, inventory, months of supply, days on market)
 
 Below the table: 2-3 sentences contextualizing where this market sits relative to national benchmarks and what the numbers indicate about market cycle positioning.
 
@@ -54,7 +55,9 @@ MANDATORY section — do NOT skip or minimize.
 
 ## 3. Supply-Demand Dynamics
 
-Analyze using: inventory count, months of supply, days on market, market temperature, vacancy rate, homes sold.
+Analyze using ALL available metrics: inventory count, months of supply, days on market, market temperature, vacancy rate, homes sold, new listings.
+If COMPETITIVE_INDICATORS section is available, incorporate: sale-to-list ratio, sold above list %, price drops %, off-market-in-2-weeks % — these reveal buyer/seller dynamics beyond simple inventory counts.
+Compare local supply metrics to NATIONAL_BENCHMARKS (national inventory, months of supply, days on market, sale-to-list ratio).
 Characterize the supply-demand balance with specific numbers.
 If building permits data is N/A, note this gap and its implications for supply-side analysis.
 
@@ -62,7 +65,7 @@ If building permits data is N/A, note this gap and its implications for supply-s
 
 | Variable | Local Value | National Benchmark | Why It Matters | Data Certainty |
 |----------|-------------|-------------------|----------------|----------------|
-(Include: gross yield vs mortgage rate spread, price-to-income ratio, rent-to-income ratio, vacancy rate, price CAGR trend, unemployment differential, affordability index)
+(Include: gross yield vs mortgage rate spread, price-to-income ratio, rent-to-income ratio, vacancy rate, price CAGR trend, unemployment differential, affordability index, sale-to-list ratio, price drops %)
 
 ## 5. Underwriting Context
 

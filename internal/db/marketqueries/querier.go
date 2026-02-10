@@ -99,7 +99,7 @@ type Querier interface {
 	// ============================================================================
 	// COUNTY TIME SERIES UPSERT QUERIES (ADR-075)
 	// ============================================================================
-	// Upsert county Redfin data (keyed by county_region_id since county_fips may be null)
+	// Upsert county Redfin data (keyed by county_fips — canonical identifier)
 	UpsertCountyRedfin(ctx context.Context, arg UpsertCountyRedfinParams) error
 	// Upsert metro sales/DOM/heat/affordability metrics
 	UpsertMetroMetrics(ctx context.Context, arg UpsertMetroMetricsParams) error

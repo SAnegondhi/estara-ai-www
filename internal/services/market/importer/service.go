@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/estara-ai/www/internal/db/marketqueries"
@@ -500,7 +501,9 @@ func (s *Service) ImportRedfinData(ctx context.Context, level string) (*ImportRe
 			}
 			ent = entities[entityKey]
 		case "metro":
-			metroID := lookupMetro(record.Region, metroLookup)
+			// Redfin uses "City, ST metro area" — strip suffix for Zillow lookup
+			metroName := strings.TrimSuffix(record.Region, " metro area")
+			metroID := lookupMetro(metroName, metroLookup)
 			if metroID == 0 {
 				result.RecordsSkipped++
 				return nil
@@ -516,19 +519,19 @@ func (s *Service) ImportRedfinData(ctx context.Context, level string) (*ImportRe
 			}
 			ent = entities[entityKey]
 		case "county":
-			if record.Region == "" {
+			if record.Region == "" || record.TableID == "" {
 				result.RecordsSkipped++
 				return nil
 			}
 			regionID := countyRegionHash(record.Region, record.StateCode)
-			entityKey = fmt.Sprintf("county:%d", regionID)
+			entityKey = fmt.Sprintf("county:%s", record.TableID) // use Redfin table_id as canonical key
 			if _, ok := entities[entityKey]; !ok {
 				metroID := lookupMetro(record.Region, metroLookup)
 				entities[entityKey] = &redfinEntity{
 					regionID:  regionID,
 					name:      record.Region,
 					stateCode: record.StateCode,
-					fips:      record.RegionTypeID,
+					fips:      record.TableID, // Redfin table_id as county identifier
 					metroID:   metroID,
 					months:    make(map[string]json.RawMessage),
 				}
@@ -655,7 +658,7 @@ func (s *Service) ImportRedfinData(ctx context.Context, level string) (*ImportRe
 
 // ComputeNationalAggregates computes national-level data from state/metro data.
 func (s *Service) ComputeNationalAggregates(ctx context.Context) (*ImportResult, error) {
-	return computeNational(ctx, s.queries, s.logger)
+	return computeNational(ctx, s.marketDB, s.queries, s.logger)
 }
 
 // FullRefresh runs all import jobs in sequence.

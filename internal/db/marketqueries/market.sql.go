@@ -1047,8 +1047,8 @@ const UpsertCountyRedfin = `-- name: UpsertCountyRedfin :exec
 
 INSERT INTO county_time_series (county_region_id, county_fips, county_name, state_code, metro_region_id, redfin_data, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, NOW())
-ON CONFLICT (county_region_id) DO UPDATE SET
-    county_fips = COALESCE(EXCLUDED.county_fips, county_time_series.county_fips),
+ON CONFLICT (county_fips) DO UPDATE SET
+    county_region_id = EXCLUDED.county_region_id,
     county_name = EXCLUDED.county_name,
     state_code = EXCLUDED.state_code,
     metro_region_id = EXCLUDED.metro_region_id,
@@ -1068,7 +1068,7 @@ type UpsertCountyRedfinParams struct {
 // ============================================================================
 // COUNTY TIME SERIES UPSERT QUERIES (ADR-075)
 // ============================================================================
-// Upsert county Redfin data (keyed by county_region_id since county_fips may be null)
+// Upsert county Redfin data (keyed by county_fips — canonical identifier)
 func (q *Queries) UpsertCountyRedfin(ctx context.Context, arg UpsertCountyRedfinParams) error {
 	_, err := q.db.Exec(ctx, UpsertCountyRedfin,
 		arg.CountyRegionID,

@@ -15,6 +15,7 @@ type RedfinRecord struct {
 	Region       string
 	RegionType   string
 	RegionTypeID string
+	TableID      string // Redfin's per-entity unique ID (distinct from RegionTypeID which is a type constant)
 	State        string
 	StateCode    string
 	PropertyType string // "All Residential", "Single Family", "Condo/Co-op", etc.
@@ -146,6 +147,7 @@ func parseRedfinFields(fields []string, colIdx map[string]int) RedfinRecord {
 		Region:             get("region"),
 		RegionType:         get("region_type"),
 		RegionTypeID:       get("region_type_id"),
+		TableID:            get("table_id"),
 		State:              get("state"),
 		StateCode:          get("state_code"),
 		PropertyType:       get("property_type"),
