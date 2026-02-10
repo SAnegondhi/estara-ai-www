@@ -2795,7 +2795,8 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// DismissAnalysisJob dismisses/deletes an analysis job
+// DismissAnalysisJob deletes an analysis from all cache layers (L0 job queue, L1 Redis, L2 PostgreSQL).
+// This is a hard delete — the analysis is removed from history and cannot be recovered.
 func (h *Handler) DismissAnalysisJob(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user := middleware.GetUserFromContext(ctx)
@@ -2810,21 +2811,50 @@ func (h *Handler) DismissAnalysisJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try to delete from in-memory job queue
+	// L0: Remove from in-memory job queue if present (in-flight or recently completed)
 	job, err := h.jobQueue.GetJob(jobID)
 	if err == nil {
 		if job.UserID != user.UserID {
-			httputil.NotFound(w, "job not found")
+			httputil.NotFound(w, "analysis not found")
 			return
 		}
 		_ = h.jobQueue.Delete(jobID)
 	}
 
-	h.logger.Info("analysis job dismissed", "job_id", jobID, "user_id", user.UserID)
+	// L2 + L1: Look up analysis_cache row by ID to get the cache key, then purge
+	q := queries.New(h.db.Main)
+	cacheRow, err := q.GetCacheByID(ctx, jobID)
+	if err == nil {
+		// Verify ownership
+		if cacheRow.UserId != user.UserID {
+			httputil.NotFound(w, "analysis not found")
+			return
+		}
+
+		// L1: Delete from Redis
+		if h.redis != nil {
+			redisKey := "cache:" + cacheRow.UserId + ":" + cacheRow.Key
+			if delErr := h.redis.Delete(ctx, redisKey); delErr != nil {
+				h.logger.Warn("failed to delete analysis from L1 Redis", "key", cacheRow.Key, "error", delErr)
+			}
+		}
+
+		// L2: Delete from PostgreSQL
+		if delErr := q.DeleteCacheByUserAndKey(ctx, queries.DeleteCacheByUserAndKeyParams{
+			UserId: cacheRow.UserId,
+			Key:    cacheRow.Key,
+		}); delErr != nil {
+			h.logger.Warn("failed to delete analysis from L2 PostgreSQL", "key", cacheRow.Key, "error", delErr)
+		}
+
+		h.logger.Info("analysis deleted from cache", "id", jobID, "key", cacheRow.Key, "user_id", user.UserID)
+	} else {
+		h.logger.Info("analysis not found in cache (job queue only)", "id", jobID, "user_id", user.UserID)
+	}
 
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
-		"message": "job dismissed",
+		"message": "analysis deleted",
 	})
 }
 
