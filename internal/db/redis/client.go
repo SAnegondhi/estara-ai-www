@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -77,7 +78,11 @@ func (c *Client) Health(ctx context.Context) error {
 
 // SetJSON stores a value as JSON with optional TTL
 func (c *Client) SetJSON(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
-	return c.Set(ctx, key, value, ttl).Err()
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("failed to marshal value for Redis: %w", err)
+	}
+	return c.Set(ctx, key, data, ttl).Err()
 }
 
 // GetJSON retrieves a JSON value

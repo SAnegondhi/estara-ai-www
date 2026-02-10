@@ -363,6 +363,8 @@ type Querier interface {
 	UpdateUserUpdatedAt(ctx context.Context, id string) error
 	// Inserts or updates AI scoring cache entry
 	UpsertAIScoringCache(ctx context.Context, arg UpsertAIScoringCacheParams) error
+	// ADR-074: Upsert analysis report with fullReport column for V2 markdown reports
+	UpsertAnalysisReport(ctx context.Context, arg UpsertAnalysisReportParams) (AnalysisCache, error)
 	UpsertCache(ctx context.Context, arg UpsertCacheParams) (AnalysisCache, error)
 	UpsertInvoice(ctx context.Context, arg UpsertInvoiceParams) (Invoice, error)
 	// Inserts or updates a property in the cache

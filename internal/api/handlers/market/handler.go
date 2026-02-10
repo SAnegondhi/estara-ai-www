@@ -6,9 +6,12 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/estara-ai/www/internal/config"
+	"github.com/estara-ai/www/internal/db/marketqueries"
+	"github.com/estara-ai/www/internal/db/postgres"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
 	"github.com/estara-ai/www/internal/services/market/bls"
 	"github.com/estara-ai/www/internal/services/market/census"
@@ -21,6 +24,7 @@ import (
 // Handler handles market data HTTP requests
 type Handler struct {
 	cfg                  *config.Config
+	marketDB             *postgres.Pool         // Market database for sqlc queries (ADR-073)
 	aggregator           *aggregator.Aggregator
 	trendsService        *trends.Service
 	fredService          *fred.Service          // Centralized FRED service with smart caching
@@ -66,6 +70,11 @@ func (h *Handler) SetBLSService(svc *bls.Service) {
 // SetEconomicsAggregator sets the economics aggregator (for dependency injection)
 func (h *Handler) SetEconomicsAggregator(agg *economics.Aggregator) {
 	h.economicsAggregator = agg
+}
+
+// SetMarketDB sets the market database pool for sqlc queries (ADR-073)
+func (h *Handler) SetMarketDB(pool *postgres.Pool) {
+	h.marketDB = pool
 }
 
 // MortgageRateResponse represents the mortgage rate response
@@ -278,17 +287,66 @@ type TrendsSearchResult struct {
 // SearchMetros handles metro search for market trends
 // GET /api/market-trends/search?q=austin&limit=10
 func (h *Handler) SearchMetros(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
 	query := r.URL.Query().Get("q")
 	if query == "" || len(query) < 2 {
 		httputil.BadRequest(w, "Search query must be at least 2 characters")
 		return
 	}
 
-	// TODO: Implement metro search against market data database
-	// For now, return empty results
+	limit := 10
+	if limitParam := r.URL.Query().Get("limit"); limitParam != "" {
+		if l, err := strconv.Atoi(limitParam); err == nil && l > 0 && l <= 50 {
+			limit = l
+		}
+	}
+
+	if h.marketDB == nil {
+		httputil.JSON(w, http.StatusOK, map[string]interface{}{
+			"metros": []TrendsSearchResult{},
+			"total":  0,
+		})
+		return
+	}
+
+	mq := marketqueries.New(h.marketDB)
+	rows, err := mq.SearchMetros(ctx, marketqueries.SearchMetrosParams{
+		MetroName: "%" + query + "%",
+		Limit:     int32(limit),
+	})
+	if err != nil {
+		h.logger.Error("failed to search metros", "error", err, "query", query)
+		httputil.Error(w, http.StatusInternalServerError, "Failed to search metros")
+		return
+	}
+
+	results := make([]TrendsSearchResult, 0, len(rows))
+	for _, row := range rows {
+		// Create display name: extract primary city from hyphenated metro names
+		displayName := row.MetroName
+		if idx := strings.Index(displayName, "-"); idx > 0 {
+			displayName = strings.TrimSpace(displayName[:idx])
+		}
+
+		var stateName *string
+		if row.StateName.Valid {
+			stateName = &row.StateName.String
+		}
+
+		results = append(results, TrendsSearchResult{
+			Name:          displayName,
+			CanonicalName: row.MetroName,
+			StateName:     stateName,
+		})
+	}
+
+	// Set cache header for browser caching (1 hour)
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{
-		"metros": []TrendsSearchResult{},
-		"total":  0,
+		"metros": results,
+		"total":  len(results),
 	})
 }
 
@@ -323,9 +381,14 @@ func (h *Handler) GetHistoricalTrends(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Calculate statistical metrics (ADR-073)
+	calc := trends.NewCalculator()
+	metrics := calc.CalculateAllMetrics(data)
+
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"data":    data,
+		"success":           true,
+		"data":              data,
+		"calculatedMetrics": metrics,
 	})
 }
 
@@ -341,7 +404,7 @@ type SynthesizeTrendsRequest struct {
 // SynthesizeTrends generates AI synthesis for market trends
 // POST /api/market-trends/synthesize
 func (h *Handler) SynthesizeTrends(w http.ResponseWriter, r *http.Request) {
-	// ctx := r.Context() // Will be used when full AI synthesis is implemented
+	ctx := r.Context()
 
 	var req SynthesizeTrendsRequest
 	if err := httputil.DecodeJSON(r, &req); err != nil {
@@ -349,24 +412,161 @@ func (h *Handler) SynthesizeTrends(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Metro == "" || req.CalculatedMetrics == nil {
-		httputil.BadRequest(w, "metro and calculatedMetrics are required")
+	if req.Metro == "" {
+		httputil.BadRequest(w, "metro is required")
 		return
 	}
 
-	// TODO: Implement full AI synthesis with Claude
-	// For now, return a placeholder response
+	if h.trendsService == nil {
+		httputil.Error(w, http.StatusServiceUnavailable, "Trends service not available")
+		return
+	}
+
+	// Fetch historical data and run AI synthesis via the trends service
+	historical, err := h.trendsService.GetHistoricalData(ctx, req.Metro, 5)
+	if err != nil {
+		h.logger.Error("failed to get historical data for synthesis", "error", err, "metro", req.Metro)
+		httputil.Error(w, http.StatusInternalServerError, "Failed to fetch historical data")
+		return
+	}
+
+	yoyChanges := h.trendsService.CalculateYoYChanges(historical)
+	synthesis, err := h.trendsService.SynthesizeTrends(ctx, historical, yoyChanges, req.Metro)
+	if err != nil {
+		h.logger.Error("failed to synthesize trends", "error", err, "metro", req.Metro)
+		httputil.Error(w, http.StatusInternalServerError, "Failed to generate synthesis")
+		return
+	}
+
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"cached":  false,
 		"data": map[string]interface{}{
-			"summary":        "Market trends synthesis for " + req.Metro,
-			"insights":       []string{},
-			"recommendation": "Analysis pending full implementation",
-			"riskLevel":      "medium",
-			"confidence":     0.5,
-			"generatedAt":    time.Now().Format(time.RFC3339),
+			"summary":          synthesis.Summary,
+			"keyInsights":      synthesis.KeyInsights,
+			"marketOutlook":    synthesis.MarketOutlook,
+			"investmentTiming": synthesis.InvestmentTiming,
+			"riskFactors":      synthesis.RiskFactors,
+			"confidence":       synthesis.Confidence,
+			"generatedAt":      time.Now().Format(time.RFC3339),
 		},
+	})
+}
+
+// =============================================================================
+// Location Autocomplete (ADR-073: Market Intelligence)
+// =============================================================================
+
+// AutocompleteResult represents a single autocomplete suggestion
+type AutocompleteResult struct {
+	Display       string `json:"display"`
+	Canonical     string `json:"canonical"`
+	Type          string `json:"type"` // "city" or "metro"
+	State         string `json:"state,omitempty"`
+	MetroName     string `json:"metroName,omitempty"`
+	HasMarketData bool   `json:"hasMarketData"`
+	HasRentalData bool   `json:"hasRentalData"`
+	Population    int    `json:"population,omitempty"`
+}
+
+// SearchLocations handles location autocomplete for market trends
+// GET /api/market-trends/location-autocomplete?q=aus&type=city,metro&limit=10
+func (h *Handler) SearchLocations(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	query := r.URL.Query().Get("q")
+	if query == "" || len(query) < 2 {
+		httputil.BadRequest(w, "Search query must be at least 2 characters")
+		return
+	}
+
+	limit := 10
+	if limitParam := r.URL.Query().Get("limit"); limitParam != "" {
+		if l, err := strconv.Atoi(limitParam); err == nil && l > 0 && l <= 20 {
+			limit = l
+		}
+	}
+
+	// Determine which types to search
+	typeParam := r.URL.Query().Get("type")
+	searchCities := true
+	searchMetros := true
+	if typeParam == "city" {
+		searchMetros = false
+	} else if typeParam == "metro" {
+		searchCities = false
+	}
+
+	if h.marketDB == nil {
+		httputil.JSON(w, http.StatusOK, map[string]interface{}{
+			"suggestions": []AutocompleteResult{},
+		})
+		return
+	}
+
+	mq := marketqueries.New(h.marketDB)
+	results := make([]AutocompleteResult, 0)
+
+	// Search metros
+	if searchMetros {
+		metros, err := mq.SearchMetros(ctx, marketqueries.SearchMetrosParams{
+			MetroName: "%" + query + "%",
+			Limit:     int32(limit),
+		})
+		if err != nil {
+			h.logger.Warn("metro search failed", "error", err)
+		} else {
+			for _, m := range metros {
+				display := m.MetroName
+				if idx := strings.Index(display, "-"); idx > 0 {
+					display = strings.TrimSpace(display[:idx])
+				}
+				state := ""
+				if m.StateName.Valid {
+					state = m.StateName.String
+				}
+				results = append(results, AutocompleteResult{
+					Display:       display,
+					Canonical:     m.MetroName,
+					Type:          "metro",
+					State:         state,
+					HasMarketData: true,
+					HasRentalData: true,
+				})
+			}
+		}
+	}
+
+	// Search cities
+	if searchCities {
+		cities, err := mq.SearchCities(ctx, marketqueries.SearchCitiesParams{
+			City:  "%" + query + "%",
+			Limit: int32(limit),
+		})
+		if err != nil {
+			h.logger.Warn("city search failed", "error", err)
+		} else {
+			for _, c := range cities {
+				display := fmt.Sprintf("%s, %s", c.City, c.State)
+				results = append(results, AutocompleteResult{
+					Display:       display,
+					Canonical:     display,
+					Type:          "city",
+					State:         c.State,
+					MetroName:     c.MetroName,
+					HasMarketData: c.HasMarketData,
+					HasRentalData: c.HasRentalData,
+					Population:    int(c.Population),
+				})
+			}
+		}
+	}
+
+	// Set cache header
+	w.Header().Set("Cache-Control", "public, max-age=600") // 10 minutes
+
+	httputil.JSON(w, http.StatusOK, map[string]interface{}{
+		"suggestions": results,
 	})
 }
 

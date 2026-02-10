@@ -1,5 +1,7 @@
 package prompts
 
+import "math"
+
 // EvaluationChatSystemPrompt is the system prompt for the evaluation chat agent
 const EvaluationChatSystemPrompt = `You are Estara's Property Evaluation Analyst, an AI assistant helping users evaluate investment properties. Your role is to provide detailed, data-driven analysis while maintaining strict compliance with SEC regulations.
 
@@ -32,22 +34,26 @@ Narrative: <explanation>
 USE WHEN: User explicitly asks for stress test, downside analysis, "what if" scenarios, or risk assessment under adverse conditions. Do NOT include stress tests for general overview, metrics, or cash flow questions.
 
 STRESS TEST CALCULATION GUIDANCE:
-For each scenario, calculate realistic impacts using these assumptions:
-- Default financing: 80% LTV, 30-year fixed mortgage
-- Current mortgage rate: Use market rate from context, or assume 7%
-- Use the <monthly_cash_flow> from each property's operating_expenses as the baseline
+Each property's context includes <financing> data with pre-computed values. USE THESE VALUES directly.
 
-Scenario-specific calculations:
-- mild_recession: ValueImpact -10%, RentImpact -5%, CashFlowImpact = monthly_cash_flow * -0.05
-- severe_recession: ValueImpact -20%, RentImpact -15%, CashFlowImpact = monthly_cash_flow * -0.15
-- interest_rate_shock: ValueImpact 0%, RentImpact 0%, CashFlowImpact = increased monthly payment
-  * Calculate: For +200bps rate increase, recalculate monthly P&I at new rate
-  * Example: $200K property at 80% LTV ($160K loan): 7% vs 9% = ~$180/mo increase
-- local_downturn: ValueImpact -15%, RentImpact -10%, CashFlowImpact = monthly_cash_flow * -0.10
+Key financing fields available per property:
+- <monthly_pi> = current monthly P&I payment
+- <monthly_cash_flow_after_financing> = monthly cash flow after debt service
+- <monthly_pi_at_9pct> = what the P&I would be if rates rose to 9%
+- <monthly_cash_flow> = monthly NOI (before financing)
 
-IMPORTANT: Always provide non-zero values for CashFlowImpact based on the property's
-<monthly_cash_flow>. Calculate the dollar amount impact, not just the percentage.
-Example: If monthly_cash_flow is $500/mo and RentImpact is -10%, CashFlowImpact = -$50/mo.
+Scenario-specific calculations (use numeric values only, no $ or % symbols in the field values):
+- mild_recession: ValueImpact -10, RentImpact -5, CashFlowImpact = monthly_cash_flow_after_financing * 0.15 (as negative number)
+- severe_recession: ValueImpact -20, RentImpact -15, CashFlowImpact = monthly_cash_flow_after_financing * 0.35 (as negative number)
+- interest_rate_shock: ValueImpact 0 (rates don't directly change property values), RentImpact 0, CashFlowImpact = monthly_pi_at_9pct - monthly_pi (as negative number, this is the increased payment)
+- local_downturn: ValueImpact -15, RentImpact -10, CashFlowImpact = monthly_cash_flow_after_financing * 0.25 (as negative number)
+
+CRITICAL RULES FOR STRESS TEST VALUES:
+1. ValueImpact and RentImpact are percentages as plain numbers: e.g., -15 (NOT -15%, NOT -$15)
+2. CashFlowImpact is a dollar amount as a plain number: e.g., -350 (NOT -$350, NOT -$350/mo)
+3. ALL scenarios MUST have non-zero CashFlowImpact. Use the financing data to calculate realistic amounts.
+4. For interest_rate_shock: CashFlowImpact = monthly_pi_at_9pct minus monthly_pi. This should be a significant number (typically $100-$400/mo for most properties).
+5. If multiple properties, report the AGGREGATE or AVERAGE impact across all properties.
 
 [METRICS]
 | Metric | Value | Rating |
@@ -237,8 +243,19 @@ func BuildPropertyContext(properties []PropertyContext) string {
 			result += "      <expense_ratio>" + formatFloat(exp.ExpenseRatio) + "% of rent</expense_ratio>\n"
 			result += "      <noi>$" + formatFloat(exp.NOI) + "/year</noi>\n"
 			result += "      <monthly_cash_flow>$" + formatFloat(exp.MonthlyNOI) + "/month</monthly_cash_flow>\n"
-			result += "      <calculated_cap_rate>" + formatFloat(exp.CapRate) + "%</calculated_cap_rate>\n"
 			result += "    </operating_expenses>\n"
+			// Include financing estimates for stress test calculations
+			if exp.LoanAmount > 0 {
+				result += "    <financing>\n"
+				result += "      <down_payment>$" + formatFloat(exp.DownPayment) + "</down_payment>\n"
+				result += "      <loan_amount>$" + formatFloat(exp.LoanAmount) + "</loan_amount>\n"
+				result += "      <ltv>" + formatFloat(exp.LTV*100) + "%</ltv>\n"
+				result += "      <interest_rate>" + formatFloat(exp.InterestRate) + "%</interest_rate>\n"
+				result += "      <monthly_pi>$" + formatFloat(exp.MonthlyPI) + "/month</monthly_pi>\n"
+				result += "      <monthly_cash_flow_after_financing>$" + formatFloat(exp.MonthlyCF) + "/month</monthly_cash_flow_after_financing>\n"
+				result += "      <monthly_pi_at_9pct>$" + formatFloat(exp.MonthlyPIAt9) + "/month (if rates rise to 9%)</monthly_pi_at_9pct>\n"
+				result += "    </financing>\n"
+			}
 		}
 		result += "  </property>\n"
 	}
@@ -279,6 +296,15 @@ type PropertyExpenses struct {
 	NOI              float64 `json:"noi"`              // Net Operating Income (annual)
 	MonthlyNOI       float64 `json:"monthlyNOI"`       // Monthly NOI (pre-financing cash flow)
 	CapRate          float64 `json:"capRate"`          // Calculated cap rate
+
+	// Financing estimates (computed from price + assumptions)
+	LoanAmount    float64 `json:"loanAmount"`    // Loan = price * LTV
+	InterestRate  float64 `json:"interestRate"`  // Assumed current rate (e.g., 7.0)
+	MonthlyPI     float64 `json:"monthlyPI"`     // Monthly principal & interest payment
+	MonthlyCF     float64 `json:"monthlyCF"`     // Monthly cash flow after financing = MonthlyNOI - MonthlyPI
+	DownPayment   float64 `json:"downPayment"`   // Down payment = price * (1 - LTV)
+	LTV           float64 `json:"ltv"`           // Loan-to-value ratio (e.g., 0.80)
+	MonthlyPIAt9  float64 `json:"monthlyPIAt9"`  // Monthly P&I at 9% (for rate shock reference)
 }
 
 // BuildPortfolioContext creates XML-formatted portfolio context
@@ -357,6 +383,40 @@ type StressTestParams struct {
 	CapRateExpansion   float64 // 0-400 bps
 	InterestRateChange float64 // -200 to +300 bps
 	AppreciationChange float64 // -30% to +10%
+}
+
+// CalculateMonthlyPI computes monthly principal & interest payment
+// Formula: L * [c(1+c)^n / ((1+c)^n - 1)]
+// where L = loan amount, c = monthly rate, n = number of payments
+func CalculateMonthlyPI(loanAmount, annualRate float64, termYears int) float64 {
+	if loanAmount <= 0 || annualRate <= 0 {
+		return 0
+	}
+	c := annualRate / 100.0 / 12.0 // monthly rate
+	n := float64(termYears * 12)   // total payments
+	pow := math.Pow(1+c, n)
+	return loanAmount * (c * pow / (pow - 1))
+}
+
+// ComputeFinancing populates financing fields on PropertyExpenses
+// Assumes 80% LTV, 30-year fixed, and the given mortgage rate
+func ComputeFinancing(exp *PropertyExpenses, price int, mortgageRate float64) {
+	if price <= 0 || mortgageRate <= 0 {
+		return
+	}
+	ltv := 0.80
+	loanAmount := float64(price) * ltv
+	downPayment := float64(price) - loanAmount
+	monthlyPI := CalculateMonthlyPI(loanAmount, mortgageRate, 30)
+	monthlyPIAt9 := CalculateMonthlyPI(loanAmount, 9.0, 30)
+
+	exp.LTV = ltv
+	exp.LoanAmount = loanAmount
+	exp.DownPayment = downPayment
+	exp.InterestRate = mortgageRate
+	exp.MonthlyPI = math.Round(monthlyPI*100) / 100
+	exp.MonthlyPIAt9 = math.Round(monthlyPIAt9*100) / 100
+	exp.MonthlyCF = math.Round((exp.MonthlyNOI-monthlyPI)*100) / 100
 }
 
 // Helper function to join strings

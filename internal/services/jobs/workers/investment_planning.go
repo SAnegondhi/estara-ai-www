@@ -183,17 +183,19 @@ func (w *InvestmentPlanningWorker) Process(
 	}
 	result.UserAssumptions = userAssumptions
 
-	// ADR-063: Generate all 3 scenario projections (base, optimistic, pessimistic)
-	// This is the single source of truth - client should NOT recalculate
+	// ADR-063: Generate all 3 scenario projections using unified cohort engine
 	w.reportProgress(progress, job.ID, 87, "Generating scenario projections")
-	scenarioYears := 5 // Standard 5-year projections for scenario comparison
-	if projectionYears < scenarioYears {
-		scenarioYears = projectionYears
+	scenarioYears := min(5, projectionYears)
+	// Build market lookup map from slice for the unified engine
+	scenarioMarketLookup := make(map[string]*investment.LocationMarketAnalysis, len(result.MarketQuality))
+	for i := range result.MarketQuality {
+		key := strings.ToLower(result.MarketQuality[i].Location)
+		scenarioMarketLookup[key] = &result.MarketQuality[i]
 	}
-	result.ScenarioProjections = w.calculator.CalculateAllScenarios(
+	result.ScenarioProjections = w.reinvestmentModeler.ProjectScenarios(
 		result.SelectedProperties,
 		scenarioYears,
-		result.MarketQuality,
+		scenarioMarketLookup,
 		userAssumptions,
 	)
 
@@ -205,7 +207,7 @@ func (w *InvestmentPlanningWorker) Process(
 		if diff < 0 {
 			diff = -diff
 		}
-		if diff > 0.01 { // More than 0.01% difference is suspicious
+		if diff > 0.5 { // More than 0.5% difference is suspicious (cohort engine uses per-property expense calc)
 			w.logger.Warn("CoC DISCREPANCY DETECTED between Metrics and Projection Year 1",
 				"metricsAvgCashOnCash", metricsCoC,
 				"projectionYear1CashOnCash", projectionCoC,
@@ -305,7 +307,7 @@ func (w *InvestmentPlanningWorker) processSearchMode(
 		"locations", params.Locations,
 	)
 
-	// Fetch existing portfolio if user has one (40%)
+	// Fetch existing portfolio (40%)
 	w.reportProgress(progress, job.ID, 40, "Analyzing existing portfolio")
 	existingPortfolio, err := w.fetchExistingPortfolio(ctx, job.UserID)
 	if err != nil {
@@ -313,7 +315,14 @@ func (w *InvestmentPlanningWorker) processSearchMode(
 	}
 	params.ExistingPortfolio = existingPortfolio
 
-	// Optimize portfolio (70%)
+	// Score and rank properties (45%)
+	w.reportProgress(progress, job.ID, 45, fmt.Sprintf("Scoring %d properties", len(properties)))
+
+	// Optimize portfolio (50-75%)
+	// Start synthetic progress ticker to keep the UI moving during optimization
+	optimDone := make(chan struct{})
+	go w.syntheticProgress(progress, job.ID, 52, 73, 2*time.Second, optimizationMessages, optimDone)
+
 	var result *investment.InvestmentPlanningResult
 
 	if len(params.YearlyBudgets) > 0 {
@@ -324,9 +333,15 @@ func (w *InvestmentPlanningWorker) processSearchMode(
 		result, err = w.runSingleYearOptimization(ctx, params.InvestmentPlanningParams, properties, mortgageRate)
 	}
 
+	close(optimDone) // Stop synthetic ticks
+
 	if err != nil {
 		return nil, fmt.Errorf("optimization failed: %w", err)
 	}
+
+	// Post-optimization progress (75%)
+	w.reportProgress(progress, job.ID, 75,
+		fmt.Sprintf("Selected %d optimal properties", len(result.SelectedProperties)))
 
 	return result, nil
 }
@@ -837,10 +852,18 @@ func (w *InvestmentPlanningWorker) searchProperties(
 		}
 	}
 
+	// Progress range for property search: 20% to 38%
+	// Each location gets an equal slice of this range, with sub-steps within each location
+	searchStart := 20.0
+	searchEnd := 38.0
+	searchRange := searchEnd - searchStart
+
 	for i, location := range locations {
-		// Update progress
-		pct := float64(20 + (i*10)/len(locations))
-		w.reportProgress(progress, jobID, pct, fmt.Sprintf("Searching in %s", location))
+		// Per-location progress: searching starts at locationBase, results at locationBase + half-step
+		locationBase := searchStart + (float64(i)/float64(len(locations)))*searchRange
+		locationDone := searchStart + (float64(i+1)/float64(len(locations)))*searchRange
+
+		w.reportProgress(progress, jobID, locationBase, fmt.Sprintf("Searching in %s", location))
 
 		// Calculate max price based on budget and down payment
 		maxPrice := int(float64(params.Budget) / params.DownPaymentPct)
@@ -865,6 +888,7 @@ func (w *InvestmentPlanningWorker) searchProperties(
 				"location", location,
 				"error", err,
 			)
+			w.reportProgress(progress, jobID, locationDone, fmt.Sprintf("No results in %s", location))
 			continue
 		}
 
@@ -897,6 +921,9 @@ func (w *InvestmentPlanningWorker) searchProperties(
 				Longitude:     r.Longitude,
 			})
 		}
+
+		w.reportProgress(progress, jobID, locationDone,
+			fmt.Sprintf("Found %d properties in %s", len(results.Properties), location))
 	}
 
 	return allProperties, nil
@@ -948,6 +975,7 @@ func (w *InvestmentPlanningWorker) runSingleYearOptimization(
 		MarketQuality:           optResult.MarketQuality,
 		Concentration:           optResult.Concentration,
 		Allocations:             optResult.Allocations,
+		AllocationRationale:     optResult.AllocationRationale,
 		Recommendations:         optResult.Recommendations,
 		DiversificationAnalysis: optResult.DiversificationAnalysis,
 		RiskAnalysis:            optResult.RiskAnalysis,
@@ -1071,6 +1099,49 @@ func (w *InvestmentPlanningWorker) cacheResult(
 
 	// Use SetInvestmentPlan to store with location and metricsData
 	return w.cache.SetInvestmentPlan(ctx, userID, cacheKey, result, opts, 24*time.Hour)
+}
+
+// optimizationMessages are shown during the optimization phase synthetic ticks
+var optimizationMessages = []string{
+	"Evaluating property combinations",
+	"Analyzing cash flow potential",
+	"Scoring risk-adjusted returns",
+	"Optimizing portfolio allocation",
+	"Checking diversification balance",
+	"Comparing investment strategies",
+	"Ranking property selections",
+	"Finalizing optimal portfolio",
+}
+
+// syntheticProgress sends periodic progress events between startPct and endPct
+// to keep the UI responsive during long-running operations. Stops when done is closed.
+func (w *InvestmentPlanningWorker) syntheticProgress(
+	progress chan<- queue.ProgressEvent,
+	jobID string,
+	startPct, endPct float64,
+	interval time.Duration,
+	messages []string,
+	done <-chan struct{},
+) {
+	pctRange := endPct - startPct
+	maxSteps := len(messages)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	step := 0
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			if step >= maxSteps {
+				return
+			}
+			pct := startPct + (float64(step+1)/float64(maxSteps))*pctRange
+			w.reportProgress(progress, jobID, pct, messages[step])
+			step++
+		}
+	}
 }
 
 // reportProgress sends a progress event

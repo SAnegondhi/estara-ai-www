@@ -190,6 +190,53 @@ func (c *HybridCache) SetInvestmentPlan(ctx context.Context, userID, key string,
 	return nil
 }
 
+// AnalysisReportCacheOptions contains fields for V2 analysis report caching (ADR-074)
+type AnalysisReportCacheOptions struct {
+	Location   string // e.g., "Austin, TX"
+	FullReport string // Markdown report content
+}
+
+// SetAnalysisReport stores a V2 analysis report with fullReport column (ADR-074)
+func (c *HybridCache) SetAnalysisReport(ctx context.Context, userID, key string, value interface{}, opts AnalysisReportCacheOptions, ttl time.Duration) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+
+	fullKey := c.buildKey(userID, key)
+	expiresAt := time.Now().Add(ttl)
+
+	// L1: Store in Redis
+	if c.redis != nil {
+		if err := c.redis.Set(ctx, fullKey, data, ttl).Err(); err != nil {
+			c.logger.Warn("failed to set L1 cache", "key", key, "error", err)
+		}
+	}
+
+	// L2: Store in PostgreSQL with fullReport column
+	c.logger.Info("storing V2 report in L2", "key", key, "userId", userID, "location", opts.Location, "report_len", len(opts.FullReport))
+	_, err = c.queries.UpsertAnalysisReport(ctx, queries.UpsertAnalysisReportParams{
+		ID:            uuid.New().String(),
+		Key:           key,
+		UserId:        userID,
+		Location:      opts.Location,
+		Feature:       "market_analysis_v2",
+		Content:       string(data),
+		FullReport:    pgtype.Text{String: opts.FullReport, Valid: opts.FullReport != ""},
+		MetricsData:   nil,
+		NarrativeData: nil,
+		Metadata:      json.RawMessage("{}"),
+		ExpiresAt:     pgtype.Timestamp{Time: expiresAt, Valid: true},
+	})
+	if err != nil {
+		c.logger.Error("failed to set L2 analysis report cache", "key", key, "userId", userID, "error", err)
+		return err
+	}
+
+	c.logger.Info("V2 report cached in L2", "key", key, "location", opts.Location)
+	return nil
+}
+
 // Delete removes a value from both cache layers
 func (c *HybridCache) Delete(ctx context.Context, userID, key string) error {
 	fullKey := c.buildKey(userID, key)

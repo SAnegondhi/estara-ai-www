@@ -88,6 +88,26 @@ DELETE FROM analysis_cache WHERE feature = $1;
 -- name: DeleteCacheOlderThan :execrows
 DELETE FROM analysis_cache WHERE "createdAt" < $1;
 
+-- name: UpsertAnalysisReport :one
+-- ADR-074: Upsert analysis report with fullReport column for V2 markdown reports
+INSERT INTO analysis_cache (
+    id, key, "userId", location, feature, content, "fullReport",
+    "metricsData", "narrativeData", metadata,
+    "expiresAt", "createdAt", "lastAccessedAt"
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW()
+)
+ON CONFLICT (key) DO UPDATE SET
+    content = EXCLUDED.content,
+    "fullReport" = EXCLUDED."fullReport",
+    feature = EXCLUDED.feature,
+    "metricsData" = EXCLUDED."metricsData",
+    "narrativeData" = EXCLUDED."narrativeData",
+    metadata = EXCLUDED.metadata,
+    "expiresAt" = EXCLUDED."expiresAt",
+    "lastAccessedAt" = NOW()
+RETURNING *;
+
 -- name: ListCacheByLocation :many
 SELECT * FROM analysis_cache
 WHERE location = $1

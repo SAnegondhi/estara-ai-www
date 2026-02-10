@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -96,6 +97,7 @@ func (h *Handler) GenerateInvestmentPlanPDF(w http.ResponseWriter, r *http.Reque
 
 	var req pdf.InvestmentPlanPDFRequest
 	if err := httputil.DecodeJSON(r, &req); err != nil {
+		slog.Error("investment-plan PDF: failed to decode body", "error", err)
 		httputil.BadRequest(w, "invalid request body")
 		return
 	}
@@ -103,6 +105,14 @@ func (h *Handler) GenerateInvestmentPlanPDF(w http.ResponseWriter, r *http.Reque
 		httputil.BadRequest(w, "missing portfolio data")
 		return
 	}
+
+	slog.Info("investment-plan PDF handler",
+		"properties", len(req.Portfolio.SelectedProperties),
+		"hasCriteria", req.Criteria != nil,
+		"hasScenarioProjections", req.ScenarioProjections != nil,
+		"hasReinvestment", req.ReinvestmentAnalysis != nil,
+		"insightCount", len(req.Insights),
+	)
 
 	req.User = &pdf.PDFUser{
 		Email:     claims.Email,
@@ -112,6 +122,7 @@ func (h *Handler) GenerateInvestmentPlanPDF(w http.ResponseWriter, r *http.Reque
 
 	pdfBytes, err := pdf.BuildInvestmentPlanPDF(ctx, req)
 	if err != nil {
+		slog.Error("investment-plan PDF: build failed", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to generate pdf")
 		return
 	}

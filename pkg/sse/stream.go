@@ -27,6 +27,13 @@ func NewWriter(w http.ResponseWriter) (*Writer, error) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
 
+	// Disable write deadline for SSE connections (Go 1.20+)
+	// The server's WriteTimeout is a hard limit from when headers are sent.
+	// SSE connections are long-lived, so we need to disable the deadline.
+	// Heartbeats + context cancellation handle cleanup instead.
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{}) // zero = no deadline
+
 	return &Writer{
 		w:       w,
 		flusher: flusher,

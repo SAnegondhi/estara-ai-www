@@ -28,6 +28,18 @@ type Querier interface {
 	// Get the metro mapping for a city (for fallback to metro-level data)
 	GetCityMetroMapping(ctx context.Context, arg GetCityMetroMappingParams) (GetCityMetroMappingRow, error)
 	// ============================================================================
+	// AUTOCOMPLETE QUERIES (ADR-073: Market Intelligence)
+	// ============================================================================
+	// Get ALL fields from city_market_cache for a city (ADR-074: DATA_PAYLOAD builder)
+	GetCitySnapshot(ctx context.Context, arg GetCitySnapshotParams) (GetCitySnapshotRow, error)
+	// Returns total counts of tracked cities and metros
+	GetMarketPulseCounts(ctx context.Context) (GetMarketPulseCountsRow, error)
+	// Market Pulse Queries
+	// Public-facing queries for the sign-in page market pulse display.
+	// Returns high-quality cities and counts for the live market ticker.
+	// Returns high-quality cities for the market pulse ticker display
+	GetMarketPulseTickerCities(ctx context.Context) ([]GetMarketPulseTickerCitiesRow, error)
+	// ============================================================================
 	// METRO TIME SERIES QUERIES
 	// ============================================================================
 	// Get metro data by name
@@ -36,10 +48,18 @@ type Querier interface {
 	GetMetroByRegionID(ctx context.Context, metroRegionID int32) (GetMetroByRegionIDRow, error)
 	// Get total count of metros
 	GetMetroCount(ctx context.Context) (int64, error)
+	// Get national aggregate ZHVI/ZORI from metro_time_series (metro_region_id=0)
+	// Used for national benchmark comparison in DATA_PAYLOAD (ADR-074)
+	GetNationalTimeSeries(ctx context.Context) (GetNationalTimeSeriesRow, error)
+	// Returns metros that have ZHVI data (for daily-rotating sparkline selection).
+	// Orders by metro_name for deterministic rotation.
+	GetSparklineMetros(ctx context.Context) ([]GetSparklineMetrosRow, error)
 	// List all cities in a state with their market data
 	ListCitiesByState(ctx context.Context, arg ListCitiesByStateParams) ([]ListCitiesByStateRow, error)
 	// List all metros in a state
 	ListMetrosByState(ctx context.Context, stateName pgtype.Text) ([]ListMetrosByStateRow, error)
+	// Search cities by name for autocomplete
+	SearchCities(ctx context.Context, arg SearchCitiesParams) ([]SearchCitiesRow, error)
 	// Search metros by name pattern
 	SearchMetros(ctx context.Context, arg SearchMetrosParams) ([]SearchMetrosRow, error)
 }

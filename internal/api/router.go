@@ -119,6 +119,12 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	if svc.EconomicsAggregator != nil {
 		handlers.Market.SetEconomicsAggregator(svc.EconomicsAggregator)
 	}
+	if svc.TrendsService != nil {
+		handlers.Market.SetTrendsService(svc.TrendsService)
+	}
+	if db.Market != nil {
+		handlers.Market.SetMarketDB(db.Market)
+	}
 
 	// Inject services into portfolio handler
 	if svc.PropertyFinder != nil {
@@ -281,6 +287,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Get("/historical", handlers.Market.GetHistoricalTrends)
 		r.Post("/synthesize", handlers.Market.SynthesizeTrends)
 		r.Post("/export", handlers.Market.ExportTrendsPDF)
+		r.Get("/location-autocomplete", handlers.Market.SearchLocations) // ADR-073
 	})
 
 	// AI Evaluation Chat
@@ -317,8 +324,12 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Post("/queue", handlers.AI.QueueAnalysis)
 		r.Get("/stream", handlers.AI.StreamAnalysis)
 		r.Get("/jobs", handlers.AI.ListAnalysisJobs)
+		r.Get("/history", handlers.AI.GetAnalysisHistory)      // ADR-073
+		r.Get("/context", handlers.AI.GetAnalysisContext)       // ADR-073
+		r.Get("/report", handlers.AI.GetAnalysisReport)        // ADR-073
 		r.Post("/retry/{jobId}", handlers.AI.RetryAnalysis)
 		r.Post("/cancel/{jobId}", handlers.AI.CancelAnalysis)
+		r.Delete("/{jobId}", handlers.AI.DismissAnalysisJob)    // ADR-073
 	})
 
 	// Portfolio
@@ -539,6 +550,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Post("/contact", handlers.Public.SubmitContact)
 		r.Post("/early-access", handlers.Public.SignupEarlyAccess)
 		r.Get("/early-access", handlers.Public.GetEarlyAccessStatus)
+		r.Get("/market-pulse", handlers.Public.GetMarketPulse)
 	})
 
 	return r

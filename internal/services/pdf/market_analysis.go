@@ -33,62 +33,66 @@ func BuildMarketAnalysisPDF(ctx context.Context, data MarketAnalysisPDFData) ([]
 	pdf.AddPage()
 	y := page.MarginTop
 
-	y = AddSectionHeading(pdf, page, theme, "Executive Summary", y)
-	if summary := getNarrativeField(data.Narrative, "executiveSummary"); summary != "" {
-		y = AddParagraph(pdf, page, theme, summary, y)
-	} else if data.FullReport != "" {
-		y = AddParagraph(pdf, page, theme, data.FullReport, y)
-	}
+	if data.FullReport != "" {
+		// V2 path: the markdown report IS the full content — render it directly
+		y = RenderMarkdown(pdf, page, theme, data.FullReport, y)
+	} else {
+		// V1 path: structured sections from dual-agent pipeline
+		y = AddSectionHeading(pdf, page, theme, "Executive Summary", y)
+		if summary := getNarrativeField(data.Narrative, "executiveSummary"); summary != "" {
+			y = AddParagraph(pdf, page, theme, summary, y)
+		}
 
-	y = AddSectionHeading(pdf, page, theme, "Market Snapshot", y+2)
-	metrics := buildMarketAnalysisMetrics(data)
-	y = AddMetricsGrid(pdf, page, theme, metrics, y)
+		y = AddSectionHeading(pdf, page, theme, "Market Snapshot", y+2)
+		metrics := buildMarketAnalysisMetrics(data)
+		y = AddMetricsGrid(pdf, page, theme, metrics, y)
 
-	charts, _ := buildMarketAnalysisCharts(ctx, data)
-	if len(charts) > 0 {
-		y = AddSectionHeading(pdf, page, theme, "Market Charts", y+2)
-		chartWidth := (page.Width - page.MarginLeft - page.MarginRight - 10) / 2
-		chartHeight := 55.0
+		charts, _ := buildMarketAnalysisCharts(ctx, data)
 		if len(charts) > 0 {
-			_ = AddImageFromBase64(pdf, "price_trends", charts[0], page.MarginLeft, y+4, chartWidth, chartHeight)
+			y = AddSectionHeading(pdf, page, theme, "Market Charts", y+2)
+			chartWidth := (page.Width - page.MarginLeft - page.MarginRight - 10) / 2
+			chartHeight := 55.0
+			if len(charts) > 0 {
+				_ = AddImageFromBase64(pdf, "price_trends", charts[0], page.MarginLeft, y+4, chartWidth, chartHeight)
+			}
+			if len(charts) > 1 {
+				_ = AddImageFromBase64(pdf, "affordability", charts[1], page.MarginLeft+chartWidth+10, y+4, chartWidth, chartHeight)
+			}
+			y += chartHeight + 12
+			if len(charts) > 2 {
+				_ = AddImageFromBase64(pdf, "supply_demand", charts[2], page.MarginLeft, y, chartWidth, chartHeight)
+			}
+			if len(charts) > 3 {
+				_ = AddImageFromBase64(pdf, "waterfall", charts[3], page.MarginLeft+chartWidth+10, y, chartWidth, chartHeight)
+			}
+			y += chartHeight + 8
 		}
-		if len(charts) > 1 {
-			_ = AddImageFromBase64(pdf, "affordability", charts[1], page.MarginLeft+chartWidth+10, y+4, chartWidth, chartHeight)
-		}
-		y += chartHeight + 12
-		if len(charts) > 2 {
-			_ = AddImageFromBase64(pdf, "supply_demand", charts[2], page.MarginLeft, y, chartWidth, chartHeight)
-		}
-		if len(charts) > 3 {
-			_ = AddImageFromBase64(pdf, "waterfall", charts[3], page.MarginLeft+chartWidth+10, y, chartWidth, chartHeight)
-		}
-		y += chartHeight + 8
-	}
 
-	sections := []struct {
-		Title string
-		Key   string
-	}{
-		{"Market Conditions", "marketConditions"},
-		{"Investment Strategy", "investmentStrategy"},
-		{"Risk Analysis", "riskAnalysis"},
-		{"Recommendations", "recommendations"},
-	}
-
-	for _, section := range sections {
-		if text := getNarrativeField(data.Narrative, section.Key); text != "" {
-			y = AddSectionHeading(pdf, page, theme, section.Title, y+4)
-			y = AddParagraph(pdf, page, theme, text, y)
+		sections := []struct {
+			Title string
+			Key   string
+		}{
+			{"Market Conditions", "marketConditions"},
+			{"Investment Strategy", "investmentStrategy"},
+			{"Risk Analysis", "riskAnalysis"},
+			{"Recommendations", "recommendations"},
 		}
-	}
 
-	if insights := getNarrativeList(data.Narrative, "keyInsights"); len(insights) > 0 {
-		y = AddSectionHeading(pdf, page, theme, "Key Insights", y+4)
-		y = AddBulletList(pdf, page, theme, insights, y)
-	}
-	if actions := getNarrativeList(data.Narrative, "actionItems"); len(actions) > 0 {
-		y = AddSectionHeading(pdf, page, theme, "Action Items", y+4)
-		y = AddBulletList(pdf, page, theme, actions, y)
+		for _, section := range sections {
+			if text := getNarrativeField(data.Narrative, section.Key); text != "" {
+				y = AddSectionHeading(pdf, page, theme, section.Title, y+4)
+				y = AddParagraph(pdf, page, theme, text, y)
+			}
+		}
+
+		if insights := getNarrativeList(data.Narrative, "keyInsights"); len(insights) > 0 {
+			y = AddSectionHeading(pdf, page, theme, "Key Insights", y+4)
+			y = AddBulletList(pdf, page, theme, insights, y)
+		}
+		if actions := getNarrativeList(data.Narrative, "actionItems"); len(actions) > 0 {
+			y = AddSectionHeading(pdf, page, theme, "Action Items", y+4)
+			y = AddBulletList(pdf, page, theme, actions, y)
+		}
 	}
 
 	var buf bytes.Buffer

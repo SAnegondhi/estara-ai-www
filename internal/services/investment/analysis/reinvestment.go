@@ -1,5 +1,19 @@
 // Package analysis provides financial engineering services for investment planning.
 // Part of ADR-059: Investment Planning Enhancement - Selection Mode
+//
+// Unified Cohort-Based Projection Engine with CapEx Reserves (ADR-059 + ADR-063)
+//
+// This file implements a single project() engine that serves both:
+//   - Reinvestment analysis: base vs reinvest comparison (ModelReinvestment)
+//   - Scenario projections: base/optimistic/pessimistic (ProjectScenarios)
+//
+// Key design decisions:
+//   - Self-contained propertyCohort struct (no fragile parallel arrays)
+//   - Split expense growth: value-based (appreciation) vs rent-based (rent growth)
+//   - Per-property expense calculator (not flat 50% ratio)
+//   - Proper amortization formula (not crude linear approximation)
+//   - Component-lifecycle CapEx reserves (separate from routine maintenance)
+//   - GrowthMultiplier for optimistic/pessimistic scenarios
 package analysis
 
 import (
@@ -59,20 +73,20 @@ type ReinvestmentParams struct {
 	ProjectionYears  int     // 1-10 years
 
 	// Financial assumptions
-	MortgageRate       float64 // Annual rate (e.g., 7.0 for 7%)
-	DownPaymentPct     float64 // e.g., 0.20 for 20%
-	AppreciationRate   float64 // Annual rate (e.g., 3.0 for 3%) - fallback if no market data
-	RentGrowthRate     float64 // Annual rate (e.g., 2.0 for 2%) - fallback if no market data
-	OperatingExpenses  float64 // As % of rent (e.g., 0.50 for 50%) - fallback if expense calc fails
-	MinDownPayment     int     // Minimum down payment for new acquisition
-	AvgPropertyPrice   int     // Average price for acquisition simulation
-	AvgPropertyRent    int     // Average rent for acquisition simulation
+	MortgageRate      float64 // Annual rate (e.g., 7.0 for 7%)
+	DownPaymentPct    float64 // e.g., 0.20 for 20%
+	AppreciationRate  float64 // Annual rate (e.g., 3.0 for 3%) - fallback if no market data
+	RentGrowthRate    float64 // Annual rate (e.g., 2.0 for 2%) - fallback if no market data
+	OperatingExpenses float64 // As % of rent (e.g., 0.50 for 50%) - fallback if expense calc fails
+	MinDownPayment    int     // Minimum down payment for new acquisition
+	AvgPropertyPrice  int     // Average price for acquisition simulation
+	AvgPropertyRent   int     // Average rent for acquisition simulation
 }
 
 // DefaultReinvestmentParams returns default parameters
 func DefaultReinvestmentParams() ReinvestmentParams {
 	return ReinvestmentParams{
-		ReinvestmentRate:  100,  // Reinvest all surplus
+		ReinvestmentRate:  100, // Reinvest all surplus
 		ProjectionYears:   5,
 		MortgageRate:      7.0,
 		DownPaymentPct:    0.20,
@@ -84,6 +98,103 @@ func DefaultReinvestmentParams() ReinvestmentParams {
 		AvgPropertyRent:   2000,
 	}
 }
+
+// ============================================================================
+// Unified Cohort Engine Types
+// ============================================================================
+
+// ProjectionConfig configures the unified projection engine.
+// Used by both ModelReinvestment and ProjectScenarios.
+type ProjectionConfig struct {
+	// Core (required)
+	Properties      []investment.PropertyInPortfolio
+	ProjectionYears int
+	MortgageRate    float64 // Annual rate as percentage (e.g., 7.0)
+	DownPaymentPct  float64 // As decimal (e.g., 0.25)
+	OperatingExpenses float64 // Fallback ratio if expense calculator fails (e.g., 0.50)
+
+	// Reinvestment (optional — off for scenario projections)
+	WithReinvestment bool
+	ReinvestmentRate float64     // % of cash flow to reinvest
+	YearlyBudgets    map[int]int // year → additional budget
+
+	// Growth adjustment (1.0 = base, 1.15 = optimistic, 0.85 = pessimistic)
+	GrowthMultiplier float64
+
+	// Tax modeling (on for scenario projections, off for reinvestment comparison)
+	IncludeTax bool
+
+	// Market data
+	MarketLookup map[string]*investment.LocationMarketAnalysis
+
+	// Acquisition market data
+	AcquisitionMarket *AcquisitionMarketData
+
+	// Fallback growth rates
+	DefaultAppreciationRate float64
+	DefaultRentGrowthRate   float64
+
+	// Average property data for simulated acquisitions
+	AvgPropertyPrice int
+	AvgPropertyRent  int
+}
+
+// propertyCohort is a self-contained group of properties acquired at the same time.
+// Replaces the fragile parallel arrays (currentProperties + propertyDataList).
+type propertyCohort struct {
+	acquisitionYear int     // 0 = initial portfolio, 1+ = acquired during projection
+	count           int     // Number of properties in this cohort
+	propertyAge     int     // Age at acquisition (for CapEx tier calculation)
+	state           string  // State (for expense calculator on simulated acquisitions)
+	city            string  // City (for management fee tier)
+
+	// Locked-in at acquisition time (per property)
+	purchasePrice       int
+	monthlyRent         int
+	loanAmount          int
+	monthlyMortgage     int
+	monthlyMortgageRate float64 // Annual rate / 12 / 100 (for amortization calc)
+
+	// Split expenses for accurate growth modeling
+	// Value-based grow with appreciation rate; rent-based grow with rent growth rate
+	monthlyValueExpenses int // Property tax + insurance + maintenance (per property, monthly)
+	monthlyRentExpenses  int // Vacancy allowance + property management (per property, monthly)
+	monthlyVacancy       int // Vacancy allowance only (per property, monthly) — for EGI breakdown
+
+	// Growth rates (already multiplied by GrowthMultiplier)
+	appreciationRate float64
+	rentGrowthRate   float64
+}
+
+// yearResult is the internal projection result — superset of both output types.
+type yearResult struct {
+	// Common fields
+	year, portfolioValue, equity, loanBalance                        int
+	annualCashFlow, cumulativeCashFlow, appreciation                 int
+	grossRentalIncome, vacancyLoss, operatingExpenses, netOperatingIncome, debtService int
+	propertyCount, propertiesAcquired                                int
+	capExReserve, cumulativeCapExReserve                             int
+	cashBalance                                                      int
+
+	// Tax fields (populated when config.IncludeTax = true)
+	interestExpense, principalPayment, depreciation int
+	taxableIncome, incomeTaxes, cashFlowAfterTax    int
+	cashOnCash, capRate, equityMultiple             float64
+}
+
+// annualBreakdown holds detailed income/expense breakdown for a year
+type annualBreakdown struct {
+	grossRentalIncome  int // Sum of (adjustedMonthlyRent × 12) for all properties
+	vacancyLoss        int // Vacancy portion of operating expenses
+	operatingExpenses  int // Sum of (monthlyExpenses × 12) for all properties
+	netOperatingIncome int // grossRentalIncome - operatingExpenses
+	debtService        int // Sum of (monthlyPayment × 12) for all properties
+	cashFlow           int // netOperatingIncome - debtService
+}
+
+// ============================================================================
+// ModelReinvestment — Public API
+// ============================================================================
 
 // ModelReinvestment projects portfolio growth with and without reinvestment
 func (m *ReinvestmentModeler) ModelReinvestment(
@@ -101,11 +212,23 @@ func (m *ReinvestmentModeler) ModelReinvestment(
 	// Build assumptions for transparency
 	assumptions := m.buildAssumptions(params)
 
-	// Calculate base scenario (no reinvestment)
-	baseScenario := m.projectWithoutReinvestment(params)
+	// Build configs for base and reinvest scenarios
+	baseConfig := m.configFromParams(params, false, 1.0, false)
+	reinvestConfig := m.configFromParams(params, true, 1.0, false)
 
-	// Calculate reinvest scenario
-	reinvestScenario := m.projectWithReinvestment(params)
+	// Run unified projection engine
+	baseResults := m.project(baseConfig)
+	reinvestResults := m.project(reinvestConfig)
+
+	// Map to YearlyProjection
+	baseScenario := make([]investment.YearlyProjection, len(baseResults))
+	for i, r := range baseResults {
+		baseScenario[i] = r.toYearlyProjection()
+	}
+	reinvestScenario := make([]investment.YearlyProjection, len(reinvestResults))
+	for i, r := range reinvestResults {
+		reinvestScenario[i] = r.toYearlyProjection()
+	}
 
 	// Calculate cumulative differences
 	cumulativeDiff := m.calculateCumulativeDiff(baseScenario, reinvestScenario, params.ProjectionYears)
@@ -126,6 +249,788 @@ func (m *ReinvestmentModeler) ModelReinvestment(
 
 	return analysis, nil
 }
+
+// ============================================================================
+// ProjectScenarios — Public API (replaces CalculateAllScenarios)
+// ============================================================================
+
+// ProjectScenarios generates base, optimistic, and pessimistic projections
+// using the unified cohort engine. This replaces projection.Calculator.CalculateAllScenarios().
+func (m *ReinvestmentModeler) ProjectScenarios(
+	properties []investment.PropertyInPortfolio,
+	years int,
+	marketLookup map[string]*investment.LocationMarketAnalysis,
+	userAssumptions *investment.UserFinancialAssumptions,
+) *investment.ScenarioProjections {
+	if len(properties) == 0 || years <= 0 {
+		return nil
+	}
+
+	// Get assumptions from user or defaults
+	mortgageRate := 7.0
+	downPaymentPct := 0.20
+	operatingExpenses := 0.50
+	if userAssumptions != nil {
+		if userAssumptions.MortgageRate > 0 {
+			mortgageRate = userAssumptions.MortgageRate
+		}
+		if userAssumptions.DownPaymentPercent > 0 {
+			downPaymentPct = userAssumptions.DownPaymentPercent / 100
+		}
+		if userAssumptions.OperatingExpenses > 0 {
+			operatingExpenses = userAssumptions.OperatingExpenses / 100
+		}
+	}
+
+	baseConfig := ProjectionConfig{
+		Properties:              properties,
+		ProjectionYears:         years,
+		MortgageRate:            mortgageRate,
+		DownPaymentPct:          downPaymentPct,
+		OperatingExpenses:       operatingExpenses,
+		GrowthMultiplier:        1.0,
+		IncludeTax:              true,
+		MarketLookup:            marketLookup,
+		DefaultAppreciationRate: 3.0,
+		DefaultRentGrowthRate:   2.0,
+	}
+
+	baseResults := m.project(baseConfig)
+
+	optConfig := baseConfig
+	optConfig.GrowthMultiplier = 1.15
+	optResults := m.project(optConfig)
+
+	pessConfig := baseConfig
+	pessConfig.GrowthMultiplier = 0.85
+	pessResults := m.project(pessConfig)
+
+	// Map to ExpandedYearProjection
+	base := mapToExpanded(baseResults)
+	optimistic := mapToExpanded(optResults)
+	pessimistic := mapToExpanded(pessResults)
+
+	// Build assumptions and summary
+	assumptions := m.buildScenarioAssumptions(properties, marketLookup, userAssumptions, mortgageRate)
+	summary := m.buildScenarioSummary(base, optimistic, pessimistic, properties)
+
+	return &investment.ScenarioProjections{
+		Base:        base,
+		Optimistic:  optimistic,
+		Pessimistic: pessimistic,
+		Assumptions: assumptions,
+		Summary:     summary,
+	}
+}
+
+// ============================================================================
+// Unified project() Engine
+// ============================================================================
+
+// project is the unified projection engine. All projection paths flow through here.
+func (m *ReinvestmentModeler) project(config ProjectionConfig) []yearResult {
+	if len(config.Properties) == 0 || config.ProjectionYears <= 0 {
+		return nil
+	}
+
+	// Build initial cohorts from portfolio properties
+	cohorts := m.buildInitialCohorts(config)
+
+	// Apply growth multiplier to cohort rates
+	for i := range cohorts {
+		cohorts[i].appreciationRate *= config.GrowthMultiplier
+		cohorts[i].rentGrowthRate *= config.GrowthMultiplier
+	}
+
+	acquisitionPool := 0
+	capExReservePool := 0
+	cumulativeCashFlow := 0
+	prevYearValue := m.calculatePortfolioValue(config.Properties)
+
+	// Calculate average appreciation for simulated acquisitions
+	avgAppreciationRate := m.calculateWeightedAverageAppreciation(
+		config.Properties, config.MarketLookup, config.DefaultAppreciationRate,
+	) * config.GrowthMultiplier
+	avgRentGrowthRate := config.DefaultRentGrowthRate * config.GrowthMultiplier
+
+	// Calculate initial down payment for CashOnCash metric
+	initialDownPayment := 0
+	for _, p := range config.Properties {
+		initialDownPayment += p.DownPayment
+	}
+
+	// Determine average state/city for acquisitions
+	avgState, avgCity := m.getMostCommonStateCity(config.Properties)
+	if config.AcquisitionMarket != nil && config.AcquisitionMarket.TargetState != "" {
+		avgState = config.AcquisitionMarket.TargetState
+		avgCity = config.AcquisitionMarket.TargetCity
+	}
+
+	results := make([]yearResult, config.ProjectionYears)
+
+	for year := 1; year <= config.ProjectionYears; year++ {
+		propertiesAcquiredThisYear := 0
+
+		// 1. Inject yearly budget (year 2+) — only in reinvestment mode or if budgets exist
+		if config.YearlyBudgets != nil {
+			if yearBudget, ok := config.YearlyBudgets[year]; ok && year > 1 {
+				acquisitionPool += yearBudget
+			}
+		}
+
+		// 2. Pre-acquisition breakdown (for reinvestment decision)
+		preBreakdown := m.aggregateBreakdown(cohorts, year)
+		preCapEx := m.aggregateCapExReserve(cohorts, year)
+
+		// 3. Pool cash flow if reinvesting
+		//    CapEx is deducted BEFORE reinvestment (can't reinvest reserved cash)
+		if config.WithReinvestment {
+			netForReinvest := preBreakdown.cashFlow - preCapEx
+			reinvestAmount := int(float64(netForReinvest) * config.ReinvestmentRate / 100)
+			if reinvestAmount > 0 {
+				acquisitionPool += reinvestAmount
+			}
+		}
+
+		// 4. Acquire properties from pool
+		if acquisitionPool > 0 {
+			avgPrice := config.AvgPropertyPrice
+			if avgPrice == 0 {
+				avgPrice = m.avgPrice(config.Properties)
+			}
+			avgRent := config.AvgPropertyRent
+			if avgRent == 0 {
+				avgRent = m.avgRent(config.Properties)
+			}
+
+			appreciatedPrice := int(float64(avgPrice) * math.Pow(1+avgAppreciationRate/100, float64(year)))
+			downPayment := int(float64(appreciatedPrice) * config.DownPaymentPct)
+
+			for acquisitionPool >= downPayment && downPayment > 0 {
+				newCohort := m.buildAcquisitionCohort(config, avgAppreciationRate, avgRentGrowthRate, year, avgState, avgCity, avgPrice, avgRent)
+				cohorts = append(cohorts, newCohort)
+				acquisitionPool -= downPayment
+				propertiesAcquiredThisYear++
+			}
+		}
+
+		// 5. Post-acquisition calculations (for OUTPUT — includes new properties)
+		fullBreakdown := m.aggregateBreakdown(cohorts, year)
+		fullCapEx := m.aggregateCapExReserve(cohorts, year)
+		portfolioValue, loanBalance := m.aggregateValues(cohorts, year)
+
+		// 6. Accumulate reserves and cash flow
+		capExReservePool += fullCapEx
+		annualCashFlow := fullBreakdown.cashFlow - fullCapEx // NOI - Debt - CapEx
+		cumulativeCashFlow += annualCashFlow
+
+		cashBalance := 0
+		if config.WithReinvestment && acquisitionPool > 0 {
+			cashBalance = acquisitionPool
+		}
+
+		yearAppreciation := portfolioValue - prevYearValue
+		prevYearValue = portfolioValue
+
+		// Count total properties
+		totalPropertyCount := 0
+		for _, c := range cohorts {
+			totalPropertyCount += c.count
+		}
+
+		// 7. Tax calculations (when config.IncludeTax)
+		interestExp, principalPay := 0, 0
+		deprec, taxIncome, taxes, afterTaxCF := 0, 0, 0, 0
+		cocReturn, capRateVal, eqMultiple := 0.0, 0.0, 0.0
+
+		if config.IncludeTax {
+			interestExp, principalPay = m.aggregateDebtSplit(cohorts, year)
+			deprec = int(float64(portfolioValue) * 0.80 / 27.5)
+			taxIncome = fullBreakdown.netOperatingIncome - interestExp - deprec
+			if taxIncome > 0 {
+				taxes = int(float64(taxIncome) * 0.25)
+			}
+			afterTaxCF = annualCashFlow - taxes
+
+			if initialDownPayment > 0 {
+				cocReturn = float64(annualCashFlow) / float64(initialDownPayment) * 100
+			}
+			if portfolioValue > 0 {
+				capRateVal = float64(fullBreakdown.netOperatingIncome) / float64(portfolioValue) * 100
+			}
+			equity := portfolioValue - loanBalance
+			if initialDownPayment > 0 {
+				eqMultiple = float64(equity) / float64(initialDownPayment)
+			}
+		}
+
+		// 8. Build result
+		results[year-1] = yearResult{
+			year:                   year,
+			portfolioValue:         portfolioValue,
+			equity:                 portfolioValue - loanBalance,
+			loanBalance:            loanBalance,
+			annualCashFlow:         annualCashFlow,
+			cumulativeCashFlow:     cumulativeCashFlow,
+			appreciation:           yearAppreciation,
+			cashBalance:            cashBalance,
+			grossRentalIncome:      fullBreakdown.grossRentalIncome,
+			vacancyLoss:            fullBreakdown.vacancyLoss,
+			operatingExpenses:      fullBreakdown.operatingExpenses,
+			netOperatingIncome:     fullBreakdown.netOperatingIncome,
+			debtService:            fullBreakdown.debtService,
+			propertyCount:          totalPropertyCount,
+			propertiesAcquired:     propertiesAcquiredThisYear,
+			capExReserve:           fullCapEx,
+			cumulativeCapExReserve: capExReservePool,
+			interestExpense:        interestExp,
+			principalPayment:       principalPay,
+			depreciation:           deprec,
+			taxableIncome:          taxIncome,
+			incomeTaxes:            taxes,
+			cashFlowAfterTax:       afterTaxCF,
+			cashOnCash:             cocReturn,
+			capRate:                capRateVal,
+			equityMultiple:         eqMultiple,
+		}
+	}
+
+	return results
+}
+
+// ============================================================================
+// Cohort Builders
+// ============================================================================
+
+// buildInitialCohorts creates cohorts from the initial portfolio properties.
+func (m *ReinvestmentModeler) buildInitialCohorts(config ProjectionConfig) []propertyCohort {
+	cohorts := make([]propertyCohort, 0, len(config.Properties))
+	currentYear := time.Now().Year()
+
+	for _, p := range config.Properties {
+		appreciationRate := m.getAppreciationRateForProperty(p, config.MarketLookup, config.DefaultAppreciationRate)
+		rentGrowthRate := m.getRentGrowthRateForProperty(p, config.MarketLookup, config.DefaultRentGrowthRate)
+
+		// Calculate property age
+		propertyAge := 15 // default if YearBuilt is 0
+		if p.Property.YearBuilt > 0 {
+			propertyAge = currentYear - p.Property.YearBuilt
+		}
+
+		// Calculate monthly mortgage rate for amortization
+		monthlyMortgageRate := config.MortgageRate / 100 / 12
+
+		// Use expense calculator per property for accurate split expenses
+		var monthlyValueExpenses, monthlyRentExpenses int
+		expResult, err := m.expenseCalc.Calculate(expenses.PropertyInput{
+			Price:         p.Property.Price,
+			State:         p.Property.State,
+			City:          p.Property.City,
+			YearBuilt:     p.Property.YearBuilt,
+			EstimatedRent: p.Property.EstimatedRent,
+		})
+		var monthlyVacancy int
+		if err != nil {
+			// Fallback to ratio-based: all expenses as rent-based
+			monthlyRentExpenses = int(float64(p.Property.EstimatedRent) * config.OperatingExpenses)
+			monthlyValueExpenses = 0
+			// Estimate vacancy as ~8% of rent (typical default)
+			monthlyVacancy = int(float64(p.Property.EstimatedRent) * 0.08)
+		} else {
+			// Value-based: property tax + insurance + maintenance (monthly)
+			annualValueExpenses := expResult.PropertyTax + expResult.Insurance + expResult.Maintenance
+			monthlyValueExpenses = int(annualValueExpenses / 12)
+			// Rent-based: vacancy + management (monthly)
+			monthlyRentExpenses = int((expResult.VacancyAllowance + expResult.PropertyMgmt) / 12)
+			monthlyVacancy = int(expResult.VacancyAllowance / 12)
+		}
+
+		cohorts = append(cohorts, propertyCohort{
+			acquisitionYear:     0,
+			count:               1,
+			propertyAge:         propertyAge,
+			state:               p.Property.State,
+			city:                p.Property.City,
+			purchasePrice:       p.Property.Price,
+			monthlyRent:         p.Property.EstimatedRent,
+			loanAmount:          p.LoanAmount,
+			monthlyMortgage:     p.MonthlyPayment,
+			monthlyMortgageRate: monthlyMortgageRate,
+			monthlyValueExpenses: monthlyValueExpenses,
+			monthlyRentExpenses:  monthlyRentExpenses,
+			monthlyVacancy:       monthlyVacancy,
+			appreciationRate:    appreciationRate,
+			rentGrowthRate:      rentGrowthRate,
+		})
+	}
+
+	return cohorts
+}
+
+// buildAcquisitionCohort creates a cohort for a property acquired during projection.
+func (m *ReinvestmentModeler) buildAcquisitionCohort(
+	config ProjectionConfig,
+	appreciationRate float64,
+	rentGrowthRate float64,
+	year int,
+	avgState string,
+	avgCity string,
+	avgPrice int,
+	avgRent int,
+) propertyCohort {
+	// Appreciate price/rent to acquisition year
+	priceFactor := math.Pow(1+appreciationRate/100, float64(year))
+	rentFactor := math.Pow(1+rentGrowthRate/100, float64(year))
+	appreciatedPrice := int(float64(avgPrice) * priceFactor)
+	appreciatedRent := int(float64(avgRent) * rentFactor)
+
+	// Financing
+	downPayment := int(float64(appreciatedPrice) * config.DownPaymentPct)
+	loanAmount := appreciatedPrice - downPayment
+
+	// Monthly mortgage
+	monthlyRate := config.MortgageRate / 100 / 12
+	var monthlyMortgage int
+	if monthlyRate > 0 {
+		numPayments := 360.0
+		pmt := float64(loanAmount) * (monthlyRate * math.Pow(1+monthlyRate, numPayments)) /
+			(math.Pow(1+monthlyRate, numPayments) - 1)
+		monthlyMortgage = int(pmt)
+	} else {
+		monthlyMortgage = loanAmount / 360
+	}
+
+	// Expenses using expense calculator with appreciated values
+	var monthlyValueExpenses, monthlyRentExpenses, monthlyVacancy int
+	if avgState != "" {
+		expInput := expenses.PropertyInput{
+			Price:         appreciatedPrice,
+			State:         avgState,
+			City:          avgCity,
+			YearBuilt:     time.Now().Year() - 10, // Assumed typical acquisition age
+			EstimatedRent: appreciatedRent,
+		}
+		if config.AcquisitionMarket != nil && config.AcquisitionMarket.VacancyRate != nil {
+			expInput.VacancyRateOverride = config.AcquisitionMarket.VacancyRate
+		}
+
+		expResult, err := m.expenseCalc.Calculate(expInput)
+		if err == nil {
+			annualValueExpenses := expResult.PropertyTax + expResult.Insurance + expResult.Maintenance
+			monthlyValueExpenses = int(annualValueExpenses / 12)
+			monthlyRentExpenses = int((expResult.VacancyAllowance + expResult.PropertyMgmt) / 12)
+			monthlyVacancy = int(expResult.VacancyAllowance / 12)
+		} else {
+			monthlyRentExpenses = int(float64(appreciatedRent) * config.OperatingExpenses)
+			monthlyVacancy = int(float64(appreciatedRent) * 0.08)
+		}
+	} else {
+		monthlyRentExpenses = int(float64(appreciatedRent) * config.OperatingExpenses)
+		monthlyVacancy = int(float64(appreciatedRent) * 0.08)
+	}
+
+	return propertyCohort{
+		acquisitionYear:      year,
+		count:                1,
+		propertyAge:          10, // Assumed typical for acquisitions
+		state:                avgState,
+		city:                 avgCity,
+		purchasePrice:        appreciatedPrice,
+		monthlyRent:          appreciatedRent,
+		loanAmount:           loanAmount,
+		monthlyMortgage:      monthlyMortgage,
+		monthlyMortgageRate:  monthlyRate,
+		monthlyValueExpenses: monthlyValueExpenses,
+		monthlyRentExpenses:  monthlyRentExpenses,
+		monthlyVacancy:       monthlyVacancy,
+		appreciationRate:     appreciationRate,
+		rentGrowthRate:       rentGrowthRate,
+	}
+}
+
+// ============================================================================
+// Aggregate Helpers
+// ============================================================================
+
+// aggregateBreakdown computes the annual income/expense breakdown across all cohorts.
+func (m *ReinvestmentModeler) aggregateBreakdown(cohorts []propertyCohort, year int) annualBreakdown {
+	var bd annualBreakdown
+	for _, c := range cohorts {
+		yearsOwned := max(1, year-c.acquisitionYear)
+
+		// Rent grows with rent growth rate
+		rentFactor := math.Pow(1+c.rentGrowthRate/100, float64(yearsOwned))
+		adjustedRent := int(float64(c.monthlyRent)*rentFactor) * c.count
+
+		// Value-based expenses (tax, insurance, maintenance) grow with appreciation
+		valueFactor := math.Pow(1+c.appreciationRate/100, float64(yearsOwned))
+		valueExp := int(float64(c.monthlyValueExpenses)*valueFactor) * c.count
+
+		// Rent-based expenses (vacancy, management) grow with rent
+		rentExp := int(float64(c.monthlyRentExpenses)*rentFactor) * c.count
+		vacancyExp := int(float64(c.monthlyVacancy)*rentFactor) * c.count
+
+		totalExpenses := valueExp + rentExp
+		mortgage := c.monthlyMortgage * c.count
+
+		bd.grossRentalIncome += adjustedRent * 12
+		bd.vacancyLoss += vacancyExp * 12
+		bd.operatingExpenses += totalExpenses * 12
+		bd.debtService += mortgage * 12
+	}
+	bd.netOperatingIncome = bd.grossRentalIncome - bd.operatingExpenses
+	bd.cashFlow = bd.netOperatingIncome - bd.debtService
+	return bd
+}
+
+// aggregateValues computes total portfolio value and loan balance using proper amortization.
+func (m *ReinvestmentModeler) aggregateValues(cohorts []propertyCohort, year int) (portfolioValue, loanBalance int) {
+	for _, c := range cohorts {
+		yearsOwned := max(1, year-c.acquisitionYear)
+
+		// Property value: appreciated
+		priceFactor := math.Pow(1+c.appreciationRate/100, float64(yearsOwned))
+		value := int(float64(c.purchasePrice)*priceFactor) * c.count
+
+		// Loan balance: proper amortization
+		loan := remainingLoanBalance(c.loanAmount, c.monthlyMortgageRate, c.monthlyMortgage, yearsOwned) * c.count
+
+		portfolioValue += value
+		loanBalance += loan
+	}
+	return
+}
+
+// aggregateCapExReserve computes the total annual CapEx reserve across all cohorts.
+func (m *ReinvestmentModeler) aggregateCapExReserve(cohorts []propertyCohort, year int) int {
+	totalReserve := 0
+	for _, c := range cohorts {
+		yearsOwned := max(1, year-c.acquisitionYear)
+		effectiveAge := c.propertyAge + yearsOwned
+
+		// Property value at this year (for CapEx $ calculation)
+		valueFactor := math.Pow(1+c.appreciationRate/100, float64(yearsOwned))
+		propertyValue := float64(c.purchasePrice) * valueFactor
+
+		// Age-adjusted CapEx rate
+		capExRate := expenses.CapExReserveRate(effectiveAge) // returns e.g. 0.83
+		annualReserve := int(propertyValue*capExRate/100) * c.count
+		totalReserve += annualReserve
+	}
+	return totalReserve
+}
+
+// aggregateDebtSplit computes interest vs principal split for tax calculations.
+func (m *ReinvestmentModeler) aggregateDebtSplit(cohorts []propertyCohort, year int) (interestExpense, principalPayment int) {
+	for _, c := range cohorts {
+		yearsOwned := max(1, year-c.acquisitionYear)
+		startBalance := remainingLoanBalance(c.loanAmount, c.monthlyMortgageRate, c.monthlyMortgage, yearsOwned-1)
+		endBalance := remainingLoanBalance(c.loanAmount, c.monthlyMortgageRate, c.monthlyMortgage, yearsOwned)
+		annualPrincipal := (startBalance - endBalance) * c.count
+		annualDebt := c.monthlyMortgage * 12 * c.count
+		principalPayment += annualPrincipal
+		interestExpense += annualDebt - annualPrincipal
+	}
+	return
+}
+
+// remainingLoanBalance calculates the remaining balance using standard amortization.
+// Formula: B = P*(1+r)^n - PMT*[(1+r)^n - 1]/r
+func remainingLoanBalance(principal int, monthlyRate float64, monthlyPayment int, yearsOwned int) int {
+	if yearsOwned <= 0 {
+		return principal
+	}
+	if monthlyRate == 0 {
+		balance := principal - monthlyPayment*yearsOwned*12
+		if balance < 0 {
+			return 0
+		}
+		return balance
+	}
+	n := float64(yearsOwned * 12)
+	factor := math.Pow(1+monthlyRate, n)
+	balance := float64(principal)*factor - float64(monthlyPayment)*(factor-1)/monthlyRate
+	if balance < 0 {
+		return 0
+	}
+	return int(balance)
+}
+
+// ============================================================================
+// Mapping Functions
+// ============================================================================
+
+func (r yearResult) toYearlyProjection() investment.YearlyProjection {
+	return investment.YearlyProjection{
+		Year:                   r.year,
+		PortfolioValue:         r.portfolioValue,
+		Equity:                 r.equity,
+		LoanBalance:            r.loanBalance,
+		AnnualCashFlow:         r.annualCashFlow,
+		CumulativeCashFlow:     r.cumulativeCashFlow,
+		Appreciation:           r.appreciation,
+		CashBalance:            r.cashBalance,
+		GrossRentalIncome:      r.grossRentalIncome,
+		OperatingExpenses:      r.operatingExpenses,
+		NetOperatingIncome:     r.netOperatingIncome,
+		DebtService:            r.debtService,
+		PropertyCount:          r.propertyCount,
+		PropertiesAcquired:     r.propertiesAcquired,
+		CapExReserve:           r.capExReserve,
+		CumulativeCapExReserve: r.cumulativeCapExReserve,
+	}
+}
+
+func (r yearResult) toExpandedYearProjection() investment.ExpandedYearProjection {
+	return investment.ExpandedYearProjection{
+		Year:                   r.year,
+		PortfolioValue:         r.portfolioValue,
+		Equity:                 r.equity,
+		LoanBalance:            r.loanBalance,
+		AnnualCashFlow:         r.annualCashFlow,
+		NetOperatingIncome:     r.netOperatingIncome,
+		GrossRent:              r.grossRentalIncome,
+		VacancyLoss:            r.vacancyLoss,
+		EffectiveGrossIncome:   r.grossRentalIncome - r.vacancyLoss,
+		OperatingExpenses:      r.operatingExpenses,
+		DebtService:            r.debtService,
+		InterestExpense:        r.interestExpense,
+		PrincipalPayment:       r.principalPayment,
+		Depreciation:           r.depreciation,
+		TaxableIncome:          r.taxableIncome,
+		IncomeTaxes:            r.incomeTaxes,
+		CashFlowAfterTax:       r.cashFlowAfterTax,
+		CashOnCash:             r.cashOnCash,
+		CapRate:                r.capRate,
+		EquityMultiple:         r.equityMultiple,
+		CumulativeCashFlow:     r.cumulativeCashFlow,
+		Appreciation:           r.appreciation,
+		CapExReserve:           r.capExReserve,
+		CumulativeCapExReserve: r.cumulativeCapExReserve,
+	}
+}
+
+func mapToExpanded(results []yearResult) []investment.ExpandedYearProjection {
+	expanded := make([]investment.ExpandedYearProjection, len(results))
+	for i, r := range results {
+		expanded[i] = r.toExpandedYearProjection()
+	}
+	return expanded
+}
+
+// ============================================================================
+// Config Builder
+// ============================================================================
+
+// configFromParams builds a ProjectionConfig from ReinvestmentParams.
+func (m *ReinvestmentModeler) configFromParams(
+	params ReinvestmentParams,
+	withReinvestment bool,
+	growthMultiplier float64,
+	includeTax bool,
+) ProjectionConfig {
+	marketLookup := m.buildMarketDataLookup(params.MarketQuality)
+
+	yearlyBudgets := make(map[int]int)
+	for _, yb := range params.YearlyBudgets {
+		yearlyBudgets[yb.Year] = yb.Budget
+	}
+
+	return ProjectionConfig{
+		Properties:              params.Properties,
+		ProjectionYears:         params.ProjectionYears,
+		MortgageRate:            params.MortgageRate,
+		DownPaymentPct:          params.DownPaymentPct,
+		OperatingExpenses:       params.OperatingExpenses,
+		WithReinvestment:        withReinvestment,
+		ReinvestmentRate:        params.ReinvestmentRate,
+		YearlyBudgets:           yearlyBudgets,
+		GrowthMultiplier:        growthMultiplier,
+		IncludeTax:              includeTax,
+		MarketLookup:            marketLookup,
+		AcquisitionMarket:       params.AcquisitionMarket,
+		DefaultAppreciationRate: params.AppreciationRate,
+		DefaultRentGrowthRate:   params.RentGrowthRate,
+		AvgPropertyPrice:        params.AvgPropertyPrice,
+		AvgPropertyRent:         params.AvgPropertyRent,
+	}
+}
+
+// ============================================================================
+// Scenario Projection Helpers
+// ============================================================================
+
+// buildScenarioAssumptions creates transparent assumptions for scenario projections.
+func (m *ReinvestmentModeler) buildScenarioAssumptions(
+	properties []investment.PropertyInPortfolio,
+	marketLookup map[string]*investment.LocationMarketAnalysis,
+	userAssumptions *investment.UserFinancialAssumptions,
+	mortgageRate float64,
+) *investment.ProjectionAssumptions {
+	// Calculate weighted average rates
+	totalValue := 0
+	weightedAppreciation := 0.0
+	weightedRentGrowth := 0.0
+	hasMarketData := false
+
+	for _, p := range properties {
+		location := strings.ToLower(fmt.Sprintf("%s, %s", p.Property.City, p.Property.State))
+		totalValue += p.Property.Price
+
+		if marketData, ok := marketLookup[location]; ok {
+			if marketData.PriceGrowth5Y != nil {
+				totalGrowth := *marketData.PriceGrowth5Y / 100
+				if totalGrowth > -1 {
+					rate := (math.Pow(1+totalGrowth, 0.2) - 1)
+					weightedAppreciation += float64(p.Property.Price) * rate
+					hasMarketData = true
+				} else {
+					weightedAppreciation += float64(p.Property.Price) * 0.03
+				}
+			} else {
+				weightedAppreciation += float64(p.Property.Price) * 0.03
+			}
+
+			if marketData.RentGrowth5Y != nil {
+				totalGrowth := *marketData.RentGrowth5Y / 100
+				if totalGrowth > -1 {
+					rate := (math.Pow(1+totalGrowth, 0.2) - 1)
+					weightedRentGrowth += float64(p.Property.Price) * rate
+					hasMarketData = true
+				} else {
+					weightedRentGrowth += float64(p.Property.Price) * 0.02
+				}
+			} else {
+				weightedRentGrowth += float64(p.Property.Price) * 0.02
+			}
+		} else {
+			weightedAppreciation += float64(p.Property.Price) * 0.03
+			weightedRentGrowth += float64(p.Property.Price) * 0.02
+		}
+	}
+
+	avgAppreciationRate := 0.0
+	avgRentGrowthRate := 0.0
+	if totalValue > 0 {
+		avgAppreciationRate = weightedAppreciation / float64(totalValue)
+		avgRentGrowthRate = weightedRentGrowth / float64(totalValue)
+	}
+
+	// Down payment
+	downPaymentPct := 0.20
+	if userAssumptions != nil && userAssumptions.DownPaymentPercent > 0 {
+		downPaymentPct = userAssumptions.DownPaymentPercent / 100
+	} else if len(properties) > 0 && totalValue > 0 {
+		totalDP := 0
+		for _, p := range properties {
+			totalDP += p.DownPayment
+		}
+		downPaymentPct = float64(totalDP) / float64(totalValue)
+	}
+
+	loanTermYears := 30
+	if userAssumptions != nil && userAssumptions.LoanTermYears > 0 {
+		loanTermYears = userAssumptions.LoanTermYears
+	}
+
+	assumptions := &investment.ProjectionAssumptions{
+		AppreciationRate: avgAppreciationRate * 100,
+		RentGrowthRate:   avgRentGrowthRate * 100,
+		MortgageRate:     mortgageRate,
+		DownPaymentPct:   downPaymentPct,
+		LoanTermYears:    loanTermYears,
+		DataQualityNotes: []string{},
+	}
+
+	// Sources
+	if hasMarketData {
+		assumptions.AppreciationSource = "Market Data 5Y CAGR (portfolio-weighted)"
+		assumptions.RentGrowthSource = "Market Data 5Y CAGR (portfolio-weighted)"
+		assumptions.OverallConfidence = 85
+	} else {
+		assumptions.AppreciationSource = "Default (3.0%)"
+		assumptions.RentGrowthSource = "Default (2.0%)"
+		assumptions.OverallConfidence = 60
+		assumptions.DataQualityNotes = append(assumptions.DataQualityNotes,
+			"Using default growth rates (market data unavailable)")
+	}
+
+	// Mortgage rate source
+	if userAssumptions != nil && userAssumptions.MortgageRate > 0 {
+		assumptions.MortgageSource = "User Input"
+	} else if mortgageRate != 7.0 {
+		assumptions.MortgageSource = "FRED 30Y Fixed"
+	} else {
+		assumptions.MortgageSource = "Default (7%)"
+	}
+
+	// Expense info
+	if len(properties) > 0 && properties[0].Expenses != nil {
+		assumptions.ExpenseSource = "State-specific calculation (per-property)"
+	} else {
+		assumptions.ExpenseSource = "State-specific calculation"
+	}
+
+	// CapEx reserve info
+	m.populateCapExAssumptions(assumptions, properties)
+
+	return assumptions
+}
+
+// buildScenarioSummary creates quick comparison across scenarios.
+func (m *ReinvestmentModeler) buildScenarioSummary(
+	base, optimistic, pessimistic []investment.ExpandedYearProjection,
+	properties []investment.PropertyInPortfolio,
+) *investment.ScenarioSummary {
+	if len(base) == 0 {
+		return nil
+	}
+
+	lastIdx := len(base) - 1
+
+	// Calculate initial value for CAGR
+	initialValue := 0
+	for _, p := range properties {
+		initialValue += p.Property.Price
+	}
+	years := len(base)
+
+	cagr := func(finalValue int) float64 {
+		if initialValue <= 0 || years <= 0 {
+			return 0
+		}
+		return (math.Pow(float64(finalValue)/float64(initialValue), 1.0/float64(years)) - 1) * 100
+	}
+
+	// Total cash flow
+	baseTotalCF, optTotalCF, pessTotalCF := 0, 0, 0
+	for i := range base {
+		baseTotalCF += base[i].AnnualCashFlow
+		optTotalCF += optimistic[i].AnnualCashFlow
+		pessTotalCF += pessimistic[i].AnnualCashFlow
+	}
+
+	return &investment.ScenarioSummary{
+		BaseFinalValue:           base[lastIdx].PortfolioValue,
+		BaseFinalEquity:          base[lastIdx].Equity,
+		BaseTotalCashFlow:        baseTotalCF,
+		BaseCAGR:                 cagr(base[lastIdx].PortfolioValue),
+		OptimisticFinalValue:     optimistic[lastIdx].PortfolioValue,
+		OptimisticFinalEquity:    optimistic[lastIdx].Equity,
+		OptimisticTotalCashFlow:  optTotalCF,
+		OptimisticCAGR:           cagr(optimistic[lastIdx].PortfolioValue),
+		PessimisticFinalValue:    pessimistic[lastIdx].PortfolioValue,
+		PessimisticFinalEquity:   pessimistic[lastIdx].Equity,
+		PessimisticTotalCashFlow: pessTotalCF,
+		PessimisticCAGR:          cagr(pessimistic[lastIdx].PortfolioValue),
+		OptimisticMultiplier:     1.15,
+		PessimisticMultiplier:    0.85,
+	}
+}
+
+// ============================================================================
+// Preserved Helper Methods (unchanged from previous implementation)
+// ============================================================================
 
 // applyDefaults fills in default values for missing parameters
 func (m *ReinvestmentModeler) applyDefaults(params ReinvestmentParams) ReinvestmentParams {
@@ -149,11 +1054,7 @@ func (m *ReinvestmentModeler) applyDefaults(params ReinvestmentParams) Reinvestm
 	if params.OperatingExpenses == 0 {
 		params.OperatingExpenses = defaults.OperatingExpenses
 	}
-	if params.MinDownPayment == 0 {
-		params.MinDownPayment = defaults.MinDownPayment
-	}
 	if params.AvgPropertyPrice == 0 {
-		// Calculate from portfolio
 		if len(params.Properties) > 0 {
 			total := 0
 			for _, p := range params.Properties {
@@ -165,7 +1066,6 @@ func (m *ReinvestmentModeler) applyDefaults(params ReinvestmentParams) Reinvestm
 		}
 	}
 	if params.AvgPropertyRent == 0 {
-		// Calculate from portfolio
 		if len(params.Properties) > 0 {
 			total := 0
 			for _, p := range params.Properties {
@@ -176,9 +1076,9 @@ func (m *ReinvestmentModeler) applyDefaults(params ReinvestmentParams) Reinvestm
 			params.AvgPropertyRent = defaults.AvgPropertyRent
 		}
 	}
-
-	// BUG FIX: ReinvestmentRate was not being defaulted, causing reinvestScenario
-	// to be identical to baseScenario (no cash flow was being reinvested)
+	if params.MinDownPayment == 0 {
+		params.MinDownPayment = int(float64(params.AvgPropertyPrice) * params.DownPaymentPct)
+	}
 	if params.ReinvestmentRate == 0 {
 		params.ReinvestmentRate = defaults.ReinvestmentRate
 	}
@@ -189,24 +1089,16 @@ func (m *ReinvestmentModeler) applyDefaults(params ReinvestmentParams) Reinvestm
 // buildAssumptions creates a transparent summary of all assumptions used in projections
 func (m *ReinvestmentModeler) buildAssumptions(params ReinvestmentParams) *investment.ProjectionAssumptions {
 	assumptions := &investment.ProjectionAssumptions{
-		// Financing
-		MortgageRate:   params.MortgageRate,
-		DownPaymentPct: params.DownPaymentPct,
-		LoanTermYears:  30, // Fixed for now
-
-		// Growth rates (defaults, will be updated if market data available)
+		MortgageRate:     params.MortgageRate,
+		DownPaymentPct:   params.DownPaymentPct,
+		LoanTermYears:    30,
 		AppreciationRate: params.AppreciationRate,
 		RentGrowthRate:   params.RentGrowthRate,
-
-		// Acquisitions
 		AcquisitionPrice: params.AvgPropertyPrice,
 		AcquisitionRent:  params.AvgPropertyRent,
-
-		// Data quality
 		DataQualityNotes: []string{},
 	}
 
-	// Determine sources
 	defaults := DefaultReinvestmentParams()
 
 	// Mortgage rate source
@@ -218,10 +1110,9 @@ func (m *ReinvestmentModeler) buildAssumptions(params ReinvestmentParams) *inves
 		assumptions.MortgageSource = "User-specified"
 	}
 
-	// Appreciation source - check if we have market data
+	// Appreciation/rent growth sources
 	marketLookup := m.buildMarketDataLookup(params.MarketQuality)
 	if len(params.Properties) > 0 {
-		// Get the most common location for reporting
 		locationCounts := make(map[string]int)
 		for _, p := range params.Properties {
 			loc := m.getPropertyLocation(p)
@@ -237,7 +1128,6 @@ func (m *ReinvestmentModeler) buildAssumptions(params ReinvestmentParams) *inves
 		}
 
 		if marketData, ok := marketLookup[mostCommonLocation]; ok && marketData.PriceGrowth5Y != nil {
-			// We have market data - calculate weighted average for display
 			avgRate := m.calculateWeightedAverageAppreciation(params.Properties, marketLookup, params.AppreciationRate)
 			assumptions.AppreciationRate = avgRate
 			assumptions.AppreciationSource = "Market Data 5Y CAGR (portfolio-weighted)"
@@ -247,7 +1137,6 @@ func (m *ReinvestmentModeler) buildAssumptions(params ReinvestmentParams) *inves
 				"Appreciation rate using historical average (market data unavailable)")
 		}
 
-		// Same for rent growth
 		if marketData, ok := marketLookup[mostCommonLocation]; ok && marketData.RentGrowth5Y != nil {
 			assumptions.RentGrowthSource = "Market Data 5Y CAGR (portfolio-weighted)"
 		} else {
@@ -260,7 +1149,7 @@ func (m *ReinvestmentModeler) buildAssumptions(params ReinvestmentParams) *inves
 		assumptions.RentGrowthSource = fmt.Sprintf("Default (%.1f%%)", defaults.RentGrowthRate)
 	}
 
-	// Acquisition price/rent source
+	// Acquisition price/rent/location sources
 	if params.AcquisitionMarket != nil && params.AcquisitionMarket.MedianHomePrice != nil {
 		assumptions.AcquisitionPrice = *params.AcquisitionMarket.MedianHomePrice
 		assumptions.AcquisitionPriceSource = "Market Data Median"
@@ -283,13 +1172,10 @@ func (m *ReinvestmentModeler) buildAssumptions(params ReinvestmentParams) *inves
 			"Acquisition rent using default (no portfolio or market data)")
 	}
 
-	// Acquisition location
 	if params.AcquisitionMarket != nil && params.AcquisitionMarket.TargetCity != "" {
 		assumptions.AcquisitionLocation = fmt.Sprintf("%s, %s",
-			params.AcquisitionMarket.TargetCity,
-			params.AcquisitionMarket.TargetState)
+			params.AcquisitionMarket.TargetCity, params.AcquisitionMarket.TargetState)
 	} else if len(params.Properties) > 0 {
-		// Use most common location from portfolio
 		locationCounts := make(map[string]int)
 		for _, p := range params.Properties {
 			loc := fmt.Sprintf("%s, %s", p.Property.City, p.Property.State)
@@ -308,7 +1194,7 @@ func (m *ReinvestmentModeler) buildAssumptions(params ReinvestmentParams) *inves
 		assumptions.AcquisitionLocation = "Various (no location data)"
 	}
 
-	// Calculate expense breakdown for acquisitions
+	// Expense breakdown
 	expenseBreakdown := m.buildExpenseBreakdown(params)
 	if expenseBreakdown != nil {
 		assumptions.ExpenseBreakdown = expenseBreakdown
@@ -323,24 +1209,71 @@ func (m *ReinvestmentModeler) buildAssumptions(params ReinvestmentParams) *inves
 			"Operating expenses using simplified estimate (detailed calculation unavailable)")
 	}
 
-	// Calculate confidence score (0-100)
+	// CapEx reserve assumptions
+	m.populateCapExAssumptions(assumptions, params.Properties)
+
 	assumptions.OverallConfidence = m.calculateConfidenceScore(assumptions)
 
 	return assumptions
 }
 
+// populateCapExAssumptions adds CapEx reserve data to assumptions.
+func (m *ReinvestmentModeler) populateCapExAssumptions(
+	assumptions *investment.ProjectionAssumptions,
+	properties []investment.PropertyInPortfolio,
+) {
+	currentYear := time.Now().Year()
+
+	// Calculate average property age
+	avgAge := 15 // default
+	if len(properties) > 0 {
+		totalAge := 0
+		for _, p := range properties {
+			if p.Property.YearBuilt > 0 {
+				totalAge += currentYear - p.Property.YearBuilt
+			} else {
+				totalAge += 15
+			}
+		}
+		avgAge = totalAge / len(properties)
+	}
+
+	assumptions.CapExReserveRate = expenses.CapExReserveRate(avgAge)
+	assumptions.CapExReserveSource = "Component lifecycle annualization (age-adjusted)"
+
+	// Calculate average property value for component risk assessment
+	avgValue := 250000 // default
+	if len(properties) > 0 {
+		totalValue := 0
+		for _, p := range properties {
+			totalValue += p.Property.Price
+		}
+		avgValue = totalValue / len(properties)
+	}
+
+	risks := expenses.ComponentRiskAssessment(avgAge, avgValue)
+	assumptions.CapExComponents = make([]investment.CapExComponentDetail, len(risks))
+	for i, r := range risks {
+		assumptions.CapExComponents[i] = investment.CapExComponentDetail{
+			Name:             r.Name,
+			LifespanYears:    r.LifespanYears,
+			EstRemainingLife: r.EstRemainingLife,
+			AnnualReserve:    r.AnnualReserve,
+			RiskLevel:        r.RiskLevel,
+		}
+	}
+}
+
 // buildExpenseBreakdown creates detailed expense breakdown for acquisitions
 func (m *ReinvestmentModeler) buildExpenseBreakdown(params ReinvestmentParams) *investment.ProjectionExpenseBreakdown {
-	// Determine target state for expense calculation
 	var targetState, targetCity string
 
 	if params.AcquisitionMarket != nil && params.AcquisitionMarket.TargetState != "" {
 		targetState = params.AcquisitionMarket.TargetState
 		targetCity = params.AcquisitionMarket.TargetCity
 	} else if len(params.Properties) > 0 {
-		// Use most common state from portfolio
 		stateCounts := make(map[string]int)
-		cityCounts := make(map[string]string) // state -> city
+		cityCounts := make(map[string]string)
 		for _, p := range params.Properties {
 			stateCounts[p.Property.State]++
 			cityCounts[p.Property.State] = p.Property.City
@@ -356,37 +1289,30 @@ func (m *ReinvestmentModeler) buildExpenseBreakdown(params ReinvestmentParams) *
 	}
 
 	if targetState == "" {
-		return nil // Can't calculate without state
+		return nil
 	}
 
-	// Use expense calculator
 	input := expenses.PropertyInput{
 		Price:         params.AvgPropertyPrice,
 		State:         targetState,
 		City:          targetCity,
-		YearBuilt:     time.Now().Year() - 10, // Assume 10-year-old property for acquisitions
+		YearBuilt:     time.Now().Year() - 10,
 		EstimatedRent: params.AvgPropertyRent,
 	}
 
-	// Get vacancy rate from market data if available
 	if params.AcquisitionMarket != nil && params.AcquisitionMarket.VacancyRate != nil {
 		input.VacancyRateOverride = params.AcquisitionMarket.VacancyRate
 	}
 
 	result, err := m.expenseCalc.Calculate(input)
 	if err != nil {
-		m.logger.Warn("expense calculation failed, using defaults",
-			"error", err,
-			"state", targetState,
-		)
+		m.logger.Warn("expense calculation failed, using defaults", "error", err, "state", targetState)
 		return nil
 	}
 
-	// Get market class info for display
 	marketClass, _, _ := m.expenseCalc.GetMarketClassInfo(targetCity)
 
-	// Determine age category
-	ageCategory := "established" // 10-year-old property
+	ageCategory := "established"
 	propertyAge := time.Now().Year() - input.YearBuilt
 	switch {
 	case propertyAge <= 5:
@@ -401,7 +1327,6 @@ func (m *ReinvestmentModeler) buildExpenseBreakdown(params ReinvestmentParams) *
 		ageCategory = "historic"
 	}
 
-	// Determine vacancy source
 	vacancySource := "National Average"
 	if params.AcquisitionMarket != nil && params.AcquisitionMarket.VacancyRate != nil {
 		vacancySource = "FRED Local"
@@ -421,15 +1346,12 @@ func (m *ReinvestmentModeler) buildExpenseBreakdown(params ReinvestmentParams) *
 	}
 }
 
-// calculateConfidenceScore calculates an overall confidence score (0-100) based on data quality
+// calculateConfidenceScore calculates an overall confidence score (0-100)
 func (m *ReinvestmentModeler) calculateConfidenceScore(assumptions *investment.ProjectionAssumptions) float64 {
 	score := 100.0
-
-	// Deduct for each data quality note (indicates fallback/default used)
 	deductionPerNote := 15.0
 	score -= float64(len(assumptions.DataQualityNotes)) * deductionPerNote
 
-	// Bonus for market-based sources
 	if strings.Contains(assumptions.AppreciationSource, "Market Data") {
 		score += 5
 	}
@@ -440,17 +1362,15 @@ func (m *ReinvestmentModeler) calculateConfidenceScore(assumptions *investment.P
 		score += 5
 	}
 	if assumptions.ExpenseBreakdown != nil {
-		score += 10 // Detailed expense calculation available
+		score += 10
 	}
 
-	// Clamp to 0-100
 	if score < 0 {
 		score = 0
 	}
 	if score > 100 {
 		score = 100
 	}
-
 	return score
 }
 
@@ -458,7 +1378,6 @@ func (m *ReinvestmentModeler) calculateConfidenceScore(assumptions *investment.P
 func (m *ReinvestmentModeler) buildMarketDataLookup(marketQuality []investment.LocationMarketAnalysis) map[string]*investment.LocationMarketAnalysis {
 	lookup := make(map[string]*investment.LocationMarketAnalysis, len(marketQuality))
 	for i := range marketQuality {
-		// Store by location string (e.g., "Austin, TX")
 		lookup[strings.ToLower(marketQuality[i].Location)] = &marketQuality[i]
 	}
 	return lookup
@@ -470,7 +1389,6 @@ func (m *ReinvestmentModeler) getPropertyLocation(prop investment.PropertyInPort
 }
 
 // getAppreciationRateForProperty returns the annual appreciation rate for a property
-// based on its location's 5-year price growth, converted to annual rate
 func (m *ReinvestmentModeler) getAppreciationRateForProperty(
 	prop investment.PropertyInPortfolio,
 	marketLookup map[string]*investment.LocationMarketAnalysis,
@@ -478,28 +1396,16 @@ func (m *ReinvestmentModeler) getAppreciationRateForProperty(
 ) float64 {
 	location := m.getPropertyLocation(prop)
 	if marketData, ok := marketLookup[location]; ok && marketData.PriceGrowth5Y != nil {
-		// Convert 5-year total growth to annual rate using CAGR formula
-		// If 5Y growth is 25%, annual rate = (1.25)^(1/5) - 1 = ~4.56%
-		totalGrowth := *marketData.PriceGrowth5Y / 100 // Convert from percent to decimal
-		if totalGrowth > -1 {                          // Ensure valid for math
-			annualRate := (math.Pow(1+totalGrowth, 0.2) - 1) * 100 // Convert back to percent
-			m.logger.Debug("using market-based appreciation rate",
-				"location", location,
-				"priceGrowth5Y", *marketData.PriceGrowth5Y,
-				"annualRate", annualRate,
-			)
+		totalGrowth := *marketData.PriceGrowth5Y / 100
+		if totalGrowth > -1 {
+			annualRate := (math.Pow(1+totalGrowth, 0.2) - 1) * 100
 			return annualRate
 		}
 	}
-	m.logger.Debug("using default appreciation rate",
-		"location", location,
-		"defaultRate", defaultRate,
-	)
 	return defaultRate
 }
 
 // getRentGrowthRateForProperty returns the annual rent growth rate for a property
-// based on its location's 5-year rent growth, converted to annual rate
 func (m *ReinvestmentModeler) getRentGrowthRateForProperty(
 	prop investment.PropertyInPortfolio,
 	marketLookup map[string]*investment.LocationMarketAnalysis,
@@ -507,22 +1413,12 @@ func (m *ReinvestmentModeler) getRentGrowthRateForProperty(
 ) float64 {
 	location := m.getPropertyLocation(prop)
 	if marketData, ok := marketLookup[location]; ok && marketData.RentGrowth5Y != nil {
-		// Convert 5-year total growth to annual rate using CAGR formula
-		totalGrowth := *marketData.RentGrowth5Y / 100 // Convert from percent to decimal
-		if totalGrowth > -1 {                         // Ensure valid for math
-			annualRate := (math.Pow(1+totalGrowth, 0.2) - 1) * 100 // Convert back to percent
-			m.logger.Debug("using market-based rent growth rate",
-				"location", location,
-				"rentGrowth5Y", *marketData.RentGrowth5Y,
-				"annualRate", annualRate,
-			)
+		totalGrowth := *marketData.RentGrowth5Y / 100
+		if totalGrowth > -1 {
+			annualRate := (math.Pow(1+totalGrowth, 0.2) - 1) * 100
 			return annualRate
 		}
 	}
-	m.logger.Debug("using default rent growth rate",
-		"location", location,
-		"defaultRate", defaultRate,
-	)
 	return defaultRate
 }
 
@@ -552,386 +1448,6 @@ func (m *ReinvestmentModeler) calculateWeightedAverageAppreciation(
 	return weightedSum / float64(totalValue)
 }
 
-// projectWithoutReinvestment models portfolio WITH yearly budget investments
-// but WITHOUT reinvesting cash flows (user keeps cash flow as income)
-func (m *ReinvestmentModeler) projectWithoutReinvestment(
-	params ReinvestmentParams,
-) []investment.YearlyProjection {
-	projections := make([]investment.YearlyProjection, params.ProjectionYears)
-
-	// Build market data lookup for location-specific rates
-	marketLookup := m.buildMarketDataLookup(params.MarketQuality)
-
-	// Build yearly budget lookup (year -> budget amount)
-	yearlyBudgetMap := make(map[int]int)
-	for _, yb := range params.YearlyBudgets {
-		yearlyBudgetMap[yb.Year] = yb.Budget
-	}
-
-	// Track evolving portfolio (properties can be added each year from yearly budgets)
-	currentProperties := make([]investment.PropertyInPortfolio, len(params.Properties))
-	copy(currentProperties, params.Properties)
-
-	// Store original property data and per-property rates
-	propertyDataList := make([]propertyProjectionData, len(params.Properties))
-	for i, p := range params.Properties {
-		propertyDataList[i] = propertyProjectionData{
-			originalPrice:    p.Property.Price,
-			originalLoan:     p.LoanAmount,
-			appreciationRate: m.getAppreciationRateForProperty(p, marketLookup, params.AppreciationRate),
-			rentGrowthRate:   m.getRentGrowthRateForProperty(p, marketLookup, params.RentGrowthRate),
-			originalRent:     p.Property.EstimatedRent,
-			monthlyPayment:   p.MonthlyPayment,
-			acquisitionYear:  0, // Year 0 = initial portfolio
-		}
-	}
-
-	// Calculate weighted average appreciation for simulated acquisitions
-	avgAppreciationRate := m.calculateWeightedAverageAppreciation(params.Properties, marketLookup, params.AppreciationRate)
-
-	cumulativeCashFlow := 0
-	prevYearValue := m.calculatePortfolioValue(params.Properties)
-
-	for year := 1; year <= params.ProjectionYears; year++ {
-		// Check if there's a yearly budget for this year (Year 2+)
-		// Note: Year 1 properties are already in params.Properties
-		if yearBudget, ok := yearlyBudgetMap[year]; ok && year > 1 && yearBudget >= params.MinDownPayment {
-			// Simulate acquisitions from yearly budget (not from cash flow reinvestment)
-			acquisitionPool := yearBudget
-			for acquisitionPool >= params.MinDownPayment {
-				newProperty := m.simulateAcquisitionWithRate(params, avgAppreciationRate)
-				currentProperties = append(currentProperties, newProperty)
-
-				propertyDataList = append(propertyDataList, propertyProjectionData{
-					originalPrice:    newProperty.Property.Price,
-					originalLoan:     newProperty.LoanAmount,
-					appreciationRate: avgAppreciationRate,
-					rentGrowthRate:   params.RentGrowthRate,
-					originalRent:     newProperty.Property.EstimatedRent,
-					monthlyPayment:   newProperty.MonthlyPayment,
-					acquisitionYear:  year,
-				})
-
-				acquisitionPool -= int(float64(params.AvgPropertyPrice) * params.DownPaymentPct)
-				m.logger.Debug("base scenario: simulated acquisition from yearly budget",
-					"year", year,
-					"yearBudget", yearBudget,
-					"totalProperties", len(currentProperties),
-				)
-			}
-		}
-
-		// Calculate current portfolio value with per-property appreciation
-		yearValue := 0
-		loanBalance := 0
-		annualCashFlow := 0
-
-		for i := range currentProperties {
-			if i < len(propertyDataList) {
-				pd := propertyDataList[i]
-				yearsOwned := year - pd.acquisitionYear
-				if yearsOwned < 1 {
-					yearsOwned = 1
-				}
-
-				// Apply property-specific appreciation rate
-				appreciationFactor := math.Pow(1+pd.appreciationRate/100, float64(yearsOwned))
-				propertyValue := int(float64(pd.originalPrice) * appreciationFactor)
-				yearValue += propertyValue
-
-				// Calculate loan paydown
-				paydownFactor := float64(yearsOwned) / 30.0
-				propLoanBalance := int(float64(pd.originalLoan) * (1 - paydownFactor*0.02))
-				loanBalance += propLoanBalance
-
-				// Calculate cash flow with property-specific rent growth
-				rentGrowthFactor := math.Pow(1+pd.rentGrowthRate/100, float64(yearsOwned))
-				adjustedRent := int(float64(pd.originalRent) * rentGrowthFactor)
-				expenses := int(float64(adjustedRent) * params.OperatingExpenses)
-				propCashFlow := (adjustedRent - expenses - pd.monthlyPayment) * 12
-				annualCashFlow += propCashFlow
-			}
-		}
-
-		// Calculate equity
-		equity := yearValue - loanBalance
-
-		cumulativeCashFlow += annualCashFlow
-
-		// Calculate appreciation for the year
-		yearAppreciation := yearValue - prevYearValue
-		prevYearValue = yearValue
-
-		projections[year-1] = investment.YearlyProjection{
-			Year:               year,
-			PortfolioValue:     yearValue,
-			Equity:             equity,
-			LoanBalance:        loanBalance,
-			AnnualCashFlow:     annualCashFlow,
-			CumulativeCashFlow: cumulativeCashFlow,
-			Appreciation:       yearAppreciation,
-		}
-	}
-
-	return projections
-}
-
-// projectWithReinvestment models portfolio with yearly budgets AND cash flow reinvestment
-func (m *ReinvestmentModeler) projectWithReinvestment(
-	params ReinvestmentParams,
-) []investment.YearlyProjection {
-	projections := make([]investment.YearlyProjection, params.ProjectionYears)
-
-	// Build market data lookup for location-specific rates
-	marketLookup := m.buildMarketDataLookup(params.MarketQuality)
-
-	// Build yearly budget lookup (year -> budget amount)
-	yearlyBudgetMap := make(map[int]int)
-	for _, yb := range params.YearlyBudgets {
-		yearlyBudgetMap[yb.Year] = yb.Budget
-	}
-
-	// Track evolving portfolio
-	currentProperties := make([]investment.PropertyInPortfolio, len(params.Properties))
-	copy(currentProperties, params.Properties)
-
-	acquisitionPool := 0 // Accumulated cash for acquisition (from reinvestment)
-	cumulativeCashFlow := 0
-	propertiesAcquired := 0
-
-	// Store original property data and per-property rates
-	propertyDataList := make([]propertyProjectionData, len(params.Properties))
-	for i, p := range params.Properties {
-		propertyDataList[i] = propertyProjectionData{
-			originalPrice:    p.Property.Price,
-			originalLoan:     p.LoanAmount,
-			appreciationRate: m.getAppreciationRateForProperty(p, marketLookup, params.AppreciationRate),
-			rentGrowthRate:   m.getRentGrowthRateForProperty(p, marketLookup, params.RentGrowthRate),
-			originalRent:     p.Property.EstimatedRent,
-			monthlyPayment:   p.MonthlyPayment,
-			acquisitionYear:  0,
-		}
-	}
-
-	// Calculate weighted average appreciation for simulated acquisitions
-	avgAppreciationRate := m.calculateWeightedAverageAppreciation(params.Properties, marketLookup, params.AppreciationRate)
-
-	prevYearValue := m.calculatePortfolioValue(params.Properties)
-
-	for year := 1; year <= params.ProjectionYears; year++ {
-		// Add yearly budget to acquisition pool (Year 2+ only, Year 1 already in params.Properties)
-		if yearBudget, ok := yearlyBudgetMap[year]; ok && year > 1 {
-			acquisitionPool += yearBudget
-			m.logger.Debug("reinvest scenario: added yearly budget to acquisition pool",
-				"year", year,
-				"yearBudget", yearBudget,
-				"acquisitionPool", acquisitionPool,
-			)
-		}
-
-		// Calculate current portfolio value with per-property appreciation
-		portfolioValue := 0
-		totalLoanBalance := 0
-
-		for i := range currentProperties {
-			if i < len(propertyDataList) {
-				pd := propertyDataList[i]
-				yearsOwned := year - pd.acquisitionYear
-				if yearsOwned < 1 {
-					yearsOwned = 1
-				}
-
-				// Apply property-specific appreciation rate
-				appreciationFactor := math.Pow(1+pd.appreciationRate/100, float64(yearsOwned))
-				currentProperties[i].Property.Price = int(float64(pd.originalPrice) * appreciationFactor)
-
-				// Calculate loan balance using original loan amount
-				paydownFactor := float64(yearsOwned) / 30.0
-				currentProperties[i].LoanAmount = int(float64(pd.originalLoan) * (1 - paydownFactor*0.02))
-			}
-			// For newly acquired properties not yet in propertyDataList, values are set by simulateAcquisition
-			portfolioValue += currentProperties[i].Property.Price
-			totalLoanBalance += currentProperties[i].LoanAmount
-		}
-
-		// Calculate annual cash flow with per-property rent growth
-		annualCashFlow := m.calculateAnnualCashFlowForYearWithRates(currentProperties, propertyDataList, params, year)
-
-		// Add reinvested cash flow to acquisition pool
-		reinvestAmount := int(float64(annualCashFlow) * params.ReinvestmentRate / 100)
-		acquisitionPool += reinvestAmount
-
-		// Acquire as many properties as possible with the acquisition pool
-		for acquisitionPool >= params.MinDownPayment {
-			// Simulate acquisition with average appreciation rate
-			newProperty := m.simulateAcquisitionWithRate(params, avgAppreciationRate)
-			currentProperties = append(currentProperties, newProperty)
-
-			// Add property data for the new acquisition
-			propertyDataList = append(propertyDataList, propertyProjectionData{
-				originalPrice:    newProperty.Property.Price,
-				originalLoan:     newProperty.LoanAmount,
-				appreciationRate: avgAppreciationRate,
-				rentGrowthRate:   params.RentGrowthRate, // Use default for simulated
-				originalRent:     newProperty.Property.EstimatedRent,
-				monthlyPayment:   newProperty.MonthlyPayment,
-				acquisitionYear:  year,
-			})
-
-			// Deduct from pool
-			acquisitionPool -= int(float64(params.AvgPropertyPrice) * params.DownPaymentPct)
-			propertiesAcquired++
-
-			m.logger.Debug("reinvest scenario: simulated property acquisition",
-				"year", year,
-				"totalProperties", len(currentProperties),
-				"appreciationRate", avgAppreciationRate,
-				"remainingPool", acquisitionPool,
-			)
-		}
-
-		// Recalculate portfolio value after potential acquisition
-		portfolioValue = 0
-		totalLoanBalance = 0
-		for _, p := range currentProperties {
-			portfolioValue += p.Property.Price
-			totalLoanBalance += p.LoanAmount
-		}
-
-		equity := portfolioValue - totalLoanBalance
-		cumulativeCashFlow += annualCashFlow
-
-		// Calculate appreciation for the year
-		yearAppreciation := portfolioValue - prevYearValue
-		prevYearValue = portfolioValue
-
-		projections[year-1] = investment.YearlyProjection{
-			Year:               year,
-			PortfolioValue:     portfolioValue,
-			Equity:             equity,
-			LoanBalance:        totalLoanBalance,
-			AnnualCashFlow:     annualCashFlow,
-			CumulativeCashFlow: cumulativeCashFlow,
-			Appreciation:       yearAppreciation,
-		}
-	}
-
-	return projections
-}
-
-// simulateAcquisition creates a simulated property acquisition
-func (m *ReinvestmentModeler) simulateAcquisition(params ReinvestmentParams) investment.PropertyInPortfolio {
-	return m.simulateAcquisitionWithRate(params, params.AppreciationRate)
-}
-
-// simulateAcquisitionWithRate creates a simulated property acquisition with a specific appreciation rate
-func (m *ReinvestmentModeler) simulateAcquisitionWithRate(params ReinvestmentParams, appreciationRate float64) investment.PropertyInPortfolio {
-	downPayment := int(float64(params.AvgPropertyPrice) * params.DownPaymentPct)
-	loanAmount := params.AvgPropertyPrice - downPayment
-
-	// Calculate monthly mortgage
-	monthlyRate := params.MortgageRate / 100 / 12
-	numPayments := 360.0
-	monthlyMortgage := float64(loanAmount) * (monthlyRate * math.Pow(1+monthlyRate, numPayments)) /
-		(math.Pow(1+monthlyRate, numPayments) - 1)
-
-	// Determine target state/city for expense calculation
-	var targetState, targetCity string
-	if params.AcquisitionMarket != nil && params.AcquisitionMarket.TargetState != "" {
-		targetState = params.AcquisitionMarket.TargetState
-		targetCity = params.AcquisitionMarket.TargetCity
-	} else if len(params.Properties) > 0 {
-		// Use most common state from portfolio
-		stateCounts := make(map[string]int)
-		cityCounts := make(map[string]string)
-		for _, p := range params.Properties {
-			stateCounts[p.Property.State]++
-			cityCounts[p.Property.State] = p.Property.City
-		}
-		maxCount := 0
-		for state, count := range stateCounts {
-			if count > maxCount {
-				maxCount = count
-				targetState = state
-				targetCity = cityCounts[state]
-			}
-		}
-	}
-
-	// Calculate monthly expenses using expense calculator if possible
-	monthlyRent := params.AvgPropertyRent
-	var monthlyExpenses int
-	var annualNOI float64
-
-	if targetState != "" {
-		// Try to use detailed expense calculator
-		input := expenses.PropertyInput{
-			Price:         params.AvgPropertyPrice,
-			State:         targetState,
-			City:          targetCity,
-			YearBuilt:     time.Now().Year() - 10, // Assume 10-year-old property
-			EstimatedRent: params.AvgPropertyRent,
-		}
-
-		// Use market vacancy rate if available
-		if params.AcquisitionMarket != nil && params.AcquisitionMarket.VacancyRate != nil {
-			input.VacancyRateOverride = params.AcquisitionMarket.VacancyRate
-		}
-
-		expenseResult, err := m.expenseCalc.Calculate(input)
-		if err == nil {
-			monthlyExpenses = int(expenseResult.TotalMonthly)
-			annualNOI = expenseResult.NOI
-			m.logger.Debug("using detailed expense calculation for simulated acquisition",
-				"state", targetState,
-				"expenseRatio", expenseResult.ExpenseRatio,
-				"monthlyExpenses", monthlyExpenses,
-			)
-		} else {
-			// Fall back to flat percentage
-			monthlyExpenses = int(float64(monthlyRent) * params.OperatingExpenses)
-			annualNOI = float64(monthlyRent) * 12 * (1 - params.OperatingExpenses)
-			m.logger.Warn("expense calculation failed, using flat percentage",
-				"error", err,
-				"operatingExpenses", params.OperatingExpenses,
-			)
-		}
-	} else {
-		// No state info, use flat percentage
-		monthlyExpenses = int(float64(monthlyRent) * params.OperatingExpenses)
-		annualNOI = float64(monthlyRent) * 12 * (1 - params.OperatingExpenses)
-	}
-
-	monthlyCashFlow := monthlyRent - monthlyExpenses - int(monthlyMortgage)
-	capRate := (annualNOI / float64(params.AvgPropertyPrice)) * 100
-
-	// Use target location in property if available
-	city := "Various"
-	state := "US"
-	if targetCity != "" {
-		city = targetCity
-	}
-	if targetState != "" {
-		state = targetState
-	}
-
-	return investment.PropertyInPortfolio{
-		Property: investment.Property{
-			ID:            "simulated",
-			Address:       "Simulated Acquisition",
-			City:          city,
-			State:         state,
-			Price:         params.AvgPropertyPrice,
-			EstimatedRent: params.AvgPropertyRent,
-		},
-		DownPayment:     downPayment,
-		LoanAmount:      loanAmount,
-		MonthlyPayment:  int(monthlyMortgage),
-		MonthlyCashFlow: monthlyCashFlow,
-		CapRate:         capRate,
-	}
-}
-
 // calculateCumulativeDiff calculates the difference between scenarios at key years
 func (m *ReinvestmentModeler) calculateCumulativeDiff(
 	base, reinvest []investment.YearlyProjection,
@@ -939,29 +1455,26 @@ func (m *ReinvestmentModeler) calculateCumulativeDiff(
 ) investment.ReinvestmentDiff {
 	diff := investment.ReinvestmentDiff{}
 
-	// Year 5 comparison
 	if years >= 5 && len(base) >= 5 && len(reinvest) >= 5 {
 		diff.Year5 = investment.ReinvestmentDiffPoint{
-			Value:    reinvest[4].PortfolioValue - base[4].PortfolioValue,
+			Value:    (reinvest[4].PortfolioValue + reinvest[4].CashBalance) - base[4].PortfolioValue,
 			CashFlow: reinvest[4].AnnualCashFlow - base[4].AnnualCashFlow,
-			Equity:   reinvest[4].Equity - base[4].Equity,
+			Equity:   (reinvest[4].Equity + reinvest[4].CashBalance) - base[4].Equity,
 		}
 	}
 
-	// Year 10 comparison
 	if years >= 10 && len(base) >= 10 && len(reinvest) >= 10 {
 		diff.Year10 = investment.ReinvestmentDiffPoint{
-			Value:    reinvest[9].PortfolioValue - base[9].PortfolioValue,
+			Value:    (reinvest[9].PortfolioValue + reinvest[9].CashBalance) - base[9].PortfolioValue,
 			CashFlow: reinvest[9].AnnualCashFlow - base[9].AnnualCashFlow,
-			Equity:   reinvest[9].Equity - base[9].Equity,
+			Equity:   (reinvest[9].Equity + reinvest[9].CashBalance) - base[9].Equity,
 		}
 	} else if years > 0 && len(base) > 0 && len(reinvest) > 0 {
-		// Use final year if less than 10 years
 		lastIdx := len(base) - 1
 		diff.Year10 = investment.ReinvestmentDiffPoint{
-			Value:    reinvest[lastIdx].PortfolioValue - base[lastIdx].PortfolioValue,
+			Value:    (reinvest[lastIdx].PortfolioValue + reinvest[lastIdx].CashBalance) - base[lastIdx].PortfolioValue,
 			CashFlow: reinvest[lastIdx].AnnualCashFlow - base[lastIdx].AnnualCashFlow,
-			Equity:   reinvest[lastIdx].Equity - base[lastIdx].Equity,
+			Equity:   (reinvest[lastIdx].Equity + reinvest[lastIdx].CashBalance) - base[lastIdx].Equity,
 		}
 	}
 
@@ -979,15 +1492,10 @@ func (m *ReinvestmentModeler) calculateCompoundedReturns(
 	lastIdx := len(reinvest) - 1
 	baseLastIdx := len(base) - 1
 
-	// Calculate total reinvested (sum of cash flows that were reinvested vs withdrawn)
-	// In base scenario, cash flows are kept; in reinvest scenario, they're deployed
 	baseCumulativeCashFlow := base[baseLastIdx].CumulativeCashFlow
-	totalReinvested := baseCumulativeCashFlow // Amount that was reinvested instead of kept
+	totalReinvested := baseCumulativeCashFlow
 
-	// Additional value from reinvestment
-	additionalValue := reinvest[lastIdx].PortfolioValue - base[baseLastIdx].PortfolioValue
-
-	// Additional annual cash flow from acquired properties
+	additionalValue := (reinvest[lastIdx].PortfolioValue + reinvest[lastIdx].CashBalance) - base[baseLastIdx].PortfolioValue
 	additionalCashFlow := reinvest[lastIdx].AnnualCashFlow - base[baseLastIdx].AnnualCashFlow
 
 	return investment.CompoundedReturns{
@@ -997,8 +1505,7 @@ func (m *ReinvestmentModeler) calculateCompoundedReturns(
 	}
 }
 
-// Helper methods
-
+// calculatePortfolioValue sums property prices
 func (m *ReinvestmentModeler) calculatePortfolioValue(properties []investment.PropertyInPortfolio) int {
 	total := 0
 	for _, p := range properties {
@@ -1007,97 +1514,49 @@ func (m *ReinvestmentModeler) calculatePortfolioValue(properties []investment.Pr
 	return total
 }
 
-func (m *ReinvestmentModeler) calculateTotalLoanBalance(properties []investment.PropertyInPortfolio) int {
-	total := 0
-	for _, p := range properties {
-		total += p.LoanAmount
+// getMostCommonStateCity returns the most common state and city from properties
+func (m *ReinvestmentModeler) getMostCommonStateCity(properties []investment.PropertyInPortfolio) (string, string) {
+	if len(properties) == 0 {
+		return "", ""
 	}
-	return total
-}
-
-func (m *ReinvestmentModeler) calculateAnnualCashFlow(
-	properties []investment.PropertyInPortfolio,
-	params ReinvestmentParams,
-) int {
-	total := 0
+	stateCounts := make(map[string]int)
+	cityCounts := make(map[string]string)
 	for _, p := range properties {
-		total += p.MonthlyCashFlow * 12
+		stateCounts[p.Property.State]++
+		cityCounts[p.Property.State] = p.Property.City
 	}
-	return total
-}
-
-func (m *ReinvestmentModeler) calculateAnnualCashFlowForYear(
-	properties []investment.PropertyInPortfolio,
-	params ReinvestmentParams,
-	year int,
-) int {
-	// Apply rent growth
-	rentGrowthFactor := math.Pow(1+params.RentGrowthRate/100, float64(year))
-
-	total := 0
-	for _, p := range properties {
-		// Adjusted cash flow with rent growth (expenses and mortgage stay same)
-		adjustedRent := int(float64(p.Property.EstimatedRent) * rentGrowthFactor)
-		expenses := int(float64(adjustedRent) * params.OperatingExpenses)
-		cashFlow := adjustedRent - expenses - p.MonthlyPayment
-		total += cashFlow * 12
-	}
-
-	return total
-}
-
-// propertyProjectionData holds per-property data for projection calculations
-type propertyProjectionData struct {
-	originalPrice    int
-	originalLoan     int
-	appreciationRate float64
-	rentGrowthRate   float64
-	originalRent     int
-	monthlyPayment   int
-	acquisitionYear  int
-}
-
-func (m *ReinvestmentModeler) calculateAnnualCashFlowForYearWithRates(
-	properties []investment.PropertyInPortfolio,
-	propertyDataList []propertyProjectionData,
-	params ReinvestmentParams,
-	year int,
-) int {
-	total := 0
-
-	for i, p := range properties {
-		var rentGrowthRate float64
-		var originalRent int
-		var monthlyPayment int
-		var acquisitionYear int
-
-		if i < len(propertyDataList) {
-			pd := propertyDataList[i]
-			rentGrowthRate = pd.rentGrowthRate
-			originalRent = pd.originalRent
-			monthlyPayment = pd.monthlyPayment
-			acquisitionYear = pd.acquisitionYear
-		} else {
-			// Fallback for properties without data
-			rentGrowthRate = params.RentGrowthRate
-			originalRent = p.Property.EstimatedRent
-			monthlyPayment = p.MonthlyPayment
-			acquisitionYear = 0
+	maxCount := 0
+	var targetState, targetCity string
+	for state, count := range stateCounts {
+		if count > maxCount {
+			maxCount = count
+			targetState = state
+			targetCity = cityCounts[state]
 		}
-
-		// Calculate years since acquisition
-		yearsOwned := year - acquisitionYear
-		if yearsOwned < 1 {
-			yearsOwned = 1
-		}
-
-		// Apply property-specific rent growth
-		rentGrowthFactor := math.Pow(1+rentGrowthRate/100, float64(yearsOwned))
-		adjustedRent := int(float64(originalRent) * rentGrowthFactor)
-		expenses := int(float64(adjustedRent) * params.OperatingExpenses)
-		cashFlow := adjustedRent - expenses - monthlyPayment
-		total += cashFlow * 12
 	}
+	return targetState, targetCity
+}
 
-	return total
+// avgPrice calculates average property price
+func (m *ReinvestmentModeler) avgPrice(properties []investment.PropertyInPortfolio) int {
+	if len(properties) == 0 {
+		return 300000
+	}
+	total := 0
+	for _, p := range properties {
+		total += p.Property.Price
+	}
+	return total / len(properties)
+}
+
+// avgRent calculates average property rent
+func (m *ReinvestmentModeler) avgRent(properties []investment.PropertyInPortfolio) int {
+	if len(properties) == 0 {
+		return 2000
+	}
+	total := 0
+	for _, p := range properties {
+		total += p.Property.EstimatedRent
+	}
+	return total / len(properties)
 }

@@ -420,6 +420,52 @@ func (c *Client) SetMaxTokens(maxTokens int) {
 	c.maxTokens = maxTokens
 }
 
+// CompleteWithMaxTokens sends a completion with a per-call max_tokens override.
+// This is thread-safe (unlike SetMaxTokens) since it doesn't mutate client state.
+func (c *Client) CompleteWithMaxTokens(ctx context.Context, systemPrompt, userPrompt string, maxTokens int) (string, error) {
+	req := MessageRequest{
+		Model:     c.model,
+		MaxTokens: maxTokens,
+		System:    systemPrompt,
+		Messages: []Message{
+			{Role: "user", Content: userPrompt},
+		},
+	}
+
+	resp, err := c.sendRequest(ctx, req)
+	if err != nil {
+		return "", err
+	}
+
+	var text strings.Builder
+	for _, block := range resp.Content {
+		if block.Type == "text" {
+			text.WriteString(block.Text)
+		}
+	}
+
+	c.logger.Debug("completion finished",
+		"input_tokens", resp.Usage.InputTokens,
+		"output_tokens", resp.Usage.OutputTokens,
+		"max_tokens", maxTokens,
+	)
+
+	return text.String(), nil
+}
+
+// ExtractText extracts all text content from a MessageResponse.
+// Web search responses contain mixed content blocks (server_tool_use, text, etc.).
+// This helper concatenates only the text blocks.
+func ExtractText(resp *MessageResponse) string {
+	var b strings.Builder
+	for _, block := range resp.Content {
+		if block.Type == "text" {
+			b.WriteString(block.Text)
+		}
+	}
+	return b.String()
+}
+
 // CollectStreamText collects all text from a stream
 func CollectStreamText(events <-chan StreamEvent) (string, *Usage, error) {
 	var text strings.Builder

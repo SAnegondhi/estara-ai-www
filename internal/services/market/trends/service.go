@@ -77,12 +77,17 @@ func (s *Service) GetTrends(ctx context.Context, req TrendsRequest) (*TrendsResu
 	// Get current metrics
 	currentMetrics := s.getCurrentMetrics(historical)
 
+	// Calculate statistical metrics (ADR-073)
+	calc := NewCalculator()
+	calculatedMetrics := calc.CalculateAllMetrics(historical)
+
 	result := &TrendsResult{
-		Location:       req.Location,
-		Historical:     historical,
-		YoYChanges:     yoyChanges,
-		CurrentMetrics: currentMetrics,
-		GeneratedAt:    time.Now(),
+		Location:          req.Location,
+		Historical:        historical,
+		YoYChanges:        yoyChanges,
+		CurrentMetrics:    currentMetrics,
+		CalculatedMetrics: calculatedMetrics,
+		GeneratedAt:       time.Now(),
 	}
 
 	// Generate AI synthesis if requested

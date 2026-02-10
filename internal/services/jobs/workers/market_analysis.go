@@ -96,6 +96,12 @@ func (w *MarketAnalysisWorker) Process(
 		}
 	}
 
+	// Route to V2 pipeline if available (ADR-074)
+	if w.orchestrator.HasV2() {
+		return w.processV2(ctx, job, progress, req, marketData, startTime)
+	}
+
+	// V1 fallback: dual-agent pipeline
 	// Step 2: Build analysis context (30%)
 	w.reportProgress(progress, job.ID, 25, "Building analysis context")
 	analysisCtx := w.buildAnalysisContext(req.Location, marketData)
@@ -320,10 +326,15 @@ func (w *MarketAnalysisWorker) checkCache(ctx context.Context, userID, cacheKey 
 		return nil, fmt.Errorf("cache not configured")
 	}
 
-	fullKey := fmt.Sprintf("market_analysis:%s:%s", userID, cacheKey)
-	data, err := w.cache.Get(ctx, userID, fullKey)
+	// Try V2 key format first (plain cacheKey, used by SetAnalysisReport)
+	data, err := w.cache.Get(ctx, userID, cacheKey)
 	if err != nil {
-		return nil, err
+		// Fallback: try V1 key format (prefixed with market_analysis:{userID}:)
+		fullKey := fmt.Sprintf("market_analysis:%s:%s", userID, cacheKey)
+		data, err = w.cache.Get(ctx, userID, fullKey)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var result agents.MarketAnalysisResult
@@ -388,6 +399,101 @@ func (w *MarketAnalysisWorker) failedResult(job *queue.Job, err error) (*queue.J
 		Error:       err.Error(),
 		CompletedAt: time.Now(),
 	}, err
+}
+
+// processV2 runs the V2 data-driven analysis pipeline (ADR-074)
+func (w *MarketAnalysisWorker) processV2(
+	ctx context.Context,
+	job *queue.Job,
+	progress chan<- queue.ProgressEvent,
+	req *agents.MarketAnalysisRequest,
+	marketData *agents.MarketDataSummary,
+	startTime time.Time,
+) (*queue.JobResult, error) {
+	// Step 2: Fetch market context (10% — usually cached, near-instant)
+	w.reportProgress(progress, job.ID, 10, "Fetching market context")
+
+	// Parse location for V2 request
+	parts := strings.Split(req.Location, ",")
+	city := strings.TrimSpace(parts[0])
+	state := ""
+	if len(parts) > 1 {
+		state = strings.TrimSpace(parts[1])
+	}
+
+	orchReq := agents.AnalysisRequest{
+		Location: req.Location,
+		City:     city,
+		State:    state,
+		CacheKey: req.CacheKey,
+		UserID:   job.UserID,
+	}
+
+	// Step 3: Build data payload (30% — parallel fetches from existing services)
+	w.reportProgress(progress, job.ID, 30, "Building data payload")
+
+	// Step 4: Generate analysis (50% — Sonnet 12K, the longest step)
+	w.reportProgress(progress, job.ID, 50, "Generating analysis")
+
+	v2Result, err := w.orchestrator.AnalyzeV2(ctx, orchReq)
+	if err != nil {
+		return w.failedResult(job, fmt.Errorf("V2 analysis failed: %w", err))
+	}
+
+	// Step 5: Finalize (90%)
+	w.reportProgress(progress, job.ID, 90, "Finalizing and caching")
+
+	// Cache V2 report in analysis_cache with fullReport column
+	if w.cache != nil && req.CacheKey != "" {
+		w.logger.Info("caching V2 report",
+			"cache_key", req.CacheKey,
+			"user_id", job.UserID,
+			"report_len", len(v2Result.FullReport),
+		)
+		if err := w.cache.SetAnalysisReport(ctx, job.UserID, req.CacheKey, v2Result, cache.AnalysisReportCacheOptions{
+			Location:   req.Location,
+			FullReport: v2Result.FullReport,
+		}, 24*time.Hour); err != nil {
+			w.logger.Error("failed to cache V2 report", "error", err, "cache_key", req.CacheKey)
+		}
+	} else {
+		w.logger.Warn("skipping V2 report cache",
+			"cache_nil", w.cache == nil,
+			"cache_key_empty", req.CacheKey == "",
+		)
+	}
+
+	// Build result compatible with existing job result format
+	// V2 puts markdown in fullReport/narrativeAnalysis for display
+	result := &agents.MarketAnalysisResult{
+		Location:          req.Location,
+		NarrativeAnalysis: v2Result.FullReport, // Markdown report
+		Confidence:        float64(v2Result.DataCompleteness) / 100.0,
+		GeneratedAt:       v2Result.GeneratedAt,
+	}
+	if marketData != nil {
+		result.MarketData = *marketData
+	}
+
+	// Complete
+	w.reportProgress(progress, job.ID, 100, "Market analysis complete")
+
+	duration := time.Since(startTime)
+	w.logger.Info("V2 market analysis job complete",
+		"job_id", job.ID,
+		"duration_ms", duration.Milliseconds(),
+		"location", req.Location,
+		"data_completeness", v2Result.DataCompleteness,
+		"report_length", len(v2Result.FullReport),
+	)
+
+	return &queue.JobResult{
+		JobID:       job.ID,
+		Status:      queue.JobStatusCompleted,
+		Data:        w.resultToMap(result),
+		Duration:    duration,
+		CompletedAt: time.Now(),
+	}, nil
 }
 
 // resultToMap converts MarketAnalysisResult to a map for JobResult.Data

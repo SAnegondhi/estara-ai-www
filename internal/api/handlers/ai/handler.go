@@ -324,12 +324,13 @@ func (h *Handler) QueueEvaluationChat(w http.ResponseWriter, r *http.Request) {
 			exp, err := expenseCalc.Calculate(expenses.PropertyInput{
 				Price:         p.Price,
 				State:         p.State,
+				City:          p.City,
 				YearBuilt:     p.YearBuilt,
 				EstimatedRent: p.EstimatedRent,
 				PropertyType:  p.PropertyType,
 			})
 			if err == nil {
-				prop.OperatingExpenses = &prompts.PropertyExpenses{
+				propExp := &prompts.PropertyExpenses{
 					PropertyTax:      exp.PropertyTax,
 					Insurance:        exp.Insurance,
 					Maintenance:      exp.Maintenance,
@@ -342,6 +343,10 @@ func (h *Handler) QueueEvaluationChat(w http.ResponseWriter, r *http.Request) {
 					MonthlyNOI:       exp.NOI / 12, // Monthly pre-financing cash flow
 					CapRate:          exp.CapRate,
 				}
+				// Compute financing estimates for stress test calculations
+				// Assume 7% mortgage rate (or market rate if available)
+				prompts.ComputeFinancing(propExp, p.Price, 7.0)
+				prop.OperatingExpenses = propExp
 			} else {
 				h.logger.Warn("failed to calculate operating expenses",
 					"property_id", p.ID,
@@ -1486,7 +1491,7 @@ func (h *Handler) GetInvestmentPlan(w http.ResponseWriter, r *http.Request) {
 			request["locations"] = locations
 		}
 
-		// Extract strategy and capital from metricsData if available
+		// Extract request parameters from metricsData
 		if len(cacheRecord.MetricsData) > 0 {
 			var metricsData map[string]interface{}
 			if err := json.Unmarshal(cacheRecord.MetricsData, &metricsData); err == nil {
@@ -1495,6 +1500,43 @@ func (h *Handler) GetInvestmentPlan(w http.ResponseWriter, r *http.Request) {
 				}
 				if capital, ok := metricsData["availableCapital"]; ok {
 					request["availableCapital"] = capital
+				}
+				// Yearly budgets for multi-year planning display
+				if yb, ok := metricsData["yearlyBudgets"]; ok && yb != nil {
+					request["yearlyBudgets"] = yb
+				}
+				// Financial assumptions
+				fa := map[string]interface{}{}
+				if mr, ok := metricsData["mortgageRate"]; ok {
+					fa["mortgageRate"] = mr
+				}
+				if dp, ok := metricsData["downPaymentPct"]; ok {
+					fa["downPaymentPercent"] = dp
+				}
+				if oe, ok := metricsData["operatingExpensesPct"]; ok {
+					fa["operatingExpenses"] = oe
+				}
+				if len(fa) > 0 {
+					request["financialAssumptions"] = fa
+				}
+				// Reinvestment settings
+				if v, ok := metricsData["reinvestSurplusCashFlows"]; ok {
+					request["reinvestSurplusCashFlows"] = v
+				}
+				if v, ok := metricsData["reinvestmentRate"]; ok {
+					request["reinvestmentRate"] = v
+				}
+				if v, ok := metricsData["projectionYears"]; ok {
+					request["projectionYears"] = v
+				}
+				// Constraints
+				if rt, ok := metricsData["riskTolerance"]; ok && rt != "" {
+					request["constraints"] = map[string]interface{}{
+						"riskTolerance": rt,
+					}
+				}
+				if v, ok := metricsData["includeSuburbs"]; ok {
+					request["includeSuburbs"] = v
 				}
 			}
 		}
@@ -2393,11 +2435,11 @@ func (h *Handler) QueueAnalysis(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Build payload
+	// Build payload — use camelCase keys to match client (single source of truth for cache keys)
 	payload := map[string]interface{}{
-		"location":      req.Location,
-		"cache_key":     req.CacheKey,
-		"force_refresh": req.ForceRefresh,
+		"location":     req.Location,
+		"cacheKey":     req.CacheKey,
+		"forceRefresh": req.ForceRefresh,
 	}
 
 	// Create job
@@ -2608,6 +2650,361 @@ func (h *Handler) CancelAnalysis(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"message": "job cancelled",
 	})
+}
+
+// ===============================
+// Analysis History & Dismiss
+// ===============================
+
+// AnalysisHistoryItem represents a single analysis in the history
+type AnalysisHistoryItem struct {
+	ID        string                 `json:"id"`
+	CacheKey  string                 `json:"cacheKey"`
+	Location  string                 `json:"location"`
+	Status    string                 `json:"status"`
+	CreatedAt string                 `json:"createdAt"`
+	Preview   string                 `json:"preview"`
+	HasReport bool                   `json:"hasReport"`
+	Metrics   map[string]interface{} `json:"metrics,omitempty"`
+	Synthesis map[string]interface{} `json:"synthesis,omitempty"`
+}
+
+// GetAnalysisHistory returns the user's market analysis history
+func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user := middleware.GetUserFromContext(ctx)
+	if user == nil {
+		httputil.Error(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	page := parseBoundedIntQuery(r, "page", 1, 1, 10_000)
+	limit := parseBoundedIntQuery(r, "limit", 50, 1, 100)
+	offset := (page - 1) * limit
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+
+	query := `
+		SELECT
+			id,
+			key,
+			location,
+			content,
+			"metricsData",
+			"narrativeData",
+			"lastAccessedAt"
+		FROM analysis_cache
+		WHERE "userId" = $1
+			AND feature = 'dual_agent_market_analysis'
+			AND "supersededBy" IS NULL
+			AND ($4 = '' OR location ILIKE '%' || $4 || '%')
+		ORDER BY "lastAccessedAt" DESC
+		LIMIT $2 OFFSET $3
+	`
+
+	rows, err := h.db.Main.Query(ctx, query, user.UserID, limit, offset, search)
+	if err != nil {
+		h.logger.Error("failed to get analysis history", "error", err)
+		httputil.JSON(w, http.StatusOK, map[string]interface{}{
+			"success": true,
+			"analyses": []AnalysisHistoryItem{},
+			"pagination": map[string]int{
+				"page": page, "limit": limit, "total": 0, "totalPages": 0,
+			},
+		})
+		return
+	}
+	defer rows.Close()
+
+	analyses := make([]AnalysisHistoryItem, 0)
+	for rows.Next() {
+		var item AnalysisHistoryItem
+		var content string
+		var metricsData, narrativeData *string
+		var lastAccessedAt time.Time
+
+		err := rows.Scan(
+			&item.ID,
+			&item.CacheKey,
+			&item.Location,
+			&content,
+			&metricsData,
+			&narrativeData,
+			&lastAccessedAt,
+		)
+		if err != nil {
+			h.logger.Warn("failed to scan analysis history item", "error", err)
+			continue
+		}
+
+		item.Status = "COMPLETED"
+		item.CreatedAt = lastAccessedAt.Format(time.RFC3339)
+		item.HasReport = content != ""
+		item.Preview = extractExecutiveSummary(content)
+
+		if metricsData != nil && *metricsData != "" {
+			var metrics map[string]interface{}
+			if json.Unmarshal([]byte(*metricsData), &metrics) == nil {
+				item.Metrics = metrics
+			}
+		}
+
+		if narrativeData != nil && *narrativeData != "" {
+			var narrative map[string]interface{}
+			if json.Unmarshal([]byte(*narrativeData), &narrative) == nil {
+				item.Synthesis = narrative
+			}
+		}
+
+		analyses = append(analyses, item)
+	}
+
+	// Get total count
+	var total int
+	_ = h.db.Main.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM analysis_cache
+		WHERE "userId" = $1
+			AND feature = 'dual_agent_market_analysis'
+			AND "supersededBy" IS NULL
+			AND ($2 = '' OR location ILIKE '%' || $2 || '%')
+	`, user.UserID, search).Scan(&total)
+
+	totalPages := total / limit
+	if total%limit > 0 {
+		totalPages++
+	}
+
+	httputil.JSON(w, http.StatusOK, map[string]interface{}{
+		"success":  true,
+		"analyses": analyses,
+		"pagination": map[string]int{
+			"page":       page,
+			"limit":      limit,
+			"total":      total,
+			"totalPages": totalPages,
+		},
+	})
+}
+
+// DismissAnalysisJob dismisses/deletes an analysis job
+func (h *Handler) DismissAnalysisJob(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user := middleware.GetUserFromContext(ctx)
+	if user == nil {
+		httputil.Error(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	jobID := chi.URLParam(r, "jobId")
+	if jobID == "" {
+		httputil.BadRequest(w, "jobId is required")
+		return
+	}
+
+	// Try to delete from in-memory job queue
+	job, err := h.jobQueue.GetJob(jobID)
+	if err == nil {
+		if job.UserID != user.UserID {
+			httputil.NotFound(w, "job not found")
+			return
+		}
+		_ = h.jobQueue.Delete(jobID)
+	}
+
+	h.logger.Info("analysis job dismissed", "job_id", jobID, "user_id", user.UserID)
+
+	httputil.JSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": "job dismissed",
+	})
+}
+
+// GetAnalysisContext returns market context for a location (used to pre-populate analysis)
+func (h *Handler) GetAnalysisContext(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user := middleware.GetUserFromContext(ctx)
+	if user == nil {
+		httputil.Error(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	location := r.URL.Query().Get("location")
+	if location == "" {
+		httputil.BadRequest(w, "location query parameter is required")
+		return
+	}
+
+	// Check if we have a cached analysis for this location
+	var cachedContent, cachedMetrics, cachedNarrative *string
+	var cachedAt time.Time
+	err := h.db.Main.QueryRow(ctx, `
+		SELECT content, "metricsData", "narrativeData", "lastAccessedAt"
+		FROM analysis_cache
+		WHERE "userId" = $1
+			AND feature = 'dual_agent_market_analysis'
+			AND location ILIKE $2
+			AND "supersededBy" IS NULL
+		ORDER BY "lastAccessedAt" DESC
+		LIMIT 1
+	`, user.UserID, location).Scan(&cachedContent, &cachedMetrics, &cachedNarrative, &cachedAt)
+
+	contextData := map[string]interface{}{
+		"location":   location,
+		"hasAnalysis": false,
+	}
+
+	if err == nil {
+		contextData["hasAnalysis"] = true
+		contextData["lastAnalyzedAt"] = cachedAt.Format(time.RFC3339)
+
+		if cachedMetrics != nil && *cachedMetrics != "" {
+			var metrics map[string]interface{}
+			if json.Unmarshal([]byte(*cachedMetrics), &metrics) == nil {
+				contextData["metrics"] = metrics
+			}
+		}
+		if cachedNarrative != nil && *cachedNarrative != "" {
+			var narrative map[string]interface{}
+			if json.Unmarshal([]byte(*cachedNarrative), &narrative) == nil {
+				contextData["synthesis"] = narrative
+			}
+		}
+	}
+
+	// Build economic context if available
+	if h.econContext != nil {
+		parts := strings.SplitN(location, ",", 2)
+		city := strings.TrimSpace(parts[0])
+		var state string
+		if len(parts) > 1 {
+			state = strings.TrimSpace(parts[1])
+		}
+		econStr := h.econContext.BuildEconomicContext(ctx, city, state, 0)
+		if econStr != "" {
+			contextData["economicSummary"] = econStr
+		}
+	}
+
+	httputil.JSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"context": contextData,
+	})
+}
+
+// extractExecutiveSummary extracts the first paragraph under "## Executive Summary"
+// from markdown content. Falls back to the first 300 chars if not found.
+func extractExecutiveSummary(content string) string {
+	if content == "" {
+		return ""
+	}
+
+	// Look for Executive Summary heading (case-insensitive)
+	lower := strings.ToLower(content)
+	idx := strings.Index(lower, "## executive summary")
+	if idx == -1 {
+		// Fallback: first 300 chars of content
+		if len(content) > 300 {
+			return strings.TrimSpace(content[:300]) + "..."
+		}
+		return strings.TrimSpace(content)
+	}
+
+	// Skip the heading line itself
+	rest := content[idx:]
+	nlIdx := strings.Index(rest, "\n")
+	if nlIdx == -1 {
+		return ""
+	}
+	rest = rest[nlIdx+1:]
+
+	// Skip blank lines after the heading
+	lines := strings.Split(rest, "\n")
+	var paragraphLines []string
+	started := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !started {
+			if trimmed == "" {
+				continue
+			}
+			// Stop if we hit another heading
+			if strings.HasPrefix(trimmed, "#") {
+				break
+			}
+			started = true
+		}
+		if started {
+			// Stop at blank line or next heading (end of first paragraph)
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+				break
+			}
+			paragraphLines = append(paragraphLines, trimmed)
+		}
+	}
+
+	result := strings.Join(paragraphLines, " ")
+	if len(result) > 500 {
+		result = result[:500] + "..."
+	}
+	return result
+}
+
+// GetAnalysisReport returns the full analysis report for a given cache key
+func (h *Handler) GetAnalysisReport(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user := middleware.GetUserFromContext(ctx)
+	if user == nil {
+		httputil.Error(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	cacheKey := r.URL.Query().Get("key")
+	if cacheKey == "" {
+		httputil.BadRequest(w, "key query parameter is required")
+		return
+	}
+
+	q := queries.New(h.db.Main)
+	cache, err := q.GetCacheByUserAndKey(ctx, queries.GetCacheByUserAndKeyParams{
+		UserId: user.UserID,
+		Key:    cacheKey,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			httputil.NotFound(w, "report not found")
+			return
+		}
+		h.logger.Error("failed to get analysis report", "error", err, "key", cacheKey)
+		httputil.Error(w, http.StatusInternalServerError, "failed to load report")
+		return
+	}
+
+	// Build response
+	resp := map[string]interface{}{
+		"success":  true,
+		"location": cache.Location,
+		"content":  cache.Content,
+	}
+
+	if cache.FullReport.Valid && cache.FullReport.String != "" {
+		resp["content"] = cache.FullReport.String
+	}
+
+	if cache.MetricsData != nil {
+		var metrics map[string]interface{}
+		if json.Unmarshal(cache.MetricsData, &metrics) == nil {
+			resp["metricsData"] = metrics
+		}
+	}
+
+	if cache.NarrativeData != nil {
+		var narrative map[string]interface{}
+		if json.Unmarshal(cache.NarrativeData, &narrative) == nil {
+			resp["narrativeData"] = narrative
+		}
+	}
+
+	httputil.JSON(w, http.StatusOK, resp)
 }
 
 // ===============================

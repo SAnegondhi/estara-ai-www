@@ -252,6 +252,161 @@ func (q *Queries) GetCityMetroMapping(ctx context.Context, arg GetCityMetroMappi
 	return i, err
 }
 
+const GetCitySnapshot = `-- name: GetCitySnapshot :one
+
+SELECT
+    c.id,
+    c.location_key,
+    c.city,
+    c.state,
+    c.metro_region_id,
+    COALESCE(m.metro_name, '') AS metro_name,
+    c.median_home_price,
+    c.median_price_per_sqft,
+    c.median_list_price,
+    c.homes_sold,
+    c.inventory_count,
+    c.months_of_supply,
+    c.median_days_on_market,
+    c.price_yoy_change,
+    c.forecast_growth,
+    c.median_rent,
+    c.rent_yoy_change,
+    c.rental_yield,
+    c.cap_rate,
+    c.price_to_rent_ratio,
+    c.vacancy_rate,
+    c.hud_fmr_0br,
+    c.hud_fmr_1br,
+    c.hud_fmr_2br,
+    c.hud_fmr_3br,
+    c.hud_fmr_4br,
+    c.population,
+    c.population_growth_rate,
+    c.median_household_income,
+    c.unemployment_rate,
+    c.employment_growth_rate,
+    c.market_heat_index,
+    c.market_temperature,
+    c.affordability_index,
+    c.affordability_burden,
+    c.price_to_income_ratio,
+    c.data_sources,
+    c.data_quality_score,
+    c.data_date,
+    c.last_updated,
+    c.is_ai_estimated,
+    c.ai_confidence_score
+FROM city_market_cache c
+LEFT JOIN metro_time_series m ON c.metro_region_id = m.metro_region_id
+WHERE c.city ILIKE $1 AND c.state = $2
+LIMIT 1
+`
+
+type GetCitySnapshotParams struct {
+	City  string `json:"city"`
+	State string `json:"state"`
+}
+
+type GetCitySnapshotRow struct {
+	ID                    int32            `json:"id"`
+	LocationKey           string           `json:"location_key"`
+	City                  string           `json:"city"`
+	State                 string           `json:"state"`
+	MetroRegionID         pgtype.Int4      `json:"metro_region_id"`
+	MetroName             string           `json:"metro_name"`
+	MedianHomePrice       pgtype.Numeric   `json:"median_home_price"`
+	MedianPricePerSqft    pgtype.Numeric   `json:"median_price_per_sqft"`
+	MedianListPrice       pgtype.Numeric   `json:"median_list_price"`
+	HomesSold             pgtype.Int4      `json:"homes_sold"`
+	InventoryCount        pgtype.Int4      `json:"inventory_count"`
+	MonthsOfSupply        pgtype.Numeric   `json:"months_of_supply"`
+	MedianDaysOnMarket    pgtype.Int4      `json:"median_days_on_market"`
+	PriceYoyChange        pgtype.Numeric   `json:"price_yoy_change"`
+	ForecastGrowth        pgtype.Numeric   `json:"forecast_growth"`
+	MedianRent            pgtype.Numeric   `json:"median_rent"`
+	RentYoyChange         pgtype.Numeric   `json:"rent_yoy_change"`
+	RentalYield           pgtype.Numeric   `json:"rental_yield"`
+	CapRate               pgtype.Numeric   `json:"cap_rate"`
+	PriceToRentRatio      pgtype.Numeric   `json:"price_to_rent_ratio"`
+	VacancyRate           pgtype.Numeric   `json:"vacancy_rate"`
+	HudFmr0br             pgtype.Numeric   `json:"hud_fmr_0br"`
+	HudFmr1br             pgtype.Numeric   `json:"hud_fmr_1br"`
+	HudFmr2br             pgtype.Numeric   `json:"hud_fmr_2br"`
+	HudFmr3br             pgtype.Numeric   `json:"hud_fmr_3br"`
+	HudFmr4br             pgtype.Numeric   `json:"hud_fmr_4br"`
+	Population            pgtype.Int4      `json:"population"`
+	PopulationGrowthRate  pgtype.Numeric   `json:"population_growth_rate"`
+	MedianHouseholdIncome pgtype.Numeric   `json:"median_household_income"`
+	UnemploymentRate      pgtype.Numeric   `json:"unemployment_rate"`
+	EmploymentGrowthRate  pgtype.Numeric   `json:"employment_growth_rate"`
+	MarketHeatIndex       pgtype.Numeric   `json:"market_heat_index"`
+	MarketTemperature     pgtype.Text      `json:"market_temperature"`
+	AffordabilityIndex    pgtype.Numeric   `json:"affordability_index"`
+	AffordabilityBurden   pgtype.Text      `json:"affordability_burden"`
+	PriceToIncomeRatio    pgtype.Numeric   `json:"price_to_income_ratio"`
+	DataSources           []byte           `json:"data_sources"`
+	DataQualityScore      int32            `json:"data_quality_score"`
+	DataDate              string           `json:"data_date"`
+	LastUpdated           pgtype.Timestamp `json:"last_updated"`
+	IsAiEstimated         bool             `json:"is_ai_estimated"`
+	AiConfidenceScore     pgtype.Int4      `json:"ai_confidence_score"`
+}
+
+// ============================================================================
+// AUTOCOMPLETE QUERIES (ADR-073: Market Intelligence)
+// ============================================================================
+// Get ALL fields from city_market_cache for a city (ADR-074: DATA_PAYLOAD builder)
+func (q *Queries) GetCitySnapshot(ctx context.Context, arg GetCitySnapshotParams) (GetCitySnapshotRow, error) {
+	row := q.db.QueryRow(ctx, GetCitySnapshot, arg.City, arg.State)
+	var i GetCitySnapshotRow
+	err := row.Scan(
+		&i.ID,
+		&i.LocationKey,
+		&i.City,
+		&i.State,
+		&i.MetroRegionID,
+		&i.MetroName,
+		&i.MedianHomePrice,
+		&i.MedianPricePerSqft,
+		&i.MedianListPrice,
+		&i.HomesSold,
+		&i.InventoryCount,
+		&i.MonthsOfSupply,
+		&i.MedianDaysOnMarket,
+		&i.PriceYoyChange,
+		&i.ForecastGrowth,
+		&i.MedianRent,
+		&i.RentYoyChange,
+		&i.RentalYield,
+		&i.CapRate,
+		&i.PriceToRentRatio,
+		&i.VacancyRate,
+		&i.HudFmr0br,
+		&i.HudFmr1br,
+		&i.HudFmr2br,
+		&i.HudFmr3br,
+		&i.HudFmr4br,
+		&i.Population,
+		&i.PopulationGrowthRate,
+		&i.MedianHouseholdIncome,
+		&i.UnemploymentRate,
+		&i.EmploymentGrowthRate,
+		&i.MarketHeatIndex,
+		&i.MarketTemperature,
+		&i.AffordabilityIndex,
+		&i.AffordabilityBurden,
+		&i.PriceToIncomeRatio,
+		&i.DataSources,
+		&i.DataQualityScore,
+		&i.DataDate,
+		&i.LastUpdated,
+		&i.IsAiEstimated,
+		&i.AiConfidenceScore,
+	)
+	return i, err
+}
+
 const GetMetroByName = `-- name: GetMetroByName :one
 
 SELECT
@@ -378,6 +533,44 @@ func (q *Queries) GetMetroCount(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const GetNationalTimeSeries = `-- name: GetNationalTimeSeries :one
+SELECT
+    metro_region_id,
+    metro_name,
+    zhvi_data,
+    zori_data,
+    zhvf_data,
+    updated_at
+FROM metro_time_series
+WHERE metro_region_id = 0
+LIMIT 1
+`
+
+type GetNationalTimeSeriesRow struct {
+	MetroRegionID int32            `json:"metro_region_id"`
+	MetroName     string           `json:"metro_name"`
+	ZhviData      []byte           `json:"zhvi_data"`
+	ZoriData      []byte           `json:"zori_data"`
+	ZhvfData      []byte           `json:"zhvf_data"`
+	UpdatedAt     pgtype.Timestamp `json:"updated_at"`
+}
+
+// Get national aggregate ZHVI/ZORI from metro_time_series (metro_region_id=0)
+// Used for national benchmark comparison in DATA_PAYLOAD (ADR-074)
+func (q *Queries) GetNationalTimeSeries(ctx context.Context) (GetNationalTimeSeriesRow, error) {
+	row := q.db.QueryRow(ctx, GetNationalTimeSeries)
+	var i GetNationalTimeSeriesRow
+	err := row.Scan(
+		&i.MetroRegionID,
+		&i.MetroName,
+		&i.ZhviData,
+		&i.ZoriData,
+		&i.ZhvfData,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const ListCitiesByState = `-- name: ListCitiesByState :many
 SELECT
     c.city,
@@ -465,6 +658,63 @@ func (q *Queries) ListMetrosByState(ctx context.Context, stateName pgtype.Text) 
 	for rows.Next() {
 		var i ListMetrosByStateRow
 		if err := rows.Scan(&i.MetroRegionID, &i.MetroName, &i.StateName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const SearchCities = `-- name: SearchCities :many
+SELECT
+    c.city,
+    c.state,
+    COALESCE(c.population, 0) AS population,
+    COALESCE(m.metro_name, '') AS metro_name,
+    CASE WHEN c.median_home_price IS NOT NULL THEN true ELSE false END AS has_market_data,
+    CASE WHEN c.median_rent IS NOT NULL THEN true ELSE false END AS has_rental_data
+FROM city_market_cache c
+LEFT JOIN metro_time_series m ON c.metro_region_id = m.metro_region_id
+WHERE c.city ILIKE $1
+ORDER BY COALESCE(c.population, 0) DESC
+LIMIT $2
+`
+
+type SearchCitiesParams struct {
+	City  string `json:"city"`
+	Limit int32  `json:"limit"`
+}
+
+type SearchCitiesRow struct {
+	City          string `json:"city"`
+	State         string `json:"state"`
+	Population    int32  `json:"population"`
+	MetroName     string `json:"metro_name"`
+	HasMarketData bool   `json:"has_market_data"`
+	HasRentalData bool   `json:"has_rental_data"`
+}
+
+// Search cities by name for autocomplete
+func (q *Queries) SearchCities(ctx context.Context, arg SearchCitiesParams) ([]SearchCitiesRow, error) {
+	rows, err := q.db.Query(ctx, SearchCities, arg.City, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SearchCitiesRow{}
+	for rows.Next() {
+		var i SearchCitiesRow
+		if err := rows.Scan(
+			&i.City,
+			&i.State,
+			&i.Population,
+			&i.MetroName,
+			&i.HasMarketData,
+			&i.HasRentalData,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

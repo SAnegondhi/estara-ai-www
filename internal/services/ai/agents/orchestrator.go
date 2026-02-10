@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/estara-ai/www/internal/services/ai/anthropic"
+	aicontext "github.com/estara-ai/www/internal/services/ai/context"
 	"github.com/estara-ai/www/internal/services/ai/prompts"
 	"github.com/estara-ai/www/internal/services/cache"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
@@ -46,6 +48,17 @@ type AnalysisEvent struct {
 	Error    string      `json:"error,omitempty"`
 }
 
+// V2AnalysisResult holds the V2 markdown report result (ADR-074)
+type V2AnalysisResult struct {
+	Location    string    `json:"location"`
+	FullReport  string    `json:"full_report"` // Markdown report from Stage 2
+	GeneratedAt time.Time `json:"generated_at"`
+	FromCache   bool      `json:"from_cache"`
+	CacheKey    string    `json:"cache_key,omitempty"`
+	// Data quality from the payload
+	DataCompleteness int `json:"data_completeness"` // percentage
+}
+
 // DualAgentOrchestrator coordinates metrics and narrative agents
 type DualAgentOrchestrator struct {
 	client     *anthropic.Client
@@ -53,11 +66,17 @@ type DualAgentOrchestrator struct {
 	market     *aggregator.Aggregator
 	cacheTTL   time.Duration
 	logger     *slog.Logger
+
+	// V2 fields (ADR-074)
+	payloadBuilder *prompts.DataPayloadBuilder
+	contextService *aicontext.MarketContextService
 }
 
 // OrchestratorConfig holds configuration for the orchestrator
 type OrchestratorConfig struct {
-	CacheTTL time.Duration
+	CacheTTL       time.Duration
+	PayloadBuilder *prompts.DataPayloadBuilder         // V2: data payload assembly
+	ContextService *aicontext.MarketContextService      // V2: Stage 1 market context
 }
 
 // NewDualAgentOrchestrator creates a new orchestrator
@@ -72,12 +91,142 @@ func NewDualAgentOrchestrator(
 	}
 
 	return &DualAgentOrchestrator{
-		client:   client,
-		cache:    cache,
-		market:   market,
-		cacheTTL: cfg.CacheTTL,
-		logger:   slog.Default().With("component", "dual_agent_orchestrator"),
+		client:         client,
+		cache:          cache,
+		market:         market,
+		cacheTTL:       cfg.CacheTTL,
+		payloadBuilder: cfg.PayloadBuilder,
+		contextService: cfg.ContextService,
+		logger:         slog.Default().With("component", "dual_agent_orchestrator"),
 	}
+}
+
+// HasV2 returns true if V2 data-driven analysis is available (ADR-074)
+func (o *DualAgentOrchestrator) HasV2() bool {
+	return o.payloadBuilder != nil && o.contextService != nil && o.contextService.IsConfigured()
+}
+
+// v2MaxTokens is the max output tokens for Stage 2 analysis
+const v2MaxTokens = 12000
+
+// AnalyzeV2 runs the data-driven V2 analysis pipeline (ADR-074).
+// Stage 1: Market context (Sonnet + web search, usually cached)
+// Stage 2: Single-pass Sonnet analysis grounded in DATA_PAYLOAD + MARKET_CONTEXT
+func (o *DualAgentOrchestrator) AnalyzeV2(ctx context.Context, req AnalysisRequest) (*V2AnalysisResult, error) {
+	startTime := time.Now()
+
+	// Check cache first
+	if !req.SkipCache && req.CacheKey != "" {
+		if cached, err := o.getV2FromCache(ctx, req.UserID, req.CacheKey); err == nil && cached != nil {
+			o.logger.Info("returning cached V2 analysis",
+				"location", req.Location,
+				"cache_key", req.CacheKey,
+			)
+			return cached, nil
+		}
+	}
+
+	// Parse city/state from location if not provided
+	city, state := req.City, req.State
+	if city == "" {
+		city, state = parseLocation(req.Location)
+	}
+
+	// Stage 1: Market context (usually cached — near-zero latency for repeat markets)
+	var marketContextXML string
+	mc, err := o.contextService.GetMarketContext(ctx, city, state)
+	if err != nil {
+		o.logger.Warn("stage 1 market context failed, proceeding without", "error", err)
+		marketContextXML = "Market context unavailable — tax, regulatory, insurance, and fiscal data not included."
+	} else {
+		marketContextXML = o.contextService.FormatAsXML(mc)
+	}
+
+	// Build DATA_PAYLOAD from existing services (parallel fetches internally)
+	payload, err := o.payloadBuilder.BuildPayload(ctx, city, state)
+	if err != nil {
+		return nil, fmt.Errorf("data payload build failed for %s, %s: %w", city, state, err)
+	}
+	dataPayloadXML := o.payloadBuilder.FormatAsXML(payload)
+
+	// Stage 2: Single-pass Sonnet analysis (12K max tokens)
+	userPrompt := prompts.BuildAnalysisV2UserPrompt(req.Location, dataPayloadXML, marketContextXML)
+
+	report, err := o.client.CompleteWithMaxTokens(ctx, prompts.AnalysisV2SystemPrompt, userPrompt, v2MaxTokens)
+	if err != nil {
+		return nil, fmt.Errorf("stage 2 analysis failed for %s: %w", req.Location, err)
+	}
+
+	completeness := 0
+	if payload.TotalFields > 0 {
+		completeness = (payload.NonNAFields * 100) / payload.TotalFields
+	}
+
+	result := &V2AnalysisResult{
+		Location:         req.Location,
+		FullReport:       report,
+		GeneratedAt:      time.Now(),
+		FromCache:        false,
+		CacheKey:         req.CacheKey,
+		DataCompleteness: completeness,
+	}
+
+	// Note: V2 report caching is handled by the worker (using fullReport column in analysis_cache)
+	// The orchestrator does not cache V2 results to avoid key format mismatch
+
+	o.logger.Info("V2 analysis completed",
+		"location", req.Location,
+		"duration", time.Since(startTime),
+		"data_completeness", completeness,
+		"report_length", len(report),
+	)
+
+	return result, nil
+}
+
+// getV2FromCache retrieves a cached V2 analysis result
+func (o *DualAgentOrchestrator) getV2FromCache(ctx context.Context, userID, key string) (*V2AnalysisResult, error) {
+	if o.cache == nil {
+		return nil, nil
+	}
+
+	data, err := o.cache.Get(ctx, userID, "analysis_v2:"+key)
+	if err != nil {
+		return nil, err
+	}
+
+	var result V2AnalysisResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+
+	result.FromCache = true
+	return &result, nil
+}
+
+// saveV2ToCache stores a V2 analysis result in cache
+func (o *DualAgentOrchestrator) saveV2ToCache(ctx context.Context, userID, key string, result *V2AnalysisResult) error {
+	if o.cache == nil {
+		return nil
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+
+	return o.cache.Set(ctx, userID, "analysis_v2:"+key, "market_analysis", data, o.cacheTTL)
+}
+
+// parseLocation splits "City, ST" into city and state
+func parseLocation(location string) (string, string) {
+	parts := strings.SplitN(location, ",", 2)
+	city := strings.TrimSpace(parts[0])
+	state := ""
+	if len(parts) > 1 {
+		state = strings.TrimSpace(parts[1])
+	}
+	return city, state
 }
 
 // Analyze runs both agents and combines results

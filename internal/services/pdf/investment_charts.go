@@ -22,13 +22,15 @@ type InvestmentProjectionScenario struct {
 
 // InvestmentYearlyMetrics holds aggregated yearly metrics used for charts.
 type InvestmentYearlyMetrics struct {
-	Year              int     `json:"year"`
-	TotalPropertyValue float64 `json:"totalPropertyValue"`
-	TotalLoanBalance  float64 `json:"totalLoanBalance"`
-	TotalEquity       float64 `json:"totalEquity"`
-	CashFlowAfterTax  float64 `json:"cashFlowAfterTax"`
-	CashOnCashReturn  float64 `json:"cashOnCashReturn"`
-	CapRate           float64 `json:"capRate"`
+	Year                   int     `json:"year"`
+	TotalPropertyValue     float64 `json:"totalPropertyValue"`
+	TotalLoanBalance       float64 `json:"totalLoanBalance"`
+	TotalEquity            float64 `json:"totalEquity"`
+	CashFlowAfterTax       float64 `json:"cashFlowAfterTax"`
+	CashOnCashReturn       float64 `json:"cashOnCashReturn"`
+	CapRate                float64 `json:"capRate"`
+	CapExReserve           float64 `json:"capExReserve,omitempty"`
+	CumulativeCapExReserve float64 `json:"cumulativeCapExReserve,omitempty"`
 }
 
 // GenerateInvestmentCharts generates investment planning charts using QuickChart.
@@ -212,4 +214,67 @@ func scenarioLabel(scenario string) string {
 	default:
 		return "Base Case"
 	}
+}
+
+// GenerateReinvestmentChart creates a line chart comparing Keep Cash vs Reinvest portfolio values.
+func GenerateReinvestmentChart(ctx context.Context, client *QuickChartClient, base, reinvest []YearlyProjectionPDF) (string, error) {
+	if len(base) == 0 || len(reinvest) == 0 {
+		return "", fmt.Errorf("empty reinvestment data")
+	}
+
+	labels := make([]string, 0, len(base))
+	baseValues := make([]float64, 0, len(base))
+	reinvestValues := make([]float64, 0, len(reinvest))
+
+	for _, y := range base {
+		labels = append(labels, fmt.Sprintf("Year %d", y.Year))
+		baseValues = append(baseValues, float64(y.PortfolioValue))
+	}
+	for _, y := range reinvest {
+		reinvestValues = append(reinvestValues, float64(y.PortfolioValue))
+	}
+
+	config := map[string]interface{}{
+		"type": "line",
+		"data": map[string]interface{}{
+			"labels": labels,
+			"datasets": []map[string]interface{}{
+				{
+					"label":           "Keep Cash",
+					"data":            baseValues,
+					"borderColor":     "rgb(59,130,246)",
+					"backgroundColor": "rgba(59,130,246,0.1)",
+					"fill":            false,
+					"tension":         0.3,
+				},
+				{
+					"label":           "Reinvest",
+					"data":            reinvestValues,
+					"borderColor":     "rgb(16,185,129)",
+					"backgroundColor": "rgba(16,185,129,0.1)",
+					"fill":            false,
+					"tension":         0.3,
+				},
+			},
+		},
+		"options": map[string]interface{}{
+			"plugins": map[string]interface{}{
+				"legend": map[string]interface{}{
+					"position": "bottom",
+					"labels":   map[string]interface{}{"boxWidth": 12, "font": map[string]interface{}{"size": 9}},
+				},
+				"title": map[string]interface{}{"display": false},
+			},
+		},
+	}
+
+	if client == nil {
+		client = NewQuickChartClient()
+	}
+
+	png, err := client.RenderPNG(ctx, config, 500, 250, "#FFFFFF")
+	if err != nil {
+		return "", err
+	}
+	return EncodePNGBase64(png), nil
 }

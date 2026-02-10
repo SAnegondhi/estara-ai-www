@@ -11,6 +11,8 @@ import (
 	"github.com/estara-ai/www/internal/services/ai/agents"
 	"github.com/estara-ai/www/internal/services/ai/anthropic"
 	"github.com/estara-ai/www/internal/services/ai/compliance"
+	aicontext "github.com/estara-ai/www/internal/services/ai/context"
+	"github.com/estara-ai/www/internal/services/ai/prompts"
 	"github.com/estara-ai/www/internal/services/cache"
 	"github.com/estara-ai/www/internal/services/investment/optimization"
 	"github.com/estara-ai/www/internal/services/jobs/queue"
@@ -22,6 +24,7 @@ import (
 	"github.com/estara-ai/www/internal/services/market/estimation"
 	"github.com/estara-ai/www/internal/services/market/fred"
 	"github.com/estara-ai/www/internal/services/market/timeseries"
+	"github.com/estara-ai/www/internal/services/market/trends"
 	"github.com/estara-ai/www/internal/services/property/finder"
 	"github.com/estara-ai/www/internal/services/property/providers"
 )
@@ -34,6 +37,7 @@ type Services struct {
 	CensusService        *census.Service      // Census demographics service (ADR-068 Phase 2)
 	BLSService           *bls.Service         // BLS labor market service (ADR-068 Phase 3)
 	EconomicsAggregator  *economics.Aggregator // Unified economic data aggregator (ADR-068 Phase 4)
+	TrendsService        *trends.Service        // Market trends service (ADR-073)
 	ChatAgent            *agents.EvaluationChatAgent
 	JobQueue             *queue.Queue
 	WorkerPool           *queue.WorkerPool
@@ -232,6 +236,17 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 		logger.Info("market data aggregator initialized")
 	}
 
+	// Create market trends service (ADR-073)
+	if metroReader != nil || fredClient != nil {
+		services.TrendsService = trends.NewService(trends.ServiceConfig{
+			Metro: metroReader,
+			FRED:  fredClient,
+			AI:    services.Anthropic,
+			Cache: services.HybridCache,
+		})
+		logger.Info("market trends service initialized")
+	}
+
 	// Create evaluation chat agent
 	if services.Anthropic != nil {
 		complianceFilter := compliance.NewFilter(compliance.FilterConfig{StrictMode: false})
@@ -259,6 +274,7 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 					cfg.DB.Main,
 					cfg.Redis,
 					services.EconomicsAggregator,
+					metroReader,
 				)
 				logger.Info("optimization service initialized with AI scoring cache and economics")
 			} else {
@@ -270,6 +286,53 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 				)
 				logger.Warn("optimization service initialized without AI scoring cache (no database)")
 			}
+		}
+
+		// Create market analysis worker and register with queue (ADR-073)
+		// ADR-074: Wire V2 data-driven analysis pipeline
+		if services.Anthropic != nil {
+			orchCfg := agents.OrchestratorConfig{}
+
+			// Build V2 dependencies if all required services are available
+			if metroReader != nil && services.EconomicsAggregator != nil {
+				// DataPayloadBuilder assembles DATA_PAYLOAD from existing services
+				orchCfg.PayloadBuilder = prompts.NewDataPayloadBuilder(
+					services.MarketData,
+					services.EconomicsAggregator,
+					metroReader,
+				)
+
+				// MarketContextService provides Stage 1 context enrichment (Sonnet + web search)
+				var q *queries.Queries
+				if cfg.DB != nil && cfg.DB.Main != nil {
+					q = queries.New(cfg.DB.Main)
+				}
+				orchCfg.ContextService = aicontext.NewMarketContextService(
+					cfg.Config.AI.AnthropicAPIKey,
+					q,
+					cfg.Redis,
+				)
+				logger.Info("V2 analysis pipeline configured (ADR-074)",
+					"payload_builder", true,
+					"context_service", orchCfg.ContextService.IsConfigured(),
+				)
+			}
+
+			orchestrator := agents.NewDualAgentOrchestrator(
+				services.Anthropic,
+				services.HybridCache,
+				services.MarketData,
+				orchCfg,
+			)
+			analysisWorker := workers.NewMarketAnalysisWorker(workers.MarketAnalysisWorkerConfig{
+				Orchestrator: orchestrator,
+				Market:       services.MarketData,
+				Cache:        services.HybridCache,
+			})
+			services.JobQueue.RegisterHandler(queue.JobTypeMarketAnalysis, analysisWorker.GetHandler())
+			logger.Info("market analysis worker registered",
+				"v2_enabled", orchestrator.HasV2(),
+			)
 		}
 
 		// Create investment planning worker and register with queue

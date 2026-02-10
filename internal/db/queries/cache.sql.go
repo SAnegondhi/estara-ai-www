@@ -497,6 +497,85 @@ func (q *Queries) UpdateCacheAccess(ctx context.Context, key string) error {
 	return err
 }
 
+const UpsertAnalysisReport = `-- name: UpsertAnalysisReport :one
+INSERT INTO analysis_cache (
+    id, key, "userId", location, feature, content, "fullReport",
+    "metricsData", "narrativeData", metadata,
+    "expiresAt", "createdAt", "lastAccessedAt"
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW()
+)
+ON CONFLICT (key) DO UPDATE SET
+    content = EXCLUDED.content,
+    "fullReport" = EXCLUDED."fullReport",
+    feature = EXCLUDED.feature,
+    "metricsData" = EXCLUDED."metricsData",
+    "narrativeData" = EXCLUDED."narrativeData",
+    metadata = EXCLUDED.metadata,
+    "expiresAt" = EXCLUDED."expiresAt",
+    "lastAccessedAt" = NOW()
+RETURNING id, key, "userId", location, feature, prompt, "promptHash", complexity, "investorProfile", "marketData", content, "fullReport", "metricsData", "narrativeData", metadata, "createdAt", "expiresAt", "lastAccessedAt", "accessCount", "supersededBy", "supersededAt", "cacheHits", "generationCost", "savingsGenerated"
+`
+
+type UpsertAnalysisReportParams struct {
+	ID            string           `json:"id"`
+	Key           string           `json:"key"`
+	UserId        string           `json:"userId"`
+	Location      string           `json:"location"`
+	Feature       string           `json:"feature"`
+	Content       string           `json:"content"`
+	FullReport    pgtype.Text      `json:"fullReport"`
+	MetricsData   []byte           `json:"metricsData"`
+	NarrativeData []byte           `json:"narrativeData"`
+	Metadata      json.RawMessage  `json:"metadata"`
+	ExpiresAt     pgtype.Timestamp `json:"expiresAt"`
+}
+
+// ADR-074: Upsert analysis report with fullReport column for V2 markdown reports
+func (q *Queries) UpsertAnalysisReport(ctx context.Context, arg UpsertAnalysisReportParams) (AnalysisCache, error) {
+	row := q.db.QueryRow(ctx, UpsertAnalysisReport,
+		arg.ID,
+		arg.Key,
+		arg.UserId,
+		arg.Location,
+		arg.Feature,
+		arg.Content,
+		arg.FullReport,
+		arg.MetricsData,
+		arg.NarrativeData,
+		arg.Metadata,
+		arg.ExpiresAt,
+	)
+	var i AnalysisCache
+	err := row.Scan(
+		&i.ID,
+		&i.Key,
+		&i.UserId,
+		&i.Location,
+		&i.Feature,
+		&i.Prompt,
+		&i.PromptHash,
+		&i.Complexity,
+		&i.InvestorProfile,
+		&i.MarketData,
+		&i.Content,
+		&i.FullReport,
+		&i.MetricsData,
+		&i.NarrativeData,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.LastAccessedAt,
+		&i.AccessCount,
+		&i.SupersededBy,
+		&i.SupersededAt,
+		&i.CacheHits,
+		&i.GenerationCost,
+		&i.SavingsGenerated,
+	)
+	return i, err
+}
+
 const UpsertCache = `-- name: UpsertCache :one
 INSERT INTO analysis_cache (
     id, key, "userId", location, feature, content,

@@ -14,13 +14,14 @@ type TrendsRequest struct {
 
 // TrendsResult holds the complete market trends result
 type TrendsResult struct {
-	Location       string           `json:"location"`
-	Historical     *HistoricalData  `json:"historical"`
-	YoYChanges     *YoYChanges      `json:"yoyChanges"`
-	CurrentMetrics *CurrentMetrics  `json:"currentMetrics"`
-	Synthesis      *TrendSynthesis  `json:"synthesis,omitempty"`
-	GeneratedAt    time.Time        `json:"generatedAt"`
-	CachedAt       *time.Time       `json:"cachedAt,omitempty"`
+	Location          string             `json:"location"`
+	Historical        *HistoricalData    `json:"historical"`
+	YoYChanges        *YoYChanges        `json:"yoyChanges"`
+	CurrentMetrics    *CurrentMetrics    `json:"currentMetrics"`
+	CalculatedMetrics *CalculatedMetrics `json:"calculatedMetrics,omitempty"` // ADR-073: CAGR, volatility, R², cycle
+	Synthesis         *TrendSynthesis    `json:"synthesis,omitempty"`
+	GeneratedAt       time.Time          `json:"generatedAt"`
+	CachedAt          *time.Time         `json:"cachedAt,omitempty"`
 }
 
 // HistoricalData holds time series data for various metrics

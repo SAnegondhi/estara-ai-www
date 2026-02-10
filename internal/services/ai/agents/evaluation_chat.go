@@ -500,36 +500,138 @@ func parseInsightBlock(content string) map[string]interface{} {
 
 // parseStressTestBlock parses a stress test block
 // Fields use camelCase to match client expectations (www_v1 parity)
+// Parser is resilient to AI formatting variations (markdown bold, spaces in field names, etc.)
 func parseStressTestBlock(content string) map[string]interface{} {
 	result := make(map[string]interface{})
 
 	lines := strings.Split(content, "\n")
+	var narrativeLines []string
+	inNarrative := false
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Scenario:") {
-			result["scenario"] = strings.TrimSpace(strings.TrimPrefix(line, "Scenario:"))
-		} else if strings.HasPrefix(line, "Name:") {
-			result["name"] = strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
-		} else if strings.HasPrefix(line, "PropertyAddress:") {
-			result["propertyAddress"] = strings.TrimSpace(strings.TrimPrefix(line, "PropertyAddress:"))
-		} else if strings.HasPrefix(line, "ValueImpact:") {
-			result["valueImpact"] = strings.TrimSpace(strings.TrimPrefix(line, "ValueImpact:"))
-		} else if strings.HasPrefix(line, "RentImpact:") {
-			result["rentImpact"] = strings.TrimSpace(strings.TrimPrefix(line, "RentImpact:"))
-		} else if strings.HasPrefix(line, "CashFlowImpact:") {
-			result["cashFlowImpact"] = strings.TrimSpace(strings.TrimPrefix(line, "CashFlowImpact:"))
-		} else if strings.HasPrefix(line, "OccupancyImpact:") {
-			result["occupancyImpact"] = strings.TrimSpace(strings.TrimPrefix(line, "OccupancyImpact:"))
-		} else if strings.HasPrefix(line, "DscrUnderStress:") {
-			result["dscrUnderStress"] = strings.TrimSpace(strings.TrimPrefix(line, "DscrUnderStress:"))
-		} else if strings.HasPrefix(line, "BreakEvenOccupancy:") {
-			result["breakEvenOccupancy"] = strings.TrimSpace(strings.TrimPrefix(line, "BreakEvenOccupancy:"))
-		} else if strings.HasPrefix(line, "Narrative:") {
-			result["narrative"] = strings.TrimSpace(strings.TrimPrefix(line, "Narrative:"))
+		// Strip markdown formatting: **bold**, *italic*, __bold__, _italic_
+		cleaned := stripMarkdown(line)
+		// Strip leading bullet points
+		cleaned = strings.TrimPrefix(cleaned, "- ")
+		cleaned = strings.TrimPrefix(cleaned, "• ")
+		cleaned = strings.TrimSpace(cleaned)
+
+		lower := strings.ToLower(cleaned)
+
+		// Once we hit narrative, collect remaining lines
+		if inNarrative {
+			if line != "" {
+				narrativeLines = append(narrativeLines, line)
+			}
+			continue
+		}
+
+		if val, ok := extractFieldValue(cleaned, lower, "scenario"); ok {
+			result["scenario"] = val
+		} else if val, ok := extractFieldValue(cleaned, lower, "name"); ok {
+			result["name"] = val
+		} else if val, ok := extractStressField(cleaned, lower, []string{"propertyaddress", "property address"}); ok {
+			result["propertyAddress"] = val
+		} else if val, ok := extractStressField(cleaned, lower, []string{"valueimpact", "value impact", "property value impact", "property value"}); ok {
+			result["valueImpact"] = extractNumericValue(val)
+		} else if val, ok := extractStressField(cleaned, lower, []string{"rentimpact", "rent impact", "rental income impact", "rental impact"}); ok {
+			result["rentImpact"] = extractNumericValue(val)
+		} else if val, ok := extractStressField(cleaned, lower, []string{"cashflowimpact", "cash flow impact", "cashflow impact", "cash flow"}); ok {
+			result["cashFlowImpact"] = extractNumericValue(val)
+		} else if val, ok := extractStressField(cleaned, lower, []string{"occupancyimpact", "occupancy impact"}); ok {
+			result["occupancyImpact"] = extractNumericValue(val)
+		} else if val, ok := extractStressField(cleaned, lower, []string{"dscrunderstress", "dscr under stress", "dscr"}); ok {
+			result["dscrUnderStress"] = extractNumericValue(val)
+		} else if val, ok := extractStressField(cleaned, lower, []string{"breakevenoccupancy", "break even occupancy", "break-even occupancy", "breakeven occupancy"}); ok {
+			result["breakEvenOccupancy"] = extractNumericValue(val)
+		} else if hasFieldPrefix(lower, []string{"narrative"}) {
+			val := extractAfterColon(cleaned, lower, "narrative")
+			if val != "" {
+				narrativeLines = append(narrativeLines, val)
+			}
+			inNarrative = true
 		}
 	}
 
+	if len(narrativeLines) > 0 {
+		result["narrative"] = strings.Join(narrativeLines, " ")
+	}
+
 	return result
+}
+
+// stripMarkdown removes common markdown formatting from a string
+func stripMarkdown(s string) string {
+	// Strip bold: **text** or __text__
+	s = strings.ReplaceAll(s, "**", "")
+	s = strings.ReplaceAll(s, "__", "")
+	// Strip italic: *text* or _text_ (only single markers)
+	// Be careful not to strip underscores in field names
+	return s
+}
+
+// extractFieldValue extracts a value after "FieldName:" prefix (case-insensitive)
+func extractFieldValue(cleaned, lower, field string) (string, bool) {
+	prefix := strings.ToLower(field) + ":"
+	if strings.HasPrefix(lower, prefix) {
+		return strings.TrimSpace(cleaned[len(prefix):]), true
+	}
+	return "", false
+}
+
+// extractStressField tries multiple field name variations to extract a value
+func extractStressField(cleaned, lower string, prefixes []string) (string, bool) {
+	for _, prefix := range prefixes {
+		full := prefix + ":"
+		if strings.HasPrefix(lower, full) {
+			return strings.TrimSpace(cleaned[len(full):]), true
+		}
+	}
+	return "", false
+}
+
+// hasFieldPrefix checks if a line starts with any of the given prefixes followed by ':'
+func hasFieldPrefix(lower string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(lower, prefix+":") {
+			return true
+		}
+	}
+	return false
+}
+
+// extractAfterColon extracts the value after "prefix:" from the cleaned string
+func extractAfterColon(cleaned, lower, prefix string) string {
+	full := prefix + ":"
+	if strings.HasPrefix(lower, full) {
+		return strings.TrimSpace(cleaned[len(full):])
+	}
+	return ""
+}
+
+// extractNumericValue extracts a numeric value from formatted strings like "-15%", "-$350/mo", "+3.2%"
+// Returns a clean numeric string that parseFloat() on the client can handle
+func extractNumericValue(s string) string {
+	s = strings.TrimSpace(s)
+	// Remove common suffixes
+	s = strings.TrimSuffix(s, "/mo")
+	s = strings.TrimSuffix(s, "/month")
+	s = strings.TrimSuffix(s, " per month")
+	s = strings.TrimSuffix(s, "%")
+	// Remove $ and commas
+	s = strings.ReplaceAll(s, "$", "")
+	s = strings.ReplaceAll(s, ",", "")
+	// Remove descriptive suffixes like "decline", "increase", "decrease"
+	for _, suffix := range []string{" decline", " increase", " decrease", " drop", " rise"} {
+		s = strings.TrimSuffix(strings.ToLower(s), suffix)
+	}
+	s = strings.TrimSpace(s)
+	// Handle parenthetical negatives: (15) -> -15
+	if strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")") {
+		s = "-" + s[1:len(s)-1]
+	}
+	return s
 }
 
 // parseMetricsBlock parses a metrics table block

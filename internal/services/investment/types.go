@@ -85,10 +85,11 @@ type InvestmentPlanningResult struct {
 	Concentration      *ConcentrationMetrics     `json:"concentration,omitempty"`
 
 	// www_v1 parity: Additional analysis fields
-	Allocations            map[string]LocationAllocation `json:"allocations,omitempty"`
-	Recommendations        []string                      `json:"recommendations,omitempty"`
-	DiversificationAnalysis *DiversificationAnalysis     `json:"diversificationAnalysis,omitempty"`
-	RiskAnalysis           *RiskAnalysis                 `json:"riskAnalysis,omitempty"`
+	Allocations             map[string]LocationAllocation `json:"allocations,omitempty"`
+	AllocationRationale     map[string]string             `json:"allocationRationale,omitempty"`
+	Recommendations         []string                      `json:"recommendations,omitempty"`
+	DiversificationAnalysis *DiversificationAnalysis      `json:"diversificationAnalysis,omitempty"`
+	RiskAnalysis            *RiskAnalysis                 `json:"riskAnalysis,omitempty"`
 
 	// ADR-059: Selection mode fields
 	Mode                    PlanningMode             `json:"mode,omitempty"`
@@ -111,16 +112,19 @@ type LocationAllocation struct {
 
 // DiversificationAnalysis contains portfolio diversification metrics
 type DiversificationAnalysis struct {
-	DiversificationScore float64               `json:"diversificationScore"`
-	Correlations         []MarketCorrelation   `json:"correlations,omitempty"`
-	Opportunities        []string              `json:"opportunities,omitempty"`
+	DiversificationScore float64             `json:"diversificationScore"`
+	Correlations         []MarketCorrelation `json:"correlations,omitempty"`
+	Opportunities        []string            `json:"opportunities,omitempty"`
+	DataQualityNote      string              `json:"dataQualityNote,omitempty"`
 }
 
 // MarketCorrelation represents correlation between two markets
 type MarketCorrelation struct {
-	Market1     string  `json:"market1"`
-	Market2     string  `json:"market2"`
-	Correlation float64 `json:"correlation"`
+	Market1          string  `json:"market1"`
+	Market2          string  `json:"market2"`
+	Correlation      float64 `json:"correlation"`
+	PriceCorrelation float64 `json:"priceCorrelation,omitempty"` // ZHVI correlation
+	RentCorrelation  float64 `json:"rentCorrelation,omitempty"`  // ZORI correlation
 }
 
 // RiskAnalysis contains portfolio risk metrics
@@ -275,6 +279,16 @@ type YearlyProjection struct {
 	AnnualCashFlow     int `json:"annualCashFlow"`
 	CumulativeCashFlow int `json:"cumulativeCashFlow"`
 	Appreciation       int `json:"appreciation"`
+	CashBalance        int `json:"cashBalance"` // Uninvested reinvestment cash held for future acquisitions
+	// Detailed income/expense breakdown for reinvestment analysis
+	GrossRentalIncome  int `json:"grossRentalIncome"`
+	OperatingExpenses  int `json:"operatingExpenses"`
+	NetOperatingIncome int `json:"netOperatingIncome"`
+	DebtService        int `json:"debtService"`
+	PropertyCount          int `json:"propertyCount"`
+	PropertiesAcquired     int `json:"propertiesAcquired"`
+	CapExReserve           int `json:"capExReserve"`
+	CumulativeCapExReserve int `json:"cumulativeCapExReserve"`
 }
 
 // ExistingPortfolioSummary summarizes the user's existing portfolio
@@ -366,6 +380,7 @@ type OptimizationResult struct {
 	MarketFilters           *MarketFilterSummary          `json:"marketFilters,omitempty"`
 	MarketQuality           []LocationMarketAnalysis      `json:"marketQuality,omitempty"`
 	Allocations             map[string]LocationAllocation `json:"allocations,omitempty"`
+	AllocationRationale     map[string]string             `json:"allocationRationale,omitempty"`
 	Recommendations         []string                      `json:"recommendations,omitempty"`
 	DiversificationAnalysis *DiversificationAnalysis      `json:"diversificationAnalysis,omitempty"`
 	RiskAnalysis            *RiskAnalysis                 `json:"riskAnalysis,omitempty"`
@@ -609,9 +624,14 @@ type ProjectionAssumptions struct {
 	RentGrowthSource   string  `json:"rentGrowthSource"`   // "Market Data 5Y CAGR" or "Default (2%)"
 
 	// Expense assumptions (for acquisitions)
-	ExpenseRatio         float64                       `json:"expenseRatio"`         // Total expenses as % of rent
-	ExpenseSource        string                        `json:"expenseSource"`        // "State-specific calculation" or "Default (50%)"
-	ExpenseBreakdown     *ProjectionExpenseBreakdown   `json:"expenseBreakdown,omitempty"`
+	ExpenseRatio     float64                     `json:"expenseRatio"`                // Total expenses as % of rent
+	ExpenseSource    string                      `json:"expenseSource"`               // "State-specific calculation" or "Default (50%)"
+	ExpenseBreakdown *ProjectionExpenseBreakdown `json:"expenseBreakdown,omitempty"`
+
+	// Capital expenditure reserve assumptions
+	CapExReserveRate   float64              `json:"capExReserveRate"`             // Age-adjusted annual rate (% of value)
+	CapExReserveSource string               `json:"capExReserveSource"`           // "Component lifecycle annualization"
+	CapExComponents    []CapExComponentDetail `json:"capExComponents,omitempty"`   // Per-component breakdown
 
 	// Acquisition assumptions
 	AcquisitionPrice       int    `json:"acquisitionPrice"`       // Price used for simulated acquisitions
@@ -637,6 +657,15 @@ type ProjectionExpenseBreakdown struct {
 	VacancySource    string  `json:"vacancySource"`    // "FRED Local" or "National Average"
 	ManagementRate   float64 `json:"managementRate"`   // % of rent
 	MarketClass      string  `json:"marketClass"`      // "A", "B", or "C"
+}
+
+// CapExComponentDetail provides per-component CapEx reserve detail for assumptions display
+type CapExComponentDetail struct {
+	Name             string `json:"name"`
+	LifespanYears    int    `json:"lifespanYears"`
+	EstRemainingLife int    `json:"estRemainingLife"`
+	AnnualReserve    int    `json:"annualReserve"`
+	RiskLevel        string `json:"riskLevel"` // "low", "medium", "high"
 }
 
 // DivestAnalysisResult holds the result of analyzing a property for divest
@@ -674,8 +703,10 @@ type ExpandedYearProjection struct {
 	LoanBalance        int     `json:"loanBalance"`       // Remaining mortgage
 	AnnualCashFlow     int     `json:"cashFlow"`          // Annual cash flow after expenses (before tax)
 	NetOperatingIncome int     `json:"noi"`               // NOI (rent - operating expenses)
-	GrossRent          int     `json:"grossRent"`         // Total annual rent before vacancy
-	OperatingExpenses  int     `json:"operatingExpenses"` // Total operating expenses
+	GrossRent              int     `json:"grossRent"`              // Total annual rent before vacancy
+	VacancyLoss            int     `json:"vacancyLoss"`            // Vacancy portion of operating expenses
+	EffectiveGrossIncome   int     `json:"effectiveGrossIncome"`   // GrossRent - VacancyLoss
+	OperatingExpenses      int     `json:"operatingExpenses"`      // Total operating expenses
 	DebtService        int     `json:"debtService"`       // Annual mortgage payments
 	InterestExpense    int     `json:"interestExpense"`   // Interest portion of debt service (deductible)
 	PrincipalPayment   int     `json:"principalPayment"`  // Principal portion of debt service
@@ -686,8 +717,10 @@ type ExpandedYearProjection struct {
 	CashOnCash         float64 `json:"cashOnCash"`        // Cash flow / down payment (%)
 	CapRate            float64 `json:"capRate"`           // NOI / value (%)
 	EquityMultiple     float64 `json:"equityMultiple"`    // Current equity / initial investment
-	CumulativeCashFlow int     `json:"cumulativeCashFlow"` // Total cash flow to date
-	Appreciation       int     `json:"appreciation"`      // Value gain this year
+	CumulativeCashFlow     int     `json:"cumulativeCashFlow"`     // Total cash flow to date
+	Appreciation           int     `json:"appreciation"`           // Value gain this year
+	CapExReserve           int     `json:"capExReserve"`           // Annual CapEx reserve
+	CumulativeCapExReserve int     `json:"cumulativeCapExReserve"` // Cumulative CapEx reserves
 }
 
 // ScenarioProjections contains all 3 scenarios computed by backend

@@ -22,6 +22,7 @@ import (
 	"github.com/estara-ai/www/internal/services/investment/projection"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
 	"github.com/estara-ai/www/internal/services/market/economics"
+	"github.com/estara-ai/www/internal/services/market/timeseries"
 )
 
 // AI scoring cache TTL - matches property search cache (ADR-061, ADR-064)
@@ -41,6 +42,8 @@ type Service struct {
 	// ADR-069: Economic data integration
 	economics       economics.Provider
 	enhancedScorer  *EconomicsEnhancedScorer
+	// Market correlation analysis
+	correlationAnalyzer *CorrelationAnalyzer
 }
 
 // NewService creates a new optimization service
@@ -86,18 +89,24 @@ func NewServiceWithEconomics(
 	db *postgres.Pool,
 	redis *redisClient.Client,
 	econ economics.Provider,
+	metro *timeseries.MetroReader,
 ) *Service {
+	var corrAnalyzer *CorrelationAnalyzer
+	if metro != nil {
+		corrAnalyzer = NewCorrelationAnalyzer(metro)
+	}
 	return &Service{
-		client:         client,
-		market:         market,
-		cache:          cache,
-		calculator:     projection.NewCalculator(nil),
-		logger:         slog.Default().With("component", "portfolio_optimization"),
-		db:             db,
-		redis:          redis,
-		queries:        queries.New(db),
-		economics:      econ,
-		enhancedScorer: NewEconomicsEnhancedScorer(econ),
+		client:              client,
+		market:              market,
+		cache:               cache,
+		calculator:          projection.NewCalculator(nil),
+		logger:              slog.Default().With("component", "portfolio_optimization"),
+		db:                  db,
+		redis:               redis,
+		queries:             queries.New(db),
+		economics:           econ,
+		enhancedScorer:      NewEconomicsEnhancedScorer(econ),
+		correlationAnalyzer: corrAnalyzer,
 	}
 }
 
@@ -196,8 +205,11 @@ func (s *Service) Optimize(ctx context.Context, req investment.OptimizationReque
 	// Calculate risk analysis
 	riskAnalysis := calculateRiskAnalysis(portfolioProperties, scoredProperties)
 
-	// Calculate diversification analysis
-	diversificationAnalysis := calculateDiversificationAnalysis(portfolioProperties, concentration)
+	// Calculate diversification analysis with market correlation
+	diversificationAnalysis := s.calculateDiversificationWithCorrelation(ctx, portfolioProperties, concentration)
+
+	// Generate per-market allocation rationale
+	allocationRationale := GenerateAllocationRationale(allocations, marketQuality, diversificationAnalysis.Correlations)
 
 	// Generate recommendations
 	recommendations := generateRecommendations(portfolioProperties, metrics, riskAnalysis, diversificationAnalysis)
@@ -216,6 +228,7 @@ func (s *Service) Optimize(ctx context.Context, req investment.OptimizationReque
 		MarketFilters:           filterSummary,
 		MarketQuality:           marketQuality,
 		Allocations:             allocations,
+		AllocationRationale:     allocationRationale,
 		RiskAnalysis:            riskAnalysis,
 		DiversificationAnalysis: diversificationAnalysis,
 		Recommendations:         recommendations,
@@ -932,7 +945,50 @@ func calculateRiskAnalysis(properties []investment.PropertyInPortfolio, scored [
 	}
 }
 
-// calculateDiversificationAnalysis computes diversification metrics
+// calculateDiversificationWithCorrelation computes diversification using actual market correlations
+// when available, falling back to simple location counting otherwise.
+func (s *Service) calculateDiversificationWithCorrelation(ctx context.Context, properties []investment.PropertyInPortfolio, concentration *investment.ConcentrationMetrics) *investment.DiversificationAnalysis {
+	// Collect unique locations
+	locationSet := make(map[string]bool)
+	for _, prop := range properties {
+		location := buildLocationKey(prop.Property.City, prop.Property.State)
+		if location != "" {
+			locationSet[location] = true
+		}
+	}
+	locations := make([]string, 0, len(locationSet))
+	for loc := range locationSet {
+		locations = append(locations, loc)
+	}
+
+	// Try correlation-based analysis
+	if s.correlationAnalyzer != nil && len(locations) >= 2 {
+		result := s.correlationAnalyzer.CalculateCorrelations(ctx, locations)
+
+		// Convert opportunities to string messages
+		var opportunities []string
+		for _, opp := range result.Opportunities {
+			opportunities = append(opportunities, fmt.Sprintf("%s ↔ %s: %s", opp.Market1, opp.Market2, opp.Reasoning))
+		}
+
+		// Add generic suggestions if score is low
+		if result.Score < 40 && len(locations) < 3 {
+			opportunities = append(opportunities, "Adding properties in a different region could improve diversification")
+		}
+
+		return &investment.DiversificationAnalysis{
+			DiversificationScore: result.Score,
+			Correlations:         result.Correlations,
+			Opportunities:        opportunities,
+			DataQualityNote:      result.DataQualityNote,
+		}
+	}
+
+	// Fallback to simple location-based analysis
+	return calculateDiversificationAnalysis(properties, concentration)
+}
+
+// calculateDiversificationAnalysis computes diversification metrics (simple fallback)
 func calculateDiversificationAnalysis(properties []investment.PropertyInPortfolio, concentration *investment.ConcentrationMetrics) *investment.DiversificationAnalysis {
 	if len(properties) == 0 {
 		return &investment.DiversificationAnalysis{

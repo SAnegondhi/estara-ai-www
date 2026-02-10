@@ -161,3 +161,86 @@ SELECT COUNT(*) FROM city_market_cache;
 -- name: GetCityCountByState :one
 -- Get count of cached cities in a state
 SELECT COUNT(*) FROM city_market_cache WHERE state = $1;
+
+-- ============================================================================
+-- AUTOCOMPLETE QUERIES (ADR-073: Market Intelligence)
+-- ============================================================================
+
+-- name: GetCitySnapshot :one
+-- Get ALL fields from city_market_cache for a city (ADR-074: DATA_PAYLOAD builder)
+SELECT
+    c.id,
+    c.location_key,
+    c.city,
+    c.state,
+    c.metro_region_id,
+    COALESCE(m.metro_name, '') AS metro_name,
+    c.median_home_price,
+    c.median_price_per_sqft,
+    c.median_list_price,
+    c.homes_sold,
+    c.inventory_count,
+    c.months_of_supply,
+    c.median_days_on_market,
+    c.price_yoy_change,
+    c.forecast_growth,
+    c.median_rent,
+    c.rent_yoy_change,
+    c.rental_yield,
+    c.cap_rate,
+    c.price_to_rent_ratio,
+    c.vacancy_rate,
+    c.hud_fmr_0br,
+    c.hud_fmr_1br,
+    c.hud_fmr_2br,
+    c.hud_fmr_3br,
+    c.hud_fmr_4br,
+    c.population,
+    c.population_growth_rate,
+    c.median_household_income,
+    c.unemployment_rate,
+    c.employment_growth_rate,
+    c.market_heat_index,
+    c.market_temperature,
+    c.affordability_index,
+    c.affordability_burden,
+    c.price_to_income_ratio,
+    c.data_sources,
+    c.data_quality_score,
+    c.data_date,
+    c.last_updated,
+    c.is_ai_estimated,
+    c.ai_confidence_score
+FROM city_market_cache c
+LEFT JOIN metro_time_series m ON c.metro_region_id = m.metro_region_id
+WHERE c.city ILIKE $1 AND c.state = $2
+LIMIT 1;
+
+-- name: GetNationalTimeSeries :one
+-- Get national aggregate ZHVI/ZORI from metro_time_series (metro_region_id=0)
+-- Used for national benchmark comparison in DATA_PAYLOAD (ADR-074)
+SELECT
+    metro_region_id,
+    metro_name,
+    zhvi_data,
+    zori_data,
+    zhvf_data,
+    updated_at
+FROM metro_time_series
+WHERE metro_region_id = 0
+LIMIT 1;
+
+-- name: SearchCities :many
+-- Search cities by name for autocomplete
+SELECT
+    c.city,
+    c.state,
+    COALESCE(c.population, 0) AS population,
+    COALESCE(m.metro_name, '') AS metro_name,
+    CASE WHEN c.median_home_price IS NOT NULL THEN true ELSE false END AS has_market_data,
+    CASE WHEN c.median_rent IS NOT NULL THEN true ELSE false END AS has_rental_data
+FROM city_market_cache c
+LEFT JOIN metro_time_series m ON c.metro_region_id = m.metro_region_id
+WHERE c.city ILIKE $1
+ORDER BY COALESCE(c.population, 0) DESC
+LIMIT $2;

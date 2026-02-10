@@ -82,6 +82,12 @@ func NewPDF(orientation, unit, size string) *gofpdf.Fpdf {
 	return pdf
 }
 
+// centerText draws text horizontally centred on the page.
+func centerText(pdf *gofpdf.Fpdf, pageWidth float64, y float64, text string) {
+	w := pdf.GetStringWidth(text)
+	pdf.Text((pageWidth-w)/2, y, text)
+}
+
 // AddCoverPage draws a branded cover.
 func AddCoverPage(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, title, subtitle, market string, generatedFor string) {
 	pdf.AddPage()
@@ -91,30 +97,30 @@ func AddCoverPage(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, title, subtitl
 
 	pdf.SetTextColor(255, 255, 255)
 	pdf.SetFont("Helvetica", "B", 24)
-	pdf.Text(page.Width/2-20, 35, "Estara-AI")
+	centerText(pdf, page.Width, 35, "Estara-AI")
 	pdf.SetFont("Helvetica", "", 10)
-	pdf.Text(page.Width/2-35, 45, "REAL ESTATE INTELLIGENCE")
+	centerText(pdf, page.Width, 45, "REAL ESTATE INTELLIGENCE")
 
 	pdf.SetTextColor(theme.Text.R, theme.Text.G, theme.Text.B)
 	pdf.SetFont("Times", "B", 20)
-	pdf.Text(page.Width/2-60, 110, title)
+	centerText(pdf, page.Width, 110, title)
 
 	pdf.SetFont("Helvetica", "", 12)
-	pdf.Text(page.Width/2-45, 125, subtitle)
+	centerText(pdf, page.Width, 125, subtitle)
 
 	pdf.SetFont("Helvetica", "B", 16)
 	pdf.SetTextColor(theme.Primary.R, theme.Primary.G, theme.Primary.B)
-	pdf.Text(page.Width/2-45, 150, market)
+	centerText(pdf, page.Width, 150, market)
 
 	if generatedFor != "" {
 		pdf.SetTextColor(theme.Text.R, theme.Text.G, theme.Text.B)
 		pdf.SetFont("Helvetica", "", 11)
-		pdf.Text(page.Width/2-35, 165, fmt.Sprintf("Generated for %s", generatedFor))
+		centerText(pdf, page.Width, 165, fmt.Sprintf("Generated for %s", generatedFor))
 	}
 
 	pdf.SetTextColor(theme.Muted.R, theme.Muted.G, theme.Muted.B)
 	pdf.SetFont("Helvetica", "", 10)
-	pdf.Text(page.Width/2-30, 180, fmt.Sprintf("Generated: %s", time.Now().Format("January 2, 2006")))
+	centerText(pdf, page.Width, 180, fmt.Sprintf("Generated: %s", time.Now().Format("January 2, 2006")))
 
 	// Disclaimer banner
 	bannerY := 195.0
@@ -141,14 +147,17 @@ func AddCoverPage(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, title, subtitl
 	pdf.Rect(0, page.Height-30, page.Width, 30, "F")
 	pdf.SetTextColor(255, 255, 255)
 	pdf.SetFont("Helvetica", "", 9)
-	pdf.Text(page.Width/2-20, page.Height-15, "Powered by Estara AI")
-	pdf.Text(page.Width/2-20, page.Height-8, "www.estara-ai.com")
+	centerText(pdf, page.Width, page.Height-15, "Powered by Estara AI")
+	centerText(pdf, page.Width, page.Height-8, "www.estara-ai.com")
 }
 
 // AddHeaderFooter configures header/footer after cover page.
+// Page 1 (cover) is skipped; page numbering starts at 1 for page 2.
 func AddHeaderFooter(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, title string) {
-	pdf.AliasNbPages("")
 	pdf.SetHeaderFunc(func() {
+		if pdf.PageNo() <= 1 {
+			return
+		}
 		pdf.SetDrawColor(theme.Primary.R, theme.Primary.G, theme.Primary.B)
 		pdf.SetLineWidth(0.8)
 		pdf.Line(page.MarginLeft, 15, page.Width-page.MarginRight, 15)
@@ -163,6 +172,9 @@ func AddHeaderFooter(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, title strin
 	})
 
 	pdf.SetFooterFunc(func() {
+		if pdf.PageNo() <= 1 {
+			return
+		}
 		y := page.Height - 10
 		pdf.SetDrawColor(theme.Primary.R, theme.Primary.G, theme.Primary.B)
 		pdf.SetLineWidth(0.3)
@@ -171,13 +183,25 @@ func AddHeaderFooter(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, title strin
 		pdf.SetTextColor(theme.Muted.R, theme.Muted.G, theme.Muted.B)
 		pdf.SetFont("Helvetica", "", 7)
 		pdf.Text(page.MarginLeft, y, "Confidential - For Intended Recipient Only")
-		pdf.Text(page.Width/2-10, y, fmt.Sprintf("Page %d of {nb}", pdf.PageNo()))
-		pdf.Text(page.Width-page.MarginRight-20, y, "© Estara AI")
+		pdf.Text(page.Width/2-10, y, fmt.Sprintf("Page %d", pdf.PageNo()-1))
+		dateStr := time.Now().Format("01/02/2006 15:04")
+		pdf.Text(page.Width-page.MarginRight-38, y, "\xa9 Estara AI | "+dateStr)
 	})
 }
 
 // AddSectionHeading draws a section heading and returns the next y position.
+// Adds vertical spacing from preceding content; no gap at top of page.
 func AddSectionHeading(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, text string, y float64) float64 {
+	// Add gap from preceding content (not at page top)
+	if y > page.MarginTop+5 {
+		y += 8
+	}
+	// Ensure heading + some content fits on this page
+	if y+20 > page.Height-page.MarginBottom {
+		pdf.AddPage()
+		y = page.MarginTop
+	}
+
 	pdf.SetFillColor(theme.Primary.R, theme.Primary.G, theme.Primary.B)
 	pdf.Rect(page.MarginLeft, y-2, 2, 6, "F")
 
@@ -266,42 +290,171 @@ type MetricItem struct {
 type TableColumn struct {
 	Header string
 	Width  float64
+	Align  string // "R" for right-align, default is left
 }
 
-// AddTable renders a basic table with optional header.
+// AddTable renders a table with text wrapping, right-alignment support,
+// and header repetition when a page break occurs mid-table.
 func AddTable(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, columns []TableColumn, rows [][]string, y float64) float64 {
-	rowHeight := 6.0
-	// Header
-	pdf.SetFillColor(theme.Primary.R, theme.Primary.G, theme.Primary.B)
-	pdf.SetTextColor(255, 255, 255)
-	pdf.SetFont("Helvetica", "B", 8)
-	x := page.MarginLeft
-	for _, col := range columns {
-		pdf.Rect(x, y, col.Width, rowHeight, "F")
-		pdf.Text(x+2, y+4.2, col.Header)
-		x += col.Width
+	lineHeight := 3.5
+	headerHeight := 6.0
+	cellPad := 2.0
+
+	drawHeader := func(atY float64) float64 {
+		pdf.SetFillColor(theme.Primary.R, theme.Primary.G, theme.Primary.B)
+		pdf.SetTextColor(255, 255, 255)
+		pdf.SetFont("Helvetica", "B", 8)
+		x := page.MarginLeft
+		for _, col := range columns {
+			pdf.Rect(x, atY, col.Width, headerHeight, "F")
+			if col.Align == "R" {
+				w := pdf.GetStringWidth(col.Header)
+				pdf.Text(x+col.Width-cellPad-w, atY+4.2, col.Header)
+			} else {
+				pdf.Text(x+cellPad, atY+4.2, col.Header)
+			}
+			x += col.Width
+		}
+		return atY + headerHeight
 	}
-	y += rowHeight
+
+	y = drawHeader(y)
 
 	pdf.SetFont("Helvetica", "", 8)
 	for _, row := range rows {
-		if y+rowHeight > page.Height-page.MarginBottom {
-			pdf.AddPage()
-			y = page.MarginTop
-		}
-		x = page.MarginLeft
-		pdf.SetTextColor(theme.Text.R, theme.Text.G, theme.Text.B)
+		cellLines := make([][][]byte, len(columns))
+		maxLines := 1
 		for i, col := range columns {
 			cell := ""
 			if i < len(row) {
 				cell = row[i]
 			}
+			if cell == "" {
+				continue
+			}
+			split := pdf.SplitLines([]byte(cell), col.Width-cellPad*2)
+			cellLines[i] = split
+			if len(split) > maxLines {
+				maxLines = len(split)
+			}
+		}
+
+		rowHeight := float64(maxLines)*lineHeight + cellPad
+		if rowHeight < headerHeight {
+			rowHeight = headerHeight
+		}
+
+		if y+rowHeight > page.Height-page.MarginBottom {
+			pdf.AddPage()
+			y = page.MarginTop
+			pdf.SetFont("Helvetica", "B", 8)
+			y = drawHeader(y)
+			pdf.SetFont("Helvetica", "", 8)
+		}
+
+		x := page.MarginLeft
+		pdf.SetTextColor(theme.Text.R, theme.Text.G, theme.Text.B)
+		for i, col := range columns {
 			pdf.Rect(x, y, col.Width, rowHeight, "D")
-			pdf.Text(x+2, y+4.2, cell)
+			textY := y + lineHeight + 0.5
+			if cellLines[i] != nil {
+				for _, line := range cellLines[i] {
+					txt := string(line)
+					if col.Align == "R" {
+						w := pdf.GetStringWidth(txt)
+						pdf.Text(x+col.Width-cellPad-w, textY, txt)
+					} else {
+						pdf.Text(x+cellPad, textY, txt)
+					}
+					textY += lineHeight
+				}
+			}
 			x += col.Width
 		}
 		y += rowHeight
 	}
+	return y + 4
+}
+
+// EnsureSpace checks if enough vertical space remains on the current page.
+// If not, it adds a new page and returns the margin top y position.
+// Callers must pass their tracked y position — pdf.GetXY() is unreliable
+// because pdf.Text() does not update the internal cursor.
+func EnsureSpace(pdf *gofpdf.Fpdf, page PageConfig, y float64, neededMM float64) (float64, bool) {
+	if y+neededMM > page.Height-page.MarginBottom {
+		pdf.AddPage()
+		return page.MarginTop, true
+	}
+	return y, false
+}
+
+// AddComparisonTable renders a multi-column comparison table with alternating
+// row colors. Numeric columns (all except the first) are right-aligned.
+// Headers are repeated when a page break occurs mid-table.
+func AddComparisonTable(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, title string, headers []string, rows [][]string, y float64) float64 {
+	if title != "" {
+		y = AddSectionHeading(pdf, page, theme, title, y)
+	}
+
+	contentWidth := page.Width - page.MarginLeft - page.MarginRight
+	colWidth := contentWidth / float64(len(headers))
+	rowHeight := 6.5
+
+	drawHeader := func(atY float64) float64 {
+		pdf.SetFillColor(theme.Primary.R, theme.Primary.G, theme.Primary.B)
+		pdf.SetTextColor(255, 255, 255)
+		pdf.SetFont("Helvetica", "B", 8)
+		x := page.MarginLeft
+		for i, header := range headers {
+			pdf.Rect(x, atY, colWidth, rowHeight, "F")
+			if i > 0 {
+				w := pdf.GetStringWidth(header)
+				pdf.Text(x+colWidth-2-w, atY+4.5, header)
+			} else {
+				pdf.Text(x+2, atY+4.5, header)
+			}
+			x += colWidth
+		}
+		return atY + rowHeight
+	}
+
+	y = drawHeader(y)
+
+	pdf.SetFont("Helvetica", "", 8)
+	for rowIdx, row := range rows {
+		if y+rowHeight > page.Height-page.MarginBottom {
+			pdf.AddPage()
+			y = page.MarginTop
+			pdf.SetFont("Helvetica", "B", 8)
+			y = drawHeader(y)
+			pdf.SetFont("Helvetica", "", 8)
+		}
+
+		if rowIdx%2 == 0 {
+			pdf.SetFillColor(theme.Light.R, theme.Light.G, theme.Light.B)
+		} else {
+			pdf.SetFillColor(255, 255, 255)
+		}
+
+		x := page.MarginLeft
+		for i := range headers {
+			pdf.Rect(x, y, colWidth, rowHeight, "F")
+			cell := ""
+			if i < len(row) {
+				cell = row[i]
+			}
+			pdf.SetTextColor(theme.Text.R, theme.Text.G, theme.Text.B)
+			if i > 0 {
+				w := pdf.GetStringWidth(cell)
+				pdf.Text(x+colWidth-2-w, y+4.5, cell)
+			} else {
+				pdf.Text(x+2, y+4.5, cell)
+			}
+			x += colWidth
+		}
+		y += rowHeight
+	}
+
 	return y + 4
 }
 
