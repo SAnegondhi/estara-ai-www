@@ -9,15 +9,17 @@ import (
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/db/postgres"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
+	"github.com/estara-ai/www/internal/services/market/importer"
 	"github.com/estara-ai/www/pkg/httputil"
 )
 
 // Handler handles cron job HTTP requests
 type Handler struct {
-	db     *postgres.DB
-	redis  *redisClient.Client
-	cfg    *config.Config
-	logger *slog.Logger
+	db       *postgres.DB
+	redis    *redisClient.Client
+	cfg      *config.Config
+	importer *importer.Service // ADR-075: Market data import service
+	logger   *slog.Logger
 }
 
 // NewHandler creates a new cron handler
@@ -28,6 +30,11 @@ func NewHandler(db *postgres.DB, redis *redisClient.Client, cfg *config.Config) 
 		cfg:    cfg,
 		logger: slog.Default().With("component", "cron_handler"),
 	}
+}
+
+// SetImporter injects the market data importer service (ADR-075).
+func (h *Handler) SetImporter(imp *importer.Service) {
+	h.importer = imp
 }
 
 // CronResult represents the result of a cron job
@@ -908,4 +915,208 @@ func (h *Handler) deleteExpiredDiscoverySessions(ctx context.Context) (int64, er
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+// ===============================
+// Market Data Import Endpoints (ADR-075)
+// ===============================
+
+// ImportZillowZHVI handles POST /api/cron/market-data/zillow-zhvi?level=metro|city|zip|state
+func (h *Handler) ImportZillowZHVI(w http.ResponseWriter, r *http.Request) {
+	if h.importer == nil {
+		httputil.Error(w, http.StatusServiceUnavailable, "market importer not configured")
+		return
+	}
+
+	level := r.URL.Query().Get("level")
+	if level == "" {
+		level = "metro"
+	}
+
+	start := time.Now()
+	result, err := h.importer.ImportZillowZHVI(r.Context(), level)
+	if err != nil {
+		h.logger.Error("ZHVI import failed", "level", level, "error", err)
+		httputil.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	cronResult := newCronResult(start)
+	cronResult.Status = "completed"
+	cronResult.Message = "ZHVI import completed"
+	cronResult.AffectedRows = result.RecordsUpserted
+	cronResult.Details = result
+	cronResult.Duration = time.Since(start).String()
+	httputil.Success(w, cronResult)
+}
+
+// ImportZillowZORI handles POST /api/cron/market-data/zillow-zori?level=metro|city|zip
+func (h *Handler) ImportZillowZORI(w http.ResponseWriter, r *http.Request) {
+	if h.importer == nil {
+		httputil.Error(w, http.StatusServiceUnavailable, "market importer not configured")
+		return
+	}
+
+	level := r.URL.Query().Get("level")
+	if level == "" {
+		level = "metro"
+	}
+
+	start := time.Now()
+	result, err := h.importer.ImportZillowZORI(r.Context(), level)
+	if err != nil {
+		h.logger.Error("ZORI import failed", "level", level, "error", err)
+		httputil.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	cronResult := newCronResult(start)
+	cronResult.Status = "completed"
+	cronResult.Message = "ZORI import completed"
+	cronResult.AffectedRows = result.RecordsUpserted
+	cronResult.Details = result
+	cronResult.Duration = time.Since(start).String()
+	httputil.Success(w, cronResult)
+}
+
+// ImportZillowForecasts handles POST /api/cron/market-data/zillow-forecasts
+func (h *Handler) ImportZillowForecasts(w http.ResponseWriter, r *http.Request) {
+	if h.importer == nil {
+		httputil.Error(w, http.StatusServiceUnavailable, "market importer not configured")
+		return
+	}
+
+	start := time.Now()
+	result, err := h.importer.ImportZillowForecasts(r.Context())
+	if err != nil {
+		h.logger.Error("ZHVF import failed", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	cronResult := newCronResult(start)
+	cronResult.Status = "completed"
+	cronResult.Message = "ZHVF import completed"
+	cronResult.AffectedRows = result.RecordsUpserted
+	cronResult.Details = result
+	cronResult.Duration = time.Since(start).String()
+	httputil.Success(w, cronResult)
+}
+
+// ImportZillowMetrics handles POST /api/cron/market-data/zillow-metrics
+func (h *Handler) ImportZillowMetrics(w http.ResponseWriter, r *http.Request) {
+	if h.importer == nil {
+		httputil.Error(w, http.StatusServiceUnavailable, "market importer not configured")
+		return
+	}
+
+	start := time.Now()
+	result, err := h.importer.ImportZillowMetrics(r.Context())
+	if err != nil {
+		h.logger.Error("metrics import failed", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	cronResult := newCronResult(start)
+	cronResult.Status = "completed"
+	cronResult.Message = "Zillow metrics import completed"
+	cronResult.AffectedRows = result.RecordsUpserted
+	cronResult.Details = result
+	cronResult.Duration = time.Since(start).String()
+	httputil.Success(w, cronResult)
+}
+
+// ImportRedfinData handles POST /api/cron/market-data/redfin?level=national|state|metro|county|city|zip
+func (h *Handler) ImportRedfinData(w http.ResponseWriter, r *http.Request) {
+	if h.importer == nil {
+		httputil.Error(w, http.StatusServiceUnavailable, "market importer not configured")
+		return
+	}
+
+	level := r.URL.Query().Get("level")
+	if level == "" {
+		level = "metro"
+	}
+
+	start := time.Now()
+	result, err := h.importer.ImportRedfinData(r.Context(), level)
+	if err != nil {
+		h.logger.Error("Redfin import failed", "level", level, "error", err)
+		httputil.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	cronResult := newCronResult(start)
+	cronResult.Status = "completed"
+	cronResult.Message = "Redfin import completed"
+	cronResult.AffectedRows = result.RecordsUpserted
+	cronResult.Details = result
+	cronResult.Duration = time.Since(start).String()
+	httputil.Success(w, cronResult)
+}
+
+// ComputeNational handles POST /api/cron/market-data/compute-national
+func (h *Handler) ComputeNational(w http.ResponseWriter, r *http.Request) {
+	if h.importer == nil {
+		httputil.Error(w, http.StatusServiceUnavailable, "market importer not configured")
+		return
+	}
+
+	start := time.Now()
+	result, err := h.importer.ComputeNationalAggregates(r.Context())
+	if err != nil {
+		h.logger.Error("national aggregate computation failed", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	cronResult := newCronResult(start)
+	cronResult.Status = "completed"
+	cronResult.Message = "national aggregates computed"
+	cronResult.AffectedRows = result.RecordsUpserted
+	cronResult.Details = result
+	cronResult.Duration = time.Since(start).String()
+	httputil.Success(w, cronResult)
+}
+
+// FullRefreshMarketData handles POST /api/cron/market-data/full-refresh
+func (h *Handler) FullRefreshMarketData(w http.ResponseWriter, r *http.Request) {
+	if h.importer == nil {
+		httputil.Error(w, http.StatusServiceUnavailable, "market importer not configured")
+		return
+	}
+
+	start := time.Now()
+	result, err := h.importer.FullRefresh(r.Context())
+	if err != nil {
+		h.logger.Error("full refresh failed", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	cronResult := newCronResult(start)
+	cronResult.Status = "completed"
+	cronResult.Message = "full market data refresh completed"
+	cronResult.AffectedRows = result.RecordsUpserted
+	cronResult.Details = result
+	cronResult.Duration = time.Since(start).String()
+	httputil.Success(w, cronResult)
+}
+
+// MarketDataStatus handles GET /api/cron/market-data/status
+func (h *Handler) MarketDataStatus(w http.ResponseWriter, r *http.Request) {
+	if h.importer == nil {
+		httputil.Error(w, http.StatusServiceUnavailable, "market importer not configured")
+		return
+	}
+
+	status, err := h.importer.Status(r.Context())
+	if err != nil {
+		h.logger.Error("market data status failed", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	httputil.Success(w, status)
 }

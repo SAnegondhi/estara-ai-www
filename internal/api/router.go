@@ -24,6 +24,7 @@ import (
 	"github.com/estara-ai/www/internal/api/handlers/website"
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
+	"github.com/estara-ai/www/internal/services/market/importer"
 	"github.com/estara-ai/www/internal/db/postgres"
 	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
@@ -124,6 +125,10 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	}
 	if db.Market != nil {
 		handlers.Market.SetMarketDB(db.Market)
+
+		// ADR-075: Wire market data importer into cron handler
+		imp := importer.NewService(db.Market)
+		handlers.Cron.SetImporter(imp)
 	}
 
 	// Inject services into portfolio handler
@@ -460,6 +465,18 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Post("/ai-estimate-refresh", handlers.Cron.RefreshAIEstimates)
 		r.Post("/cleanup-guest-sessions", handlers.Cron.CleanupGuestSessions)
 		r.Post("/discovery-cleanup", handlers.Cron.DiscoveryCleanup)
+
+		// Market data import endpoints (ADR-075)
+		r.Route("/market-data", func(r chi.Router) {
+			r.Post("/zillow-zhvi", handlers.Cron.ImportZillowZHVI)
+			r.Post("/zillow-zori", handlers.Cron.ImportZillowZORI)
+			r.Post("/zillow-forecasts", handlers.Cron.ImportZillowForecasts)
+			r.Post("/zillow-metrics", handlers.Cron.ImportZillowMetrics)
+			r.Post("/redfin", handlers.Cron.ImportRedfinData)
+			r.Post("/compute-national", handlers.Cron.ComputeNational)
+			r.Post("/full-refresh", handlers.Cron.FullRefreshMarketData)
+			r.Get("/status", handlers.Cron.MarketDataStatus)
+		})
 	})
 
 	// Billing/Payment routes (protected)

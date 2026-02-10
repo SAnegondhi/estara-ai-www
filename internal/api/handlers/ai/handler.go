@@ -2691,10 +2691,11 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 			content,
 			"metricsData",
 			"narrativeData",
-			"lastAccessedAt"
+			"lastAccessedAt",
+			COALESCE("fullReport", '') AS "fullReport"
 		FROM analysis_cache
 		WHERE "userId" = $1
-			AND feature = 'dual_agent_market_analysis'
+			AND feature IN ('dual_agent_market_analysis', 'market_analysis_v2')
 			AND "supersededBy" IS NULL
 			AND ($4 = '' OR location ILIKE '%' || $4 || '%')
 		ORDER BY "lastAccessedAt" DESC
@@ -2721,6 +2722,7 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 		var content string
 		var metricsData, narrativeData *string
 		var lastAccessedAt time.Time
+		var fullReport string
 
 		err := rows.Scan(
 			&item.ID,
@@ -2730,6 +2732,7 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 			&metricsData,
 			&narrativeData,
 			&lastAccessedAt,
+			&fullReport,
 		)
 		if err != nil {
 			h.logger.Warn("failed to scan analysis history item", "error", err)
@@ -2738,8 +2741,14 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 
 		item.Status = "COMPLETED"
 		item.CreatedAt = lastAccessedAt.Format(time.RFC3339)
-		item.HasReport = content != ""
-		item.Preview = extractExecutiveSummary(content)
+
+		// V2 reports store markdown in fullReport; V1 stores it in content
+		reportContent := fullReport
+		if reportContent == "" {
+			reportContent = content
+		}
+		item.HasReport = reportContent != ""
+		item.Preview = extractExecutiveSummary(reportContent)
 
 		if metricsData != nil && *metricsData != "" {
 			var metrics map[string]interface{}
@@ -2764,7 +2773,7 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 		SELECT COUNT(*)
 		FROM analysis_cache
 		WHERE "userId" = $1
-			AND feature = 'dual_agent_market_analysis'
+			AND feature IN ('dual_agent_market_analysis', 'market_analysis_v2')
 			AND "supersededBy" IS NULL
 			AND ($2 = '' OR location ILIKE '%' || $2 || '%')
 	`, user.UserID, search).Scan(&total)

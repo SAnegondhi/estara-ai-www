@@ -33,6 +33,12 @@ func (rw *responseWriter) Flush() {
 	}
 }
 
+// Unwrap returns the underlying ResponseWriter, enabling http.ResponseController
+// to reach the connection for SetWriteDeadline (used by SSE to disable write timeout).
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
+}
+
 // RequestID adds a unique request ID to each request
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

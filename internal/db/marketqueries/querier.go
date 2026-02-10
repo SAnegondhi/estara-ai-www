@@ -11,6 +11,10 @@ import (
 )
 
 type Querier interface {
+	// Get all metros for city→metro linking during import
+	GetAllMetroLookup(ctx context.Context) ([]GetAllMetroLookupRow, error)
+	// Get all state ZHVI data for national aggregation
+	GetAllStateZHVI(ctx context.Context) ([]GetAllStateZHVIRow, error)
 	// Get cities where cache has expired
 	GetCitiesNeedingRefresh(ctx context.Context, limit int32) ([]GetCitiesNeedingRefreshRow, error)
 	// Get total count of cached cities
@@ -32,6 +36,14 @@ type Querier interface {
 	// ============================================================================
 	// Get ALL fields from city_market_cache for a city (ADR-074: DATA_PAYLOAD builder)
 	GetCitySnapshot(ctx context.Context, arg GetCitySnapshotParams) (GetCitySnapshotRow, error)
+	// Get total count of city time-series entries
+	GetCityTimeSeriesCount(ctx context.Context) (int64, error)
+	// Get most recent city time-series update timestamp
+	GetCityTimeSeriesFreshness(ctx context.Context) (interface{}, error)
+	// Get most recent county update timestamp
+	GetCountyFreshness(ctx context.Context) (interface{}, error)
+	// Get total count of county time-series entries
+	GetCountyTimeSeriesCount(ctx context.Context) (int64, error)
 	// Returns total counts of tracked cities and metros
 	GetMarketPulseCounts(ctx context.Context) (GetMarketPulseCountsRow, error)
 	// Market Pulse Queries
@@ -48,12 +60,25 @@ type Querier interface {
 	GetMetroByRegionID(ctx context.Context, metroRegionID int32) (GetMetroByRegionIDRow, error)
 	// Get total count of metros
 	GetMetroCount(ctx context.Context) (int64, error)
+	// ============================================================================
+	// STATUS QUERIES (ADR-075: Market data freshness)
+	// ============================================================================
+	// Get most recent metro update timestamp
+	GetMetroFreshness(ctx context.Context) (interface{}, error)
 	// Get national aggregate ZHVI/ZORI from metro_time_series (metro_region_id=0)
 	// Used for national benchmark comparison in DATA_PAYLOAD (ADR-074)
 	GetNationalTimeSeries(ctx context.Context) (GetNationalTimeSeriesRow, error)
 	// Returns metros that have ZHVI data (for daily-rotating sparkline selection).
 	// Orders by metro_name for deterministic rotation.
 	GetSparklineMetros(ctx context.Context) ([]GetSparklineMetrosRow, error)
+	// Get most recent state update timestamp
+	GetStateFreshness(ctx context.Context) (interface{}, error)
+	// Get total count of state time-series entries
+	GetStateTimeSeriesCount(ctx context.Context) (int64, error)
+	// Get most recent zip update timestamp
+	GetZipFreshness(ctx context.Context) (interface{}, error)
+	// Get total count of zip time-series entries
+	GetZipTimeSeriesCount(ctx context.Context) (int64, error)
 	// List all cities in a state with their market data
 	ListCitiesByState(ctx context.Context, arg ListCitiesByStateParams) ([]ListCitiesByStateRow, error)
 	// List all metros in a state
@@ -62,6 +87,49 @@ type Querier interface {
 	SearchCities(ctx context.Context, arg SearchCitiesParams) ([]SearchCitiesRow, error)
 	// Search metros by name pattern
 	SearchMetros(ctx context.Context, arg SearchMetrosParams) ([]SearchMetrosRow, error)
+	// Upsert city Redfin data (keyed by city_name + state since Redfin has no region IDs)
+	UpsertCityRedfin(ctx context.Context, arg UpsertCityRedfinParams) error
+	// ============================================================================
+	// CITY TIME SERIES UPSERT QUERIES (ADR-075)
+	// ============================================================================
+	// Upsert city ZHVI time-series data
+	UpsertCityZHVI(ctx context.Context, arg UpsertCityZHVIParams) error
+	// Upsert city ZORI time-series data
+	UpsertCityZORI(ctx context.Context, arg UpsertCityZORIParams) error
+	// ============================================================================
+	// COUNTY TIME SERIES UPSERT QUERIES (ADR-075)
+	// ============================================================================
+	// Upsert county Redfin data (keyed by county_region_id since county_fips may be null)
+	UpsertCountyRedfin(ctx context.Context, arg UpsertCountyRedfinParams) error
+	// Upsert metro sales/DOM/heat/affordability metrics
+	UpsertMetroMetrics(ctx context.Context, arg UpsertMetroMetricsParams) error
+	// Upsert metro Redfin data
+	UpsertMetroRedfin(ctx context.Context, arg UpsertMetroRedfinParams) error
+	// Upsert metro ZHVI forecast data
+	UpsertMetroZHVF(ctx context.Context, arg UpsertMetroZHVFParams) error
+	// ============================================================================
+	// METRO TIME SERIES UPSERT QUERIES (ADR-075: Market Data Import)
+	// ============================================================================
+	// Upsert metro ZHVI time-series data
+	UpsertMetroZHVI(ctx context.Context, arg UpsertMetroZHVIParams) error
+	// Upsert metro ZORI time-series data
+	UpsertMetroZORI(ctx context.Context, arg UpsertMetroZORIParams) error
+	// Upsert state Redfin data
+	UpsertStateRedfin(ctx context.Context, arg UpsertStateRedfinParams) error
+	// ============================================================================
+	// STATE TIME SERIES UPSERT QUERIES (ADR-075)
+	// ============================================================================
+	// Upsert state ZHVI time-series data
+	UpsertStateZHVI(ctx context.Context, arg UpsertStateZHVIParams) error
+	// Upsert zip Redfin data
+	UpsertZipRedfin(ctx context.Context, arg UpsertZipRedfinParams) error
+	// ============================================================================
+	// ZIP TIME SERIES UPSERT QUERIES (ADR-075)
+	// ============================================================================
+	// Upsert zip ZHVI time-series data
+	UpsertZipZHVI(ctx context.Context, arg UpsertZipZHVIParams) error
+	// Upsert zip ZORI time-series data
+	UpsertZipZORI(ctx context.Context, arg UpsertZipZORIParams) error
 }
 
 var _ Querier = (*Queries)(nil)

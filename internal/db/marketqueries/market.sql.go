@@ -11,6 +11,77 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const GetAllMetroLookup = `-- name: GetAllMetroLookup :many
+SELECT metro_region_id, metro_name
+FROM metro_time_series
+ORDER BY metro_name
+`
+
+type GetAllMetroLookupRow struct {
+	MetroRegionID int32  `json:"metro_region_id"`
+	MetroName     string `json:"metro_name"`
+}
+
+// Get all metros for city→metro linking during import
+func (q *Queries) GetAllMetroLookup(ctx context.Context) ([]GetAllMetroLookupRow, error) {
+	rows, err := q.db.Query(ctx, GetAllMetroLookup)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetAllMetroLookupRow{}
+	for rows.Next() {
+		var i GetAllMetroLookupRow
+		if err := rows.Scan(&i.MetroRegionID, &i.MetroName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const GetAllStateZHVI = `-- name: GetAllStateZHVI :many
+SELECT state_region_id, state_code, state_name, zhvi_data
+FROM state_time_series
+WHERE zhvi_data IS NOT NULL
+`
+
+type GetAllStateZHVIRow struct {
+	StateRegionID int32  `json:"state_region_id"`
+	StateCode     string `json:"state_code"`
+	StateName     string `json:"state_name"`
+	ZhviData      []byte `json:"zhvi_data"`
+}
+
+// Get all state ZHVI data for national aggregation
+func (q *Queries) GetAllStateZHVI(ctx context.Context) ([]GetAllStateZHVIRow, error) {
+	rows, err := q.db.Query(ctx, GetAllStateZHVI)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetAllStateZHVIRow{}
+	for rows.Next() {
+		var i GetAllStateZHVIRow
+		if err := rows.Scan(
+			&i.StateRegionID,
+			&i.StateCode,
+			&i.StateName,
+			&i.ZhviData,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const GetCitiesNeedingRefresh = `-- name: GetCitiesNeedingRefresh :many
 SELECT
     c.id,
@@ -407,6 +478,54 @@ func (q *Queries) GetCitySnapshot(ctx context.Context, arg GetCitySnapshotParams
 	return i, err
 }
 
+const GetCityTimeSeriesCount = `-- name: GetCityTimeSeriesCount :one
+SELECT COUNT(*) FROM city_time_series
+`
+
+// Get total count of city time-series entries
+func (q *Queries) GetCityTimeSeriesCount(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, GetCityTimeSeriesCount)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const GetCityTimeSeriesFreshness = `-- name: GetCityTimeSeriesFreshness :one
+SELECT MAX(updated_at) AS latest_update FROM city_time_series
+`
+
+// Get most recent city time-series update timestamp
+func (q *Queries) GetCityTimeSeriesFreshness(ctx context.Context) (interface{}, error) {
+	row := q.db.QueryRow(ctx, GetCityTimeSeriesFreshness)
+	var latest_update interface{}
+	err := row.Scan(&latest_update)
+	return latest_update, err
+}
+
+const GetCountyFreshness = `-- name: GetCountyFreshness :one
+SELECT MAX(updated_at) AS latest_update FROM county_time_series
+`
+
+// Get most recent county update timestamp
+func (q *Queries) GetCountyFreshness(ctx context.Context) (interface{}, error) {
+	row := q.db.QueryRow(ctx, GetCountyFreshness)
+	var latest_update interface{}
+	err := row.Scan(&latest_update)
+	return latest_update, err
+}
+
+const GetCountyTimeSeriesCount = `-- name: GetCountyTimeSeriesCount :one
+SELECT COUNT(*) FROM county_time_series
+`
+
+// Get total count of county time-series entries
+func (q *Queries) GetCountyTimeSeriesCount(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, GetCountyTimeSeriesCount)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const GetMetroByName = `-- name: GetMetroByName :one
 
 SELECT
@@ -533,6 +652,22 @@ func (q *Queries) GetMetroCount(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const GetMetroFreshness = `-- name: GetMetroFreshness :one
+
+SELECT MAX(updated_at) AS latest_update FROM metro_time_series
+`
+
+// ============================================================================
+// STATUS QUERIES (ADR-075: Market data freshness)
+// ============================================================================
+// Get most recent metro update timestamp
+func (q *Queries) GetMetroFreshness(ctx context.Context) (interface{}, error) {
+	row := q.db.QueryRow(ctx, GetMetroFreshness)
+	var latest_update interface{}
+	err := row.Scan(&latest_update)
+	return latest_update, err
+}
+
 const GetNationalTimeSeries = `-- name: GetNationalTimeSeries :one
 SELECT
     metro_region_id,
@@ -569,6 +704,54 @@ func (q *Queries) GetNationalTimeSeries(ctx context.Context) (GetNationalTimeSer
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const GetStateFreshness = `-- name: GetStateFreshness :one
+SELECT MAX(updated_at) AS latest_update FROM state_time_series
+`
+
+// Get most recent state update timestamp
+func (q *Queries) GetStateFreshness(ctx context.Context) (interface{}, error) {
+	row := q.db.QueryRow(ctx, GetStateFreshness)
+	var latest_update interface{}
+	err := row.Scan(&latest_update)
+	return latest_update, err
+}
+
+const GetStateTimeSeriesCount = `-- name: GetStateTimeSeriesCount :one
+SELECT COUNT(*) FROM state_time_series
+`
+
+// Get total count of state time-series entries
+func (q *Queries) GetStateTimeSeriesCount(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, GetStateTimeSeriesCount)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const GetZipFreshness = `-- name: GetZipFreshness :one
+SELECT MAX(updated_at) AS latest_update FROM zip_time_series
+`
+
+// Get most recent zip update timestamp
+func (q *Queries) GetZipFreshness(ctx context.Context) (interface{}, error) {
+	row := q.db.QueryRow(ctx, GetZipFreshness)
+	var latest_update interface{}
+	err := row.Scan(&latest_update)
+	return latest_update, err
+}
+
+const GetZipTimeSeriesCount = `-- name: GetZipTimeSeriesCount :one
+SELECT COUNT(*) FROM zip_time_series
+`
+
+// Get total count of zip time-series entries
+func (q *Queries) GetZipTimeSeriesCount(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, GetZipTimeSeriesCount)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const ListCitiesByState = `-- name: ListCitiesByState :many
@@ -766,4 +949,426 @@ func (q *Queries) SearchMetros(ctx context.Context, arg SearchMetrosParams) ([]S
 		return nil, err
 	}
 	return items, nil
+}
+
+const UpsertCityRedfin = `-- name: UpsertCityRedfin :exec
+INSERT INTO city_time_series (city_region_id, city_name, state_name, redfin_data, updated_at)
+VALUES ($1, $2, $3, $4, NOW())
+ON CONFLICT (city_region_id) DO UPDATE SET
+    redfin_data = EXCLUDED.redfin_data,
+    updated_at = NOW()
+`
+
+type UpsertCityRedfinParams struct {
+	CityRegionID int32       `json:"city_region_id"`
+	CityName     string      `json:"city_name"`
+	StateName    pgtype.Text `json:"state_name"`
+	RedfinData   []byte      `json:"redfin_data"`
+}
+
+// Upsert city Redfin data (keyed by city_name + state since Redfin has no region IDs)
+func (q *Queries) UpsertCityRedfin(ctx context.Context, arg UpsertCityRedfinParams) error {
+	_, err := q.db.Exec(ctx, UpsertCityRedfin,
+		arg.CityRegionID,
+		arg.CityName,
+		arg.StateName,
+		arg.RedfinData,
+	)
+	return err
+}
+
+const UpsertCityZHVI = `-- name: UpsertCityZHVI :exec
+
+INSERT INTO city_time_series (city_region_id, city_name, state_name, metro_region_id, zhvi_data, updated_at)
+VALUES ($1, $2, $3, $4, $5, NOW())
+ON CONFLICT (city_region_id) DO UPDATE SET
+    city_name = EXCLUDED.city_name,
+    state_name = EXCLUDED.state_name,
+    metro_region_id = EXCLUDED.metro_region_id,
+    zhvi_data = EXCLUDED.zhvi_data,
+    updated_at = NOW()
+`
+
+type UpsertCityZHVIParams struct {
+	CityRegionID  int32       `json:"city_region_id"`
+	CityName      string      `json:"city_name"`
+	StateName     pgtype.Text `json:"state_name"`
+	MetroRegionID pgtype.Int4 `json:"metro_region_id"`
+	ZhviData      []byte      `json:"zhvi_data"`
+}
+
+// ============================================================================
+// CITY TIME SERIES UPSERT QUERIES (ADR-075)
+// ============================================================================
+// Upsert city ZHVI time-series data
+func (q *Queries) UpsertCityZHVI(ctx context.Context, arg UpsertCityZHVIParams) error {
+	_, err := q.db.Exec(ctx, UpsertCityZHVI,
+		arg.CityRegionID,
+		arg.CityName,
+		arg.StateName,
+		arg.MetroRegionID,
+		arg.ZhviData,
+	)
+	return err
+}
+
+const UpsertCityZORI = `-- name: UpsertCityZORI :exec
+INSERT INTO city_time_series (city_region_id, city_name, state_name, metro_region_id, zori_data, updated_at)
+VALUES ($1, $2, $3, $4, $5, NOW())
+ON CONFLICT (city_region_id) DO UPDATE SET
+    city_name = EXCLUDED.city_name,
+    state_name = EXCLUDED.state_name,
+    metro_region_id = EXCLUDED.metro_region_id,
+    zori_data = EXCLUDED.zori_data,
+    updated_at = NOW()
+`
+
+type UpsertCityZORIParams struct {
+	CityRegionID  int32       `json:"city_region_id"`
+	CityName      string      `json:"city_name"`
+	StateName     pgtype.Text `json:"state_name"`
+	MetroRegionID pgtype.Int4 `json:"metro_region_id"`
+	ZoriData      []byte      `json:"zori_data"`
+}
+
+// Upsert city ZORI time-series data
+func (q *Queries) UpsertCityZORI(ctx context.Context, arg UpsertCityZORIParams) error {
+	_, err := q.db.Exec(ctx, UpsertCityZORI,
+		arg.CityRegionID,
+		arg.CityName,
+		arg.StateName,
+		arg.MetroRegionID,
+		arg.ZoriData,
+	)
+	return err
+}
+
+const UpsertCountyRedfin = `-- name: UpsertCountyRedfin :exec
+
+INSERT INTO county_time_series (county_region_id, county_fips, county_name, state_code, metro_region_id, redfin_data, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, NOW())
+ON CONFLICT (county_region_id) DO UPDATE SET
+    county_fips = COALESCE(EXCLUDED.county_fips, county_time_series.county_fips),
+    county_name = EXCLUDED.county_name,
+    state_code = EXCLUDED.state_code,
+    metro_region_id = EXCLUDED.metro_region_id,
+    redfin_data = EXCLUDED.redfin_data,
+    updated_at = NOW()
+`
+
+type UpsertCountyRedfinParams struct {
+	CountyRegionID int32       `json:"county_region_id"`
+	CountyFips     pgtype.Text `json:"county_fips"`
+	CountyName     string      `json:"county_name"`
+	StateCode      string      `json:"state_code"`
+	MetroRegionID  pgtype.Int4 `json:"metro_region_id"`
+	RedfinData     []byte      `json:"redfin_data"`
+}
+
+// ============================================================================
+// COUNTY TIME SERIES UPSERT QUERIES (ADR-075)
+// ============================================================================
+// Upsert county Redfin data (keyed by county_region_id since county_fips may be null)
+func (q *Queries) UpsertCountyRedfin(ctx context.Context, arg UpsertCountyRedfinParams) error {
+	_, err := q.db.Exec(ctx, UpsertCountyRedfin,
+		arg.CountyRegionID,
+		arg.CountyFips,
+		arg.CountyName,
+		arg.StateCode,
+		arg.MetroRegionID,
+		arg.RedfinData,
+	)
+	return err
+}
+
+const UpsertMetroMetrics = `-- name: UpsertMetroMetrics :exec
+INSERT INTO metro_time_series (metro_region_id, metro_name, state_name, sales_count_data, days_on_market_data, market_heat_data, affordability_data, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+ON CONFLICT (metro_region_id) DO UPDATE SET
+    sales_count_data = COALESCE(EXCLUDED.sales_count_data, metro_time_series.sales_count_data),
+    days_on_market_data = COALESCE(EXCLUDED.days_on_market_data, metro_time_series.days_on_market_data),
+    market_heat_data = COALESCE(EXCLUDED.market_heat_data, metro_time_series.market_heat_data),
+    affordability_data = COALESCE(EXCLUDED.affordability_data, metro_time_series.affordability_data),
+    updated_at = NOW()
+`
+
+type UpsertMetroMetricsParams struct {
+	MetroRegionID     int32       `json:"metro_region_id"`
+	MetroName         string      `json:"metro_name"`
+	StateName         pgtype.Text `json:"state_name"`
+	SalesCountData    []byte      `json:"sales_count_data"`
+	DaysOnMarketData  []byte      `json:"days_on_market_data"`
+	MarketHeatData    []byte      `json:"market_heat_data"`
+	AffordabilityData []byte      `json:"affordability_data"`
+}
+
+// Upsert metro sales/DOM/heat/affordability metrics
+func (q *Queries) UpsertMetroMetrics(ctx context.Context, arg UpsertMetroMetricsParams) error {
+	_, err := q.db.Exec(ctx, UpsertMetroMetrics,
+		arg.MetroRegionID,
+		arg.MetroName,
+		arg.StateName,
+		arg.SalesCountData,
+		arg.DaysOnMarketData,
+		arg.MarketHeatData,
+		arg.AffordabilityData,
+	)
+	return err
+}
+
+const UpsertMetroRedfin = `-- name: UpsertMetroRedfin :exec
+INSERT INTO metro_time_series (metro_region_id, metro_name, state_name, redfin_data, updated_at)
+VALUES ($1, $2, $3, $4, NOW())
+ON CONFLICT (metro_region_id) DO UPDATE SET
+    redfin_data = EXCLUDED.redfin_data,
+    updated_at = NOW()
+`
+
+type UpsertMetroRedfinParams struct {
+	MetroRegionID int32       `json:"metro_region_id"`
+	MetroName     string      `json:"metro_name"`
+	StateName     pgtype.Text `json:"state_name"`
+	RedfinData    []byte      `json:"redfin_data"`
+}
+
+// Upsert metro Redfin data
+func (q *Queries) UpsertMetroRedfin(ctx context.Context, arg UpsertMetroRedfinParams) error {
+	_, err := q.db.Exec(ctx, UpsertMetroRedfin,
+		arg.MetroRegionID,
+		arg.MetroName,
+		arg.StateName,
+		arg.RedfinData,
+	)
+	return err
+}
+
+const UpsertMetroZHVF = `-- name: UpsertMetroZHVF :exec
+INSERT INTO metro_time_series (metro_region_id, metro_name, state_name, zhvf_data, updated_at)
+VALUES ($1, $2, $3, $4, NOW())
+ON CONFLICT (metro_region_id) DO UPDATE SET
+    metro_name = EXCLUDED.metro_name,
+    state_name = EXCLUDED.state_name,
+    zhvf_data = EXCLUDED.zhvf_data,
+    updated_at = NOW()
+`
+
+type UpsertMetroZHVFParams struct {
+	MetroRegionID int32       `json:"metro_region_id"`
+	MetroName     string      `json:"metro_name"`
+	StateName     pgtype.Text `json:"state_name"`
+	ZhvfData      []byte      `json:"zhvf_data"`
+}
+
+// Upsert metro ZHVI forecast data
+func (q *Queries) UpsertMetroZHVF(ctx context.Context, arg UpsertMetroZHVFParams) error {
+	_, err := q.db.Exec(ctx, UpsertMetroZHVF,
+		arg.MetroRegionID,
+		arg.MetroName,
+		arg.StateName,
+		arg.ZhvfData,
+	)
+	return err
+}
+
+const UpsertMetroZHVI = `-- name: UpsertMetroZHVI :exec
+
+INSERT INTO metro_time_series (metro_region_id, metro_name, state_name, zhvi_data, updated_at)
+VALUES ($1, $2, $3, $4, NOW())
+ON CONFLICT (metro_region_id) DO UPDATE SET
+    metro_name = EXCLUDED.metro_name,
+    state_name = EXCLUDED.state_name,
+    zhvi_data = EXCLUDED.zhvi_data,
+    updated_at = NOW()
+`
+
+type UpsertMetroZHVIParams struct {
+	MetroRegionID int32       `json:"metro_region_id"`
+	MetroName     string      `json:"metro_name"`
+	StateName     pgtype.Text `json:"state_name"`
+	ZhviData      []byte      `json:"zhvi_data"`
+}
+
+// ============================================================================
+// METRO TIME SERIES UPSERT QUERIES (ADR-075: Market Data Import)
+// ============================================================================
+// Upsert metro ZHVI time-series data
+func (q *Queries) UpsertMetroZHVI(ctx context.Context, arg UpsertMetroZHVIParams) error {
+	_, err := q.db.Exec(ctx, UpsertMetroZHVI,
+		arg.MetroRegionID,
+		arg.MetroName,
+		arg.StateName,
+		arg.ZhviData,
+	)
+	return err
+}
+
+const UpsertMetroZORI = `-- name: UpsertMetroZORI :exec
+INSERT INTO metro_time_series (metro_region_id, metro_name, state_name, zori_data, updated_at)
+VALUES ($1, $2, $3, $4, NOW())
+ON CONFLICT (metro_region_id) DO UPDATE SET
+    metro_name = EXCLUDED.metro_name,
+    state_name = EXCLUDED.state_name,
+    zori_data = EXCLUDED.zori_data,
+    updated_at = NOW()
+`
+
+type UpsertMetroZORIParams struct {
+	MetroRegionID int32       `json:"metro_region_id"`
+	MetroName     string      `json:"metro_name"`
+	StateName     pgtype.Text `json:"state_name"`
+	ZoriData      []byte      `json:"zori_data"`
+}
+
+// Upsert metro ZORI time-series data
+func (q *Queries) UpsertMetroZORI(ctx context.Context, arg UpsertMetroZORIParams) error {
+	_, err := q.db.Exec(ctx, UpsertMetroZORI,
+		arg.MetroRegionID,
+		arg.MetroName,
+		arg.StateName,
+		arg.ZoriData,
+	)
+	return err
+}
+
+const UpsertStateRedfin = `-- name: UpsertStateRedfin :exec
+INSERT INTO state_time_series (state_region_id, state_code, state_name, redfin_data, updated_at)
+VALUES ($1, $2, $3, $4, NOW())
+ON CONFLICT (state_code) DO UPDATE SET
+    redfin_data = EXCLUDED.redfin_data,
+    updated_at = NOW()
+`
+
+type UpsertStateRedfinParams struct {
+	StateRegionID int32  `json:"state_region_id"`
+	StateCode     string `json:"state_code"`
+	StateName     string `json:"state_name"`
+	RedfinData    []byte `json:"redfin_data"`
+}
+
+// Upsert state Redfin data
+func (q *Queries) UpsertStateRedfin(ctx context.Context, arg UpsertStateRedfinParams) error {
+	_, err := q.db.Exec(ctx, UpsertStateRedfin,
+		arg.StateRegionID,
+		arg.StateCode,
+		arg.StateName,
+		arg.RedfinData,
+	)
+	return err
+}
+
+const UpsertStateZHVI = `-- name: UpsertStateZHVI :exec
+
+INSERT INTO state_time_series (state_region_id, state_code, state_name, zhvi_data, updated_at)
+VALUES ($1, $2, $3, $4, NOW())
+ON CONFLICT (state_code) DO UPDATE SET
+    state_name = EXCLUDED.state_name,
+    zhvi_data = EXCLUDED.zhvi_data,
+    updated_at = NOW()
+`
+
+type UpsertStateZHVIParams struct {
+	StateRegionID int32  `json:"state_region_id"`
+	StateCode     string `json:"state_code"`
+	StateName     string `json:"state_name"`
+	ZhviData      []byte `json:"zhvi_data"`
+}
+
+// ============================================================================
+// STATE TIME SERIES UPSERT QUERIES (ADR-075)
+// ============================================================================
+// Upsert state ZHVI time-series data
+func (q *Queries) UpsertStateZHVI(ctx context.Context, arg UpsertStateZHVIParams) error {
+	_, err := q.db.Exec(ctx, UpsertStateZHVI,
+		arg.StateRegionID,
+		arg.StateCode,
+		arg.StateName,
+		arg.ZhviData,
+	)
+	return err
+}
+
+const UpsertZipRedfin = `-- name: UpsertZipRedfin :exec
+INSERT INTO zip_time_series (zip_code, state, redfin_data, updated_at)
+VALUES ($1, $2, $3, NOW())
+ON CONFLICT (zip_code) DO UPDATE SET
+    redfin_data = EXCLUDED.redfin_data,
+    updated_at = NOW()
+`
+
+type UpsertZipRedfinParams struct {
+	ZipCode    string      `json:"zip_code"`
+	State      pgtype.Text `json:"state"`
+	RedfinData []byte      `json:"redfin_data"`
+}
+
+// Upsert zip Redfin data
+func (q *Queries) UpsertZipRedfin(ctx context.Context, arg UpsertZipRedfinParams) error {
+	_, err := q.db.Exec(ctx, UpsertZipRedfin, arg.ZipCode, arg.State, arg.RedfinData)
+	return err
+}
+
+const UpsertZipZHVI = `-- name: UpsertZipZHVI :exec
+
+INSERT INTO zip_time_series (zip_code, city, state, county, metro_region_id, zhvi_data, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, NOW())
+ON CONFLICT (zip_code) DO UPDATE SET
+    city = EXCLUDED.city,
+    state = EXCLUDED.state,
+    county = EXCLUDED.county,
+    metro_region_id = EXCLUDED.metro_region_id,
+    zhvi_data = EXCLUDED.zhvi_data,
+    updated_at = NOW()
+`
+
+type UpsertZipZHVIParams struct {
+	ZipCode       string      `json:"zip_code"`
+	City          pgtype.Text `json:"city"`
+	State         pgtype.Text `json:"state"`
+	County        pgtype.Text `json:"county"`
+	MetroRegionID pgtype.Int4 `json:"metro_region_id"`
+	ZhviData      []byte      `json:"zhvi_data"`
+}
+
+// ============================================================================
+// ZIP TIME SERIES UPSERT QUERIES (ADR-075)
+// ============================================================================
+// Upsert zip ZHVI time-series data
+func (q *Queries) UpsertZipZHVI(ctx context.Context, arg UpsertZipZHVIParams) error {
+	_, err := q.db.Exec(ctx, UpsertZipZHVI,
+		arg.ZipCode,
+		arg.City,
+		arg.State,
+		arg.County,
+		arg.MetroRegionID,
+		arg.ZhviData,
+	)
+	return err
+}
+
+const UpsertZipZORI = `-- name: UpsertZipZORI :exec
+INSERT INTO zip_time_series (zip_code, city, state, zhvi_data, zori_data, updated_at)
+VALUES ($1, $2, $3, $4, $5, NOW())
+ON CONFLICT (zip_code) DO UPDATE SET
+    zori_data = EXCLUDED.zori_data,
+    updated_at = NOW()
+`
+
+type UpsertZipZORIParams struct {
+	ZipCode  string      `json:"zip_code"`
+	City     pgtype.Text `json:"city"`
+	State    pgtype.Text `json:"state"`
+	ZhviData []byte      `json:"zhvi_data"`
+	ZoriData []byte      `json:"zori_data"`
+}
+
+// Upsert zip ZORI time-series data
+func (q *Queries) UpsertZipZORI(ctx context.Context, arg UpsertZipZORIParams) error {
+	_, err := q.db.Exec(ctx, UpsertZipZORI,
+		arg.ZipCode,
+		arg.City,
+		arg.State,
+		arg.ZhviData,
+		arg.ZoriData,
+	)
+	return err
 }

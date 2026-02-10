@@ -1,0 +1,11 @@
+-- Migration: 20260210_market_geographic_tables
+-- Description: Adds city/state/zip/county time-series tables to market database
+-- Author: Claude (ADR-075)
+-- Date: 2026-02-10
+-- Note: These tables are in the MARKET database, not the main database.
+--       This migration file documents the schema for reference.
+--       The actual tables are created via direct DDL on the market database.
+
+-- This migration is a no-op on the main database.
+-- Market database tables are managed separately.
+-- See: www/internal/db/marketqueries/schema/market.sql for the full schema.

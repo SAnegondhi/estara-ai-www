@@ -28,6 +28,7 @@ type DataPayload struct {
 	PriceCagr3Y         float64
 	PriceCagr5Y         float64
 	RentCagr3Y          float64
+	RentCagr5Y          float64
 	GrossYield          float64
 	NetYieldLow         float64
 	NetYieldHigh        float64
@@ -109,7 +110,7 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 		City:           city,
 		State:          state,
 		DerivedMetrics: []string{"gross yield", "net yield range", "CAGRs", "price-to-income", "rent-to-income", "yield-to-mortgage spread"},
-		MissingData:    []string{"zip-level submarket data", "observed cap rates", "transaction volume", "building permits"},
+		MissingData:    []string{"zip-level submarket data", "observed cap rates", "transaction volume"},
 		LaggedData:     []string{},
 	}
 
@@ -125,11 +126,11 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 		mu.Lock()
 		defer mu.Unlock()
 		if err != nil {
-			p.UnavailableSources = append(p.UnavailableSources, fmt.Sprintf("city_market_cache: %v", err))
+			p.UnavailableSources = append(p.UnavailableSources, fmt.Sprintf("Zillow/Redfin market data: %v", err))
 			b.logger.Warn("city snapshot unavailable", "city", city, "state", state, "error", err)
 		} else {
 			snapshot = s
-			p.RealSources = append(p.RealSources, "city_market_cache")
+			p.RealSources = append(p.RealSources, "Zillow Research")
 		}
 	}()
 
@@ -189,10 +190,11 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 		p.PriceCagr3Y = computeCAGR(series, 3, true)
 		p.PriceCagr5Y = computeCAGR(series, 5, true)
 		p.RentCagr3Y = computeCAGR(series, 3, false)
+		p.RentCagr5Y = computeCAGR(series, 5, false)
 		p.RealSources = append(p.RealSources, "Zillow ZHVI/ZORI time series")
 	}()
 
-	// 4. National benchmarks
+	// 4. National benchmarks (from metro_time_series where metro_region_id=0)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -202,7 +204,7 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 		nat, err := b.metro.GetNationalData(ctx)
 		if err != nil {
 			mu.Lock()
-			p.UnavailableSources = append(p.UnavailableSources, "national benchmarks: "+err.Error())
+			p.UnavailableSources = append(p.UnavailableSources, "national ZHVI/ZORI: "+err.Error())
 			mu.Unlock()
 			return
 		}
@@ -240,10 +242,10 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 	if econ != nil {
 		p.MortgageRate30 = econ.MortgageRate30Year
 		p.NationalMortgage30 = econ.MortgageRate30Year // Same — it's a national rate
+		p.NationalUnemployment = econ.NationalUnemployment
 		p.Population = econ.Population
 		p.MedianHouseholdIncome = econ.MedianHouseholdIncome
 		p.UnemploymentRate = econ.StateUnemploymentRate
-		p.NationalUnemployment = econ.NationalUnemployment
 		p.LaborForceParticipation = econ.LaborForceParticipation
 		p.CPIShelter = econ.CPIShelter
 		p.CPIRent = econ.CPIRent
@@ -255,6 +257,12 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 		if src, ok := econ.Sources["census"]; ok {
 			p.LaggedData = append(p.LaggedData, fmt.Sprintf("Census ACS (%s)", src))
 		}
+	}
+
+	// National ZHVI/ZORI may be missing (data not bootstrapped per ADR-075).
+	// National mortgage and unemployment are always available from FRED/BLS.
+	if p.NationalZHVI == 0 && p.NationalZORI == 0 {
+		p.MissingData = append(p.MissingData, "national ZHVI/ZORI benchmarks (pending data bootstrap per ADR-075)")
 	}
 
 	// Compute derived metrics
@@ -295,6 +303,8 @@ func (b *DataPayloadBuilder) FormatAsXML(p *DataPayload) string {
 	writeXMLField(&sb, "price_cagr_3y", fmtPct(p.PriceCagr3Y), "Zillow ZHVI time series", "high", p.PriceCagr3Y != 0)
 	writeXMLField(&sb, "price_cagr_5y", fmtPct(p.PriceCagr5Y), "Zillow ZHVI time series", "high", p.PriceCagr5Y != 0)
 	writeXMLField(&sb, "rent_yoy_change", fmtPct(p.RentYoyChange), "Zillow ZORI", "high", p.RentYoyChange != 0)
+	writeXMLField(&sb, "rent_cagr_3y", fmtPct(p.RentCagr3Y), "Zillow ZORI time series", "high", p.RentCagr3Y != 0)
+	writeXMLField(&sb, "rent_cagr_5y", fmtPct(p.RentCagr5Y), "Zillow ZORI time series", "high", p.RentCagr5Y != 0)
 	writeXMLDerived(&sb, "gross_yield", fmtPct(p.GrossYield), "(ZORI*12)/ZHVI", "medium", p.GrossYield > 0)
 	sb.WriteString(fmt.Sprintf(`    <net_yield_range estimated="true" expense_ratio="40-55%%" confidence="low">%s - %s</net_yield_range>`+"\n",
 		fmtPct(p.NetYieldLow), fmtPct(p.NetYieldHigh)))
@@ -303,13 +313,13 @@ func (b *DataPayloadBuilder) FormatAsXML(p *DataPayload) string {
 	sb.WriteString("  </HOUSING_MARKET>\n")
 
 	sb.WriteString("\n  <SUPPLY_DEMAND>\n")
-	writeXMLField(&sb, "inventory_count", fmtInt(p.InventoryCount), "city_market_cache", "high", p.InventoryCount > 0)
-	writeXMLField(&sb, "months_of_supply", fmt.Sprintf("%.1f", p.MonthsOfSupply), "city_market_cache", "high", p.MonthsOfSupply > 0)
-	writeXMLField(&sb, "median_days_on_market", fmtInt(p.MedianDaysOnMarket), "city_market_cache", "high", p.MedianDaysOnMarket > 0)
-	writeXMLField(&sb, "market_temperature", p.MarketTemperature, "city_market_cache", "high", p.MarketTemperature != "")
-	writeXMLField(&sb, "vacancy_rate", fmtPct(p.VacancyRate), "city_market_cache", "medium", p.VacancyRate > 0)
-	writeXMLField(&sb, "homes_sold", fmtInt(p.HomesSold), "city_market_cache", "high", p.HomesSold > 0)
-	sb.WriteString("    <building_permits>NOT_AVAILABLE — future enhancement (Phase 1.5)</building_permits>\n")
+	writeXMLField(&sb, "inventory_count", fmtInt(p.InventoryCount), "Zillow/Redfin", "high", p.InventoryCount > 0)
+	writeXMLField(&sb, "months_of_supply", fmt.Sprintf("%.1f", p.MonthsOfSupply), "Zillow/Redfin", "high", p.MonthsOfSupply > 0)
+	writeXMLField(&sb, "median_days_on_market", fmtInt(p.MedianDaysOnMarket), "Zillow/Redfin", "high", p.MedianDaysOnMarket > 0)
+	writeXMLField(&sb, "market_temperature", p.MarketTemperature, "Zillow/Redfin", "high", p.MarketTemperature != "")
+	writeXMLField(&sb, "vacancy_rate", fmtPct(p.VacancyRate), "Zillow/Redfin", "medium", p.VacancyRate > 0)
+	writeXMLField(&sb, "homes_sold", fmtInt(p.HomesSold), "Zillow/Redfin", "high", p.HomesSold > 0)
+	sb.WriteString("    <building_permits>See TAX_REGULATORY_INSURANCE section below for web-sourced supply pipeline data</building_permits>\n")
 	sb.WriteString("  </SUPPLY_DEMAND>\n")
 
 	sb.WriteString("\n  <DEMOGRAPHICS>\n")
@@ -331,20 +341,20 @@ func (b *DataPayloadBuilder) FormatAsXML(p *DataPayload) string {
 	sb.WriteString("\n  <AFFORDABILITY>\n")
 	writeXMLDerived(&sb, "price_to_income_ratio", fmt.Sprintf("%.1fx", p.PriceToIncomeRatio), "ZHVI/MHI", "medium", p.PriceToIncomeRatio > 0)
 	writeXMLDerived(&sb, "rent_to_income_ratio", fmtPct(p.RentToIncomeRatio), "(ZORI*12)/MHI", "medium", p.RentToIncomeRatio > 0)
-	writeXMLField(&sb, "affordability_index", fmt.Sprintf("%.1f", p.AffordabilityIndex), "city_market_cache", "medium", p.AffordabilityIndex > 0)
+	writeXMLField(&sb, "affordability_index", fmt.Sprintf("%.1f", p.AffordabilityIndex), "Zillow/Redfin", "medium", p.AffordabilityIndex > 0)
 	if p.AffordabilityBurden != "" {
-		writeXMLField(&sb, "affordability_burden", p.AffordabilityBurden, "city_market_cache", "medium", true)
+		writeXMLField(&sb, "affordability_burden", p.AffordabilityBurden, "Zillow/Redfin", "medium", true)
 	}
-	writeXMLField(&sb, "hud_fmr_0br", fmtDollarF(p.HudFMR0BR), "city_market_cache", "high", p.HudFMR0BR > 0)
-	writeXMLField(&sb, "hud_fmr_1br", fmtDollarF(p.HudFMR1BR), "city_market_cache", "high", p.HudFMR1BR > 0)
-	writeXMLField(&sb, "hud_fmr_2br", fmtDollarF(p.HudFMR2BR), "city_market_cache", "high", p.HudFMR2BR > 0)
-	writeXMLField(&sb, "hud_fmr_3br", fmtDollarF(p.HudFMR3BR), "city_market_cache", "high", p.HudFMR3BR > 0)
-	writeXMLField(&sb, "hud_fmr_4br", fmtDollarF(p.HudFMR4BR), "city_market_cache", "high", p.HudFMR4BR > 0)
+	writeXMLField(&sb, "hud_fmr_0br", fmtDollarF(p.HudFMR0BR), "HUD Fair Market Rent", "high", p.HudFMR0BR > 0)
+	writeXMLField(&sb, "hud_fmr_1br", fmtDollarF(p.HudFMR1BR), "HUD Fair Market Rent", "high", p.HudFMR1BR > 0)
+	writeXMLField(&sb, "hud_fmr_2br", fmtDollarF(p.HudFMR2BR), "HUD Fair Market Rent", "high", p.HudFMR2BR > 0)
+	writeXMLField(&sb, "hud_fmr_3br", fmtDollarF(p.HudFMR3BR), "HUD Fair Market Rent", "high", p.HudFMR3BR > 0)
+	writeXMLField(&sb, "hud_fmr_4br", fmtDollarF(p.HudFMR4BR), "HUD Fair Market Rent", "high", p.HudFMR4BR > 0)
 	sb.WriteString("  </AFFORDABILITY>\n")
 
 	sb.WriteString("\n  <NATIONAL_BENCHMARKS>\n")
-	writeXMLField(&sb, "national_zhvi", fmtDollarF(p.NationalZHVI), "Zillow ZHVI (metro_region_id=0)", "high", p.NationalZHVI > 0)
-	writeXMLField(&sb, "national_zori", fmtDollarFMo(p.NationalZORI), "Zillow ZORI (metro_region_id=0)", "high", p.NationalZORI > 0)
+	writeXMLField(&sb, "national_zhvi", fmtDollarF(p.NationalZHVI), "Zillow ZHVI (national)", "high", p.NationalZHVI > 0)
+	writeXMLField(&sb, "national_zori", fmtDollarFMo(p.NationalZORI), "Zillow ZORI (national)", "high", p.NationalZORI > 0)
 	writeXMLDerived(&sb, "national_gross_yield", fmtPct(p.NationalGrossYield), "(national_ZORI*12)/national_ZHVI", "medium", p.NationalGrossYield > 0)
 	writeXMLField(&sb, "national_unemployment", fmtPct(p.NationalUnemployment), "FRED", "high", p.NationalUnemployment > 0)
 	writeXMLField(&sb, "national_mortgage_30y", fmtPct(p.NationalMortgage30), "FRED", "high", p.NationalMortgage30 > 0)
@@ -385,6 +395,8 @@ func (b *DataPayloadBuilder) computeDataQuality(p *DataPayload) {
 		{"price_cagr_3y", p.PriceCagr3Y != 0},
 		{"price_cagr_5y", p.PriceCagr5Y != 0},
 		{"rent_yoy_change", p.RentYoyChange != 0},
+		{"rent_cagr_3y", p.RentCagr3Y != 0},
+		{"rent_cagr_5y", p.RentCagr5Y != 0},
 		{"mortgage_30y", p.MortgageRate30 > 0},
 		{"inventory_count", p.InventoryCount > 0},
 		{"months_of_supply", p.MonthsOfSupply > 0},

@@ -330,8 +330,11 @@ func isTableSeparator(line string) bool {
 	return cleaned == ""
 }
 
-// cleanInlineMarkdown strips ** markers from text.
+// cleanInlineMarkdown strips ** markers and transliterates Unicode characters
+// that gofpdf cannot render (it uses ISO-8859-1 for built-in fonts).
 func cleanInlineMarkdown(text string) string {
 	text = strings.ReplaceAll(text, "**", "")
+	text = strings.ReplaceAll(text, "`", "")
+	text = sanitizeForPDF(text) // defined in investment_plan.go — strips non-Latin-1
 	return strings.TrimSpace(text)
 }

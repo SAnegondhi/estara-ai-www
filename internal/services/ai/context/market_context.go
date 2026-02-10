@@ -25,8 +25,8 @@ const (
 	cacheTTL        = 90 * 24 * time.Hour // 90 days
 	memTTL          = 24 * time.Hour      // 24h in-memory
 	redisTTL        = 90 * 24 * time.Hour // 90 days in Redis
-	maxWebSearches  = 8
-	maxTokens       = 2000
+	maxWebSearches  = 12
+	maxTokens       = 4000
 )
 
 // MarketContext holds the Stage 1 enrichment result
@@ -200,7 +200,7 @@ func (s *MarketContextService) fetchFromAI(ctx context.Context, city, state stri
 
 // checkQuality logs warnings if categories are missing or lack sourced entries
 func (s *MarketContextService) checkQuality(city, state, text string) {
-	categories := []string{"PROPERTY_TAX_SYSTEM", "REGULATORY_ENVIRONMENT", "INSURANCE_CONTEXT", "FISCAL_CONTEXT"}
+	categories := []string{"PROPERTY_TAX_SYSTEM", "REGULATORY_ENVIRONMENT", "INSURANCE_CONTEXT", "FISCAL_CONTEXT", "ECONOMIC_INDICATORS", "SUPPLY_PIPELINE"}
 	lower := strings.ToLower(text)
 	missing := 0
 	for _, cat := range categories {

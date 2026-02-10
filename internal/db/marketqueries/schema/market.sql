@@ -101,3 +101,88 @@ CREATE INDEX city_market_cache_last_updated_idx ON city_market_cache(last_update
 CREATE INDEX city_market_cache_data_quality_score_idx ON city_market_cache(data_quality_score);
 CREATE INDEX city_market_cache_is_ai_estimated_idx ON city_market_cache(is_ai_estimated);
 CREATE INDEX city_market_cache_ttl_expires_at_idx ON city_market_cache(ttl_expires_at);
+
+-- ============================================================================
+-- CITY TIME SERIES (ADR-075: city-level ZHVI/ZORI time-series)
+-- ============================================================================
+CREATE TABLE city_time_series (
+    id SERIAL PRIMARY KEY,
+    city_region_id INTEGER NOT NULL UNIQUE,
+    city_name VARCHAR(255) NOT NULL,
+    state_name VARCHAR(50),
+    metro_region_id INTEGER,
+    zhvi_data JSONB,       -- {"2024-01": 341000, ...}
+    zori_data JSONB,
+    redfin_data JSONB,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX city_time_series_city_name_idx ON city_time_series(city_name);
+CREATE INDEX city_time_series_state_name_idx ON city_time_series(state_name);
+CREATE INDEX city_time_series_metro_region_id_idx ON city_time_series(metro_region_id);
+
+-- ============================================================================
+-- STATE TIME SERIES (ADR-075: state-level ZHVI/Redfin time-series)
+-- ============================================================================
+CREATE TABLE state_time_series (
+    id SERIAL PRIMARY KEY,
+    state_region_id INTEGER NOT NULL UNIQUE,
+    state_code VARCHAR(2) NOT NULL UNIQUE,
+    state_name VARCHAR(50) NOT NULL,
+    zhvi_data JSONB,       -- {"2024-01": 341000, ...}
+    zori_data JSONB,
+    zhvf_data JSONB,
+    sales_count_data JSONB,
+    days_on_market_data JSONB,
+    affordability_data JSONB,
+    redfin_data JSONB,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX state_time_series_state_name_idx ON state_time_series(state_name);
+
+-- ============================================================================
+-- ZIP TIME SERIES (ADR-075: zip-level ZHVI/ZORI time-series)
+-- ============================================================================
+CREATE TABLE zip_time_series (
+    id SERIAL PRIMARY KEY,
+    zip_code VARCHAR(10) NOT NULL UNIQUE,
+    city VARCHAR(100),
+    state VARCHAR(2),
+    county VARCHAR(100),
+    metro_region_id INTEGER,
+    zhvi_data JSONB,
+    zori_data JSONB,
+    redfin_data JSONB,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX zip_time_series_state_idx ON zip_time_series(state);
+CREATE INDEX zip_time_series_metro_region_id_idx ON zip_time_series(metro_region_id);
+
+-- ============================================================================
+-- COUNTY TIME SERIES (ADR-075: county-level Redfin data)
+-- ============================================================================
+CREATE TABLE county_time_series (
+    id SERIAL PRIMARY KEY,
+    county_region_id INTEGER NOT NULL UNIQUE,
+    county_fips VARCHAR(5) UNIQUE,
+    county_name VARCHAR(100) NOT NULL,
+    state_code VARCHAR(2) NOT NULL,
+    state_name VARCHAR(50),
+    metro_region_id INTEGER,
+    zhvi_data JSONB,
+    zori_data JSONB,
+    zhvf_data JSONB,
+    sales_count_data JSONB,
+    days_on_market_data JSONB,
+    redfin_data JSONB,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX county_time_series_state_code_idx ON county_time_series(state_code);
+CREATE INDEX county_time_series_metro_region_id_idx ON county_time_series(metro_region_id);

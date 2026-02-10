@@ -244,3 +244,211 @@ LEFT JOIN metro_time_series m ON c.metro_region_id = m.metro_region_id
 WHERE c.city ILIKE $1
 ORDER BY COALESCE(c.population, 0) DESC
 LIMIT $2;
+
+-- ============================================================================
+-- METRO TIME SERIES UPSERT QUERIES (ADR-075: Market Data Import)
+-- ============================================================================
+
+-- name: UpsertMetroZHVI :exec
+-- Upsert metro ZHVI time-series data
+INSERT INTO metro_time_series (metro_region_id, metro_name, state_name, zhvi_data, updated_at)
+VALUES ($1, $2, $3, $4, NOW())
+ON CONFLICT (metro_region_id) DO UPDATE SET
+    metro_name = EXCLUDED.metro_name,
+    state_name = EXCLUDED.state_name,
+    zhvi_data = EXCLUDED.zhvi_data,
+    updated_at = NOW();
+
+-- name: UpsertMetroZORI :exec
+-- Upsert metro ZORI time-series data
+INSERT INTO metro_time_series (metro_region_id, metro_name, state_name, zori_data, updated_at)
+VALUES ($1, $2, $3, $4, NOW())
+ON CONFLICT (metro_region_id) DO UPDATE SET
+    metro_name = EXCLUDED.metro_name,
+    state_name = EXCLUDED.state_name,
+    zori_data = EXCLUDED.zori_data,
+    updated_at = NOW();
+
+-- name: UpsertMetroZHVF :exec
+-- Upsert metro ZHVI forecast data
+INSERT INTO metro_time_series (metro_region_id, metro_name, state_name, zhvf_data, updated_at)
+VALUES ($1, $2, $3, $4, NOW())
+ON CONFLICT (metro_region_id) DO UPDATE SET
+    metro_name = EXCLUDED.metro_name,
+    state_name = EXCLUDED.state_name,
+    zhvf_data = EXCLUDED.zhvf_data,
+    updated_at = NOW();
+
+-- name: UpsertMetroMetrics :exec
+-- Upsert metro sales/DOM/heat/affordability metrics
+INSERT INTO metro_time_series (metro_region_id, metro_name, state_name, sales_count_data, days_on_market_data, market_heat_data, affordability_data, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+ON CONFLICT (metro_region_id) DO UPDATE SET
+    sales_count_data = COALESCE(EXCLUDED.sales_count_data, metro_time_series.sales_count_data),
+    days_on_market_data = COALESCE(EXCLUDED.days_on_market_data, metro_time_series.days_on_market_data),
+    market_heat_data = COALESCE(EXCLUDED.market_heat_data, metro_time_series.market_heat_data),
+    affordability_data = COALESCE(EXCLUDED.affordability_data, metro_time_series.affordability_data),
+    updated_at = NOW();
+
+-- name: UpsertMetroRedfin :exec
+-- Upsert metro Redfin data
+INSERT INTO metro_time_series (metro_region_id, metro_name, state_name, redfin_data, updated_at)
+VALUES ($1, $2, $3, $4, NOW())
+ON CONFLICT (metro_region_id) DO UPDATE SET
+    redfin_data = EXCLUDED.redfin_data,
+    updated_at = NOW();
+
+-- name: GetAllMetroLookup :many
+-- Get all metros for city→metro linking during import
+SELECT metro_region_id, metro_name
+FROM metro_time_series
+ORDER BY metro_name;
+
+-- ============================================================================
+-- CITY TIME SERIES UPSERT QUERIES (ADR-075)
+-- ============================================================================
+
+-- name: UpsertCityZHVI :exec
+-- Upsert city ZHVI time-series data
+INSERT INTO city_time_series (city_region_id, city_name, state_name, metro_region_id, zhvi_data, updated_at)
+VALUES ($1, $2, $3, $4, $5, NOW())
+ON CONFLICT (city_region_id) DO UPDATE SET
+    city_name = EXCLUDED.city_name,
+    state_name = EXCLUDED.state_name,
+    metro_region_id = EXCLUDED.metro_region_id,
+    zhvi_data = EXCLUDED.zhvi_data,
+    updated_at = NOW();
+
+-- name: UpsertCityZORI :exec
+-- Upsert city ZORI time-series data
+INSERT INTO city_time_series (city_region_id, city_name, state_name, metro_region_id, zori_data, updated_at)
+VALUES ($1, $2, $3, $4, $5, NOW())
+ON CONFLICT (city_region_id) DO UPDATE SET
+    city_name = EXCLUDED.city_name,
+    state_name = EXCLUDED.state_name,
+    metro_region_id = EXCLUDED.metro_region_id,
+    zori_data = EXCLUDED.zori_data,
+    updated_at = NOW();
+
+-- name: UpsertCityRedfin :exec
+-- Upsert city Redfin data (keyed by city_name + state since Redfin has no region IDs)
+INSERT INTO city_time_series (city_region_id, city_name, state_name, redfin_data, updated_at)
+VALUES ($1, $2, $3, $4, NOW())
+ON CONFLICT (city_region_id) DO UPDATE SET
+    redfin_data = EXCLUDED.redfin_data,
+    updated_at = NOW();
+
+-- name: GetCityTimeSeriesCount :one
+-- Get total count of city time-series entries
+SELECT COUNT(*) FROM city_time_series;
+
+-- ============================================================================
+-- STATE TIME SERIES UPSERT QUERIES (ADR-075)
+-- ============================================================================
+
+-- name: UpsertStateZHVI :exec
+-- Upsert state ZHVI time-series data
+INSERT INTO state_time_series (state_region_id, state_code, state_name, zhvi_data, updated_at)
+VALUES ($1, $2, $3, $4, NOW())
+ON CONFLICT (state_code) DO UPDATE SET
+    state_name = EXCLUDED.state_name,
+    zhvi_data = EXCLUDED.zhvi_data,
+    updated_at = NOW();
+
+-- name: UpsertStateRedfin :exec
+-- Upsert state Redfin data
+INSERT INTO state_time_series (state_region_id, state_code, state_name, redfin_data, updated_at)
+VALUES ($1, $2, $3, $4, NOW())
+ON CONFLICT (state_code) DO UPDATE SET
+    redfin_data = EXCLUDED.redfin_data,
+    updated_at = NOW();
+
+-- name: GetStateTimeSeriesCount :one
+-- Get total count of state time-series entries
+SELECT COUNT(*) FROM state_time_series;
+
+-- name: GetAllStateZHVI :many
+-- Get all state ZHVI data for national aggregation
+SELECT state_region_id, state_code, state_name, zhvi_data
+FROM state_time_series
+WHERE zhvi_data IS NOT NULL;
+
+-- ============================================================================
+-- ZIP TIME SERIES UPSERT QUERIES (ADR-075)
+-- ============================================================================
+
+-- name: UpsertZipZHVI :exec
+-- Upsert zip ZHVI time-series data
+INSERT INTO zip_time_series (zip_code, city, state, county, metro_region_id, zhvi_data, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, NOW())
+ON CONFLICT (zip_code) DO UPDATE SET
+    city = EXCLUDED.city,
+    state = EXCLUDED.state,
+    county = EXCLUDED.county,
+    metro_region_id = EXCLUDED.metro_region_id,
+    zhvi_data = EXCLUDED.zhvi_data,
+    updated_at = NOW();
+
+-- name: UpsertZipZORI :exec
+-- Upsert zip ZORI time-series data
+INSERT INTO zip_time_series (zip_code, city, state, zhvi_data, zori_data, updated_at)
+VALUES ($1, $2, $3, $4, $5, NOW())
+ON CONFLICT (zip_code) DO UPDATE SET
+    zori_data = EXCLUDED.zori_data,
+    updated_at = NOW();
+
+-- name: UpsertZipRedfin :exec
+-- Upsert zip Redfin data
+INSERT INTO zip_time_series (zip_code, state, redfin_data, updated_at)
+VALUES ($1, $2, $3, NOW())
+ON CONFLICT (zip_code) DO UPDATE SET
+    redfin_data = EXCLUDED.redfin_data,
+    updated_at = NOW();
+
+-- name: GetZipTimeSeriesCount :one
+-- Get total count of zip time-series entries
+SELECT COUNT(*) FROM zip_time_series;
+
+-- ============================================================================
+-- COUNTY TIME SERIES UPSERT QUERIES (ADR-075)
+-- ============================================================================
+
+-- name: UpsertCountyRedfin :exec
+-- Upsert county Redfin data (keyed by county_region_id since county_fips may be null)
+INSERT INTO county_time_series (county_region_id, county_fips, county_name, state_code, metro_region_id, redfin_data, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, NOW())
+ON CONFLICT (county_region_id) DO UPDATE SET
+    county_fips = COALESCE(EXCLUDED.county_fips, county_time_series.county_fips),
+    county_name = EXCLUDED.county_name,
+    state_code = EXCLUDED.state_code,
+    metro_region_id = EXCLUDED.metro_region_id,
+    redfin_data = EXCLUDED.redfin_data,
+    updated_at = NOW();
+
+-- name: GetCountyTimeSeriesCount :one
+-- Get total count of county time-series entries
+SELECT COUNT(*) FROM county_time_series;
+
+-- ============================================================================
+-- STATUS QUERIES (ADR-075: Market data freshness)
+-- ============================================================================
+
+-- name: GetMetroFreshness :one
+-- Get most recent metro update timestamp
+SELECT MAX(updated_at) AS latest_update FROM metro_time_series;
+
+-- name: GetCityTimeSeriesFreshness :one
+-- Get most recent city time-series update timestamp
+SELECT MAX(updated_at) AS latest_update FROM city_time_series;
+
+-- name: GetStateFreshness :one
+-- Get most recent state update timestamp
+SELECT MAX(updated_at) AS latest_update FROM state_time_series;
+
+-- name: GetZipFreshness :one
+-- Get most recent zip update timestamp
+SELECT MAX(updated_at) AS latest_update FROM zip_time_series;
+
+-- name: GetCountyFreshness :one
+-- Get most recent county update timestamp
+SELECT MAX(updated_at) AS latest_update FROM county_time_series;

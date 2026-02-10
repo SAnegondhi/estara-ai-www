@@ -5,8 +5,6 @@
 package marketqueries
 
 import (
-	"time"
-
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -58,13 +56,35 @@ type CityMarketCache struct {
 	AiEstimatedAt         pgtype.Timestamptz `json:"ai_estimated_at"`
 }
 
-type CityMetroMapping struct {
-	ID            int32       `json:"id"`
-	City          string      `json:"city"`
-	StateCode     string      `json:"state_code"`
-	MetroName     string      `json:"metro_name"`
-	MetroRegionID pgtype.Int4 `json:"metro_region_id"`
-	CreatedAt     time.Time   `json:"created_at"`
+type CityTimeSeries struct {
+	ID            int32            `json:"id"`
+	CityRegionID  int32            `json:"city_region_id"`
+	CityName      string           `json:"city_name"`
+	StateName     pgtype.Text      `json:"state_name"`
+	MetroRegionID pgtype.Int4      `json:"metro_region_id"`
+	ZhviData      []byte           `json:"zhvi_data"`
+	ZoriData      []byte           `json:"zori_data"`
+	RedfinData    []byte           `json:"redfin_data"`
+	CreatedAt     pgtype.Timestamp `json:"created_at"`
+	UpdatedAt     pgtype.Timestamp `json:"updated_at"`
+}
+
+type CountyTimeSeries struct {
+	ID               int32            `json:"id"`
+	CountyRegionID   int32            `json:"county_region_id"`
+	CountyFips       pgtype.Text      `json:"county_fips"`
+	CountyName       string           `json:"county_name"`
+	StateCode        string           `json:"state_code"`
+	StateName        pgtype.Text      `json:"state_name"`
+	MetroRegionID    pgtype.Int4      `json:"metro_region_id"`
+	ZhviData         []byte           `json:"zhvi_data"`
+	ZoriData         []byte           `json:"zori_data"`
+	ZhvfData         []byte           `json:"zhvf_data"`
+	SalesCountData   []byte           `json:"sales_count_data"`
+	DaysOnMarketData []byte           `json:"days_on_market_data"`
+	RedfinData       []byte           `json:"redfin_data"`
+	CreatedAt        pgtype.Timestamp `json:"created_at"`
+	UpdatedAt        pgtype.Timestamp `json:"updated_at"`
 }
 
 type MetroTimeSeries struct {
@@ -84,18 +104,32 @@ type MetroTimeSeries struct {
 	UpdatedAt         pgtype.Timestamp `json:"updated_at"`
 }
 
-type MetroTimeseries struct {
-	ID           int32          `json:"id"`
-	RegionID     int32          `json:"region_id"`
-	RegionName   string         `json:"region_name"`
-	RegionType   string         `json:"region_type"`
-	StateCode    pgtype.Text    `json:"state_code"`
-	Metro        pgtype.Text    `json:"metro"`
-	Date         pgtype.Date    `json:"date"`
-	Zhvi         pgtype.Numeric `json:"zhvi"`
-	Zori         pgtype.Numeric `json:"zori"`
-	ZhviForecast pgtype.Numeric `json:"zhvi_forecast"`
-	ZoriForecast pgtype.Numeric `json:"zori_forecast"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
+type StateTimeSeries struct {
+	ID                int32            `json:"id"`
+	StateRegionID     int32            `json:"state_region_id"`
+	StateCode         string           `json:"state_code"`
+	StateName         string           `json:"state_name"`
+	ZhviData          []byte           `json:"zhvi_data"`
+	ZoriData          []byte           `json:"zori_data"`
+	ZhvfData          []byte           `json:"zhvf_data"`
+	SalesCountData    []byte           `json:"sales_count_data"`
+	DaysOnMarketData  []byte           `json:"days_on_market_data"`
+	AffordabilityData []byte           `json:"affordability_data"`
+	RedfinData        []byte           `json:"redfin_data"`
+	CreatedAt         pgtype.Timestamp `json:"created_at"`
+	UpdatedAt         pgtype.Timestamp `json:"updated_at"`
+}
+
+type ZipTimeSeries struct {
+	ID            int32            `json:"id"`
+	ZipCode       string           `json:"zip_code"`
+	City          pgtype.Text      `json:"city"`
+	State         pgtype.Text      `json:"state"`
+	County        pgtype.Text      `json:"county"`
+	MetroRegionID pgtype.Int4      `json:"metro_region_id"`
+	ZhviData      []byte           `json:"zhvi_data"`
+	ZoriData      []byte           `json:"zori_data"`
+	RedfinData    []byte           `json:"redfin_data"`
+	CreatedAt     pgtype.Timestamp `json:"created_at"`
+	UpdatedAt     pgtype.Timestamp `json:"updated_at"`
 }
