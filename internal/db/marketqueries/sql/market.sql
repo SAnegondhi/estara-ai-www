@@ -246,6 +246,77 @@ ORDER BY COALESCE(c.population, 0) DESC
 LIMIT $2;
 
 -- ============================================================================
+-- GEOGRAPHIC TIME SERIES READ QUERIES (ADR-076: Reader methods)
+-- ============================================================================
+
+-- name: GetCityTimeSeriesByName :one
+-- Get city time-series data by city name and state
+SELECT
+    city_region_id,
+    city_name,
+    state_name,
+    metro_region_id,
+    zhvi_data,
+    zori_data,
+    updated_at
+FROM city_time_series
+WHERE city_name ILIKE $1 AND state_name = $2
+LIMIT 1;
+
+-- name: GetStateTimeSeriesByCode :one
+-- Get state time-series data by state code
+SELECT
+    state_region_id,
+    state_code,
+    state_name,
+    zhvi_data,
+    zori_data,
+    redfin_data,
+    updated_at
+FROM state_time_series
+WHERE state_code = $1
+LIMIT 1;
+
+-- name: GetZipTimeSeries :one
+-- Get zip time-series data by zip code
+SELECT
+    zip_code,
+    city,
+    state,
+    county,
+    metro_region_id,
+    zhvi_data,
+    zori_data,
+    updated_at
+FROM zip_time_series
+WHERE zip_code = $1
+LIMIT 1;
+
+-- name: GetZipsByCity :many
+-- Get all zip-level ZHVI/ZORI data for a city (for submarket analysis in DATA_PAYLOAD)
+SELECT
+    zip_code,
+    zhvi_data,
+    zori_data
+FROM zip_time_series
+WHERE city ILIKE $1 AND state = $2
+ORDER BY zip_code;
+
+-- name: GetCountyTimeSeriesByFips :one
+-- Get county time-series data by FIPS code
+SELECT
+    county_region_id,
+    county_fips,
+    county_name,
+    state_code,
+    metro_region_id,
+    redfin_data,
+    updated_at
+FROM county_time_series
+WHERE county_fips = $1
+LIMIT 1;
+
+-- ============================================================================
 -- METRO TIME SERIES UPSERT QUERIES (ADR-075: Market Data Import)
 -- ============================================================================
 

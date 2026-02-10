@@ -21,7 +21,6 @@ import (
 	"github.com/estara-ai/www/internal/services/market/bls"
 	"github.com/estara-ai/www/internal/services/market/census"
 	"github.com/estara-ai/www/internal/services/market/economics"
-	"github.com/estara-ai/www/internal/services/market/estimation"
 	"github.com/estara-ai/www/internal/services/market/fred"
 	"github.com/estara-ai/www/internal/services/market/timeseries"
 	"github.com/estara-ai/www/internal/services/market/trends"
@@ -148,8 +147,6 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 
 	// Create market data aggregator
 	var metroReader *timeseries.MetroReader
-	var fredClient *timeseries.FREDClient
-	var aiEstimator *estimation.AIEstimator
 
 	// Initialize MetroReader if market DB is configured
 	if cfg.DB != nil && cfg.DB.Market != nil {
@@ -159,6 +156,7 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 
 	// Initialize FRED service if API key is configured
 	// Centralized service with three-tier caching: L0 (memory) -> L1 (Redis) -> L2 (PostgreSQL)
+	// ADR-076: Single FRED path — all consumers use fred.Service (no legacy FREDClient)
 	if cfg.Config.Market.FREDAPIKey != "" {
 		// Get queries for L2 PostgreSQL cache
 		var q *queries.Queries
@@ -173,9 +171,6 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 			"l1Cache", cfg.Redis != nil,
 			"l2Cache", q != nil,
 		)
-
-		// Also create legacy client for aggregator compatibility
-		fredClient = timeseries.NewFREDClient(cfg.Config.Market.FREDAPIKey, cfg.Redis)
 	}
 
 	// Initialize Census service if API key is configured (ADR-068 Phase 2)
@@ -219,28 +214,23 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 		)
 	}
 
-	// Initialize AI estimator if Anthropic client is available
-	if services.Anthropic != nil {
-		aiEstimator = estimation.NewAIEstimator(services.Anthropic)
-		logger.Info("AI estimator initialized")
-	}
-
 	// Create aggregator if we have at least one data source
-	if metroReader != nil || fredClient != nil || aiEstimator != nil {
+	// ADR-076: Uses fred.Service directly (no legacy FREDClient, no AI estimator)
+	if metroReader != nil || services.FREDService != nil {
 		services.MarketData = aggregator.NewAggregator(
 			metroReader,
-			fredClient,
-			aiEstimator,
+			services.FREDService,
 			services.HybridCache,
 		)
 		logger.Info("market data aggregator initialized")
 	}
 
 	// Create market trends service (ADR-073)
-	if metroReader != nil || fredClient != nil {
+	// ADR-076: Uses fred.Service directly (no legacy FREDClient)
+	if metroReader != nil || services.FREDService != nil {
 		services.TrendsService = trends.NewService(trends.ServiceConfig{
 			Metro: metroReader,
-			FRED:  fredClient,
+			FRED:  services.FREDService,
 			AI:    services.Anthropic,
 			Cache: services.HybridCache,
 		})

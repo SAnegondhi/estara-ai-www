@@ -45,13 +45,15 @@ Quantitative summary table:
 
 Below the table: 2-3 sentences contextualizing where this market sits relative to national benchmarks and what the numbers indicate about market cycle positioning.
 
+If ZIP_SUBMARKET_ANALYSIS section is present in DATA_PAYLOAD, add a brief subsection noting the zip-level price spread (min/max/median ZHVI across zip codes), rent spread if available, and what the spread implies about submarket diversity within the metro.
+
 ## 2. Data Limitations & Gaps
 
 MANDATORY section — do NOT skip or minimize.
 
 | Data Gap | Impact on Analysis | Recommended Action |
 |----------|-------------------|-------------------|
-(Include: property tax rates, insurance costs, building permits/supply pipeline, zip-level submarket data, any N/A fields from DATA_PAYLOAD, any unverified items from the tax/regulatory/insurance section)
+(Include: property tax rates, insurance costs, any N/A fields from DATA_PAYLOAD, any unverified items from the tax/regulatory/insurance section. Only list zip-level submarket data as a gap if ZIP_SUBMARKET_ANALYSIS section is absent from DATA_PAYLOAD.)
 
 ## 3. Supply-Demand Dynamics
 
@@ -66,7 +68,7 @@ Characterize the supply-demand balance with specific numbers.
 
 | Variable | Local Value | National Benchmark | Why It Matters | Data Certainty |
 |----------|-------------|-------------------|----------------|----------------|
-(Include: gross yield vs mortgage rate spread, price-to-income ratio, price-to-rent ratio, rent-to-income ratio, vacancy rate, price CAGR trend, ZHVI forecast growth, unemployment differential, affordability index, sale-to-list ratio, price drops %, inflation rate, per capita income)
+(Include: gross yield vs mortgage rate spread, price-to-income ratio, price-to-rent ratio, rent-to-income ratio, vacancy rate, price CAGR trend, ZHVI forecast growth, unemployment differential, affordability index, sale-to-list ratio, price drops %, inflation rate, per capita income. If ZIP_SUBMARKET_ANALYSIS is present, include zip-level price spread as a decision variable — wide spreads signal submarket differentiation opportunities.)
 
 ## 5. Underwriting Context
 

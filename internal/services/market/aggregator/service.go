@@ -10,12 +10,12 @@ import (
 	"time"
 
 	"github.com/estara-ai/www/internal/services/cache"
-	"github.com/estara-ai/www/internal/services/market/estimation"
+	"github.com/estara-ai/www/internal/services/market/fred"
 	"github.com/estara-ai/www/internal/services/market/timeseries"
 )
 
 const (
-	// Maximum variance between sources before triggering AI estimation
+	// Maximum variance between sources before using primary source only
 	maxSourceVariance = 0.5 // 50%
 
 	// Cache TTL for aggregated market data
@@ -42,6 +42,7 @@ type MarketData struct {
 	UnemploymentRate     float64   `json:"unemploymentRate"`     // Local unemployment rate (%)
 	EmploymentGrowthRate float64   `json:"employmentGrowthRate"` // YoY employment growth (%)
 	PopulationGrowthRate float64   `json:"populationGrowthRate"` // YoY population growth (%)
+	MedianDaysOnMarket   *int      `json:"medianDaysOnMarket"`   // Median DOM from Redfin (ADR-076)
 	Confidence           float64   `json:"confidence"`
 	Sources              []string  `json:"sources"`
 	DataDate             time.Time `json:"dataDate"`
@@ -65,26 +66,24 @@ type memoryCacheEntry struct {
 // Aggregator aggregates data from multiple market data sources
 type Aggregator struct {
 	metro       *timeseries.MetroReader
-	fred        *timeseries.FREDClient
-	estimator   *estimation.AIEstimator
+	fred        *fred.Service
 	cache       *cache.HybridCache
 	memoryCache sync.Map // In-memory cache for ultra-fast repeated lookups
 	logger      *slog.Logger
 }
 
 // NewAggregator creates a new market data aggregator
+// ADR-076: Uses fred.Service (3-tier cache) instead of legacy FREDClient
 func NewAggregator(
 	metro *timeseries.MetroReader,
-	fred *timeseries.FREDClient,
-	estimator *estimation.AIEstimator,
+	fredService *fred.Service,
 	hybridCache *cache.HybridCache,
 ) *Aggregator {
 	return &Aggregator{
-		metro:     metro,
-		fred:      fred,
-		estimator: estimator,
-		cache:     hybridCache,
-		logger:    slog.Default().With("component", "market_aggregator"),
+		metro:  metro,
+		fred:   fredService,
+		cache:  hybridCache,
+		logger: slog.Default().With("component", "market_aggregator"),
 	}
 }
 
@@ -122,11 +121,12 @@ func (a *Aggregator) GetMarketData(ctx context.Context, city, state string) (*Ma
 
 	// Collect data from all sources
 	sources := make([]SourceData, 0, 2)
-	var mortgageData *timeseries.MortgageRateData
 	var metroData *timeseries.MetroData
 	var yoyData *timeseries.YearOverYearData
+	var fredRates *fred.EconomicRates
 
 	// Get metro data (Zillow)
+	var snapshot *timeseries.CitySnapshot
 	metroData, err := a.metro.GetMarketData(ctx, city, state)
 	if err != nil {
 		a.logger.Warn("failed to get metro data", "city", city, "state", state, "error", err)
@@ -145,28 +145,28 @@ func (a *Aggregator) GetMarketData(ctx context.Context, city, state string) (*Ma
 				a.logger.Warn("failed to get YoY data", "regionId", metroData.RegionID, "error", err)
 			}
 		}
-	}
 
-	// Get mortgage rates (FRED)
-	if a.fred != nil && a.fred.IsConfigured() {
-		mortgageData, err = a.fred.GetMortgageRates(ctx)
+		// Get CitySnapshot for Redfin DOM data (ADR-076)
+		snapshot, err = a.metro.GetCitySnapshot(ctx, city, state)
 		if err != nil {
-			a.logger.Warn("failed to get mortgage rates", "error", err)
+			a.logger.Debug("failed to get city snapshot for DOM", "city", city, "state", state, "error", err)
 		}
 	}
 
-	// Get national vacancy rate from FRED as fallback
+	// Get all FRED rates via fred.Service (3-tier cache, release-schedule-aware TTL)
+	if a.fred != nil && a.fred.IsConfigured() {
+		fredRates, err = a.fred.GetAllRates(ctx)
+		if err != nil {
+			a.logger.Warn("failed to get FRED rates", "error", err)
+		}
+	}
+
+	// Extract vacancy rate from FRED or use default
 	var vacancyRate float64
-	if a.fred != nil && a.fred.IsConfigured() {
-		vr, _, err := a.fred.GetRentalVacancyRate(ctx)
-		if err != nil {
-			a.logger.Debug("failed to get FRED vacancy rate, using default", "error", err)
-			vacancyRate = 6.5 // Default national average
-		} else {
-			vacancyRate = vr
-		}
+	if fredRates != nil && fredRates.RentalVacancyRate > 0 {
+		vacancyRate = fredRates.RentalVacancyRate
 	} else {
-		vacancyRate = 6.5 // Default when FRED not configured
+		vacancyRate = 6.5 // Default national average
 	}
 
 	// Get employment growth from FRED
@@ -190,28 +190,27 @@ func (a *Aggregator) GetMarketData(ctx context.Context, city, state string) (*Ma
 	populationGrowth := getRegionalPopulationGrowthDefault(state)
 	a.logger.Debug("population growth for state", "state", state, "growth", populationGrowth)
 
-	// Cross-validate sources
-	if len(sources) > 1 {
-		if !a.validateSources(sources) {
-			a.logger.Info("source variance too high, triggering AI estimation",
-				"city", city,
-				"state", state,
-			)
-			return a.getAIEstimation(ctx, city, state, mortgageData)
-		}
-	}
-
-	// If no data sources, fall back to AI estimation
-	if len(sources) == 0 {
-		a.logger.Info("no data sources available, using AI estimation",
+	// Cross-validate sources — with only one source (Zillow), variance check is N/A
+	if len(sources) > 1 && !a.validateSources(sources) {
+		a.logger.Warn("source variance too high, using primary source only",
 			"city", city,
 			"state", state,
 		)
-		return a.getAIEstimation(ctx, city, state, mortgageData)
+		// Per ADR-050/076: no AI fabrication. Use first source only.
+		sources = sources[:1]
+	}
+
+	// If no data sources, return nil (ADR-050/076: no AI-fabricated fallback)
+	if len(sources) == 0 {
+		a.logger.Warn("no market data sources available",
+			"city", city,
+			"state", state,
+		)
+		return nil, fmt.Errorf("no market data available for %s, %s", city, state)
 	}
 
 	// Aggregate data
-	data := a.aggregateData(city, state, sources, metroData, yoyData, mortgageData, vacancyRate, employmentGrowth, populationGrowth)
+	data := a.aggregateData(city, state, sources, metroData, yoyData, fredRates, snapshot, vacancyRate, employmentGrowth, populationGrowth)
 
 	// Cache the result in L1/L2 (Redis/DB)
 	if a.cache != nil {
@@ -282,7 +281,8 @@ func (a *Aggregator) aggregateData(
 	sources []SourceData,
 	metro *timeseries.MetroData,
 	yoy *timeseries.YearOverYearData,
-	mortgage *timeseries.MortgageRateData,
+	rates *fred.EconomicRates,
+	snapshot *timeseries.CitySnapshot,
 	vacancyRate float64,
 	employmentGrowth float64,
 	populationGrowth float64,
@@ -316,6 +316,7 @@ func (a *Aggregator) aggregateData(
 			noi := annualRent * (1 - expenseRatio)
 			data.CapRate = (noi / metro.ZHVI) * 100
 		}
+
 	}
 
 	// Add year-over-year data
@@ -324,67 +325,25 @@ func (a *Aggregator) aggregateData(
 		data.RentYearOverYear = yoy.ZORIYoYPct
 	}
 
-	// Add mortgage rates
-	if mortgage != nil {
-		data.MortgageRate30 = mortgage.Rate30Year
-		data.MortgageRate15 = mortgage.Rate15Year
-		if !mortgage.Date.IsZero() && (data.DataDate.IsZero() || mortgage.Date.After(data.DataDate)) {
-			// Use more recent date
-			data.Sources = append(data.Sources, mortgage.Source)
+	// Add mortgage rates from FRED service
+	if rates != nil {
+		data.MortgageRate30 = rates.MortgageRate30Year
+		data.MortgageRate15 = rates.MortgageRate15Year
+		if !rates.MortgageRateDate.IsZero() {
+			data.Sources = append(data.Sources, rates.Source)
 		}
 	}
 
 	// Add vacancy rate (from FRED or default)
 	data.VacancyRate = vacancyRate
 
+	// Add median days on market from CitySnapshot (Redfin data, ADR-076)
+	if snapshot != nil && snapshot.MedianDaysOnMarket > 0 {
+		dom := snapshot.MedianDaysOnMarket
+		data.MedianDaysOnMarket = &dom
+	}
+
 	return data
-}
-
-// getAIEstimation falls back to AI estimation when data sources fail
-func (a *Aggregator) getAIEstimation(
-	ctx context.Context,
-	city, state string,
-	mortgage *timeseries.MortgageRateData,
-) (*MarketData, error) {
-	if a.estimator == nil {
-		return nil, fmt.Errorf("AI estimator not available and no data sources")
-	}
-
-	estimated, err := a.estimator.EstimateMarketData(ctx, city, state)
-	if err != nil {
-		return nil, fmt.Errorf("AI estimation failed: %w", err)
-	}
-
-	data := &MarketData{
-		City:            city,
-		State:           state,
-		MedianHomePrice: estimated.MedianHomePrice,
-		MedianRent:      estimated.MedianRent,
-		CapRate:         estimated.CapRate,
-		YearOverYearPct: estimated.YearOverYearPct,
-		Confidence:      estimated.Confidence,
-		Sources:         []string{"AI Estimation"},
-		DataDate:        time.Now(),
-		IsAIEstimated:   true,
-	}
-
-	// Add mortgage rates if available
-	if mortgage != nil {
-		data.MortgageRate30 = mortgage.Rate30Year
-		data.MortgageRate15 = mortgage.Rate15Year
-		data.Sources = append(data.Sources, mortgage.Source)
-	}
-
-	// Cache AI-estimated data with shorter TTL
-	if a.cache != nil {
-		cacheKey := a.buildCacheKey(city, state)
-		shortTTL := 6 * time.Hour // AI estimates cached for less time
-		if err := a.cache.Set(ctx, "", cacheKey, "market_data_ai", data, shortTTL); err != nil {
-			a.logger.Warn("failed to cache AI estimation", "error", err)
-		}
-	}
-
-	return data, nil
 }
 
 // buildCacheKey creates a cache key for market data

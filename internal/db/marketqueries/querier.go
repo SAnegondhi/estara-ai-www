@@ -36,12 +36,19 @@ type Querier interface {
 	// ============================================================================
 	// Get ALL fields from city_market_cache for a city (ADR-074: DATA_PAYLOAD builder)
 	GetCitySnapshot(ctx context.Context, arg GetCitySnapshotParams) (GetCitySnapshotRow, error)
+	// ============================================================================
+	// GEOGRAPHIC TIME SERIES READ QUERIES (ADR-076: Reader methods)
+	// ============================================================================
+	// Get city time-series data by city name and state
+	GetCityTimeSeriesByName(ctx context.Context, arg GetCityTimeSeriesByNameParams) (GetCityTimeSeriesByNameRow, error)
 	// Get total count of city time-series entries
 	GetCityTimeSeriesCount(ctx context.Context) (int64, error)
 	// Get most recent city time-series update timestamp
 	GetCityTimeSeriesFreshness(ctx context.Context) (interface{}, error)
 	// Get most recent county update timestamp
 	GetCountyFreshness(ctx context.Context) (interface{}, error)
+	// Get county time-series data by FIPS code
+	GetCountyTimeSeriesByFips(ctx context.Context, countyFips pgtype.Text) (GetCountyTimeSeriesByFipsRow, error)
 	// Get total count of county time-series entries
 	GetCountyTimeSeriesCount(ctx context.Context) (int64, error)
 	// Returns total counts of tracked cities and metros
@@ -73,12 +80,18 @@ type Querier interface {
 	GetSparklineMetros(ctx context.Context) ([]GetSparklineMetrosRow, error)
 	// Get most recent state update timestamp
 	GetStateFreshness(ctx context.Context) (interface{}, error)
+	// Get state time-series data by state code
+	GetStateTimeSeriesByCode(ctx context.Context, stateCode string) (GetStateTimeSeriesByCodeRow, error)
 	// Get total count of state time-series entries
 	GetStateTimeSeriesCount(ctx context.Context) (int64, error)
 	// Get most recent zip update timestamp
 	GetZipFreshness(ctx context.Context) (interface{}, error)
+	// Get zip time-series data by zip code
+	GetZipTimeSeries(ctx context.Context, zipCode string) (GetZipTimeSeriesRow, error)
 	// Get total count of zip time-series entries
 	GetZipTimeSeriesCount(ctx context.Context) (int64, error)
+	// Get all zip-level ZHVI/ZORI data for a city (for submarket analysis in DATA_PAYLOAD)
+	GetZipsByCity(ctx context.Context, arg GetZipsByCityParams) ([]GetZipsByCityRow, error)
 	// List all cities in a state with their market data
 	ListCitiesByState(ctx context.Context, arg ListCitiesByStateParams) ([]ListCitiesByStateRow, error)
 	// List all metros in a state

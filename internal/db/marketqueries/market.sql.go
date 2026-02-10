@@ -478,6 +478,55 @@ func (q *Queries) GetCitySnapshot(ctx context.Context, arg GetCitySnapshotParams
 	return i, err
 }
 
+const GetCityTimeSeriesByName = `-- name: GetCityTimeSeriesByName :one
+
+SELECT
+    city_region_id,
+    city_name,
+    state_name,
+    metro_region_id,
+    zhvi_data,
+    zori_data,
+    updated_at
+FROM city_time_series
+WHERE city_name ILIKE $1 AND state_name = $2
+LIMIT 1
+`
+
+type GetCityTimeSeriesByNameParams struct {
+	CityName  string      `json:"city_name"`
+	StateName pgtype.Text `json:"state_name"`
+}
+
+type GetCityTimeSeriesByNameRow struct {
+	CityRegionID  int32            `json:"city_region_id"`
+	CityName      string           `json:"city_name"`
+	StateName     pgtype.Text      `json:"state_name"`
+	MetroRegionID pgtype.Int4      `json:"metro_region_id"`
+	ZhviData      []byte           `json:"zhvi_data"`
+	ZoriData      []byte           `json:"zori_data"`
+	UpdatedAt     pgtype.Timestamp `json:"updated_at"`
+}
+
+// ============================================================================
+// GEOGRAPHIC TIME SERIES READ QUERIES (ADR-076: Reader methods)
+// ============================================================================
+// Get city time-series data by city name and state
+func (q *Queries) GetCityTimeSeriesByName(ctx context.Context, arg GetCityTimeSeriesByNameParams) (GetCityTimeSeriesByNameRow, error) {
+	row := q.db.QueryRow(ctx, GetCityTimeSeriesByName, arg.CityName, arg.StateName)
+	var i GetCityTimeSeriesByNameRow
+	err := row.Scan(
+		&i.CityRegionID,
+		&i.CityName,
+		&i.StateName,
+		&i.MetroRegionID,
+		&i.ZhviData,
+		&i.ZoriData,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const GetCityTimeSeriesCount = `-- name: GetCityTimeSeriesCount :one
 SELECT COUNT(*) FROM city_time_series
 `
@@ -512,6 +561,46 @@ func (q *Queries) GetCountyFreshness(ctx context.Context) (interface{}, error) {
 	var latest_update interface{}
 	err := row.Scan(&latest_update)
 	return latest_update, err
+}
+
+const GetCountyTimeSeriesByFips = `-- name: GetCountyTimeSeriesByFips :one
+SELECT
+    county_region_id,
+    county_fips,
+    county_name,
+    state_code,
+    metro_region_id,
+    redfin_data,
+    updated_at
+FROM county_time_series
+WHERE county_fips = $1
+LIMIT 1
+`
+
+type GetCountyTimeSeriesByFipsRow struct {
+	CountyRegionID int32            `json:"county_region_id"`
+	CountyFips     pgtype.Text      `json:"county_fips"`
+	CountyName     string           `json:"county_name"`
+	StateCode      string           `json:"state_code"`
+	MetroRegionID  pgtype.Int4      `json:"metro_region_id"`
+	RedfinData     []byte           `json:"redfin_data"`
+	UpdatedAt      pgtype.Timestamp `json:"updated_at"`
+}
+
+// Get county time-series data by FIPS code
+func (q *Queries) GetCountyTimeSeriesByFips(ctx context.Context, countyFips pgtype.Text) (GetCountyTimeSeriesByFipsRow, error) {
+	row := q.db.QueryRow(ctx, GetCountyTimeSeriesByFips, countyFips)
+	var i GetCountyTimeSeriesByFipsRow
+	err := row.Scan(
+		&i.CountyRegionID,
+		&i.CountyFips,
+		&i.CountyName,
+		&i.StateCode,
+		&i.MetroRegionID,
+		&i.RedfinData,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const GetCountyTimeSeriesCount = `-- name: GetCountyTimeSeriesCount :one
@@ -718,6 +807,46 @@ func (q *Queries) GetStateFreshness(ctx context.Context) (interface{}, error) {
 	return latest_update, err
 }
 
+const GetStateTimeSeriesByCode = `-- name: GetStateTimeSeriesByCode :one
+SELECT
+    state_region_id,
+    state_code,
+    state_name,
+    zhvi_data,
+    zori_data,
+    redfin_data,
+    updated_at
+FROM state_time_series
+WHERE state_code = $1
+LIMIT 1
+`
+
+type GetStateTimeSeriesByCodeRow struct {
+	StateRegionID int32            `json:"state_region_id"`
+	StateCode     string           `json:"state_code"`
+	StateName     string           `json:"state_name"`
+	ZhviData      []byte           `json:"zhvi_data"`
+	ZoriData      []byte           `json:"zori_data"`
+	RedfinData    []byte           `json:"redfin_data"`
+	UpdatedAt     pgtype.Timestamp `json:"updated_at"`
+}
+
+// Get state time-series data by state code
+func (q *Queries) GetStateTimeSeriesByCode(ctx context.Context, stateCode string) (GetStateTimeSeriesByCodeRow, error) {
+	row := q.db.QueryRow(ctx, GetStateTimeSeriesByCode, stateCode)
+	var i GetStateTimeSeriesByCodeRow
+	err := row.Scan(
+		&i.StateRegionID,
+		&i.StateCode,
+		&i.StateName,
+		&i.ZhviData,
+		&i.ZoriData,
+		&i.RedfinData,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const GetStateTimeSeriesCount = `-- name: GetStateTimeSeriesCount :one
 SELECT COUNT(*) FROM state_time_series
 `
@@ -742,6 +871,49 @@ func (q *Queries) GetZipFreshness(ctx context.Context) (interface{}, error) {
 	return latest_update, err
 }
 
+const GetZipTimeSeries = `-- name: GetZipTimeSeries :one
+SELECT
+    zip_code,
+    city,
+    state,
+    county,
+    metro_region_id,
+    zhvi_data,
+    zori_data,
+    updated_at
+FROM zip_time_series
+WHERE zip_code = $1
+LIMIT 1
+`
+
+type GetZipTimeSeriesRow struct {
+	ZipCode       string           `json:"zip_code"`
+	City          pgtype.Text      `json:"city"`
+	State         pgtype.Text      `json:"state"`
+	County        pgtype.Text      `json:"county"`
+	MetroRegionID pgtype.Int4      `json:"metro_region_id"`
+	ZhviData      []byte           `json:"zhvi_data"`
+	ZoriData      []byte           `json:"zori_data"`
+	UpdatedAt     pgtype.Timestamp `json:"updated_at"`
+}
+
+// Get zip time-series data by zip code
+func (q *Queries) GetZipTimeSeries(ctx context.Context, zipCode string) (GetZipTimeSeriesRow, error) {
+	row := q.db.QueryRow(ctx, GetZipTimeSeries, zipCode)
+	var i GetZipTimeSeriesRow
+	err := row.Scan(
+		&i.ZipCode,
+		&i.City,
+		&i.State,
+		&i.County,
+		&i.MetroRegionID,
+		&i.ZhviData,
+		&i.ZoriData,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const GetZipTimeSeriesCount = `-- name: GetZipTimeSeriesCount :one
 SELECT COUNT(*) FROM zip_time_series
 `
@@ -752,6 +924,48 @@ func (q *Queries) GetZipTimeSeriesCount(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const GetZipsByCity = `-- name: GetZipsByCity :many
+SELECT
+    zip_code,
+    zhvi_data,
+    zori_data
+FROM zip_time_series
+WHERE city ILIKE $1 AND state = $2
+ORDER BY zip_code
+`
+
+type GetZipsByCityParams struct {
+	City  pgtype.Text `json:"city"`
+	State pgtype.Text `json:"state"`
+}
+
+type GetZipsByCityRow struct {
+	ZipCode  string `json:"zip_code"`
+	ZhviData []byte `json:"zhvi_data"`
+	ZoriData []byte `json:"zori_data"`
+}
+
+// Get all zip-level ZHVI/ZORI data for a city (for submarket analysis in DATA_PAYLOAD)
+func (q *Queries) GetZipsByCity(ctx context.Context, arg GetZipsByCityParams) ([]GetZipsByCityRow, error) {
+	rows, err := q.db.Query(ctx, GetZipsByCity, arg.City, arg.State)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetZipsByCityRow{}
+	for rows.Next() {
+		var i GetZipsByCityRow
+		if err := rows.Scan(&i.ZipCode, &i.ZhviData, &i.ZoriData); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const ListCitiesByState = `-- name: ListCitiesByState :many

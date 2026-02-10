@@ -747,7 +747,7 @@ func (h *Handler) GetMarketDefaults(w http.ResponseWriter, r *http.Request) {
 			CapRate:            &capRate,
 			GrossRentalYield:   grossRentalYield,
 			PriceYoyChange:     &priceYoyChange,
-			MedianDaysOnMarket: nil, // Not available from current sources
+			MedianDaysOnMarket: data.MedianDaysOnMarket, // From Redfin via CitySnapshot (ADR-076)
 			MortgageRate30:     mortgageRate30,
 			MortgageRate15:     mortgageRate15,
 		},

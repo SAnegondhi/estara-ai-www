@@ -10,13 +10,14 @@ import (
 
 	"github.com/estara-ai/www/internal/services/ai/anthropic"
 	"github.com/estara-ai/www/internal/services/cache"
+	"github.com/estara-ai/www/internal/services/market/fred"
 	"github.com/estara-ai/www/internal/services/market/timeseries"
 )
 
 // Service provides market trends analysis
 type Service struct {
 	metro  *timeseries.MetroReader
-	fred   *timeseries.FREDClient
+	fred   *fred.Service
 	ai     *anthropic.Client
 	cache  *cache.HybridCache
 	logger *slog.Logger
@@ -25,7 +26,7 @@ type Service struct {
 // ServiceConfig holds configuration for the trends service
 type ServiceConfig struct {
 	Metro *timeseries.MetroReader
-	FRED  *timeseries.FREDClient
+	FRED  *fred.Service
 	AI    *anthropic.Client
 	Cache *cache.HybridCache
 }

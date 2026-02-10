@@ -98,6 +98,14 @@ type DataPayload struct {
 	HudFMR3BR           float64
 	HudFMR4BR           float64
 
+	// Zip submarket analysis (ADR-076: from zip_time_series)
+	ZipCount    int
+	ZipMinZHVI  float64
+	ZipMaxZHVI  float64
+	ZipMedianZHVI float64
+	ZipMinZORI  float64
+	ZipMaxZORI  float64
+
 	// National benchmarks (Zillow + Redfin)
 	NationalZHVI           float64
 	NationalZORI           float64
@@ -149,7 +157,7 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 		City:           city,
 		State:          state,
 		DerivedMetrics: []string{"gross yield", "net yield range", "CAGRs", "price-to-income", "price-to-rent", "rent-to-income", "yield-to-mortgage spread"},
-		MissingData:    []string{"zip-level submarket data", "observed cap rates", "metro-level building permits"},
+		MissingData:    []string{"observed cap rates"},
 		LaggedData:     []string{},
 	}
 
@@ -289,6 +297,30 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 		}
 	}()
 
+	// 5. Zip submarket analysis (ADR-076: from zip_time_series)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if b.metro == nil {
+			return
+		}
+		summary, err := b.metro.GetZipSubmarketSummary(ctx, city, state)
+		if err != nil {
+			// Not a critical failure — zip data may not exist for all cities
+			b.logger.Debug("zip submarket data unavailable", "city", city, "state", state, "error", err)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		p.ZipCount = summary.ZipCount
+		p.ZipMinZHVI = summary.MinZHVI
+		p.ZipMaxZHVI = summary.MaxZHVI
+		p.ZipMedianZHVI = summary.MedianZHVI
+		p.ZipMinZORI = summary.MinZORI
+		p.ZipMaxZORI = summary.MaxZORI
+		p.RealSources = append(p.RealSources, "Zillow zip-level data")
+	}()
+
 	wg.Wait()
 
 	// Merge city snapshot data (city_market_cache + Redfin metro backfill)
@@ -365,10 +397,9 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 		}
 	}
 
-	// National ZHVI/ZORI may be missing (data not bootstrapped per ADR-075).
-	// National mortgage and unemployment are always available from FRED/BLS.
+	// National ZHVI/ZORI from metro_region_id=0 (ADR-075 bootstrapped this data)
 	if p.NationalZHVI == 0 && p.NationalZORI == 0 {
-		p.MissingData = append(p.MissingData, "national ZHVI/ZORI benchmarks (pending data bootstrap per ADR-075)")
+		p.MissingData = append(p.MissingData, "national ZHVI/ZORI benchmarks")
 	}
 
 	// Compute derived metrics
@@ -511,6 +542,24 @@ func (b *DataPayloadBuilder) FormatAsXML(p *DataPayload) string {
 	writeXMLField(&sb, "national_building_permits", fmt.Sprintf("%.0fK units/yr", p.BuildingPermits), "FRED PERMIT", "high", p.BuildingPermits > 0)
 	writeXMLField(&sb, "national_housing_starts", fmt.Sprintf("%.0fK units/yr", p.HousingStarts), "FRED HOUST", "high", p.HousingStarts > 0)
 	sb.WriteString("  </NATIONAL_BENCHMARKS>\n")
+
+	// Zip submarket analysis (ADR-076)
+	if p.ZipCount > 0 {
+		sb.WriteString("\n  <ZIP_SUBMARKET_ANALYSIS>\n")
+		sb.WriteString(fmt.Sprintf("    <zip_count>%d</zip_count>\n", p.ZipCount))
+		writeXMLField(&sb, "zhvi_min", fmtDollarF(p.ZipMinZHVI), "Zillow zip-level", "high", p.ZipMinZHVI > 0)
+		writeXMLField(&sb, "zhvi_max", fmtDollarF(p.ZipMaxZHVI), "Zillow zip-level", "high", p.ZipMaxZHVI > 0)
+		writeXMLField(&sb, "zhvi_median", fmtDollarF(p.ZipMedianZHVI), "Zillow zip-level", "high", p.ZipMedianZHVI > 0)
+		if p.ZipMaxZHVI > 0 && p.ZipMinZHVI > 0 {
+			spread := ((p.ZipMaxZHVI - p.ZipMinZHVI) / p.ZipMedianZHVI) * 100
+			sb.WriteString(fmt.Sprintf("    <price_spread>%.0f%% (range/median)</price_spread>\n", spread))
+		}
+		if p.ZipMinZORI > 0 {
+			writeXMLField(&sb, "zori_min", fmtDollarFMo(p.ZipMinZORI), "Zillow zip-level", "high", true)
+			writeXMLField(&sb, "zori_max", fmtDollarFMo(p.ZipMaxZORI), "Zillow zip-level", "high", true)
+		}
+		sb.WriteString("  </ZIP_SUBMARKET_ANALYSIS>\n")
+	}
 
 	// Data quality
 	pct := 0
