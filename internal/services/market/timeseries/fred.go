@@ -25,6 +25,8 @@ const (
 	SeriesCPI              = "CPIAUCSL"      // Consumer Price Index
 	SeriesRentalVacancy    = "RRVRUSQ156N"   // Rental Vacancy Rate (national, quarterly)
 	SeriesHomeownerVacancy = "RHVRUSQ156N"   // Homeowner Vacancy Rate (national, quarterly)
+	SeriesBuildingPermits  = "PERMIT"        // New Private Housing Units Authorized (national, monthly, thousands)
+	SeriesHousingStarts    = "HOUST"         // Housing Starts (national, monthly, thousands)
 
 	// Cache settings - FRED data doesn't change frequently
 	// 7-day TTL to avoid rate limits and IP blocks (matches www_v1 implementation)
@@ -314,6 +316,16 @@ func (c *FREDClient) GetInflationRate(ctx context.Context) (float64, time.Time, 
 // FRED series RRVRUSQ156N is quarterly data
 func (c *FREDClient) GetRentalVacancyRate(ctx context.Context) (float64, time.Time, error) {
 	return c.getLatestValue(ctx, SeriesRentalVacancy)
+}
+
+// GetBuildingPermits returns the latest national building permits (thousands of units, annualized)
+func (c *FREDClient) GetBuildingPermits(ctx context.Context) (float64, time.Time, error) {
+	return c.getLatestValue(ctx, SeriesBuildingPermits)
+}
+
+// GetHousingStarts returns the latest national housing starts (thousands of units, annualized)
+func (c *FREDClient) GetHousingStarts(ctx context.Context) (float64, time.Time, error) {
+	return c.getLatestValue(ctx, SeriesHousingStarts)
 }
 
 // IsConfigured returns true if the client has an API key

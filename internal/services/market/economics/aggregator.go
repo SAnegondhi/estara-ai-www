@@ -49,6 +49,10 @@ type MarketEconomics struct {
 	JobOpenings             float64 `json:"jobOpenings"`            // thousands
 	LaborForceParticipation float64 `json:"laborForceParticipation"`
 
+	// Supply pipeline (from FRED — national)
+	BuildingPermits float64 `json:"buildingPermits"` // thousands, annualized
+	HousingStarts   float64 `json:"housingStarts"`   // thousands, annualized
+
 	// Calculated Metrics
 	PriceToIncomeRatio float64 `json:"priceToIncomeRatio,omitempty"` // Requires median home price input
 	AffordabilityIndex float64 `json:"affordabilityIndex,omitempty"` // Based on mortgage, income, prices
@@ -161,6 +165,8 @@ func (a *Aggregator) GetMarketEconomics(ctx context.Context, city, state string)
 		result.NationalUnemployment = fredData.UnemploymentRate
 		result.InflationRate = fredData.InflationRate
 		result.RentalVacancyRate = fredData.RentalVacancyRate
+		result.BuildingPermits = fredData.BuildingPermits
+		result.HousingStarts = fredData.HousingStarts
 	}
 
 	// Merge Census data

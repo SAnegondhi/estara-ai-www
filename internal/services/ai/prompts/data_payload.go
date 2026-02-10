@@ -54,17 +54,38 @@ type DataPayload struct {
 	OffMarketIn2Weeks  float64 // Fraction going off-market within 2 weeks
 	HasRedfinData      bool
 
-	// Demographics (from economics aggregator)
+	// Demographics (from economics aggregator — Census ACS)
 	Population            int64
 	MedianHouseholdIncome float64
-	UnemploymentRate      float64
-	NationalUnemployment  float64
-	LaborForceParticipation float64
-	CPIShelter            float64
-	CPIRent               float64
+	PerCapitaIncome       float64
+	HouseholdCount        int64
 	MedianAge             float64
 	DemographicLevel      string // "place", "county", or "state"
 	PovertyRate           float64
+
+	// Labor market (from economics aggregator — BLS + FRED)
+	UnemploymentRate        float64
+	NationalUnemployment    float64
+	LaborForceParticipation float64
+	StateEmployment         float64 // thousands
+	ConstructionEmployment  float64 // thousands (state)
+	JobOpenings             float64 // thousands (national)
+	AverageHourlyEarnings   float64 // dollars
+	CPIShelter              float64
+	CPIRent                 float64
+
+	// Additional rates (from FRED)
+	MortgageRate15    float64
+	InflationRate     float64
+	RentalVacancyRate float64 // national rental vacancy
+
+	// Derived market metrics
+	PriceToRentRatio float64 // ZHVI / (ZORI*12)
+	ForecastGrowth   float64 // ZHVF vs current ZHVI, pct
+
+	// Building permits & housing starts (from FRED — national monthly)
+	BuildingPermits float64 // thousands, national
+	HousingStarts   float64 // thousands, national
 
 	// Affordability
 	PriceToIncomeRatio  float64
@@ -127,8 +148,8 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 	p := &DataPayload{
 		City:           city,
 		State:          state,
-		DerivedMetrics: []string{"gross yield", "net yield range", "CAGRs", "price-to-income", "rent-to-income", "yield-to-mortgage spread"},
-		MissingData:    []string{"zip-level submarket data", "observed cap rates"},
+		DerivedMetrics: []string{"gross yield", "net yield range", "CAGRs", "price-to-income", "price-to-rent", "rent-to-income", "yield-to-mortgage spread"},
+		MissingData:    []string{"zip-level submarket data", "observed cap rates", "metro-level building permits"},
 		LaggedData:     []string{},
 	}
 
@@ -180,36 +201,62 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 		}
 	}()
 
-	// 3. Metro time series for CAGR calculations
+	// 3. Time series for CAGR calculations + forecast growth
+	// Try city-level first (more accurate), fall back to metro-level
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		if b.metro == nil {
 			return
 		}
-		// First get city-metro mapping
-		mapping, err := b.metro.GetCityMetroMapping(ctx, city, state)
-		if err != nil || mapping.MetroName == "" {
-			mu.Lock()
-			p.UnavailableSources = append(p.UnavailableSources, "metro_time_series: city mapping not found")
-			mu.Unlock()
-			return
-		}
 
 		now := time.Now()
 		fiveYearsAgo := now.AddDate(-5, 0, 0)
-		series, err := b.metro.GetTimeSeries(ctx, mapping.MetroName, "msa", fiveYearsAgo, now)
-		if err != nil || len(series) == 0 {
-			return
+
+		// Try city-level time series first (21K cities in city_time_series)
+		citySeries, err := b.metro.GetCityTimeSeries(ctx, city, state, fiveYearsAgo, now)
+		if err == nil && len(citySeries) > 0 {
+			mu.Lock()
+			p.PriceCagr3Y = computeCAGR(citySeries, 3, true)
+			p.PriceCagr5Y = computeCAGR(citySeries, 5, true)
+			p.RentCagr3Y = computeCAGR(citySeries, 3, false)
+			p.RentCagr5Y = computeCAGR(citySeries, 5, false)
+			p.RealSources = append(p.RealSources, "Zillow city-level time series")
+			mu.Unlock()
+		} else {
+			// Fall back to metro-level time series
+			mapping, mapErr := b.metro.GetCityMetroMapping(ctx, city, state)
+			if mapErr != nil || mapping.MetroName == "" {
+				mu.Lock()
+				p.UnavailableSources = append(p.UnavailableSources, "time_series: city/metro mapping not found")
+				mu.Unlock()
+				return
+			}
+
+			series, serErr := b.metro.GetTimeSeries(ctx, mapping.MetroName, "msa", fiveYearsAgo, now)
+			if serErr != nil || len(series) == 0 {
+				return
+			}
+
+			mu.Lock()
+			p.PriceCagr3Y = computeCAGR(series, 3, true)
+			p.PriceCagr5Y = computeCAGR(series, 5, true)
+			p.RentCagr3Y = computeCAGR(series, 3, false)
+			p.RentCagr5Y = computeCAGR(series, 5, false)
+			p.RealSources = append(p.RealSources, "Zillow metro-level time series")
+			mu.Unlock()
 		}
 
-		mu.Lock()
-		defer mu.Unlock()
-		p.PriceCagr3Y = computeCAGR(series, 3, true)
-		p.PriceCagr5Y = computeCAGR(series, 5, true)
-		p.RentCagr3Y = computeCAGR(series, 3, false)
-		p.RentCagr5Y = computeCAGR(series, 5, false)
-		p.RealSources = append(p.RealSources, "Zillow ZHVI/ZORI time series")
+		// Forecast growth from metro ZHVF (only available at metro level)
+		mapping, err := b.metro.GetCityMetroMapping(ctx, city, state)
+		if err == nil && mapping.MetroRegionID > 0 {
+			metroData, mErr := b.metro.GetLatestDataByID(ctx, mapping.MetroRegionID)
+			if mErr == nil && metroData.ZHVI > 0 && metroData.ZHVIForecast > 0 {
+				mu.Lock()
+				p.ForecastGrowth = ((metroData.ZHVIForecast - metroData.ZHVI) / metroData.ZHVI) * 100
+				mu.Unlock()
+			}
+		}
 	}()
 
 	// 4. National benchmarks (from metro_time_series where metro_region_id=0)
@@ -281,18 +328,36 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 
 	// Merge economics data
 	if econ != nil {
+		// FRED national rates
 		p.MortgageRate30 = econ.MortgageRate30Year
+		p.MortgageRate15 = econ.MortgageRate15Year
 		p.NationalMortgage30 = econ.MortgageRate30Year // Same — it's a national rate
 		p.NationalUnemployment = econ.NationalUnemployment
+		p.InflationRate = econ.InflationRate
+		p.RentalVacancyRate = econ.RentalVacancyRate
+
+		// Census demographics
 		p.Population = econ.Population
 		p.MedianHouseholdIncome = econ.MedianHouseholdIncome
-		p.UnemploymentRate = econ.StateUnemploymentRate
-		p.LaborForceParticipation = econ.LaborForceParticipation
-		p.CPIShelter = econ.CPIShelter
-		p.CPIRent = econ.CPIRent
+		p.PerCapitaIncome = econ.PerCapitaIncome
+		p.HouseholdCount = econ.HouseholdCount
 		p.MedianAge = econ.MedianAge
 		p.DemographicLevel = econ.DemographicLevel
 		p.PovertyRate = econ.PovertyRate
+
+		// BLS labor market
+		p.UnemploymentRate = econ.StateUnemploymentRate
+		p.LaborForceParticipation = econ.LaborForceParticipation
+		p.StateEmployment = econ.StateEmployment
+		p.ConstructionEmployment = econ.ConstructionEmployment
+		p.JobOpenings = econ.JobOpenings
+		p.AverageHourlyEarnings = econ.AverageHourlyEarnings
+		p.CPIShelter = econ.CPIShelter
+		p.CPIRent = econ.CPIRent
+
+		// Building permits & housing starts (national)
+		p.BuildingPermits = econ.BuildingPermits
+		p.HousingStarts = econ.HousingStarts
 
 		// Add lagged data notice for Census
 		if src, ok := econ.Sources["census"]; ok {
@@ -317,12 +382,15 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 		p.YieldToMortgageSpread = (p.GrossYield - p.MortgageRate30) * 100 // in bps
 	}
 
-	// Price-to-income and rent-to-income
+	// Price-to-income, rent-to-income, price-to-rent
 	if p.MedianHouseholdIncome > 0 && p.MedianHomePrice > 0 {
 		p.PriceToIncomeRatio = float64(p.MedianHomePrice) / p.MedianHouseholdIncome
 	}
 	if p.MedianHouseholdIncome > 0 && p.MedianRent > 0 {
 		p.RentToIncomeRatio = (float64(p.MedianRent) * 12 / p.MedianHouseholdIncome) * 100
+	}
+	if p.MedianHomePrice > 0 && p.MedianRent > 0 {
+		p.PriceToRentRatio = float64(p.MedianHomePrice) / (float64(p.MedianRent) * 12)
 	}
 
 	// Data quality scoring
@@ -350,7 +418,11 @@ func (b *DataPayloadBuilder) FormatAsXML(p *DataPayload) string {
 	sb.WriteString(fmt.Sprintf(`    <net_yield_range estimated="true" expense_ratio="40-55%%" confidence="low">%s - %s</net_yield_range>`+"\n",
 		fmtPct(p.NetYieldLow), fmtPct(p.NetYieldHigh)))
 	writeXMLField(&sb, "mortgage_30y", fmtPct(p.MortgageRate30), "FRED MORTGAGE30US", "high", p.MortgageRate30 > 0)
+	writeXMLField(&sb, "mortgage_15y", fmtPct(p.MortgageRate15), "FRED MORTGAGE15US", "high", p.MortgageRate15 > 0)
 	writeXMLDerived(&sb, "yield_to_mortgage_spread", fmt.Sprintf("%.0f bps", p.YieldToMortgageSpread), "gross_yield - mortgage_30y", "medium", p.YieldToMortgageSpread != 0)
+	if p.ForecastGrowth != 0 {
+		writeXMLField(&sb, "zhvi_forecast_growth", fmtPct(p.ForecastGrowth), "Zillow ZHVF", "medium", true)
+	}
 	sb.WriteString("  </HOUSING_MARKET>\n")
 
 	sb.WriteString("\n  <SUPPLY_DEMAND>\n")
@@ -361,7 +433,11 @@ func (b *DataPayloadBuilder) FormatAsXML(p *DataPayload) string {
 	writeXMLField(&sb, "vacancy_rate", fmtPct(p.VacancyRate), "Zillow Research", "medium", p.VacancyRate > 0)
 	writeXMLField(&sb, "homes_sold", fmtInt(p.HomesSold), "Redfin", "high", p.HomesSold > 0)
 	writeXMLField(&sb, "new_listings", fmtInt(p.NewListings), "Redfin", "high", p.NewListings > 0)
-	sb.WriteString("    <building_permits>See TAX_REGULATORY_INSURANCE section below for web-sourced supply pipeline data</building_permits>\n")
+	writeXMLField(&sb, "building_permits_national", fmt.Sprintf("%.0fK units/yr", p.BuildingPermits), "FRED PERMIT", "high", p.BuildingPermits > 0)
+	writeXMLField(&sb, "housing_starts_national", fmt.Sprintf("%.0fK units/yr", p.HousingStarts), "FRED HOUST", "high", p.HousingStarts > 0)
+	if p.BuildingPermits == 0 {
+		sb.WriteString("    <building_permits_note>See TAX_REGULATORY_INSURANCE section below for metro-level supply pipeline data</building_permits_note>\n")
+	}
 	sb.WriteString("  </SUPPLY_DEMAND>\n")
 
 	// Competitive indicators from Redfin
@@ -383,18 +459,28 @@ func (b *DataPayloadBuilder) FormatAsXML(p *DataPayload) string {
 	}
 	writeXMLField(&sb, "population", fmtInt64(p.Population), "Census ACS", "high", p.Population > 0)
 	writeXMLField(&sb, "median_household_income", fmtDollarF(p.MedianHouseholdIncome), "Census ACS", "high", p.MedianHouseholdIncome > 0)
+	writeXMLField(&sb, "per_capita_income", fmtDollarF(p.PerCapitaIncome), "Census ACS", "high", p.PerCapitaIncome > 0)
+	writeXMLField(&sb, "household_count", fmtInt64(p.HouseholdCount), "Census ACS", "high", p.HouseholdCount > 0)
 	writeXMLField(&sb, "median_age", fmt.Sprintf("%.1f", p.MedianAge), "Census ACS", "high", p.MedianAge > 0)
 	writeXMLField(&sb, "poverty_rate", fmtPct(p.PovertyRate), "Census ACS", "high", p.PovertyRate > 0)
+	sb.WriteString("  </DEMOGRAPHICS>\n")
+
+	sb.WriteString("\n  <LABOR_MARKET>\n")
 	writeXMLField(&sb, "state_unemployment_rate", fmtPct(p.UnemploymentRate), "BLS", "high", p.UnemploymentRate > 0)
 	writeXMLField(&sb, "national_unemployment_rate", fmtPct(p.NationalUnemployment), "FRED", "high", p.NationalUnemployment > 0)
 	writeXMLField(&sb, "labor_force_participation", fmtPct(p.LaborForceParticipation), "BLS", "high", p.LaborForceParticipation > 0)
+	writeXMLField(&sb, "state_employment", fmt.Sprintf("%.1fK", p.StateEmployment), "BLS", "high", p.StateEmployment > 0)
+	writeXMLField(&sb, "construction_employment", fmt.Sprintf("%.1fK", p.ConstructionEmployment), "BLS", "high", p.ConstructionEmployment > 0)
+	writeXMLField(&sb, "job_openings", fmt.Sprintf("%.0fK", p.JobOpenings), "BLS JOLTS", "high", p.JobOpenings > 0)
+	writeXMLField(&sb, "avg_hourly_earnings", fmtDollarF(p.AverageHourlyEarnings), "BLS CES", "high", p.AverageHourlyEarnings > 0)
 	writeXMLField(&sb, "cpi_shelter_index", fmt.Sprintf("%.1f", p.CPIShelter), "BLS", "high", p.CPIShelter > 0)
 	writeXMLField(&sb, "cpi_rent_index", fmt.Sprintf("%.1f", p.CPIRent), "BLS", "high", p.CPIRent > 0)
 	sb.WriteString("    <cpi_note>CPI values are index numbers, not percentages. Compare current to historical for YoY change.</cpi_note>\n")
-	sb.WriteString("  </DEMOGRAPHICS>\n")
+	sb.WriteString("  </LABOR_MARKET>\n")
 
 	sb.WriteString("\n  <AFFORDABILITY>\n")
 	writeXMLDerived(&sb, "price_to_income_ratio", fmt.Sprintf("%.1fx", p.PriceToIncomeRatio), "ZHVI/MHI", "medium", p.PriceToIncomeRatio > 0)
+	writeXMLDerived(&sb, "price_to_rent_ratio", fmt.Sprintf("%.1fx", p.PriceToRentRatio), "ZHVI/(ZORI*12)", "medium", p.PriceToRentRatio > 0)
 	writeXMLDerived(&sb, "rent_to_income_ratio", fmtPct(p.RentToIncomeRatio), "(ZORI*12)/MHI", "medium", p.RentToIncomeRatio > 0)
 	writeXMLField(&sb, "affordability_index", fmt.Sprintf("%.1f", p.AffordabilityIndex), "Zillow/Redfin", "medium", p.AffordabilityIndex > 0)
 	if p.AffordabilityBurden != "" {
@@ -420,6 +506,10 @@ func (b *DataPayloadBuilder) FormatAsXML(p *DataPayload) string {
 	writeXMLField(&sb, "national_avg_sale_to_list", fmt.Sprintf("%.1f%%", p.NationalAvgSaleToList*100), "Redfin (national)", "high", p.NationalAvgSaleToList > 0)
 	writeXMLField(&sb, "national_sold_above_list", fmt.Sprintf("%.1f%%", p.NationalSoldAboveList*100), "Redfin (national)", "high", p.NationalSoldAboveList > 0)
 	writeXMLField(&sb, "national_price_drops", fmt.Sprintf("%.1f%%", p.NationalPriceDrops*100), "Redfin (national)", "high", p.NationalPriceDrops > 0)
+	writeXMLField(&sb, "national_inflation_rate", fmtPct(p.InflationRate), "FRED CPIAUCSL", "high", p.InflationRate > 0)
+	writeXMLField(&sb, "national_rental_vacancy", fmtPct(p.RentalVacancyRate), "FRED RRVRUSQ156N", "high", p.RentalVacancyRate > 0)
+	writeXMLField(&sb, "national_building_permits", fmt.Sprintf("%.0fK units/yr", p.BuildingPermits), "FRED PERMIT", "high", p.BuildingPermits > 0)
+	writeXMLField(&sb, "national_housing_starts", fmt.Sprintf("%.0fK units/yr", p.HousingStarts), "FRED HOUST", "high", p.HousingStarts > 0)
 	sb.WriteString("  </NATIONAL_BENCHMARKS>\n")
 
 	// Data quality
@@ -474,6 +564,17 @@ func (b *DataPayloadBuilder) computeDataQuality(p *DataPayload) {
 		{"hud_fmr_2br", p.HudFMR2BR > 0},
 		{"national_zhvi", p.NationalZHVI > 0},
 		{"national_zori", p.NationalZORI > 0},
+		// Tier 1: Economics fields
+		{"per_capita_income", p.PerCapitaIncome > 0},
+		{"household_count", p.HouseholdCount > 0},
+		{"construction_employment", p.ConstructionEmployment > 0},
+		{"job_openings", p.JobOpenings > 0},
+		{"avg_hourly_earnings", p.AverageHourlyEarnings > 0},
+		{"inflation_rate", p.InflationRate > 0},
+		// Tier 3: Derived
+		{"price_to_rent_ratio", p.PriceToRentRatio > 0},
+		// Tier 4: Supply pipeline
+		{"building_permits", p.BuildingPermits > 0},
 		// Redfin competitive indicators
 		{"median_sale_price", p.MedianSalePrice > 0},
 		{"avg_sale_to_list", p.AvgSaleToList > 0},

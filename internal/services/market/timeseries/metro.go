@@ -509,6 +509,90 @@ func (r *MetroReader) SearchRegions(ctx context.Context, query string, limit int
 	return regions, rows.Err()
 }
 
+// GetCityTimeSeries returns historical ZHVI/ZORI data from city_time_series table.
+// Returns city-level time series for more accurate CAGRs than metro-level.
+// Falls back to ErrNotFound if city not in city_time_series.
+func (r *MetroReader) GetCityTimeSeries(ctx context.Context, city, stateCode string, startDate, endDate time.Time) ([]MetroData, error) {
+	query := `
+		SELECT
+			city_region_id,
+			city_name,
+			COALESCE(state_name, ''),
+			COALESCE(zhvi_data, '{}'::jsonb),
+			COALESCE(zori_data, '{}'::jsonb)
+		FROM city_time_series
+		WHERE city_name ILIKE $1 AND state_name ILIKE $2
+		LIMIT 1
+	`
+
+	var (
+		regionID     int
+		name         string
+		stateName    string
+		zhviDataJSON []byte
+		zoriDataJSON []byte
+	)
+
+	err := r.db.QueryRow(ctx, query, city, stateCode).Scan(
+		&regionID,
+		&name,
+		&stateName,
+		&zhviDataJSON,
+		&zoriDataJSON,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	// Parse JSONB and filter by date range
+	zhviMap := parseJSONBData(zhviDataJSON)
+	zoriMap := parseJSONBData(zoriDataJSON)
+
+	dateSet := make(map[string]bool)
+	for date := range zhviMap {
+		dateSet[date] = true
+	}
+	for date := range zoriMap {
+		dateSet[date] = true
+	}
+
+	var dates []string
+	for date := range dateSet {
+		dates = append(dates, date)
+	}
+	sort.Strings(dates)
+
+	var series []MetroData
+	for _, dateStr := range dates {
+		date, parseErr := time.Parse("2006-01", dateStr)
+		if parseErr != nil {
+			continue
+		}
+		if date.Before(startDate) || date.After(endDate) {
+			continue
+		}
+		series = append(series, MetroData{
+			RegionID:   regionID,
+			RegionName: name,
+			RegionType: "city",
+			StateCode:  stateName,
+			Date:       date,
+			ZHVI:       zhviMap[dateStr],
+			ZORI:       zoriMap[dateStr],
+		})
+	}
+
+	r.logger.Debug("fetched city time series",
+		"city", city, "state", stateCode,
+		"points", len(series),
+	)
+
+	return series, nil
+}
+
 // CitySnapshot holds all fields from city_market_cache (ADR-074)
 type CitySnapshot struct {
 	City                  string  `json:"city"`

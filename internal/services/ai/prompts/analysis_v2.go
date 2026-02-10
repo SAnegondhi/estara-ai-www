@@ -41,7 +41,7 @@ Quantitative summary table:
 
 | Metric | Value | vs National | Source | Confidence |
 |--------|-------|-------------|--------|------------|
-(One row per key metric from DATA_PAYLOAD: home price, rent, gross yield, mortgage, unemployment, price CAGR, rent CAGR, vacancy, inventory, months of supply, days on market)
+(One row per key metric from DATA_PAYLOAD: home price, rent, gross yield, mortgage spread, unemployment, price CAGR, rent CAGR, vacancy, inventory, months of supply, days on market, price-to-rent ratio, price-to-income ratio, building permits)
 
 Below the table: 2-3 sentences contextualizing where this market sits relative to national benchmarks and what the numbers indicate about market cycle positioning.
 
@@ -58,22 +58,24 @@ MANDATORY section — do NOT skip or minimize.
 Analyze using ALL available metrics: inventory count, months of supply, days on market, market temperature, vacancy rate, homes sold, new listings.
 If COMPETITIVE_INDICATORS section is available, incorporate: sale-to-list ratio, sold above list %, price drops %, off-market-in-2-weeks % — these reveal buyer/seller dynamics beyond simple inventory counts.
 Compare local supply metrics to NATIONAL_BENCHMARKS (national inventory, months of supply, days on market, sale-to-list ratio).
+Use national building permits and housing starts from SUPPLY_DEMAND to assess macro supply pipeline.
+If LABOR_MARKET section has construction_employment, note construction labor trends.
 Characterize the supply-demand balance with specific numbers.
-If building permits data is N/A, note this gap and its implications for supply-side analysis.
 
 ## 4. Decision Variables
 
 | Variable | Local Value | National Benchmark | Why It Matters | Data Certainty |
 |----------|-------------|-------------------|----------------|----------------|
-(Include: gross yield vs mortgage rate spread, price-to-income ratio, rent-to-income ratio, vacancy rate, price CAGR trend, unemployment differential, affordability index, sale-to-list ratio, price drops %)
+(Include: gross yield vs mortgage rate spread, price-to-income ratio, price-to-rent ratio, rent-to-income ratio, vacancy rate, price CAGR trend, ZHVI forecast growth, unemployment differential, affordability index, sale-to-list ratio, price drops %, inflation rate, per capita income)
 
 ## 5. Underwriting Context
 
 Based ONLY on the data provided:
-- Rent growth assumptions: cite ZORI CAGR and YoY, note CPI shelter/rent index trends
-- Expense growth: note what is known (CPI) and unknown (property tax, insurance — flag as USER_MUST_SUPPLY)
-- Leverage sensitivity: calculate at current mortgage rate, note spread to gross yield
-- Affordability pressure: price-to-income and rent burden indicators
+- Rent growth assumptions: cite ZORI CAGR and YoY, note CPI shelter/rent index trends from LABOR_MARKET section
+- Expense growth: note what is known (CPI, inflation rate) and unknown (property tax, insurance — flag as USER_MUST_SUPPLY)
+- Leverage sensitivity: calculate at both 30yr and 15yr mortgage rates, note spread to gross yield
+- Affordability pressure: price-to-income, price-to-rent, and rent burden indicators
+- Income context: median household income, per capita income, avg hourly earnings from LABOR_MARKET section
 
 ## 6. Scenario Analysis
 

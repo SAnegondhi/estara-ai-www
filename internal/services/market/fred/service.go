@@ -57,6 +57,12 @@ type EconomicRates struct {
 	RentalVacancyRate     float64   `json:"rentalVacancyRate"`
 	RentalVacancyRateDate time.Time `json:"rentalVacancyRateDate"`
 
+	// Supply pipeline (national)
+	BuildingPermits     float64   `json:"buildingPermits"`     // thousands, annualized
+	BuildingPermitsDate time.Time `json:"buildingPermitsDate"`
+	HousingStarts       float64   `json:"housingStarts"`       // thousands, annualized
+	HousingStartsDate   time.Time `json:"housingStartsDate"`
+
 	// Metadata
 	LastUpdated time.Time `json:"lastUpdated"`
 	NextRefresh time.Time `json:"nextRefresh"`
@@ -237,6 +243,24 @@ func (s *Service) refreshRates(ctx context.Context) (*EconomicRates, error) {
 	} else {
 		rates.RentalVacancyRate = vacancy
 		rates.RentalVacancyRateDate = vacancyDate
+	}
+
+	// Fetch building permits (national, monthly, thousands annualized)
+	permits, permitsDate, err := s.client.GetBuildingPermits(ctx)
+	if err != nil {
+		s.logger.Warn("failed to fetch building permits", "error", err)
+	} else {
+		rates.BuildingPermits = permits
+		rates.BuildingPermitsDate = permitsDate
+	}
+
+	// Fetch housing starts (national, monthly, thousands annualized)
+	starts, startsDate, err := s.client.GetHousingStarts(ctx)
+	if err != nil {
+		s.logger.Warn("failed to fetch housing starts", "error", err)
+	} else {
+		rates.HousingStarts = starts
+		rates.HousingStartsDate = startsDate
 	}
 
 	// Calculate next refresh time based on release schedules
