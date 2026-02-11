@@ -84,13 +84,20 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 		logger.Info("anthropic client initialized")
 	}
 
-	// Create job queue
+	// Create job queue (in-memory; Redis is optional backup only)
 	if cfg.Redis != nil {
 		services.JobQueue = queue.NewQueue(cfg.Redis.Client, queue.QueueConfig{
 			Capacity:        1000,
 			ResultRetention: 24 * 60, // 24 hours in minutes
+			UseRedisBackup:  true,
 		})
-		logger.Info("job queue initialized")
+		logger.Info("job queue initialized", "redis_backup", true)
+	} else {
+		services.JobQueue = queue.NewQueue(nil, queue.QueueConfig{
+			Capacity:        1000,
+			ResultRetention: 24 * 60, // 24 hours in minutes
+		})
+		logger.Info("job queue initialized", "redis_backup", false)
 	}
 
 	// Create property finder orchestrator
