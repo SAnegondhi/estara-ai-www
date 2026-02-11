@@ -380,7 +380,11 @@ func (h *Handler) QueueEvaluationChat(w http.ResponseWriter, r *http.Request) {
 	// Create job
 	job := queue.NewJob(queue.JobTypeEvaluationChat, user.UserID, payload)
 
-	// Enqueue
+	// Enqueue (nil-safe: queue may be unavailable if Redis is down)
+	if h.jobQueue == nil {
+		httputil.InternalError(w, fmt.Errorf("job processing unavailable"))
+		return
+	}
 	jobID, err := h.jobQueue.Enqueue(job)
 	if err != nil {
 		h.logger.Error("failed to enqueue chat job", "error", err)
@@ -448,7 +452,11 @@ func (h *Handler) StreamEvaluationChat(w http.ResponseWriter, r *http.Request) {
 	stopHeartbeat := sseWriter.StartHeartbeat(sse.HeartbeatInterval)
 	defer close(stopHeartbeat)
 
-	// Get job
+	// Get job (nil-safe: queue may be unavailable after restart)
+	if h.jobQueue == nil {
+		sseWriter.WriteError("job not found")
+		return
+	}
 	job, err := h.jobQueue.GetJob(jobID)
 	if err != nil {
 		sseWriter.WriteError("job not found")
@@ -1104,7 +1112,11 @@ func (h *Handler) QueueInvestmentPlan(w http.ResponseWriter, r *http.Request) {
 	// Create job
 	job := queue.NewJob(queue.JobTypeInvestmentPlanning, user.UserID, payload)
 
-	// Enqueue
+	// Enqueue (nil-safe: queue may be unavailable if Redis is down)
+	if h.jobQueue == nil {
+		httputil.InternalError(w, fmt.Errorf("job processing unavailable"))
+		return
+	}
 	jobID, err := h.jobQueue.Enqueue(job)
 	if err != nil {
 		h.logger.Error("failed to enqueue investment planning job", "error", err)
@@ -1174,6 +1186,12 @@ func (h *Handler) streamInvestmentPlanByID(w http.ResponseWriter, r *http.Reques
 	// Start heartbeat
 	stopHeartbeat := sseWriter.StartHeartbeat(sse.HeartbeatInterval)
 	defer close(stopHeartbeat)
+
+	// Nil-safe: queue may be unavailable after restart
+	if h.jobQueue == nil {
+		sseWriter.WriteError("job not found")
+		return
+	}
 
 	// Calculate dynamic timeout based on location count (matches www_v1)
 	// Base: 5 minutes + 30 seconds per location
@@ -1290,6 +1308,11 @@ func (h *Handler) CancelInvestmentPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.jobQueue == nil {
+		httputil.NotFound(w, "job not found")
+		return
+	}
+
 	job, err := h.jobQueue.GetJob(jobID)
 	if err != nil {
 		httputil.NotFound(w, "job not found")
@@ -1337,18 +1360,20 @@ func (h *Handler) DeleteInvestmentPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Remove job from queue if it exists.
-	if job, err := h.jobQueue.GetJob(jobID); err == nil {
-		if job.UserID != user.UserID {
-			httputil.NotFound(w, "job not found")
-			return
-		}
-		if job.Type != queue.JobTypeInvestmentPlanning {
-			httputil.BadRequest(w, "invalid job type for deletion")
-			return
-		}
+	// Remove job from queue if it exists (nil-safe: queue may be unavailable after restart).
+	if h.jobQueue != nil {
+		if job, err := h.jobQueue.GetJob(jobID); err == nil {
+			if job.UserID != user.UserID {
+				httputil.NotFound(w, "job not found")
+				return
+			}
+			if job.Type != queue.JobTypeInvestmentPlanning {
+				httputil.BadRequest(w, "invalid job type for deletion")
+				return
+			}
 
-		_ = h.jobQueue.Delete(jobID)
+			_ = h.jobQueue.Delete(jobID)
+		}
 	}
 
 	deletedID, deletedKey, err := h.deleteInvestmentPlanCache(ctx, user.UserID, jobID)
@@ -1449,9 +1474,12 @@ func (h *Handler) GetInvestmentPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get job
-	job, err := h.jobQueue.GetJob(jobID)
-	if err != nil {
+	// Get job from in-memory queue (nil-safe: queue may be unavailable after restart)
+	var job *queue.Job
+	if h.jobQueue != nil {
+		job, _ = h.jobQueue.GetJob(jobID)
+	}
+	if job == nil {
 		record, recordErr := h.findInvestmentPlanCacheRecord(ctx, user.UserID, jobID)
 		if recordErr != nil {
 			h.logger.Error("failed to find investment plan cache record", "error", recordErr)
@@ -2445,7 +2473,11 @@ func (h *Handler) QueueAnalysis(w http.ResponseWriter, r *http.Request) {
 	// Create job
 	job := queue.NewJob(queue.JobTypeMarketAnalysis, user.UserID, payload)
 
-	// Enqueue
+	// Enqueue (nil-safe: queue may be unavailable if Redis is down)
+	if h.jobQueue == nil {
+		httputil.InternalError(w, fmt.Errorf("job processing unavailable"))
+		return
+	}
 	jobID, err := h.jobQueue.Enqueue(job)
 	if err != nil {
 		h.logger.Error("failed to enqueue analysis job", "error", err)
@@ -2486,6 +2518,12 @@ func (h *Handler) StreamAnalysis(w http.ResponseWriter, r *http.Request) {
 	// Start heartbeat
 	stopHeartbeat := sseWriter.StartHeartbeat(sse.HeartbeatInterval)
 	defer close(stopHeartbeat)
+
+	// Nil-safe: queue may be unavailable after restart
+	if h.jobQueue == nil {
+		sseWriter.WriteError("job not found")
+		return
+	}
 
 	// Subscribe to progress
 	progressChan := h.jobQueue.Subscribe(jobID)
@@ -2538,7 +2576,10 @@ func (h *Handler) ListAnalysisJobs(w http.ResponseWriter, r *http.Request) {
 		status = &js
 	}
 
-	jobs := h.jobQueue.GetUserJobs(user.UserID, status)
+	var jobs []*queue.Job
+	if h.jobQueue != nil {
+		jobs = h.jobQueue.GetUserJobs(user.UserID, status)
+	}
 
 	// Filter to analysis jobs only
 	analysisJobs := make([]map[string]interface{}, 0)
@@ -2575,7 +2616,11 @@ func (h *Handler) RetryAnalysis(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get original job
+	// Get original job (nil-safe: queue may be unavailable after restart)
+	if h.jobQueue == nil {
+		httputil.NotFound(w, "job not found")
+		return
+	}
 	job, err := h.jobQueue.GetJob(jobID)
 	if err != nil {
 		httputil.NotFound(w, "job not found")
@@ -2625,6 +2670,11 @@ func (h *Handler) CancelAnalysis(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "jobId")
 	if jobID == "" {
 		httputil.BadRequest(w, "jobId is required")
+		return
+	}
+
+	if h.jobQueue == nil {
+		httputil.NotFound(w, "job not found")
 		return
 	}
 
@@ -2811,14 +2861,15 @@ func (h *Handler) DismissAnalysisJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// L0: Remove from in-memory job queue if present (in-flight or recently completed)
-	job, err := h.jobQueue.GetJob(jobID)
-	if err == nil {
-		if job.UserID != user.UserID {
-			httputil.NotFound(w, "analysis not found")
-			return
+	// L0: Remove from in-memory job queue if present (nil-safe: queue may be unavailable after restart)
+	if h.jobQueue != nil {
+		if job, err := h.jobQueue.GetJob(jobID); err == nil {
+			if job.UserID != user.UserID {
+				httputil.NotFound(w, "analysis not found")
+				return
+			}
+			_ = h.jobQueue.Delete(jobID)
 		}
-		_ = h.jobQueue.Delete(jobID)
 	}
 
 	// L2 + L1: Look up analysis_cache row by ID to get the cache key, then purge

@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"runtime/debug"
 
 	"github.com/estara-ai/www/internal/config"
 )
@@ -73,6 +74,7 @@ func Recoverer(next http.Handler) http.Handler {
 					"error", err,
 					"path", r.URL.Path,
 					"method", r.Method,
+					"stack", string(debug.Stack()),
 				)
 
 				// Don't expose panic details in production
