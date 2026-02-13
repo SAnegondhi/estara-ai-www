@@ -1,0 +1,29 @@
+ESTARA AI
+Payment Receipt
+
+────────────────────────────────────────
+
+{{.FirstName}},
+
+Your payment has been processed. Below is your receipt for this
+transaction.
+
+✓ Payment Confirmed
+
+  Receipt Number:   {{.ReceiptNumber}}
+  Date:             {{.PaidAt}}
+  Description:      {{.Description}}
+  Payment Method:   {{.PaymentMethod}}
+  Amount Paid:      {{.Amount}}
+
+{{if .ReceiptURL}}→ View Full Receipt: {{.ReceiptURL}}{{end}}
+
+────────────────────────────────────────
+
+Independent decision-support platform. Not investment advice.
+No deal promotion.
+
+Retain this email for your records. Questions? Reply to this email
+or contact support@estara-ai.com
+
+© {{.Year}} Estara AI. All rights reserved.

@@ -76,10 +76,45 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 		logger.Info("property cache initialized (size-based FIFO)")
 	}
 
-	// Create Anthropic client
+	// Build API error alerter for all Anthropic clients
+	var apiErrorAlert func(anthropic.APIErrorInfo)
+	if cfg.DB != nil && cfg.DB.Main != nil {
+		alertQ := queries.New(cfg.DB.Main)
+		apiErrorAlert = func(info anthropic.APIErrorInfo) {
+			var severity, title, alertKey string
+			switch {
+			case info.IsBillingError():
+				severity, title, alertKey = "critical", "Anthropic API: Credit Balance Exhausted", "anthropic_billing_error"
+			case info.IsAuthError():
+				severity, title, alertKey = "critical", "Anthropic API: Authentication Failed", "anthropic_auth_error"
+			case info.IsRateLimitError():
+				severity, title, alertKey = "warning", "Anthropic API: Rate Limited", "anthropic_rate_limit"
+			default:
+				return
+			}
+			_, err := alertQ.UpsertSystemAlert(context.Background(), queries.UpsertSystemAlertParams{
+				ID:             alertKey,
+				Type:           "api_error",
+				Severity:       severity,
+				Title:          title,
+				Description:    info.Message,
+				AlertKey:       alertKey,
+				Metadata:       "{}",
+				ActionRequired: info.IsBillingError() || info.IsAuthError(),
+			})
+			if err != nil {
+				logger.Error("failed to create system alert", "error", err, "alertKey", alertKey)
+			} else {
+				logger.Warn("system alert created", "alertKey", alertKey, "severity", severity)
+			}
+		}
+	}
+
+	// Create Anthropic client with system alert on critical API errors
 	if cfg.Config.AI.AnthropicAPIKey != "" {
 		services.Anthropic = anthropic.NewClient(anthropic.ClientConfig{
-			APIKey: cfg.Config.AI.AnthropicAPIKey,
+			APIKey:     cfg.Config.AI.AnthropicAPIKey,
+			OnAPIError: apiErrorAlert,
 		})
 		logger.Info("anthropic client initialized")
 	}
@@ -308,6 +343,7 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 					cfg.Config.AI.AnthropicAPIKey,
 					q,
 					cfg.Redis,
+					apiErrorAlert,
 				)
 				logger.Info("V2 analysis pipeline configured (ADR-074)",
 					"payload_builder", true,

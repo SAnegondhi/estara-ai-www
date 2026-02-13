@@ -7,11 +7,11 @@ import "time"
 type SubscriptionTier string
 
 const (
-	TierFree         SubscriptionTier = "FREE"
-	TierInvestor     SubscriptionTier = "INVESTOR"
-	TierProfessional SubscriptionTier = "PROFESSIONAL"
-	TierAPIInvestor  SubscriptionTier = "API_INVESTOR"
-	TierAPIAllocator SubscriptionTier = "API_ALLOCATOR"
+	TierFree                  SubscriptionTier = "FREE"
+	TierAnnualAccess          SubscriptionTier = "ANNUAL_ACCESS"
+	TierProfessionalAllocator SubscriptionTier = "PROFESSIONAL_ALLOCATOR"
+	TierAPIInvestor           SubscriptionTier = "API_INVESTOR"
+	TierAPIAllocator          SubscriptionTier = "API_ALLOCATOR"
 )
 
 // SubscriptionStatus represents subscription status

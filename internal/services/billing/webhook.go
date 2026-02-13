@@ -181,11 +181,18 @@ func (s *WebhookService) handleGuestCheckoutCompleted(ctx context.Context, sessi
 		)
 
 		// Update subscription for existing user
-		if session.Subscription != nil {
+		if session.Subscription != nil && session.Subscription.ID != "" {
 			if err := s.createOrUpdateSubscription(ctx, existingUser.ID, session.Subscription.ID, session.Customer.ID); err != nil {
 				s.logger.Error("failed to update subscription for existing user", "error", err)
 				return err
 			}
+		}
+
+		// Ensure V2 evaluation quota exists (required for Insight login)
+		existingTier := s.mapTierToSubscriptionTier(tier)
+		if err := s.upsertV2EvaluationQuota(ctx, existingUser.ID, existingTier); err != nil {
+			s.logger.Error("failed to upsert V2 evaluation quota for existing user", "error", err)
+			return err
 		}
 
 		// Record audit log
@@ -261,11 +268,22 @@ func (s *WebhookService) handleGuestCheckoutCompleted(ctx context.Context, sessi
 	)
 
 	// Create subscription record
-	if session.Subscription != nil {
+	if session.Subscription != nil && session.Subscription.ID != "" {
 		if err := s.createOrUpdateSubscription(ctx, newUser.ID, session.Subscription.ID, stripeCustomerID); err != nil {
 			s.logger.Error("failed to create subscription", "error", err)
 			return err
 		}
+	} else {
+		s.logger.Warn("checkout session has no subscription object - subscription will be created by customer.subscription.created webhook",
+			"user_id", newUser.ID,
+			"session_id", session.ID,
+		)
+	}
+
+	// Create V2 evaluation quota (required for Insight login)
+	if err := s.upsertV2EvaluationQuota(ctx, newUser.ID, subscriptionTier); err != nil {
+		s.logger.Error("failed to create V2 evaluation quota", "error", err, "user_id", newUser.ID)
+		return err
 	}
 
 	// Record audit log
@@ -282,12 +300,15 @@ func (s *WebhookService) handleGuestCheckoutCompleted(ctx context.Context, sessi
 
 	// ADR-067: Send rich welcome email with tier features and app link
 	emailSvc := email.NewService(s.cfg)
-	if _, err := emailSvc.SendWelcomeEmail(email.WelcomeEmailParams{
+	result, err := emailSvc.SendWelcomeEmail(email.WelcomeEmailParams{
 		To:        userEmail,
 		FirstName: pendingFirstName,
 		Tier:      tier,
-	}); err != nil {
+	})
+	if err != nil {
 		s.logger.Warn("failed to send welcome email", "error", err, "email", userEmail)
+	} else if result != nil && !result.Success {
+		s.logger.Warn("welcome email not delivered", "error", result.Error, "email", userEmail)
 	}
 
 	return nil
@@ -296,17 +317,78 @@ func (s *WebhookService) handleGuestCheckoutCompleted(ctx context.Context, sessi
 // mapTierToSubscriptionTier maps checkout tier to database subscription tier
 func (s *WebhookService) mapTierToSubscriptionTier(tier string) string {
 	switch tier {
+	case "PROFESSIONAL_ALLOCATOR", "professional_allocator":
+		return "professional_allocator"
+	case "ANNUAL_ACCESS", "annual_access":
+		return "annual_access"
+	// Backwards compatibility for old tier names
 	case "PROFESSIONAL_ACCESS", "professional":
-		return "professional"
+		return "professional_allocator"
 	case "INVESTOR_ACCESS", "investor":
-		return "investor"
+		return "annual_access"
 	case "AAPI_INVESTOR":
 		return "aapi_investor"
 	case "AAPI_ALLOCATOR":
 		return "aapi_allocator"
 	default:
-		return "professional" // Default tier
+		return "professional_allocator" // Default tier
 	}
+}
+
+// mapSubscriptionTierToV2Tier converts a subscription tier to its V2 enum value and annual limit.
+func mapSubscriptionTierToV2Tier(subscriptionTier string) (v2Tier string, annualLimit int) {
+	switch subscriptionTier {
+	case "professional_allocator":
+		return "V2_PROFESSIONAL_ALLOCATOR", 1000
+	case "annual_access":
+		return "V2_ANNUAL_ACCESS", 500
+	// Backwards compatibility
+	case "professional":
+		return "V2_PROFESSIONAL_ALLOCATOR", 1000
+	case "investor":
+		return "V2_ANNUAL_ACCESS", 500
+	default:
+		return "V2_ANNUAL_ACCESS", 500
+	}
+}
+
+// upsertV2EvaluationQuota creates or updates the V2 evaluation quota required for Insight login.
+func (s *WebhookService) upsertV2EvaluationQuota(ctx context.Context, userID, subscriptionTier string) error {
+	v2Tier, annualLimit := mapSubscriptionTierToV2Tier(subscriptionTier)
+
+	now := time.Now()
+	periodEnd := now.AddDate(1, 0, 0) // 1 year from now
+
+	query := `
+		INSERT INTO v2_evaluation_quotas (id, user_id, tier, annual_limit, used_this_period, period_start_date, period_end_date, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, 0, $5, $6, NOW(), NOW())
+		ON CONFLICT (user_id) DO UPDATE SET
+			tier = $3,
+			annual_limit = $4,
+			period_start_date = CASE WHEN v2_evaluation_quotas.period_end_date < NOW() THEN $5 ELSE v2_evaluation_quotas.period_start_date END,
+			period_end_date = CASE WHEN v2_evaluation_quotas.period_end_date < NOW() THEN $6 ELSE v2_evaluation_quotas.period_end_date END,
+			used_this_period = CASE WHEN v2_evaluation_quotas.period_end_date < NOW() THEN 0 ELSE v2_evaluation_quotas.used_this_period END,
+			updated_at = NOW()
+	`
+
+	_, err := s.db.Main.Exec(ctx, query,
+		uuid.New().String(), // $1: id
+		userID,              // $2: user_id
+		v2Tier,              // $3: tier
+		annualLimit,         // $4: annual_limit
+		now,                 // $5: period_start_date
+		periodEnd,           // $6: period_end_date
+	)
+	if err != nil {
+		return fmt.Errorf("failed to upsert v2_evaluation_quotas: %w", err)
+	}
+
+	s.logger.Info("V2 evaluation quota created",
+		"user_id", userID,
+		"tier", v2Tier,
+		"annual_limit", annualLimit,
+	)
+	return nil
 }
 
 func (s *WebhookService) handleCheckoutSessionExpired(ctx context.Context, event *stripe.Event, ipAddress, userAgent string) error {
@@ -337,38 +419,46 @@ func (s *WebhookService) handleSubscriptionCreated(ctx context.Context, event *s
 		return fmt.Errorf("failed to parse subscription: %w", err)
 	}
 
+	customerID := ""
+	if subscription.Customer != nil {
+		customerID = subscription.Customer.ID
+	}
+
 	s.logger.Info("subscription created",
 		"subscription_id", subscription.ID,
-		"customer_id", subscription.Customer.ID,
+		"customer_id", customerID,
 		"status", subscription.Status,
 	)
 
-	if user, err := s.findUserForStripe(ctx, subscription.Customer.ID, subscription.ID); err == nil && user != nil {
-		// Determine tier from subscription price
-		tier := string(TierInvestor)
-		if subscription.Items != nil && len(subscription.Items.Data) > 0 && subscription.Items.Data[0].Price != nil {
-			stripeClient := NewStripeClient(&s.cfg.Stripe)
-			tier = string(stripeClient.GetTierFromPriceID(subscription.Items.Data[0].Price.ID))
+	// Determine tier from subscription price
+	tier := string(TierAnnualAccess)
+	if subscription.Items != nil && len(subscription.Items.Data) > 0 && subscription.Items.Data[0].Price != nil {
+		stripeClient := NewStripeClient(&s.cfg.Stripe)
+		tier = string(stripeClient.GetTierFromPriceID(subscription.Items.Data[0].Price.ID))
+	}
+
+	if user, err := s.findUserForStripe(ctx, customerID, subscription.ID); err == nil && user != nil {
+		// Create/update subscription record (may not have been created by checkout.session.completed)
+		if err := s.createOrUpdateSubscription(ctx, user.ID, subscription.ID, customerID); err != nil {
+			s.logger.Error("failed to create subscription record", "error", err)
 		}
 
-		// ADR-067: Send rich welcome email with tier features and app link
-		emailSvc := email.NewService(s.cfg)
-		if _, err := emailSvc.SendWelcomeEmail(email.WelcomeEmailParams{
-			To:        user.Email,
-			FirstName: s.userFirstName(user),
-			Tier:      tier,
-		}); err != nil {
-			s.logger.Warn("failed to send welcome email", "error", err)
+		// Ensure V2 evaluation quota exists (required for Insight login)
+		subscriptionTier := s.mapTierToSubscriptionTier(tier)
+		if err := s.upsertV2EvaluationQuota(ctx, user.ID, subscriptionTier); err != nil {
+			s.logger.Error("failed to upsert V2 evaluation quota", "error", err)
 		}
+
+		// Welcome email is sent by handleGuestCheckoutCompleted; not duplicated here.
 	} else if err != nil {
-		s.logger.Warn("failed to resolve user for subscription created email", "error", err)
+		s.logger.Warn("failed to resolve user for subscription created", "error", err)
 	}
 
 	// Record billing audit log
 	eventData, _ := json.Marshal(subscription)
 	return s.recordAuditLog(ctx, queries.CreateBillingAuditLogParams{
 		ID:                   uuid.New().String(),
-		StripeCustomerId:     pgtype.Text{String: subscription.Customer.ID, Valid: true},
+		StripeCustomerId:     pgtype.Text{String: customerID, Valid: customerID != ""},
 		StripeSubscriptionId: pgtype.Text{String: subscription.ID, Valid: true},
 		EventType:            "SUBSCRIPTION_CREATED",
 		EventData:            eventData,
@@ -470,8 +560,11 @@ func (s *WebhookService) handleSubscriptionDeleted(ctx context.Context, event *s
 			t := time.Unix(subscription.CurrentPeriodEnd, 0)
 			endDate = &t
 		}
-		if _, err := emailSvc.SendSubscriptionCancelled(user.Email, s.userFirstName(user), endDate); err != nil {
+		result, err := emailSvc.SendSubscriptionCancelled(user.Email, s.userFirstName(user), endDate)
+		if err != nil {
 			s.logger.Warn("failed to send subscription cancelled email", "error", err)
+		} else if result != nil && !result.Success {
+			s.logger.Warn("subscription cancelled email not delivered", "error", result.Error, "email", user.Email)
 		}
 	} else if err != nil {
 		s.logger.Warn("failed to resolve user for subscription cancelled email", "error", err)
@@ -504,8 +597,11 @@ func (s *WebhookService) handleTrialWillEnd(ctx context.Context, event *stripe.E
 	if user, err := s.findUserForStripe(ctx, subscription.Customer.ID, subscription.ID); err == nil && user != nil {
 		emailSvc := email.NewService(s.cfg)
 		trialEnd := time.Unix(subscription.TrialEnd, 0)
-		if _, err := emailSvc.SendTrialEnding(user.Email, s.userFirstName(user), trialEnd); err != nil {
+		result, err := emailSvc.SendTrialEnding(user.Email, s.userFirstName(user), trialEnd)
+		if err != nil {
 			s.logger.Warn("failed to send trial ending email", "error", err)
+		} else if result != nil && !result.Success {
+			s.logger.Warn("trial ending email not delivered", "error", result.Error, "email", user.Email)
 		}
 	} else if err != nil {
 		s.logger.Warn("failed to resolve user for trial ending email", "error", err)
@@ -899,7 +995,7 @@ func (s *WebhookService) handleInvoicePaymentSucceeded(ctx context.Context, even
 
 		// Send detailed receipt email
 		emailSvc := email.NewService(s.cfg)
-		if _, err := emailSvc.SendReceiptEmail(email.ReceiptEmailParams{
+		receiptResult, receiptErr := emailSvc.SendReceiptEmail(email.ReceiptEmailParams{
 			To:            user.Email,
 			FirstName:     s.userFirstName(user),
 			ReceiptNumber: receiptNumber,
@@ -910,8 +1006,11 @@ func (s *WebhookService) handleInvoicePaymentSucceeded(ctx context.Context, even
 			PaidAt:        paidAt,
 			ReceiptURL:    receiptURL,
 			Description:   description,
-		}); err != nil {
-			s.logger.Warn("failed to send receipt email", "error", err)
+		})
+		if receiptErr != nil {
+			s.logger.Warn("failed to send receipt email", "error", receiptErr)
+		} else if receiptResult != nil && !receiptResult.Success {
+			s.logger.Warn("receipt email not delivered", "error", receiptResult.Error, "email", user.Email)
 		}
 	} else if err != nil {
 		s.logger.Warn("failed to resolve user for receipt email", "error", err)
@@ -971,8 +1070,11 @@ func (s *WebhookService) handleInvoicePaymentFailed(ctx context.Context, event *
 
 	if user, err := s.findUserForStripe(ctx, customerID, subscriptionID); err == nil && user != nil {
 		emailSvc := email.NewService(s.cfg)
-		if _, err := emailSvc.SendPaymentFailed(user.Email, s.userFirstName(user), invoice.AmountDue, string(invoice.Currency)); err != nil {
+		result, err := emailSvc.SendPaymentFailed(user.Email, s.userFirstName(user), invoice.AmountDue, string(invoice.Currency))
+		if err != nil {
 			s.logger.Warn("failed to send payment failed email", "error", err)
+		} else if result != nil && !result.Success {
+			s.logger.Warn("payment failed email not delivered", "error", result.Error, "email", user.Email)
 		}
 	} else if err != nil {
 		s.logger.Warn("failed to resolve user for payment failed email", "error", err)
@@ -1091,15 +1193,29 @@ func (s *WebhookService) recordAuditLog(ctx context.Context, params queries.Crea
 func (s *WebhookService) createOrUpdateSubscription(ctx context.Context, userID, stripeSubID, stripeCustomerID string) error {
 	q := queries.New(s.db.Main)
 
-	// Get the Stripe subscription details
-	stripe.Key = s.cfg.Stripe.SecretKey
 	sub, err := q.GetSubscriptionByUserID(ctx, userID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
 
-	// Determine tier from price
-	tier := string(TierInvestor) // Default tier
+	// Derive tier from user's subscriptionTier (already set by checkout flow)
+	tier := string(TierAnnualAccess) // Default
+	user, userErr := q.GetUserByID(ctx, userID)
+	if userErr == nil && user.SubscriptionTier.Valid && user.SubscriptionTier.String != "" {
+		// Map user's subscription tier to ENUM tier
+		switch user.SubscriptionTier.String {
+		case "professional_allocator", "professional":
+			tier = string(TierProfessionalAllocator)
+		case "annual_access", "investor":
+			tier = string(TierAnnualAccess)
+		default:
+			tier = strings.ToUpper(user.SubscriptionTier.String)
+		}
+	}
+
+	// Resolve Stripe price ID from tier
+	stripeClient := NewStripeClient(&s.cfg.Stripe)
+	priceID := stripeClient.GetPriceIDForTier(SubscriptionTier(tier))
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Create new subscription
@@ -1109,6 +1225,10 @@ func (s *WebhookService) createOrUpdateSubscription(ctx context.Context, userID,
 			StripeSubscriptionId: pgtype.Text{
 				String: stripeSubID,
 				Valid:  true,
+			},
+			StripePriceId: pgtype.Text{
+				String: priceID,
+				Valid:  priceID != "",
 			},
 			StripeCustomerId: pgtype.Text{
 				String: stripeCustomerID,
@@ -1121,7 +1241,7 @@ func (s *WebhookService) createOrUpdateSubscription(ctx context.Context, userID,
 				Valid: true,
 			},
 			CurrentPeriodEnd: pgtype.Timestamp{
-				Time:  time.Now().AddDate(0, 1, 0), // 1 month
+				Time:  time.Now().AddDate(1, 0, 0), // 1 year (annual subscriptions)
 				Valid: true,
 			},
 			CancelAtPeriodEnd: false,

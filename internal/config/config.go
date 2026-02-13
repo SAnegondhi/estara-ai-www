@@ -44,8 +44,8 @@ type StripeConfig struct {
 	PublishableKey   string `mapstructure:"STRIPE_PUBLISHABLE_KEY"`
 	PriceSingleReport   string `mapstructure:"STRIPE_PRICE_SINGLE_REPORT"`
 	PriceReportPack     string `mapstructure:"STRIPE_PRICE_REPORT_PACK"`
-	PriceInvestorAccess string `mapstructure:"STRIPE_PRICE_INVESTOR_ACCESS"`
-	PriceProfessionalAccess string `mapstructure:"STRIPE_PRICE_PROFESSIONAL_ACCESS"`
+	PriceAnnualAccess      string `mapstructure:"STRIPE_PRICE_ANNUAL_ACCESS"`
+	PriceProfessionalAllocator string `mapstructure:"STRIPE_PRICE_PROFESSIONAL_ALLOCATOR"`
 	PriceAPIInvestor   string `mapstructure:"STRIPE_PRICE_AAPI_INVESTOR"`
 	PriceAPIAllocator  string `mapstructure:"STRIPE_PRICE_AAPI_ALLOCATOR"`
 	PriceOverageReport string `mapstructure:"STRIPE_PRICE_OVERAGE_REPORT"`
@@ -301,8 +301,8 @@ func Load() (*Config, error) {
 		PublishableKey:         v.GetString("STRIPE_PUBLISHABLE_KEY"),
 		PriceSingleReport:      v.GetString("STRIPE_PRICE_SINGLE_REPORT"),
 		PriceReportPack:        v.GetString("STRIPE_PRICE_REPORT_PACK"),
-		PriceInvestorAccess:    v.GetString("STRIPE_PRICE_INVESTOR_ACCESS"),
-		PriceProfessionalAccess: v.GetString("STRIPE_PRICE_PROFESSIONAL_ACCESS"),
+		PriceAnnualAccess:         v.GetString("STRIPE_PRICE_ANNUAL_ACCESS"),
+		PriceProfessionalAllocator: v.GetString("STRIPE_PRICE_PROFESSIONAL_ALLOCATOR"),
 		PriceAPIInvestor:       v.GetString("STRIPE_PRICE_AAPI_INVESTOR"),
 		PriceAPIAllocator:      v.GetString("STRIPE_PRICE_AAPI_ALLOCATOR"),
 		PriceOverageReport:     v.GetString("STRIPE_PRICE_OVERAGE_REPORT"),

@@ -1,0 +1,51 @@
+ESTARA AI
+Decision Infrastructure for Real Estate Investors
+
+────────────────────────────────────────
+
+Welcome, {{.FirstName}}.
+
+{{if .IsPaid}}Your {{.TierName}} subscription is now active.{{else}}Your 14-day evaluation period has started.{{end}} The decision infrastructure is ready.
+
+{{.BadgeText}} INCLUDES:
+
+{{.FeaturesText}}
+
+→ Sign In to Estara Insight: {{.AppURL}}
+
+────────────────────────────────────────
+
+GETTING STARTED
+
+1. Sign in to Estara Insight
+   Use the credentials you just created to access the platform
+
+2. Define your investment criteria
+   Set target returns, risk tolerance, property types, and geographic preferences
+
+3. Evaluate your first opportunity
+   Receive a structured decision memo with conservative underwriting
+   and portfolio context
+
+────────────────────────────────────────
+
+ACCESS ESTARA INSIGHT ANYWHERE
+
+Estara Insight is a web application — no installation required. It works
+on any device: desktop, laptop, tablet, or mobile. For the best
+experience, we recommend desktop or tablet.
+
+Type https://insight.estara-ai.com in your browser to start.
+
+Prefer a native app? Download at {{.DownloadURL}}
+
+{{.GuaranteeSectionText}}
+
+────────────────────────────────────────
+
+Independent decision-support platform. Not investment advice.
+No deal promotion.
+
+Questions? Reply to this email or contact support@estara-ai.com
+
+© {{.Year}} Estara AI. All rights reserved.

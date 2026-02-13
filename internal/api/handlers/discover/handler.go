@@ -215,6 +215,7 @@ type SearchCriteria struct {
 	MinBaths      int      `json:"minBaths,omitempty"`
 	MinSqft       int      `json:"minSqft,omitempty"`
 	MinCapRate    float64  `json:"minCapRate,omitempty"`
+	MaxCapRate    float64  `json:"maxCapRate,omitempty"`
 	MinGrossYield float64  `json:"minGrossYield,omitempty"`
 	ForceRefresh  bool     `json:"forceRefresh,omitempty"`
 }
@@ -451,13 +452,14 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Filter by investment criteria using enriched values
-		if criteria.MinCapRate > 0 || criteria.MinGrossYield > 0 {
-			// Use enriched cap rate (with expenses) instead of calculating
+		if criteria.MinCapRate > 0 || criteria.MaxCapRate > 0 || criteria.MinGrossYield > 0 {
 			capRate := p.EstimatedCapRate
 			grossYield := p.GrossYield
 
-			// Apply filters
 			if criteria.MinCapRate > 0 && capRate < criteria.MinCapRate {
+				continue
+			}
+			if criteria.MaxCapRate > 0 && capRate > criteria.MaxCapRate {
 				continue
 			}
 			if criteria.MinGrossYield > 0 && grossYield < criteria.MinGrossYield {
@@ -1074,10 +1076,23 @@ var tierConfigs = map[string]struct {
 		Limit:        20,
 		Features:     []string{"discover", "propertySearch", "aiEvaluation"},
 	},
-	"V2_PROFESSIONAL": {
-		DisplayName:  "Professional",
+	"V2_ANNUAL_ACCESS": {
+		DisplayName:  "Annual Access",
 		PricePerYear: 1200,
-		Limit:        50,
+		Limit:        500,
+		Features:     []string{"discover", "propertySearch", "aiEvaluation", "investmentPlanning", "portfolioTracking"},
+	},
+	"V2_PROFESSIONAL_ALLOCATOR": {
+		DisplayName:  "Professional Allocator",
+		PricePerYear: 2400,
+		Limit:        1000,
+		Features:     []string{"discover", "propertySearch", "aiEvaluation", "investmentPlanning", "portfolioTracking", "prioritySupport"},
+	},
+	// Backwards compatibility
+	"V2_PROFESSIONAL": {
+		DisplayName:  "Annual Access",
+		PricePerYear: 1200,
+		Limit:        500,
 		Features:     []string{"discover", "propertySearch", "aiEvaluation", "investmentPlanning", "portfolioTracking"},
 	},
 	"V2_ENTERPRISE": {

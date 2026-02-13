@@ -1,0 +1,28 @@
+ESTARA AI
+Subscription Renewal Notice
+
+────────────────────────────────────────
+
+{{.FirstName}},
+
+Your Estara AI subscription is scheduled to renew automatically.
+Below are the details.
+
+  Plan:           {{.PlanName}}
+  Renewal Date:   {{.RenewalDate}}
+  Amount:         {{.Amount}}
+
+Your payment method on file will be charged on the renewal date.
+No action is required to continue your subscription.
+
+{{if .ManageURL}}→ Manage Subscription: {{.ManageURL}}{{end}}
+
+────────────────────────────────────────
+
+Independent decision-support platform. Not investment advice.
+No deal promotion.
+
+Questions or need to make changes? Reply to this email or contact
+support@estara-ai.com
+
+© {{.Year}} Estara AI. All rights reserved.

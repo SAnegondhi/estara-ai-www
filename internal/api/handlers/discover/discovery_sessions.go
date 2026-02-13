@@ -13,6 +13,12 @@ import (
 	"github.com/google/uuid"
 )
 
+// PriceStats contains computed price statistics for a session's properties
+type PriceStats struct {
+	Median int `json:"median"`
+	Mode   int `json:"mode"`
+}
+
 // DiscoverySessionResponse represents a discovery session for API responses
 type DiscoverySessionResponse struct {
 	ID               string          `json:"id"`
@@ -28,6 +34,7 @@ type DiscoverySessionResponse struct {
 	LastAccessedAt   string          `json:"lastAccessedAt"`
 	ArchivedAt       *string         `json:"archivedAt,omitempty"`
 	ExpiresAt        string          `json:"expiresAt"`
+	PriceStats       *PriceStats     `json:"priceStats,omitempty"`
 }
 
 // DiscoverySessionDetailResponse includes full session details with properties and activities
@@ -111,22 +118,24 @@ type SessionEvaluationResponse struct {
 
 // discoverySessionRow represents a row from the discovery_sessions table
 type discoverySessionRow struct {
-	ID               string
-	UserID           string
-	SearchCriteria   json.RawMessage
-	Location         string
-	PropertyCount    int
+	ID                string
+	UserID            string
+	SearchCriteria    json.RawMessage
+	Location          string
+	PropertyCount     int
 	CachedPropertyIds []string
-	Name             *string
-	Notes            *string
-	Status           string
-	ChatSessionCount int
-	EvaluationCount  int
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	LastAccessedAt   time.Time
-	ArchivedAt       *time.Time
-	ExpiresAt        time.Time
+	Name              *string
+	Notes             *string
+	Status            string
+	ChatSessionCount  int
+	EvaluationCount   int
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	LastAccessedAt    time.Time
+	ArchivedAt        *time.Time
+	ExpiresAt         time.Time
+	MedianPrice       *int
+	ModePrice         *int
 }
 
 // discoveryActivityRow represents a row from the discovery_session_activities table
@@ -164,12 +173,12 @@ func (h *Handler) ListDiscoverySessions(w http.ResponseWriter, r *http.Request) 
 		offset = 0
 	}
 
-	// Get sessions
+	// Get sessions (includes stored price stats)
 	rows, err := h.db.Main.Query(ctx, `
 		SELECT id, "userId", "searchCriteria", location, "propertyCount",
 		       "cachedPropertyIds", name, notes, status, "chatSessionCount",
 		       "evaluationCount", "createdAt", "updatedAt", "lastAccessedAt",
-		       "archivedAt", "expiresAt"
+		       "archivedAt", "expiresAt", median_price, mode_price
 		FROM discovery_sessions
 		WHERE "userId" = $1 AND status = $2
 		ORDER BY "lastAccessedAt" DESC
@@ -189,7 +198,7 @@ func (h *Handler) ListDiscoverySessions(w http.ResponseWriter, r *http.Request) 
 			&s.ID, &s.UserID, &s.SearchCriteria, &s.Location, &s.PropertyCount,
 			&s.CachedPropertyIds, &s.Name, &s.Notes, &s.Status, &s.ChatSessionCount,
 			&s.EvaluationCount, &s.CreatedAt, &s.UpdatedAt, &s.LastAccessedAt,
-			&s.ArchivedAt, &s.ExpiresAt,
+			&s.ArchivedAt, &s.ExpiresAt, &s.MedianPrice, &s.ModePrice,
 		)
 		if err != nil {
 			h.logger.Warn("failed to scan discovery session row", "error", err)
@@ -209,7 +218,7 @@ func (h *Handler) ListDiscoverySessions(w http.ResponseWriter, r *http.Request) 
 		total = 0
 	}
 
-	// Transform to response
+	// Transform to response (price stats come from stored columns)
 	responseSessions := make([]DiscoverySessionResponse, len(sessions))
 	for i, s := range sessions {
 		responseSessions[i] = sessionRowToResponse(s)
@@ -251,14 +260,14 @@ func (h *Handler) GetDiscoverySession(w http.ResponseWriter, r *http.Request) {
 		SELECT id, "userId", "searchCriteria", location, "propertyCount",
 		       "cachedPropertyIds", name, notes, status, "chatSessionCount",
 		       "evaluationCount", "createdAt", "updatedAt", "lastAccessedAt",
-		       "archivedAt", "expiresAt"
+		       "archivedAt", "expiresAt", median_price, mode_price
 		FROM discovery_sessions
 		WHERE id = $1 AND "userId" = $2
 	`, sessionID, userID).Scan(
 		&s.ID, &s.UserID, &s.SearchCriteria, &s.Location, &s.PropertyCount,
 		&s.CachedPropertyIds, &s.Name, &s.Notes, &s.Status, &s.ChatSessionCount,
 		&s.EvaluationCount, &s.CreatedAt, &s.UpdatedAt, &s.LastAccessedAt,
-		&s.ArchivedAt, &s.ExpiresAt,
+		&s.ArchivedAt, &s.ExpiresAt, &s.MedianPrice, &s.ModePrice,
 	)
 	if err != nil {
 		httputil.NotFound(w, "session not found")
@@ -427,12 +436,12 @@ func (h *Handler) CreateDiscoverySession(w http.ResponseWriter, r *http.Request)
 		) RETURNING id, "userId", "searchCriteria", location, "propertyCount",
 		           "cachedPropertyIds", name, notes, status, "chatSessionCount",
 		           "evaluationCount", "createdAt", "updatedAt", "lastAccessedAt",
-		           "archivedAt", "expiresAt"
+		           "archivedAt", "expiresAt", median_price, mode_price
 	`, sessionID, userID, req.SearchCriteria, req.Location, req.PropertyCount, req.CachedPropertyIds).Scan(
 		&s.ID, &s.UserID, &s.SearchCriteria, &s.Location, &s.PropertyCount,
 		&s.CachedPropertyIds, &s.Name, &s.Notes, &s.Status, &s.ChatSessionCount,
 		&s.EvaluationCount, &s.CreatedAt, &s.UpdatedAt, &s.LastAccessedAt,
-		&s.ArchivedAt, &s.ExpiresAt,
+		&s.ArchivedAt, &s.ExpiresAt, &s.MedianPrice, &s.ModePrice,
 	)
 	if err != nil {
 		h.logger.Error("failed to create discovery session", "error", err, "userId", userID)
@@ -484,12 +493,12 @@ func (h *Handler) ArchiveDiscoverySession(w http.ResponseWriter, r *http.Request
 		RETURNING id, "userId", "searchCriteria", location, "propertyCount",
 		          "cachedPropertyIds", name, notes, status, "chatSessionCount",
 		          "evaluationCount", "createdAt", "updatedAt", "lastAccessedAt",
-		          "archivedAt", "expiresAt"
+		          "archivedAt", "expiresAt", median_price, mode_price
 	`, sessionID, userID).Scan(
 		&s.ID, &s.UserID, &s.SearchCriteria, &s.Location, &s.PropertyCount,
 		&s.CachedPropertyIds, &s.Name, &s.Notes, &s.Status, &s.ChatSessionCount,
 		&s.EvaluationCount, &s.CreatedAt, &s.UpdatedAt, &s.LastAccessedAt,
-		&s.ArchivedAt, &s.ExpiresAt,
+		&s.ArchivedAt, &s.ExpiresAt, &s.MedianPrice, &s.ModePrice,
 	)
 	if err != nil {
 		httputil.NotFound(w, "session not found")
@@ -535,12 +544,12 @@ func (h *Handler) RestoreDiscoverySession(w http.ResponseWriter, r *http.Request
 		RETURNING id, "userId", "searchCriteria", location, "propertyCount",
 		          "cachedPropertyIds", name, notes, status, "chatSessionCount",
 		          "evaluationCount", "createdAt", "updatedAt", "lastAccessedAt",
-		          "archivedAt", "expiresAt"
+		          "archivedAt", "expiresAt", median_price, mode_price
 	`, sessionID, userID).Scan(
 		&s.ID, &s.UserID, &s.SearchCriteria, &s.Location, &s.PropertyCount,
 		&s.CachedPropertyIds, &s.Name, &s.Notes, &s.Status, &s.ChatSessionCount,
 		&s.EvaluationCount, &s.CreatedAt, &s.UpdatedAt, &s.LastAccessedAt,
-		&s.ArchivedAt, &s.ExpiresAt,
+		&s.ArchivedAt, &s.ExpiresAt, &s.MedianPrice, &s.ModePrice,
 	)
 	if err != nil {
 		httputil.NotFound(w, "session not found")
@@ -784,6 +793,26 @@ func (h *Handler) CreateDiscoverySessionForSearch(ctx context.Context, userID st
 		}
 	}
 
+	// Compute and save price stats from stored properties
+	if len(properties) > 0 {
+		_, err = h.db.Main.Exec(ctx, `
+			UPDATE discovery_sessions SET
+				median_price = stats.median_price,
+				mode_price = stats.mode_price
+			FROM (
+				SELECT
+					percentile_cont(0.5) WITHIN GROUP (ORDER BY price)::int AS median_price,
+					mode() WITHIN GROUP (ORDER BY price) AS mode_price
+				FROM discovery_session_properties
+				WHERE "discoverySessionId" = $1
+			) stats
+			WHERE id = $1
+		`, sessionID)
+		if err != nil {
+			h.logger.Warn("failed to compute price stats for session", "error", err, "sessionId", sessionID)
+		}
+	}
+
 	h.logger.Info("created discovery session for search",
 		"sessionId", sessionID,
 		"userId", userID,
@@ -815,6 +844,10 @@ func sessionRowToResponse(s discoverySessionRow) DiscoverySessionResponse {
 	if s.ArchivedAt != nil {
 		archived := s.ArchivedAt.Format(time.RFC3339)
 		resp.ArchivedAt = &archived
+	}
+
+	if s.MedianPrice != nil && s.ModePrice != nil {
+		resp.PriceStats = &PriceStats{Median: *s.MedianPrice, Mode: *s.ModePrice}
 	}
 
 	return resp

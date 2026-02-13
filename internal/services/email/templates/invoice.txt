@@ -1,0 +1,25 @@
+ESTARA AI
+Invoice
+
+────────────────────────────────────────
+
+{{.FirstName}},
+
+Your invoice is ready.
+
+  Invoice Number:  {{.InvoiceNumber}}
+  Amount:          {{.Amount}}
+  Due Date:        {{.DueDate}}
+
+→ View Invoice: {{.InvoiceURL}}
+{{if .PDFURL}}→ Download PDF: {{.PDFURL}}{{end}}
+
+────────────────────────────────────────
+
+Independent decision-support platform. Not investment advice.
+No deal promotion.
+
+Questions about this invoice? Reply to this email or contact
+support@estara-ai.com
+
+© {{.Year}} Estara AI. All rights reserved.

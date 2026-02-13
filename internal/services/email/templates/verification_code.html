@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Verify Your Email</title>
+</head>
+<body style="font-family: 'DM Sans', Arial, sans-serif; line-height: 1.6; color: #374151; max-width: 600px; margin: 0 auto; padding: 20px; background: #f9fafb;">
+
+  <div style="background: #111827; padding: 32px 30px; border-radius: 12px 12px 0 0; text-align: center;">
+    <h1 style="color: white; margin: 0; font-size: 22px; font-family: 'DM Serif Display', Georgia, serif; font-weight: 400; letter-spacing: -0.02em;">Estara AI</h1>
+    <p style="color: rgba(255,255,255,0.45); margin: 8px 0 0 0; font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; font-family: 'DM Serif Display', Georgia, serif;">Email Verification</p>
+  </div>
+
+  <div style="background: white; padding: 36px 30px; border-radius: 0 0 12px 12px; border: 1px solid #e5e7eb; border-top: none;">
+
+    <h2 style="color: #111827; margin: 0 0 20px 0; font-size: 19px; font-family: 'DM Serif Display', Georgia, serif; font-weight: 400;">{{.FirstName}},</h2>
+
+    <p style="margin-bottom: 20px; font-size: 14px; line-height: 1.65; color: #4b5563;">
+      Use the verification code below to complete your account registration.
+    </p>
+
+    <div style="text-align: center; margin: 28px 0;">
+      <div style="display: inline-block; background: #f9fafb; padding: 18px 36px; border-radius: 8px; border: 2px solid #e5e7eb;">
+        <span style="font-size: 32px; font-weight: 700; letter-spacing: 8px; color: #111827; font-family: 'DM Sans', Arial, sans-serif;">{{.Code}}</span>
+      </div>
+    </div>
+
+    <p style="margin-bottom: 20px; font-size: 12px; color: #6b7280; text-align: center;">
+      This code expires in <strong style="color: #111827;">10 minutes</strong>.
+    </p>
+
+    <div style="border-top: 1px solid #e5e7eb; margin-top: 28px; padding-top: 20px;">
+      <h3 style="margin: 0 0 10px 0; color: #111827; font-size: 13px; font-weight: 600; font-family: 'DM Sans', Arial, sans-serif;">Didn't request this code?</h3>
+      <p style="font-size: 12px; color: #6b7280; margin: 0; line-height: 1.7;">
+        If you did not create an Estara AI account, no action is required. Someone may have entered your email address by mistake.
+      </p>
+    </div>
+
+    <div style="margin-top: 28px; text-align: center; border-top: 1px solid #e5e7eb; padding-top: 20px;">
+      <p style="font-size: 12px; color: #9ca3af; margin: 0; line-height: 1.6;">
+        Independent decision-support platform. Not investment advice. No deal promotion.
+      </p>
+      <p style="font-size: 12px; color: #9ca3af; margin: 10px 0 0 0;">
+        This email was sent from a notification-only address.
+      </p>
+      <p style="font-size: 12px; color: #9ca3af; margin: 8px 0 0 0;">
+        &copy; {{.Year}} Estara AI. All rights reserved.
+      </p>
+    </div>
+  </div>
+</body>
+</html>

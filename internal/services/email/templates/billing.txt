@@ -1,0 +1,17 @@
+ESTARA AI
+{{.Headline}}
+
+────────────────────────────────────────
+
+{{.FirstName}},
+
+{{.Message}}
+
+If you have questions, reply to this email or contact support@estara-ai.com.
+
+────────────────────────────────────────
+
+Independent decision-support platform. Not investment advice.
+No deal promotion.
+
+© {{.Year}} Estara AI. All rights reserved.

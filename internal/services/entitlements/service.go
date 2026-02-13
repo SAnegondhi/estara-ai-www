@@ -32,13 +32,13 @@ func NewService(db *postgres.DB, cfg *config.Config) *Service {
 type SubscriptionTier string
 
 const (
-	TierFree         SubscriptionTier = "free"
-	TierReportUser   SubscriptionTier = "report_user"
-	TierInvestor     SubscriptionTier = "investor"
-	TierProfessional SubscriptionTier = "professional"
-	TierAAPIInvestor SubscriptionTier = "aapi_investor"
-	TierAAPIAllocator SubscriptionTier = "aapi_allocator"
-	TierEnterprise   SubscriptionTier = "enterprise"
+	TierFree                  SubscriptionTier = "free"
+	TierReportUser            SubscriptionTier = "report_user"
+	TierAnnualAccess          SubscriptionTier = "annual_access"
+	TierProfessionalAllocator SubscriptionTier = "professional_allocator"
+	TierAAPIInvestor          SubscriptionTier = "aapi_investor"
+	TierAAPIAllocator         SubscriptionTier = "aapi_allocator"
+	TierEnterprise            SubscriptionTier = "enterprise"
 )
 
 // SubscriptionStatus represents the subscription status
@@ -376,10 +376,15 @@ func normalizeTier(tier *string) SubscriptionTier {
 		return TierFree
 	case "REPORT_USER":
 		return TierReportUser
+	case "ANNUAL_ACCESS":
+		return TierAnnualAccess
+	case "PROFESSIONAL_ALLOCATOR":
+		return TierProfessionalAllocator
+	// Backwards compatibility for old tier names
 	case "INVESTOR":
-		return TierInvestor
+		return TierAnnualAccess
 	case "PROFESSIONAL":
-		return TierProfessional
+		return TierProfessionalAllocator
 	case "AAPI_INVESTOR":
 		return TierAAPIInvestor
 	case "AAPI_ALLOCATOR":
@@ -471,7 +476,7 @@ func getTierFeatures(tier SubscriptionTier) Features {
 			PrioritySupport:       false,
 			APIAccess:             false,
 		}
-	case TierInvestor:
+	case TierAnnualAccess:
 		return Features{
 			BasicPropertySearches: true,
 			InvestmentPlanPicks:   true,
@@ -483,7 +488,7 @@ func getTierFeatures(tier SubscriptionTier) Features {
 			PrioritySupport:       false,
 			APIAccess:             false,
 		}
-	case TierProfessional, TierEnterprise:
+	case TierProfessionalAllocator, TierEnterprise:
 		return Features{
 			BasicPropertySearches: true,
 			InvestmentPlanPicks:   true,
@@ -540,9 +545,9 @@ func getInvestmentPicksLimit(tier SubscriptionTier) int {
 		return 0 // No free picks - must purchase reports
 	case TierReportUser:
 		return 0 // One-time purchase, no monthly limit
-	case TierInvestor:
+	case TierAnnualAccess:
 		return 24 // 24 reports/year
-	case TierProfessional:
+	case TierProfessionalAllocator:
 		return 60 // 60 reports/year
 	case TierAAPIInvestor:
 		return 36 // 36 reports/year

@@ -243,10 +243,10 @@ func (c *StripeClient) UpdateSubscriptionTier(subscriptionID, newPriceID string)
 // GetPriceIDForTier returns the Stripe price ID for a subscription tier
 func (c *StripeClient) GetPriceIDForTier(tier SubscriptionTier) string {
 	switch tier {
-	case TierInvestor:
-		return c.cfg.PriceInvestorAccess
-	case TierProfessional:
-		return c.cfg.PriceProfessionalAccess
+	case TierAnnualAccess:
+		return c.cfg.PriceAnnualAccess
+	case TierProfessionalAllocator:
+		return c.cfg.PriceProfessionalAllocator
 	case TierAPIInvestor:
 		return c.cfg.PriceAPIInvestor
 	case TierAPIAllocator:
@@ -273,15 +273,15 @@ func (c *StripeClient) GetPriceIDForProduct(productType ProductType) string {
 // GetTierFromPriceID returns the subscription tier for a given price ID
 func (c *StripeClient) GetTierFromPriceID(priceID string) SubscriptionTier {
 	switch priceID {
-	case c.cfg.PriceInvestorAccess:
-		return TierInvestor
-	case c.cfg.PriceProfessionalAccess:
-		return TierProfessional
+	case c.cfg.PriceAnnualAccess:
+		return TierAnnualAccess
+	case c.cfg.PriceProfessionalAllocator:
+		return TierProfessionalAllocator
 	case c.cfg.PriceAPIInvestor:
 		return TierAPIInvestor
 	case c.cfg.PriceAPIAllocator:
 		return TierAPIAllocator
 	default:
-		return TierInvestor // Default to investor tier
+		return TierAnnualAccess // Default to annual access tier
 	}
 }

@@ -745,12 +745,17 @@ func getStringOrDefault(s *string, defaultVal string) string {
 
 func getTierDisplayName(tier string) string {
 	switch tier {
-	case "V2_PROFESSIONAL":
-		return "Professional"
-	case "V2_ADVANCED":
-		return "Advanced"
+	case "V2_ANNUAL_ACCESS":
+		return "Annual Access"
+	case "V2_PROFESSIONAL_ALLOCATOR":
+		return "Professional Allocator"
 	case "V2_PRIVATE":
 		return "Private"
+	// Backwards compatibility
+	case "V2_PROFESSIONAL":
+		return "Annual Access"
+	case "V2_ADVANCED":
+		return "Professional Allocator"
 	default:
 		return strings.TrimPrefix(tier, "V2_")
 	}
@@ -773,10 +778,10 @@ func getTierFeaturesAndPrice(tier string) (map[string]bool, int) {
 	}
 
 	switch tier {
-	case "V2_PROFESSIONAL":
+	case "V2_ANNUAL_ACCESS", "V2_PROFESSIONAL":
 		return features, 1200
 
-	case "V2_ADVANCED":
+	case "V2_PROFESSIONAL_ALLOCATOR", "V2_ADVANCED":
 		features["customStressTests"] = true
 		features["prioritySupport"] = true
 		return features, 2400

@@ -9,11 +9,11 @@ func TestSubscriptionTierConstants(t *testing.T) {
 	if TierFree != "free" {
 		t.Errorf("expected TierFree='free', got='%s'", TierFree)
 	}
-	if TierInvestor != "investor" {
-		t.Errorf("expected TierInvestor='investor', got='%s'", TierInvestor)
+	if TierAnnualAccess != "annual_access" {
+		t.Errorf("expected TierAnnualAccess='annual_access', got='%s'", TierAnnualAccess)
 	}
-	if TierProfessional != "professional" {
-		t.Errorf("expected TierProfessional='professional', got='%s'", TierProfessional)
+	if TierProfessionalAllocator != "professional_allocator" {
+		t.Errorf("expected TierProfessionalAllocator='professional_allocator', got='%s'", TierProfessionalAllocator)
 	}
 	if TierAAPIInvestor != "aapi_investor" {
 		t.Errorf("expected TierAAPIInvestor='aapi_investor', got='%s'", TierAAPIInvestor)
@@ -186,9 +186,9 @@ func TestAIUsage_LimitExceeded(t *testing.T) {
 func TestTierFeatureMapping(t *testing.T) {
 	// Test helper function for tier feature mapping
 	tierFeatures := map[SubscriptionTier][]string{
-		TierFree:         {},
-		TierInvestor:     {"market_analysis", "property_search"},
-		TierProfessional: {"market_analysis", "property_search", "report_generation", "pdf_export"},
+		TierFree:                  {},
+		TierAnnualAccess:          {"market_analysis", "property_search"},
+		TierProfessionalAllocator: {"market_analysis", "property_search", "report_generation", "pdf_export"},
 		TierAAPIAllocator: {"market_analysis", "property_search", "report_generation", "pdf_export", "api_access"},
 	}
 
@@ -198,8 +198,8 @@ func TestTierFeatureMapping(t *testing.T) {
 			if tier == TierFree && len(expectedFeatures) != 0 {
 				t.Error("free tier should have no features")
 			}
-			if tier == TierInvestor && len(expectedFeatures) < 2 {
-				t.Error("investor tier should have basic features")
+			if tier == TierAnnualAccess && len(expectedFeatures) < 2 {
+				t.Error("annual access tier should have basic features")
 			}
 		})
 	}

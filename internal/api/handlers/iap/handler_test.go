@@ -109,14 +109,14 @@ func TestGetTierFromProductID(t *testing.T) {
 		productID    string
 		expectedTier iap.SubscriptionTier
 	}{
-		{"com.estara.investor.monthly", iap.TierInvestor},
-		{"com.estara.investor.annual", iap.TierInvestor},
-		{"com.estara.professional.monthly", iap.TierProfessional},
-		{"com.estara.professional.annual", iap.TierProfessional},
-		{"investor_monthly", iap.TierInvestor},
-		{"investor_annual", iap.TierInvestor},
-		{"professional_monthly", iap.TierProfessional},
-		{"professional_annual", iap.TierProfessional},
+		{"com.estara.annual_access.monthly", iap.TierAnnualAccess},
+		{"com.estara.annual_access.annual", iap.TierAnnualAccess},
+		{"com.estara.professional_allocator.monthly", iap.TierProfessionalAllocator},
+		{"com.estara.professional_allocator.annual", iap.TierProfessionalAllocator},
+		{"annual_access_monthly", iap.TierAnnualAccess},
+		{"annual_access_annual", iap.TierAnnualAccess},
+		{"professional_allocator_monthly", iap.TierProfessionalAllocator},
+		{"professional_allocator_annual", iap.TierProfessionalAllocator},
 		{"unknown.product", iap.TierFree},
 	}
 
@@ -158,11 +158,11 @@ func TestSubscriptionTierConstants(t *testing.T) {
 	if iap.TierFree != "FREE" {
 		t.Errorf("expected TierFree='FREE', got='%s'", iap.TierFree)
 	}
-	if iap.TierInvestor != "INVESTOR" {
-		t.Errorf("expected TierInvestor='INVESTOR', got='%s'", iap.TierInvestor)
+	if iap.TierAnnualAccess != "ANNUAL_ACCESS" {
+		t.Errorf("expected TierAnnualAccess='ANNUAL_ACCESS', got='%s'", iap.TierAnnualAccess)
 	}
-	if iap.TierProfessional != "PROFESSIONAL" {
-		t.Errorf("expected TierProfessional='PROFESSIONAL', got='%s'", iap.TierProfessional)
+	if iap.TierProfessionalAllocator != "PROFESSIONAL_ALLOCATOR" {
+		t.Errorf("expected TierProfessionalAllocator='PROFESSIONAL_ALLOCATOR', got='%s'", iap.TierProfessionalAllocator)
 	}
 }
 
@@ -172,8 +172,8 @@ func TestGetFeaturesForTier(t *testing.T) {
 		minFeatureCount int
 	}{
 		{iap.TierFree, 2},
-		{iap.TierInvestor, 5},
-		{iap.TierProfessional, 7},
+		{iap.TierAnnualAccess, 5},
+		{iap.TierProfessionalAllocator, 7},
 	}
 
 	for _, tt := range tests {
@@ -197,7 +197,7 @@ func TestSyncEntitlementsRequest_Validation(t *testing.T) {
 			name: "valid iOS request",
 			request: iap.SyncEntitlementsRequest{
 				Platform:    iap.PlatformIOS,
-				ProductID:   "com.estara.investor.monthly",
+				ProductID:   "com.estara.annual_access.monthly",
 				ReceiptData: "receipt-data",
 			},
 			expectValid: true,
@@ -206,7 +206,7 @@ func TestSyncEntitlementsRequest_Validation(t *testing.T) {
 			name: "valid Android request",
 			request: iap.SyncEntitlementsRequest{
 				Platform:      iap.PlatformAndroid,
-				ProductID:     "investor_monthly",
+				ProductID:     "annual_access_monthly",
 				PurchaseToken: "purchase-token",
 			},
 			expectValid: true,
@@ -214,7 +214,7 @@ func TestSyncEntitlementsRequest_Validation(t *testing.T) {
 		{
 			name: "missing platform",
 			request: iap.SyncEntitlementsRequest{
-				ProductID: "com.estara.investor.monthly",
+				ProductID: "com.estara.annual_access.monthly",
 			},
 			expectValid: false,
 			reason:      "platform is required",
@@ -233,10 +233,10 @@ func TestSyncEntitlementsRequest_Validation(t *testing.T) {
 
 func TestSubscriptionPlan_JSON(t *testing.T) {
 	plan := iap.SubscriptionPlan{
-		ProductID:   "com.estara.investor.monthly",
-		Name:        "Investor Monthly",
+		ProductID:   "com.estara.annual_access.monthly",
+		Name:        "Annual Access Monthly",
 		Description: "Essential tools for individual investors",
-		Tier:        string(iap.TierInvestor),
+		Tier:        string(iap.TierAnnualAccess),
 		Price:       "$19.99",
 		Currency:    "USD",
 		Period:      "monthly",
@@ -265,16 +265,16 @@ func TestSubscriptionPlansResponse_JSON(t *testing.T) {
 	resp := iap.SubscriptionPlansResponse{
 		IOSPlans: []iap.SubscriptionPlan{
 			{
-				ProductID: "com.estara.investor.monthly",
-				Name:      "Investor Monthly",
-				Tier:      string(iap.TierInvestor),
+				ProductID: "com.estara.annual_access.monthly",
+				Name:      "Annual Access Monthly",
+				Tier:      string(iap.TierAnnualAccess),
 			},
 		},
 		AndroidPlans: []iap.SubscriptionPlan{
 			{
-				ProductID: "investor_monthly",
-				Name:      "Investor Monthly",
-				Tier:      string(iap.TierInvestor),
+				ProductID: "annual_access_monthly",
+				Name:      "Annual Access Monthly",
+				Tier:      string(iap.TierAnnualAccess),
 			},
 		},
 	}

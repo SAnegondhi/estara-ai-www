@@ -99,10 +99,15 @@ func (h *Handler) StreamingSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse investment filters
-	var minCapRate, minGrossYield float64
+	var minCapRate, maxCapRate, minGrossYield float64
 	if mcr := r.URL.Query().Get("minCapRate"); mcr != "" {
 		if val, err := strconv.ParseFloat(mcr, 64); err == nil {
 			minCapRate = val
+		}
+	}
+	if mcr := r.URL.Query().Get("maxCapRate"); mcr != "" {
+		if val, err := strconv.ParseFloat(mcr, 64); err == nil {
+			maxCapRate = val
 		}
 	}
 	if mgy := r.URL.Query().Get("minGrossYield"); mgy != "" {
@@ -181,6 +186,7 @@ func (h *Handler) StreamingSearch(w http.ResponseWriter, r *http.Request) {
 						MaxPrice:      params.MaxPrice,
 						MinBeds:       params.MinBeds,
 						MinCapRate:    minCapRate,
+						MaxCapRate:    maxCapRate,
 						MinGrossYield: minGrossYield,
 					}
 					if params.PropertyType != "" {
@@ -239,6 +245,9 @@ func (h *Handler) StreamingSearch(w http.ResponseWriter, r *http.Request) {
 
 				// Apply investment filters
 				if minCapRate > 0 && p.EstimatedCapRate < minCapRate {
+					continue
+				}
+				if maxCapRate > 0 && p.EstimatedCapRate > maxCapRate {
 					continue
 				}
 				if minGrossYield > 0 && p.GrossYield < minGrossYield {

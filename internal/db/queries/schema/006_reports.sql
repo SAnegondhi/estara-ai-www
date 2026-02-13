@@ -4,7 +4,8 @@
 -- Enums (create if not exists pattern)
 DO $$ BEGIN
     CREATE TYPE "AccessTier" AS ENUM (
-        'INVESTOR', 'PROFESSIONAL', 'AAPI_INVESTOR', 'AAPI_ALLOCATOR'
+        'INVESTOR', 'PROFESSIONAL', 'AAPI_INVESTOR', 'AAPI_ALLOCATOR',
+        'ANNUAL_ACCESS', 'PROFESSIONAL_ALLOCATOR'
     );
 EXCEPTION WHEN duplicate_object THEN null;
 END $$;
@@ -18,7 +19,8 @@ END $$;
 
 DO $$ BEGIN
     CREATE TYPE "InvestorReportType" AS ENUM (
-        'SNAPSHOT', 'INVESTOR', 'PROFESSIONAL'
+        'SNAPSHOT', 'INVESTOR', 'PROFESSIONAL',
+        'ANNUAL_ACCESS', 'PROFESSIONAL_ALLOCATOR'
     );
 EXCEPTION WHEN duplicate_object THEN null;
 END $$;

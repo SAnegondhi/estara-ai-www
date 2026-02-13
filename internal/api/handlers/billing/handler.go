@@ -321,10 +321,10 @@ func (h *Handler) UpgradeSubscription(w http.ResponseWriter, r *http.Request) {
 	// Map tier string
 	var tier billing.SubscriptionTier
 	switch req.NewTier {
-	case "INVESTOR":
-		tier = billing.TierInvestor
-	case "PROFESSIONAL":
-		tier = billing.TierProfessional
+	case "ANNUAL_ACCESS", "INVESTOR":
+		tier = billing.TierAnnualAccess
+	case "PROFESSIONAL_ALLOCATOR", "PROFESSIONAL":
+		tier = billing.TierProfessionalAllocator
 	case "API_INVESTOR":
 		tier = billing.TierAPIInvestor
 	case "API_ALLOCATOR":

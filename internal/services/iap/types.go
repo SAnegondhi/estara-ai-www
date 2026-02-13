@@ -29,25 +29,25 @@ type ProductID string
 
 const (
 	// iOS Product IDs
-	ProductIOSInvestorMonthly     ProductID = "com.estara.investor.monthly"
-	ProductIOSInvestorAnnual      ProductID = "com.estara.investor.annual"
-	ProductIOSProfessionalMonthly ProductID = "com.estara.professional.monthly"
-	ProductIOSProfessionalAnnual  ProductID = "com.estara.professional.annual"
+	ProductIOSAnnualAccessMonthly            ProductID = "com.estara.annual_access.monthly"
+	ProductIOSAnnualAccessAnnual             ProductID = "com.estara.annual_access.annual"
+	ProductIOSProfessionalAllocatorMonthly   ProductID = "com.estara.professional_allocator.monthly"
+	ProductIOSProfessionalAllocatorAnnual    ProductID = "com.estara.professional_allocator.annual"
 
 	// Android Product IDs
-	ProductAndroidInvestorMonthly     ProductID = "investor_monthly"
-	ProductAndroidInvestorAnnual      ProductID = "investor_annual"
-	ProductAndroidProfessionalMonthly ProductID = "professional_monthly"
-	ProductAndroidProfessionalAnnual  ProductID = "professional_annual"
+	ProductAndroidAnnualAccessMonthly            ProductID = "annual_access_monthly"
+	ProductAndroidAnnualAccessAnnual             ProductID = "annual_access_annual"
+	ProductAndroidProfessionalAllocatorMonthly   ProductID = "professional_allocator_monthly"
+	ProductAndroidProfessionalAllocatorAnnual    ProductID = "professional_allocator_annual"
 )
 
 // SubscriptionTier represents the subscription tier
 type SubscriptionTier string
 
 const (
-	TierFree         SubscriptionTier = "FREE"
-	TierInvestor     SubscriptionTier = "INVESTOR"
-	TierProfessional SubscriptionTier = "PROFESSIONAL"
+	TierFree                  SubscriptionTier = "FREE"
+	TierAnnualAccess          SubscriptionTier = "ANNUAL_ACCESS"
+	TierProfessionalAllocator SubscriptionTier = "PROFESSIONAL_ALLOCATOR"
 )
 
 // AppleReceiptValidationRequest is the request for iOS receipt validation
@@ -196,14 +196,14 @@ type AppleRenewalInfo struct {
 
 // ProductToTierMapping maps product IDs to subscription tiers
 var ProductToTierMapping = map[ProductID]SubscriptionTier{
-	ProductIOSInvestorMonthly:         TierInvestor,
-	ProductIOSInvestorAnnual:          TierInvestor,
-	ProductIOSProfessionalMonthly:     TierProfessional,
-	ProductIOSProfessionalAnnual:      TierProfessional,
-	ProductAndroidInvestorMonthly:     TierInvestor,
-	ProductAndroidInvestorAnnual:      TierInvestor,
-	ProductAndroidProfessionalMonthly: TierProfessional,
-	ProductAndroidProfessionalAnnual:  TierProfessional,
+	ProductIOSAnnualAccessMonthly:            TierAnnualAccess,
+	ProductIOSAnnualAccessAnnual:             TierAnnualAccess,
+	ProductIOSProfessionalAllocatorMonthly:   TierProfessionalAllocator,
+	ProductIOSProfessionalAllocatorAnnual:    TierProfessionalAllocator,
+	ProductAndroidAnnualAccessMonthly:        TierAnnualAccess,
+	ProductAndroidAnnualAccessAnnual:         TierAnnualAccess,
+	ProductAndroidProfessionalAllocatorMonthly: TierProfessionalAllocator,
+	ProductAndroidProfessionalAllocatorAnnual:  TierProfessionalAllocator,
 }
 
 // GetTierFromProductID returns the subscription tier for a product ID
@@ -217,7 +217,7 @@ func GetTierFromProductID(productID string) SubscriptionTier {
 // GetFeaturesForTier returns the features available for a subscription tier
 func GetFeaturesForTier(tier SubscriptionTier) []string {
 	switch tier {
-	case TierProfessional:
+	case TierProfessionalAllocator:
 		return []string{
 			"unlimited_market_analysis",
 			"unlimited_property_search",
@@ -227,7 +227,7 @@ func GetFeaturesForTier(tier SubscriptionTier) []string {
 			"priority_support",
 			"api_access",
 		}
-	case TierInvestor:
+	case TierAnnualAccess:
 		return []string{
 			"market_analysis",
 			"property_search",

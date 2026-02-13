@@ -29,15 +29,39 @@ type Client struct {
 	maxTokens  int
 	httpClient *http.Client
 	logger     *slog.Logger
+	onAPIError func(APIErrorInfo)
+}
+
+// APIErrorInfo contains information about an API error for alerting
+type APIErrorInfo struct {
+	StatusCode int
+	ErrorType  string
+	Message    string
+}
+
+// IsBillingError returns true if this is a billing/credit error
+func (e APIErrorInfo) IsBillingError() bool {
+	return e.StatusCode == 400 && strings.Contains(e.Message, "credit balance")
+}
+
+// IsAuthError returns true if this is an authentication error
+func (e APIErrorInfo) IsAuthError() bool {
+	return e.StatusCode == 401 || e.ErrorType == "authentication_error"
+}
+
+// IsRateLimitError returns true if this is a rate limit error
+func (e APIErrorInfo) IsRateLimitError() bool {
+	return e.StatusCode == 429
 }
 
 // ClientConfig holds configuration for the Anthropic client
 type ClientConfig struct {
-	APIKey    string
-	BaseURL   string
-	Model     string
-	MaxTokens int
-	Timeout   time.Duration
+	APIKey     string
+	BaseURL    string
+	Model      string
+	MaxTokens  int
+	Timeout    time.Duration
+	OnAPIError func(APIErrorInfo) // Called on critical API errors (billing, auth, rate limit)
 }
 
 // Message represents a message in a conversation
@@ -171,7 +195,8 @@ func NewClient(cfg ClientConfig) *Client {
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},
-		logger: slog.Default().With("component", "anthropic_client"),
+		logger:     slog.Default().With("component", "anthropic_client"),
+		onAPIError: cfg.OnAPIError,
 	}
 }
 
@@ -289,8 +314,10 @@ func (c *Client) sendRequest(ctx context.Context, req MessageRequest) (*MessageR
 			Error APIError `json:"error"`
 		}
 		if err := json.Unmarshal(respBody, &apiErr); err == nil {
+			c.notifyAPIError(resp.StatusCode, apiErr.Error.Type, apiErr.Error.Message)
 			return nil, fmt.Errorf("API error (%s): %s", apiErr.Error.Type, apiErr.Error.Message)
 		}
+		c.notifyAPIError(resp.StatusCode, "unknown", string(respBody))
 		return nil, fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -324,6 +351,14 @@ func (c *Client) streamRequest(ctx context.Context, req MessageRequest) (<-chan 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		var apiErr struct {
+			Error APIError `json:"error"`
+		}
+		if err := json.Unmarshal(respBody, &apiErr); err == nil {
+			c.notifyAPIError(resp.StatusCode, apiErr.Error.Type, apiErr.Error.Message)
+		} else {
+			c.notifyAPIError(resp.StatusCode, "unknown", string(respBody))
+		}
 		return nil, fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -376,6 +411,17 @@ func (c *Client) streamRequest(ctx context.Context, req MessageRequest) (<-chan 
 	}()
 
 	return events, nil
+}
+
+// notifyAPIError calls the error callback for critical API errors
+func (c *Client) notifyAPIError(statusCode int, errType, message string) {
+	if c.onAPIError == nil {
+		return
+	}
+	info := APIErrorInfo{StatusCode: statusCode, ErrorType: errType, Message: message}
+	if info.IsBillingError() || info.IsAuthError() || info.IsRateLimitError() {
+		c.onAPIError(info)
+	}
 }
 
 // setHeaders sets required headers for Anthropic API

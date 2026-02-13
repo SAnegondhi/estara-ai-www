@@ -61,14 +61,21 @@ func NewMarketContextService(
 	apiKey string,
 	q *queries.Queries,
 	redis *redisClient.Client,
+	onAPIError ...func(anthropic.APIErrorInfo),
 ) *MarketContextService {
 	// Compute prompt version hash for cache key versioning
 	promptHash := computePromptHash(prompts.MarketContextSystemPrompt)
 
+	var errorFunc func(anthropic.APIErrorInfo)
+	if len(onAPIError) > 0 {
+		errorFunc = onAPIError[0]
+	}
+
 	return &MarketContextService{
 		client: anthropic.NewClient(anthropic.ClientConfig{
-			APIKey:    apiKey,
-			MaxTokens: maxTokens,
+			APIKey:     apiKey,
+			MaxTokens:  maxTokens,
+			OnAPIError: errorFunc,
 			// Uses default Sonnet model (per ADR-074: Sonnet preferred over Haiku)
 		}),
 		queries: q,
