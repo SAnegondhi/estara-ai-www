@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/estara-ai/www/internal/api/middleware"
+	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/email"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -88,6 +90,7 @@ func (h *Handler) ClientForgotPassword(w http.ResponseWriter, r *http.Request) {
 	user, err := h.getUserByEmail(ctx, normalizedEmail)
 	if err != nil {
 		h.logger.Info("password reset requested for non-existent email", "email", normalizedEmail)
+		h.logPasswordResetAudit(ctx, r, "", "AUTH_FAILURE", "Password reset for non-existent email", false, "email not found")
 		httputil.JSON(w, http.StatusOK, successResponse)
 		return
 	}
@@ -110,9 +113,15 @@ func (h *Handler) ClientForgotPassword(w http.ResponseWriter, r *http.Request) {
 	result, err := emailSvc.SendPasswordReset(normalizedEmail, token, firstName)
 	if err != nil || !result.Success {
 		h.logger.Error("failed to send password reset email", "error", err)
+		errMsg := "email send failure"
+		if err != nil {
+			errMsg = err.Error()
+		}
+		h.logPasswordResetAudit(ctx, r, user.ID, "AUTH_FAILURE", "Password reset email failed to send", false, errMsg)
 		// Still return success for security
 	} else {
 		h.logger.Info("password reset email sent", "email", normalizedEmail)
+		h.logPasswordResetAudit(ctx, r, user.ID, "AUTH_SUCCESS", "Password reset requested", true, "")
 	}
 
 	httputil.JSON(w, http.StatusOK, successResponse)
@@ -136,6 +145,7 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 
 	// Validate password strength
 	if !isStrongPassword(req.NewPassword) {
+		h.logPasswordResetAudit(ctx, r, "", "AUTH_FAILURE", "Password reset with weak password", false, "password does not meet strength requirements")
 		httputil.BadRequest(w, "Password must be at least 8 characters with uppercase, lowercase, number, and special character")
 		return
 	}
@@ -144,6 +154,7 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	tokenInfo, err := h.validatePasswordResetToken(ctx, req.Token)
 	if err != nil {
 		h.logger.Warn("invalid password reset token", "error", err)
+		h.logPasswordResetAudit(ctx, r, "", "AUTH_FAILURE", "Password reset with invalid token", false, err.Error())
 		httputil.JSON(w, http.StatusBadRequest, ResetPasswordResponse{
 			Success: false,
 			Message: err.Error(),
@@ -178,6 +189,7 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	_ = h.invalidateUserPasswordResetTokens(ctx, tokenInfo.UserID)
 
 	h.logger.Info("password reset successful", "user_id", tokenInfo.UserID)
+	h.logPasswordResetAudit(ctx, r, tokenInfo.UserID, "AUTH_SUCCESS", "Password reset completed", true, "")
 	httputil.JSON(w, http.StatusOK, ResetPasswordResponse{
 		Success: true,
 		Message: "Password has been reset successfully. You can now sign in with your new password.",
@@ -352,6 +364,42 @@ func (h *Handler) updateUserPassword(ctx context.Context, userID, hashedPassword
 	query := `UPDATE users SET password = $2, "updatedAt" = NOW() WHERE id = $1`
 	_, err := h.db.Main.Exec(ctx, query, userID, hashedPassword)
 	return err
+}
+
+// logPasswordResetAudit logs a password reset audit event
+func (h *Handler) logPasswordResetAudit(ctx context.Context, r *http.Request, userID, eventType, description string, success bool, errMsg string) {
+	idBytes := make([]byte, 12)
+	_, _ = rand.Read(idBytes)
+	id := hex.EncodeToString(idBytes)
+
+	// Extract client IP from headers
+	clientIP := r.RemoteAddr
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if idx := strings.Index(xff, ","); idx != -1 {
+			clientIP = xff[:idx]
+		} else {
+			clientIP = xff
+		}
+	} else if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		clientIP = xri
+	}
+
+	q := queries.New(h.db.Main)
+	_, err := q.CreateAuditLog(ctx, queries.CreateAuditLogParams{
+		ID:        id,
+		UserId:    pgtype.Text{String: userID, Valid: userID != ""},
+		EventType: eventType,
+		Description: pgtype.Text{String: description, Valid: true},
+		IpAddress:   pgtype.Text{String: clientIP, Valid: true},
+		UserAgent:   pgtype.Text{String: r.UserAgent(), Valid: true},
+		Success:     success,
+		Error:       pgtype.Text{String: errMsg, Valid: errMsg != ""},
+		Endpoint:    pgtype.Text{String: r.URL.Path, Valid: true},
+		Severity:    "info",
+	})
+	if err != nil {
+		h.logger.Warn("failed to write audit log", "error", err)
+	}
 }
 
 // isValidEmail validates email format
