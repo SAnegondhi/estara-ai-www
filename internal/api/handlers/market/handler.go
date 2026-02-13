@@ -374,27 +374,31 @@ func (h *Handler) GetHistoricalTrends(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := h.trendsService.GetHistoricalData(ctx, location, years)
+	result, err := h.trendsService.GetTrends(ctx, trends.TrendsRequest{
+		Location: location,
+		Years:    years,
+	})
 	if err != nil {
 		h.logger.Error("failed to get historical data", "error", err, "location", location)
 		httputil.Error(w, http.StatusInternalServerError, "Failed to fetch historical data")
 		return
 	}
 
-	// Calculate statistical metrics (ADR-073)
-	calc := trends.NewCalculator()
-	metrics := calc.CalculateAllMetrics(data)
-
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{
 		"success":           true,
-		"data":              data,
-		"calculatedMetrics": metrics,
+		"location":          result.Location,
+		"years":             years,
+		"data":              result.Historical,
+		"yoyChanges":        result.YoYChanges,
+		"currentMetrics":    result.CurrentMetrics,
+		"calculatedMetrics": result.CalculatedMetrics,
 	})
 }
 
 // SynthesizeTrendsRequest represents a synthesis request
 type SynthesizeTrendsRequest struct {
 	Metro             string                 `json:"metro"`
+	Location          string                 `json:"location"` // Alias for metro (client sends this)
 	CalculatedMetrics map[string]interface{} `json:"calculatedMetrics"`
 	Comparisons       map[string]interface{} `json:"comparisons,omitempty"`
 	CacheKey          string                 `json:"cacheKey,omitempty"`
@@ -412,6 +416,10 @@ func (h *Handler) SynthesizeTrends(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Accept either "metro" or "location" field from client
+	if req.Metro == "" && req.Location != "" {
+		req.Metro = req.Location
+	}
 	if req.Metro == "" {
 		httputil.BadRequest(w, "metro is required")
 		return
@@ -440,15 +448,13 @@ func (h *Handler) SynthesizeTrends(w http.ResponseWriter, r *http.Request) {
 
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
-		"cached":  false,
-		"data": map[string]interface{}{
+		"synthesis": map[string]interface{}{
 			"summary":          synthesis.Summary,
 			"keyInsights":      synthesis.KeyInsights,
 			"marketOutlook":    synthesis.MarketOutlook,
 			"investmentTiming": synthesis.InvestmentTiming,
 			"riskFactors":      synthesis.RiskFactors,
 			"confidence":       synthesis.Confidence,
-			"generatedAt":      time.Now().Format(time.RFC3339),
 		},
 	})
 }

@@ -466,20 +466,43 @@ func (s *Service) getLatestValueFloat(points []TimeSeriesPoint) float64 {
 }
 
 func (s *Service) parseSynthesisResponse(content string) (*TrendSynthesis, error) {
-	// Try to parse as JSON first
+	// Strip markdown code fences if present (Claude often wraps JSON in ```json ... ```)
+	cleaned := strings.TrimSpace(content)
+	if strings.HasPrefix(cleaned, "```") {
+		// Remove opening fence (```json or ```)
+		if idx := strings.Index(cleaned, "\n"); idx >= 0 {
+			cleaned = cleaned[idx+1:]
+		}
+		// Remove closing fence
+		if idx := strings.LastIndex(cleaned, "```"); idx >= 0 {
+			cleaned = cleaned[:idx]
+		}
+		cleaned = strings.TrimSpace(cleaned)
+	}
+
+	// Try to parse as JSON
 	var synthesis TrendSynthesis
-	if err := json.Unmarshal([]byte(content), &synthesis); err == nil {
+	if err := json.Unmarshal([]byte(cleaned), &synthesis); err == nil {
 		return &synthesis, nil
 	}
 
-	// Fallback: extract from text response
+	// Second attempt: extract JSON object from mixed text
+	if start := strings.Index(content, "{"); start >= 0 {
+		if end := strings.LastIndex(content, "}"); end > start {
+			if err := json.Unmarshal([]byte(content[start:end+1]), &synthesis); err == nil {
+				return &synthesis, nil
+			}
+		}
+	}
+
+	// Fallback: treat entire response as summary text
 	synthesis = TrendSynthesis{
 		Summary:          content,
 		KeyInsights:      []string{},
 		MarketOutlook:    "neutral",
 		InvestmentTiming: "neutral",
 		RiskFactors:      []string{},
-		Confidence:       0.7, // Default confidence for text responses
+		Confidence:       0.7,
 	}
 
 	return &synthesis, nil
@@ -520,20 +543,23 @@ func (s *Service) cacheResult(ctx context.Context, userID, cacheKey string, resu
 const trendSynthesisSystemPrompt = `You are a real estate market analyst specializing in trend analysis.
 Your task is to analyze market data and provide investment insights.
 
-RESPONSE FORMAT (JSON):
+CRITICAL: Respond with ONLY a valid JSON object. No markdown, no code fences, no explanation text before or after the JSON.
+
 {
-  "summary": "2-3 sentence market summary",
-  "keyInsights": ["insight 1", "insight 2", "insight 3"],
+  "summary": "2-3 sentence market summary with specific data points",
+  "keyInsights": ["insight 1", "insight 2", "insight 3", "insight 4"],
   "marketOutlook": "bullish|bearish|neutral",
   "investmentTiming": "favorable|unfavorable|neutral",
-  "riskFactors": ["risk 1", "risk 2"],
+  "riskFactors": ["risk 1", "risk 2", "risk 3"],
   "confidence": 0.0-1.0
 }
 
 GUIDELINES:
+- Provide 3-5 key insights and 2-4 risk factors
 - Use data-driven language: "data indicates", "analysis shows"
 - Never use prescriptive language: "you should", "I recommend"
 - Base confidence on data quality and completeness
 - Consider both short-term and long-term trends
 - Identify divergences between home values and rents
-- Factor in mortgage rate impacts on affordability`
+- Factor in mortgage rate impacts on affordability
+- Reference specific percentage changes and dollar values from the data`

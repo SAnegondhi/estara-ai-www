@@ -15,18 +15,19 @@ func NewCalculator() *Calculator {
 // CalculatedMetrics holds all computed metrics for a market
 type CalculatedMetrics struct {
 	// Price metrics
-	PriceCAGR1Y  float64 `json:"priceCagr1Y"`
-	PriceCAGR3Y  float64 `json:"priceCagr3Y"`
-	PriceCAGR5Y  float64 `json:"priceCagr5Y"`
-	PriceCAGR10Y float64 `json:"priceCagr10Y,omitempty"`
+	PriceCAGR1Y  float64 `json:"priceCAGR1Y"`
+	PriceCAGR3Y  float64 `json:"priceCAGR3Y"`
+	PriceCAGR5Y  float64 `json:"priceCAGR5Y"`
+	PriceCAGR10Y float64 `json:"priceCAGR10Y,omitempty"`
 
 	// Rent metrics
-	RentCAGR1Y float64 `json:"rentCagr1Y"`
-	RentCAGR3Y float64 `json:"rentCagr3Y"`
-	RentCAGR5Y float64 `json:"rentCagr5Y"`
+	RentCAGR1Y float64 `json:"rentCAGR1Y"`
+	RentCAGR3Y float64 `json:"rentCAGR3Y"`
+	RentCAGR5Y float64 `json:"rentCAGR5Y"`
 
 	// Volatility
 	PriceVolatility float64 `json:"priceVolatility"` // Annualized std deviation of returns
+	RentVolatility  float64 `json:"rentVolatility"`  // Annualized std deviation of rent returns
 	MaxDrawdown     float64 `json:"maxDrawdown"`     // Maximum peak-to-trough decline (%)
 
 	// Trend direction
@@ -195,6 +196,7 @@ func (c *Calculator) CalculateAllMetrics(data *HistoricalData) *CalculatedMetric
 
 	// Volatility & drawdown
 	m.PriceVolatility = Volatility(homeValues)
+	m.RentVolatility = Volatility(rentValues)
 	m.MaxDrawdown = MaxDrawdown(homeValues)
 
 	// Trend direction (linear regression)
