@@ -699,7 +699,8 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			(SELECT COUNT(*) FROM evaluation_chat_messages WHERE session_id = s.id) as message_count,
 			(SELECT content FROM evaluation_chat_messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) as last_message_content,
 			(SELECT role FROM evaluation_chat_messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) as last_message_role,
-			(SELECT created_at FROM evaluation_chat_messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) as last_message_at
+			(SELECT created_at FROM evaluation_chat_messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) as last_message_at,
+			(SELECT content FROM evaluation_chat_messages WHERE session_id = s.id AND role = 'user' ORDER BY created_at ASC LIMIT 1) as first_user_question
 		FROM evaluation_chat_sessions s
 		WHERE s.user_id = $1
 		ORDER BY s.updated_at DESC
@@ -723,7 +724,14 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
+	type sessionData struct {
+		index           int
+		cachedPropertyIDs []string
+	}
+
 	sessions := make([]map[string]interface{}, 0)
+	sessionLookups := make([]sessionData, 0)
+
 	for rows.Next() {
 		var id, userID string
 		var propertyIDs, cachedPropertyIDs []string
@@ -732,10 +740,12 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		var messageCount int
 		var lastMsgContent, lastMsgRole *string
 		var lastMsgAt *time.Time
+		var firstUserQuestion *string
 
 		err := rows.Scan(
 			&id, &userID, &propertyIDs, &cachedPropertyIDs, &investorProfile, &portfolioSnapshot,
 			&createdAt, &updatedAt, &messageCount, &lastMsgContent, &lastMsgRole, &lastMsgAt,
+			&firstUserQuestion,
 		)
 		if err != nil {
 			h.logger.Error("failed to scan session", "error", err)
@@ -761,7 +771,87 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Add first user question if exists
+		if firstUserQuestion != nil {
+			session["firstUserQuestion"] = *firstUserQuestion
+		}
+
 		sessions = append(sessions, session)
+
+		// Track cached property IDs for location enrichment
+		if len(cachedPropertyIDs) > 0 {
+			sessionLookups = append(sessionLookups, sessionData{
+				index:           len(sessions) - 1,
+				cachedPropertyIDs: cachedPropertyIDs,
+			})
+		}
+	}
+
+	// Enrich sessions with location and address data from cached_properties
+	if len(sessionLookups) > 0 {
+		// Collect all unique cached property IDs
+		idSet := make(map[string]bool)
+		for _, sl := range sessionLookups {
+			for _, cid := range sl.cachedPropertyIDs {
+				idSet[cid] = true
+			}
+		}
+		allIDs := make([]string, 0, len(idSet))
+		for id := range idSet {
+			allIDs = append(allIDs, id)
+		}
+
+		type propInfo struct {
+			city    string
+			state   string
+			address string
+		}
+		propMap := make(map[string]propInfo)
+
+		propRows, propErr := h.db.Main.Query(ctx,
+			`SELECT id, city, state, address FROM cached_properties WHERE id = ANY($1)`,
+			allIDs,
+		)
+		if propErr == nil {
+			defer propRows.Close()
+			for propRows.Next() {
+				var pid, city, state, addr string
+				if err := propRows.Scan(&pid, &city, &state, &addr); err == nil {
+					propMap[pid] = propInfo{city: city, state: state, address: addr}
+				}
+			}
+		}
+
+		// Derive location and addresses per session
+		for _, sl := range sessionLookups {
+			cities := make(map[string]bool)
+			addresses := make([]string, 0, len(sl.cachedPropertyIDs))
+			for _, cid := range sl.cachedPropertyIDs {
+				if p, ok := propMap[cid]; ok {
+					cityState := p.city + ", " + p.state
+					cities[cityState] = true
+					addresses = append(addresses, p.address+", "+p.city+", "+p.state)
+				}
+			}
+
+			// Derive location label
+			cityList := make([]string, 0, len(cities))
+			for c := range cities {
+				cityList = append(cityList, c)
+			}
+			if len(cityList) == 1 {
+				sessions[sl.index]["location"] = cityList[0]
+			} else if len(cityList) > 1 {
+				sessions[sl.index]["location"] = fmt.Sprintf("%s + %d more", cityList[0], len(cityList)-1)
+			}
+
+			if len(addresses) > 5 {
+				addresses = addresses[:5]
+			}
+			if len(addresses) > 0 {
+				sessions[sl.index]["propertyAddresses"] = addresses
+			}
+		}
 	}
 
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{
