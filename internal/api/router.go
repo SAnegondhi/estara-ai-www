@@ -132,9 +132,10 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	if db.Market != nil {
 		handlers.Market.SetMarketDB(db.Market)
 
-		// ADR-075: Wire market data importer into cron handler
+		// ADR-075: Wire market data importer into cron and admin handlers
 		imp := importer.NewService(db.Market)
 		handlers.Cron.SetImporter(imp)
+		handlers.Admin.SetImporter(imp)
 	}
 
 	// Inject services into portfolio handler
@@ -474,6 +475,20 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Route("/sessions", func(r chi.Router) {
 			r.Get("/", handlers.Admin.ListSessions)
 			r.Delete("/{id}", handlers.Admin.RevokeSession)
+		})
+
+		// Cron Job Management
+		r.Route("/cron-jobs", func(r chi.Router) {
+			r.Get("/", handlers.Admin.ListCronJobs)
+			r.Get("/{id}/runs", handlers.Admin.GetCronJobRuns)
+			r.Post("/{id}/toggle", handlers.Admin.ToggleCronJob)
+			r.Post("/{id}/trigger", handlers.Admin.TriggerCronJob)
+		})
+
+		// Market Data Management
+		r.Route("/market-data", func(r chi.Router) {
+			r.Get("/status", handlers.Admin.MarketDataStatus)
+			r.Post("/trigger-import", handlers.Admin.TriggerMarketDataImport)
 		})
 
 		// Monitoring

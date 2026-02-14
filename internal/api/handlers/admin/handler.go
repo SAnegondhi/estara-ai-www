@@ -22,6 +22,7 @@ import (
 	"github.com/estara-ai/www/internal/db/postgres"
 	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
+	"github.com/estara-ai/www/internal/services/market/importer"
 	"github.com/estara-ai/www/pkg/httputil"
 )
 
@@ -33,6 +34,7 @@ type Handler struct {
 	auth     *middleware.AuthMiddleware
 	validate *validator.Validate
 	logger   *slog.Logger
+	importer *importer.Service
 }
 
 // NewHandler creates a new admin handler
