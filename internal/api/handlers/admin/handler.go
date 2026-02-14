@@ -62,27 +62,25 @@ func NewHandler(db *postgres.DB, redis *redisClient.Client, cfg *config.Config, 
 
 // User represents a user from the database
 type User struct {
-	ID                 string     `json:"id"`
-	ClerkUserID        *string    `json:"clerkUserId,omitempty"`
-	Email              string     `json:"email"`
-	Name               *string    `json:"name,omitempty"`
-	Role               string     `json:"role"`
-	SubscriptionPlan   string     `json:"subscriptionPlan"`
-	SubscriptionStatus string     `json:"subscriptionStatus"`
-	MonthlyUsage       any        `json:"monthlyUsage,omitempty"`
-	UsageResetAt       *time.Time `json:"usageResetAt,omitempty"`
-	LastLoginAt        *time.Time `json:"lastLoginAt,omitempty"`
-	CreatedAt          time.Time  `json:"createdAt"`
-	UpdatedAt          time.Time  `json:"updatedAt"`
+	ID               string     `json:"id"`
+	Email            string     `json:"email"`
+	FirstName        *string    `json:"firstName,omitempty"`
+	LastName         *string    `json:"lastName,omitempty"`
+	Role             string     `json:"role"`
+	SubscriptionTier *string    `json:"subscriptionTier,omitempty"`
+	StripeCustomerID *string    `json:"stripeCustomerId,omitempty"`
+	SuspendedAt      *time.Time `json:"suspendedAt,omitempty"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
 }
 
 // UpdateUserRequest represents the request to update a user
 type UpdateUserRequest struct {
-	Name               *string `json:"name,omitempty"`
-	Email              *string `json:"email,omitempty" validate:"omitempty,email"`
-	Role               *string `json:"role,omitempty" validate:"omitempty,oneof=user admin"`
-	SubscriptionPlan   *string `json:"subscriptionPlan,omitempty" validate:"omitempty,oneof=free pro enterprise"`
-	SubscriptionStatus *string `json:"subscriptionStatus,omitempty" validate:"omitempty,oneof=active inactive trialing past_due canceled"`
+	FirstName        *string `json:"firstName,omitempty"`
+	LastName         *string `json:"lastName,omitempty"`
+	Email            *string `json:"email,omitempty" validate:"omitempty,email"`
+	Role             *string `json:"role,omitempty" validate:"omitempty,oneof=USER ADMIN SUPER_ADMIN"`
+	SubscriptionTier *string `json:"subscriptionTier,omitempty"`
 }
 
 // InvalidateCacheRequest represents the request to invalidate cache
@@ -1057,16 +1055,16 @@ func (h *Handler) logAdminAudit(ctx context.Context, r *http.Request, action, re
 func (h *Handler) listAllUsers(ctx context.Context, limit, offset int) ([]User, int64, error) {
 	// Get total count
 	var total int64
-	err := h.db.Main.QueryRow(ctx, `SELECT COUNT(*) FROM "User"`).Scan(&total)
+	err := h.db.Main.QueryRow(ctx, `SELECT COUNT(*) FROM users`).Scan(&total)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	// Get users with pagination
 	rows, err := h.db.Main.Query(ctx, `
-		SELECT id, "clerkUserId", email, name, role, "subscriptionPlan", "subscriptionStatus",
-		       "monthlyUsage", "usageResetAt", "lastLoginAt", "createdAt", "updatedAt"
-		FROM "User"
+		SELECT id, email, "firstName", "lastName", role::text, "subscriptionTier",
+		       "stripeCustomerId", "suspendedAt", "createdAt", "updatedAt"
+		FROM users
 		ORDER BY "createdAt" DESC
 		LIMIT $1 OFFSET $2
 	`, limit, offset)
@@ -1079,9 +1077,9 @@ func (h *Handler) listAllUsers(ctx context.Context, limit, offset int) ([]User, 
 	for rows.Next() {
 		var u User
 		err := rows.Scan(
-			&u.ID, &u.ClerkUserID, &u.Email, &u.Name, &u.Role,
-			&u.SubscriptionPlan, &u.SubscriptionStatus, &u.MonthlyUsage,
-			&u.UsageResetAt, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
+			&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Role,
+			&u.SubscriptionTier, &u.StripeCustomerID, &u.SuspendedAt,
+			&u.CreatedAt, &u.UpdatedAt,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -1098,7 +1096,7 @@ func (h *Handler) searchUsersByEmail(ctx context.Context, search string, limit, 
 	// Get total count
 	var total int64
 	err := h.db.Main.QueryRow(ctx, `
-		SELECT COUNT(*) FROM "User" WHERE LOWER(email) LIKE $1
+		SELECT COUNT(*) FROM users WHERE LOWER(email) LIKE $1
 	`, searchPattern).Scan(&total)
 	if err != nil {
 		return nil, 0, err
@@ -1106,9 +1104,9 @@ func (h *Handler) searchUsersByEmail(ctx context.Context, search string, limit, 
 
 	// Get users with pagination
 	rows, err := h.db.Main.Query(ctx, `
-		SELECT id, "clerkUserId", email, name, role, "subscriptionPlan", "subscriptionStatus",
-		       "monthlyUsage", "usageResetAt", "lastLoginAt", "createdAt", "updatedAt"
-		FROM "User"
+		SELECT id, email, "firstName", "lastName", role::text, "subscriptionTier",
+		       "stripeCustomerId", "suspendedAt", "createdAt", "updatedAt"
+		FROM users
 		WHERE LOWER(email) LIKE $1
 		ORDER BY "createdAt" DESC
 		LIMIT $2 OFFSET $3
@@ -1122,9 +1120,9 @@ func (h *Handler) searchUsersByEmail(ctx context.Context, search string, limit, 
 	for rows.Next() {
 		var u User
 		err := rows.Scan(
-			&u.ID, &u.ClerkUserID, &u.Email, &u.Name, &u.Role,
-			&u.SubscriptionPlan, &u.SubscriptionStatus, &u.MonthlyUsage,
-			&u.UsageResetAt, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
+			&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Role,
+			&u.SubscriptionTier, &u.StripeCustomerID, &u.SuspendedAt,
+			&u.CreatedAt, &u.UpdatedAt,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -1138,14 +1136,14 @@ func (h *Handler) searchUsersByEmail(ctx context.Context, search string, limit, 
 func (h *Handler) getUserByID(ctx context.Context, id string) (*User, error) {
 	var u User
 	err := h.db.Main.QueryRow(ctx, `
-		SELECT id, "clerkUserId", email, name, role, "subscriptionPlan", "subscriptionStatus",
-		       "monthlyUsage", "usageResetAt", "lastLoginAt", "createdAt", "updatedAt"
-		FROM "User"
+		SELECT id, email, "firstName", "lastName", role::text, "subscriptionTier",
+		       "stripeCustomerId", "suspendedAt", "createdAt", "updatedAt"
+		FROM users
 		WHERE id = $1
 	`, id).Scan(
-		&u.ID, &u.ClerkUserID, &u.Email, &u.Name, &u.Role,
-		&u.SubscriptionPlan, &u.SubscriptionStatus, &u.MonthlyUsage,
-		&u.UsageResetAt, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
+		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Role,
+		&u.SubscriptionTier, &u.StripeCustomerID, &u.SuspendedAt,
+		&u.CreatedAt, &u.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -1155,15 +1153,15 @@ func (h *Handler) getUserByID(ctx context.Context, id string) (*User, error) {
 
 func (h *Handler) updateUserProfile(ctx context.Context, id string, req *UpdateUserRequest) error {
 	_, err := h.db.Main.Exec(ctx, `
-		UPDATE "User" SET
-			name = COALESCE($2, name),
-			email = COALESCE($3, email),
-			role = COALESCE($4, role),
-			"subscriptionPlan" = COALESCE($5, "subscriptionPlan"),
-			"subscriptionStatus" = COALESCE($6, "subscriptionStatus"),
+		UPDATE users SET
+			"firstName" = COALESCE($2, "firstName"),
+			"lastName" = COALESCE($3, "lastName"),
+			email = COALESCE($4, email),
+			role = COALESCE($5::text::"UserRole", role),
+			"subscriptionTier" = COALESCE($6, "subscriptionTier"),
 			"updatedAt" = NOW()
 		WHERE id = $1
-	`, id, req.Name, req.Email, req.Role, req.SubscriptionPlan, req.SubscriptionStatus)
+	`, id, req.FirstName, req.LastName, req.Email, req.Role, req.SubscriptionTier)
 	return err
 }
 
@@ -1172,13 +1170,13 @@ func (h *Handler) getUserStats(ctx context.Context) (*UserStats, error) {
 	err := h.db.Main.QueryRow(ctx, `
 		SELECT
 			COUNT(*) as total_users,
-			COUNT(*) FILTER (WHERE role = 'admin') as admin_count,
-			COUNT(*) FILTER (WHERE role = 'user') as user_count,
-			COUNT(*) FILTER (WHERE "subscriptionPlan" = 'free') as free_count,
-			COUNT(*) FILTER (WHERE "subscriptionPlan" = 'pro') as pro_count,
-			COUNT(*) FILTER (WHERE "subscriptionPlan" = 'enterprise') as enterprise_count,
-			COUNT(*) FILTER (WHERE "lastLoginAt" > NOW() - INTERVAL '7 days') as active_last_week
-		FROM "User"
+			COUNT(*) FILTER (WHERE role::text IN ('ADMIN','SUPER_ADMIN')) as admin_count,
+			COUNT(*) FILTER (WHERE role::text = 'USER') as user_count,
+			COUNT(*) FILTER (WHERE "subscriptionTier" = 'free' OR "subscriptionTier" IS NULL) as free_count,
+			COUNT(*) FILTER (WHERE "subscriptionTier" NOT IN ('free') AND "subscriptionTier" IS NOT NULL) as pro_count,
+			0 as enterprise_count,
+			COUNT(*) FILTER (WHERE "updatedAt" > NOW() - INTERVAL '7 days') as active_last_week
+		FROM users
 	`).Scan(
 		&stats.TotalUsers, &stats.AdminCount, &stats.UserCount,
 		&stats.FreeCount, &stats.ProCount, &stats.EnterpriseCount,
@@ -1193,14 +1191,8 @@ func (h *Handler) getUserStats(ctx context.Context) (*UserStats, error) {
 func (h *Handler) generateImpersonationToken(user *User, expiry time.Duration) (string, error) {
 	now := time.Now()
 
-	clerkUserID := ""
-	if user.ClerkUserID != nil {
-		clerkUserID = *user.ClerkUserID
-	}
-
 	claims := jwt.MapClaims{
 		"userId":      user.ID,
-		"clerkUserId": clerkUserID,
 		"email":       user.Email,
 		"role":        user.Role,
 		"exp":         now.Add(expiry).Unix(),
@@ -1535,7 +1527,7 @@ func (h *Handler) getAIUsageRecords(ctx context.Context, userID, cacheType strin
 	query := fmt.Sprintf(`
 		SELECT c.id, c."userId", u.email, c."cacheType", c.model, c."inputTokens", c."outputTokens", c."totalCost", c."createdAt"
 		FROM "AiResponseCache" c
-		LEFT JOIN "User" u ON c."userId" = u.id
+		LEFT JOIN users u ON c."userId" = u.id
 		WHERE %s
 		ORDER BY c."createdAt" DESC
 		LIMIT $%d OFFSET $%d
@@ -1643,7 +1635,7 @@ func (h *Handler) getInvestorReports(ctx context.Context, status, userID string,
 		SELECT r.id, r."userId", u.email, r.report_type, r.status, r.address, r.city, r.state,
 		       r.error_message, r.created_at, r.completed_at
 		FROM investor_reports r
-		LEFT JOIN "User" u ON r."userId" = u.id
+		LEFT JOIN users u ON r."userId" = u.id
 		WHERE %s
 		ORDER BY r.created_at DESC
 		LIMIT $%d OFFSET $%d
