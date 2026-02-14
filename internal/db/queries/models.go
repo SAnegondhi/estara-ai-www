@@ -754,3 +754,15 @@ type VendorContract struct {
 	CreatedAt             pgtype.Timestamp `json:"createdAt"`
 	UpdatedAt             pgtype.Timestamp `json:"updatedAt"`
 }
+
+type WhitelistedEmail struct {
+	ID        string           `json:"id"`
+	Email     string           `json:"email"`
+	Name      pgtype.Text      `json:"name"`
+	Type      interface{}      `json:"type"`
+	AddedBy   pgtype.Text      `json:"addedBy"`
+	Reason    pgtype.Text      `json:"reason"`
+	Active    bool             `json:"active"`
+	CreatedAt pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt pgtype.Timestamp `json:"updatedAt"`
+}

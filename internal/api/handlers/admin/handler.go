@@ -24,24 +24,31 @@ import (
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 	billingService "github.com/estara-ai/www/internal/services/billing"
 	"github.com/estara-ai/www/internal/services/market/importer"
+	"github.com/estara-ai/www/internal/services/whitelist"
 	"github.com/estara-ai/www/pkg/httputil"
 )
 
 // Handler handles admin-related HTTP requests
 type Handler struct {
-	db       *postgres.DB
-	redis    *redisClient.Client
-	cfg      *config.Config
-	auth     *middleware.AuthMiddleware
-	validate *validator.Validate
-	logger   *slog.Logger
-	importer *importer.Service
-	billing  *billingService.StripeClient
+	db        *postgres.DB
+	redis     *redisClient.Client
+	cfg       *config.Config
+	auth      *middleware.AuthMiddleware
+	validate  *validator.Validate
+	logger    *slog.Logger
+	importer  *importer.Service
+	billing   *billingService.StripeClient
+	whitelist *whitelist.Service
 }
 
 // SetBilling injects the Stripe billing client into the handler.
 func (h *Handler) SetBilling(b *billingService.StripeClient) {
 	h.billing = b
+}
+
+// SetWhitelist injects the whitelist service for admin management.
+func (h *Handler) SetWhitelist(wl *whitelist.Service) {
+	h.whitelist = wl
 }
 
 // NewHandler creates a new admin handler

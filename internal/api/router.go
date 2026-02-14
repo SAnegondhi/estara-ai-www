@@ -27,6 +27,7 @@ import (
 	billingService "github.com/estara-ai/www/internal/services/billing"
 	"github.com/estara-ai/www/internal/services/market/importer"
 	"github.com/estara-ai/www/internal/services/pdf"
+	"github.com/estara-ai/www/internal/services/whitelist"
 	"github.com/estara-ai/www/internal/db/postgres"
 	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
@@ -104,6 +105,13 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		Public:        public.NewHandler(db, cfg),
 		StripeWebhook: webhooks.NewStripeHandler(db, cfg),
 		AppleWebhook:  webhooks.NewAppleHandler(db, cfg),
+	}
+
+	// Wire whitelist service for beta access control
+	if db.Main != nil {
+		wlService := whitelist.NewService(db.Main)
+		handlers.Auth.SetWhitelist(wlService)
+		handlers.Admin.SetWhitelist(wlService)
 	}
 
 	// Inject services into market handler if available
@@ -533,6 +541,32 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 			r.Get("/renewal-status", handlers.Admin.GetIAPRenewalStatus)
 			r.Get("/webhook-events", handlers.Admin.GetIAPWebhookEvents)
 			r.Post("/subscriptions/{id}/downgrade", handlers.Admin.DowngradeIAPSubscription)
+		})
+
+		// Whitelist management
+		r.Route("/whitelist", func(r chi.Router) {
+			r.Get("/", handlers.Admin.ListWhitelist)
+			r.Post("/", handlers.Admin.CreateWhitelistEntry)
+			r.Get("/{id}", handlers.Admin.GetWhitelistEntry)
+			r.Put("/{id}", handlers.Admin.UpdateWhitelistEntry)
+			r.Post("/{id}/toggle", handlers.Admin.ToggleWhitelistEntry)
+			r.Delete("/{id}", handlers.Admin.DeleteWhitelistEntry)
+		})
+
+		// Contact submissions management
+		r.Route("/contacts", func(r chi.Router) {
+			r.Get("/", handlers.Admin.ListContacts)
+			r.Get("/{id}", handlers.Admin.GetContact)
+			r.Put("/{id}", handlers.Admin.UpdateContact)
+			r.Delete("/{id}", handlers.Admin.DeleteContact)
+		})
+
+		// Waitlist (early access) management
+		r.Route("/waitlist", func(r chi.Router) {
+			r.Get("/", handlers.Admin.ListWaitlist)
+			r.Get("/{id}", handlers.Admin.GetWaitlistEntry)
+			r.Post("/{id}/invite", handlers.Admin.InviteWaitlistEntry)
+			r.Delete("/{id}", handlers.Admin.DeleteWaitlistEntry)
 		})
 
 		// Two-Factor Authentication

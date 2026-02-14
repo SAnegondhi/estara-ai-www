@@ -1,0 +1,37 @@
+ESTARA AI
+Decision Infrastructure for Real Estate Investors
+
+---
+
+{{.FirstName}}, you've been invited.
+
+You now have access to Estara Insight, our decision-support platform for real estate investors. Your account has been approved for the private beta.
+
+BETA ACCESS INCLUDES
+- AI-Powered Market Analysis — Data-driven insights for any US market
+- Investment Planning Tools — Portfolio projections with conservative underwriting
+- Property Search — Discover investment opportunities with structured evaluation
+- Investor Reports — Comprehensive decision memos for your portfolio
+
+GETTING STARTED
+
+1. Create your account
+   Visit {{.SignupURL}} to register with this email address
+
+2. Sign in to Estara Insight
+   Use your credentials at {{.AppURL}}
+
+3. Evaluate your first opportunity
+   Run a market analysis or search for properties to begin building your decision framework
+
+---
+
+PRIVATE BETA — You're among a select group with early access. Your feedback shapes the platform. Reply to this email with any questions or observations.
+
+---
+
+Independent decision-support platform. Not investment advice. No deal promotion.
+
+Questions? Reply to this email or contact support@estara-ai.com
+
+(c) {{.Year}} Estara AI. All rights reserved.

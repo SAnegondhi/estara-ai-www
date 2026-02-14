@@ -20,6 +20,7 @@ type Querier interface {
 	// Returns count of valid (non-expired) cache entries
 	CountAIScoringCache(ctx context.Context) (int64, error)
 	CountActiveAlertsBySeverity(ctx context.Context) ([]CountActiveAlertsBySeverityRow, error)
+	CountActiveWhitelistedEmails(ctx context.Context) (int64, error)
 	CountAllCache(ctx context.Context) (int64, error)
 	CountAuditLogsByEventType(ctx context.Context, arg CountAuditLogsByEventTypeParams) ([]CountAuditLogsByEventTypeRow, error)
 	CountCacheByUser(ctx context.Context, userid string) (int64, error)
@@ -33,6 +34,7 @@ type Querier interface {
 	CountPortfolioSnapshots(ctx context.Context, userID string) (int64, error)
 	// Returns the total number of entries in the property cache
 	CountPropertyCache(ctx context.Context) (int64, error)
+	CountSearchWhitelistedEmails(ctx context.Context, email string) (int64, error)
 	CountSessionActivitiesByType(ctx context.Context, arg CountSessionActivitiesByTypeParams) (int64, error)
 	CountSessionEvaluations(ctx context.Context, discoverysessionid string) (int64, error)
 	CountSessionProperties(ctx context.Context, discoverysessionid string) (int64, error)
@@ -45,6 +47,7 @@ type Querier interface {
 	CountUserInvestorReports(ctx context.Context, userid pgtype.Text) (int64, error)
 	CountUserScenarios(ctx context.Context, userid string) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
+	CountWhitelistedEmails(ctx context.Context) (int64, error)
 	// Activity Linking Queries
 	CreateActivityLink(ctx context.Context, arg CreateActivityLinkParams) (DiscoverySessionActivity, error)
 	// Admin Audit Log Queries
@@ -113,6 +116,7 @@ type Querier interface {
 	// Vendor Contracts
 	// =========================================================
 	CreateVendorContract(ctx context.Context, arg CreateVendorContractParams) (VendorContract, error)
+	CreateWhitelistedEmail(ctx context.Context, arg CreateWhitelistedEmailParams) (CreateWhitelistedEmailRow, error)
 	DeactivateSilentLoginSession(ctx context.Context, id string) error
 	DeactivateUserSilentLoginSessions(ctx context.Context, userid string) error
 	DeleteActivityLink(ctx context.Context, arg DeleteActivityLinkParams) error
@@ -158,6 +162,7 @@ type Querier interface {
 	DeleteUser(ctx context.Context, id string) error
 	DeleteUserAnalysisPreference(ctx context.Context, arg DeleteUserAnalysisPreferenceParams) error
 	DeleteVendorContract(ctx context.Context, id string) error
+	DeleteWhitelistedEmail(ctx context.Context, id string) error
 	DisableAdminTwoFactor(ctx context.Context, userid string) error
 	DismissSystemAlert(ctx context.Context, id string) error
 	DismissSystemAlertByKey(ctx context.Context, alertkey string) error
@@ -296,6 +301,8 @@ type Querier interface {
 	GetUserStats(ctx context.Context) (GetUserStatsRow, error)
 	GetVendorContract(ctx context.Context, vendorid string) (VendorContract, error)
 	GetVendorContractByID(ctx context.Context, id string) (VendorContract, error)
+	GetWhitelistedEmailByEmail(ctx context.Context, email string) (GetWhitelistedEmailByEmailRow, error)
+	GetWhitelistedEmailByID(ctx context.Context, id string) (GetWhitelistedEmailByIDRow, error)
 	IncrementChatSessionCount(ctx context.Context, id string) error
 	IncrementEmailVerificationAttempts(ctx context.Context, id string) error
 	IncrementEvaluationCount(ctx context.Context, id string) error
@@ -306,6 +313,7 @@ type Querier interface {
 	ListActiveAdminSessions(ctx context.Context) ([]AdminSession, error)
 	ListActiveSubscriptions(ctx context.Context, arg ListActiveSubscriptionsParams) ([]Subscription, error)
 	ListActiveSystemAlerts(ctx context.Context, arg ListActiveSystemAlertsParams) ([]SystemAlert, error)
+	ListActiveWhitelistedEmails(ctx context.Context) ([]ListActiveWhitelistedEmailsRow, error)
 	ListAdminAuditLogs(ctx context.Context, arg ListAdminAuditLogsParams) ([]AdminAuditLog, error)
 	ListAdminAuditLogsByAction(ctx context.Context, arg ListAdminAuditLogsByActionParams) ([]AdminAuditLog, error)
 	ListAdminAuditLogsByAdmin(ctx context.Context, arg ListAdminAuditLogsByAdminParams) ([]AdminAuditLog, error)
@@ -366,6 +374,8 @@ type Querier interface {
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
 	ListUsersByRole(ctx context.Context, arg ListUsersByRoleParams) ([]User, error)
 	ListVendorContracts(ctx context.Context) ([]VendorContract, error)
+	// Whitelist Management Queries
+	ListWhitelistedEmails(ctx context.Context, arg ListWhitelistedEmailsParams) ([]ListWhitelistedEmailsRow, error)
 	MarkBillingCycleProcessed(ctx context.Context, id string) error
 	MarkEmailVerificationCodeVerified(ctx context.Context, id string) error
 	MarkPasswordResetTokenUsed(ctx context.Context, id string) error
@@ -377,11 +387,13 @@ type Querier interface {
 	RevokeUserConsent(ctx context.Context, arg RevokeUserConsentParams) error
 	SearchUserScenarios(ctx context.Context, arg SearchUserScenariosParams) ([]Scenario, error)
 	SearchUsersByEmail(ctx context.Context, arg SearchUsersByEmailParams) ([]User, error)
+	SearchWhitelistedEmails(ctx context.Context, arg SearchWhitelistedEmailsParams) ([]SearchWhitelistedEmailsRow, error)
 	SessionExistsByUser(ctx context.Context, arg SessionExistsByUserParams) (bool, error)
 	SupersedeInvestorReport(ctx context.Context, arg SupersedeInvestorReportParams) error
 	SuspendUser(ctx context.Context, arg SuspendUserParams) error
 	ToggleCronJobConfig(ctx context.Context, arg ToggleCronJobConfigParams) (CronJobConfig, error)
 	ToggleScenarioFavorite(ctx context.Context, arg ToggleScenarioFavoriteParams) (Scenario, error)
+	ToggleWhitelistedEmail(ctx context.Context, arg ToggleWhitelistedEmailParams) (ToggleWhitelistedEmailRow, error)
 	UnsuspendUser(ctx context.Context, id string) error
 	UpdateAdminSessionLastActive(ctx context.Context, id string) error
 	UpdateAdminTwoFactorBackupCodes(ctx context.Context, arg UpdateAdminTwoFactorBackupCodesParams) error
@@ -424,6 +436,7 @@ type Querier interface {
 	UpdateUserSubscription(ctx context.Context, arg UpdateUserSubscriptionParams) error
 	UpdateUserUpdatedAt(ctx context.Context, id string) error
 	UpdateVendorContract(ctx context.Context, arg UpdateVendorContractParams) (VendorContract, error)
+	UpdateWhitelistedEmail(ctx context.Context, arg UpdateWhitelistedEmailParams) (UpdateWhitelistedEmailRow, error)
 	// Inserts or updates AI scoring cache entry
 	UpsertAIScoringCache(ctx context.Context, arg UpsertAIScoringCacheParams) error
 	// ADR-074: Upsert analysis report with fullReport column for V2 markdown reports

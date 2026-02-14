@@ -21,17 +21,19 @@ import (
 	"github.com/estara-ai/www/internal/db/postgres"
 	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
+	"github.com/estara-ai/www/internal/services/whitelist"
 	"github.com/estara-ai/www/pkg/httputil"
 )
 
 // Handler handles auth-related HTTP requests
 type Handler struct {
-	auth     *middleware.AuthMiddleware
-	db       *postgres.DB
-	redis    *redisClient.Client
-	cfg      *config.Config
-	validate *validator.Validate
-	logger   *slog.Logger
+	auth      *middleware.AuthMiddleware
+	db        *postgres.DB
+	redis     *redisClient.Client
+	cfg       *config.Config
+	validate  *validator.Validate
+	logger    *slog.Logger
+	whitelist *whitelist.Service
 }
 
 // NewHandler creates a new auth handler
@@ -44,6 +46,11 @@ func NewHandler(auth *middleware.AuthMiddleware, db *postgres.DB, redis *redisCl
 		validate: validator.New(),
 		logger:   slog.Default().With("component", "auth_handler"),
 	}
+}
+
+// SetWhitelist injects the whitelist service for beta access control.
+func (h *Handler) SetWhitelist(wl *whitelist.Service) {
+	h.whitelist = wl
 }
 
 // LoginRequest represents a login request
@@ -231,6 +238,18 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	// Clear failed login attempts on success
 	h.clearLoginAttempts(ctx, email)
+
+	// Check whitelist (beta access control)
+	if h.whitelist != nil && !h.whitelist.IsAllowed(ctx, email) {
+		h.logAuthAudit(ctx, r, user.ID, "USER_LOGIN", "Login blocked: email not whitelisted", false, "not whitelisted")
+		h.logger.Warn("login blocked by whitelist", "email", email)
+		httputil.JSON(w, http.StatusForbidden, map[string]interface{}{
+			"error":   "access_denied",
+			"code":    "NOT_WHITELISTED",
+			"message": "Your account is not approved for beta access. Please contact support.",
+		})
+		return
+	}
 
 	// Check V2 subscription quota
 	v2Quota, err := h.getV2Quota(ctx, user.ID)

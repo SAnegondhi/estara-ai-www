@@ -498,6 +498,45 @@ func (s *Service) SendRenewalReminder(params RenewalReminderParams) (*Result, er
 	})
 }
 
+// SendWhitelistInvite sends an invite email when an admin whitelists a user for beta access.
+func (s *Service) SendWhitelistInvite(to, firstName string) (*Result, error) {
+	if firstName == "" {
+		firstName = "Investor"
+	}
+
+	appURL := s.cfg.Server.ClientURL
+	if appURL == "" {
+		appURL = "https://insight.estara-ai.com"
+	}
+
+	signupURL := s.cfg.Server.MarketingURL
+	if signupURL == "" {
+		signupURL = "https://www.estara-ai.com"
+	}
+	signupURL = signupURL + "/signup"
+
+	html := s.renderHTML("whitelist_invite.html", map[string]interface{}{
+		"FirstName": firstName,
+		"AppURL":    appURL,
+		"SignupURL": signupURL,
+		"Year":      time.Now().Year(),
+	})
+	text := s.renderText("whitelist_invite.txt", map[string]interface{}{
+		"FirstName": firstName,
+		"AppURL":    appURL,
+		"SignupURL": signupURL,
+		"Year":      time.Now().Year(),
+	})
+
+	return s.Send(EmailParams{
+		To:      to,
+		ToName:  firstName,
+		Subject: "You're Invited to Estara Insight",
+		HTML:    html,
+		Text:    text,
+	})
+}
+
 // TierInfo holds tier-specific display information
 type TierInfo struct {
 	Name     string
