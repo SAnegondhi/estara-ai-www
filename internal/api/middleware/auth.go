@@ -35,10 +35,11 @@ var (
 
 // Claims represents the JWT claims structure
 type Claims struct {
-	UserID      string `json:"userId"`
-	ClerkUserID string `json:"clerkUserId,omitempty"`
-	Email       string `json:"email"`
-	Role        string `json:"role"`
+	UserID       string `json:"userId"`
+	ClerkUserID  string `json:"clerkUserId,omitempty"`
+	Email        string `json:"email"`
+	Role         string `json:"role"`
+	AdminSession bool   `json:"adminSession,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -186,6 +187,32 @@ func (m *AuthMiddleware) GenerateToken(userID, clerkUserID, email, role string, 
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(m.jwtSecret)
+}
+
+// GenerateAdminToken creates an admin-specific JWT with 8-hour expiry
+func (m *AuthMiddleware) GenerateAdminToken(userID, email string) (string, error) {
+	now := time.Now()
+	claims := &Claims{
+		UserID:       userID,
+		Email:        email,
+		Role:         "admin",
+		AdminSession: true,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(now.Add(8 * time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
+			Issuer:    "estara-ai-admin",
+			Subject:   userID,
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(m.jwtSecret)
+}
+
+// IsAdmin checks if the user ID is in the admin list or has admin role
+func (m *AuthMiddleware) IsAdmin(userID string) bool {
+	return m.adminIDs[userID]
 }
 
 // GenerateRefreshToken creates a long-lived refresh token

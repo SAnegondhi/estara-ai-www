@@ -11,10 +11,12 @@ import (
 )
 
 type Querier interface {
+	ApplyAdminCredit(ctx context.Context, id string) (AdminCredit, error)
 	ArchiveDiscoverySession(ctx context.Context, arg ArchiveDiscoverySessionParams) (DiscoverySession, error)
 	AutoArchiveOldSessions(ctx context.Context) error
 	CancelInsightAccess(ctx context.Context, id string) (InsightAccess, error)
 	CancelSubscription(ctx context.Context, arg CancelSubscriptionParams) error
+	CompleteCronJobRun(ctx context.Context, arg CompleteCronJobRunParams) (CronJobRun, error)
 	// Returns count of valid (non-expired) cache entries
 	CountAIScoringCache(ctx context.Context) (int64, error)
 	CountActiveAlertsBySeverity(ctx context.Context) ([]CountActiveAlertsBySeverityRow, error)
@@ -23,6 +25,7 @@ type Querier interface {
 	CountCacheByUser(ctx context.Context, userid string) (int64, error)
 	CountContactSubmissions(ctx context.Context) (int64, error)
 	CountContactSubmissionsByStatus(ctx context.Context, status string) (int64, error)
+	CountCronJobRunsByStatus(ctx context.Context, jobid string) (CountCronJobRunsByStatusRow, error)
 	CountEarlyAccess(ctx context.Context) (int64, error)
 	CountExpiredCache(ctx context.Context) (int64, error)
 	CountPendingEarlyAccess(ctx context.Context) (int64, error)
@@ -35,6 +38,7 @@ type Querier interface {
 	CountSessionProperties(ctx context.Context, discoverysessionid string) (int64, error)
 	CountSnapshotsByEmail(ctx context.Context, email pgtype.Text) (int64, error)
 	CountSubscriptionsByStatus(ctx context.Context) (CountSubscriptionsByStatusRow, error)
+	CountTermsAcceptancesByVersion(ctx context.Context, version string) (int64, error)
 	CountUserDiscoverySessions(ctx context.Context, arg CountUserDiscoverySessionsParams) (int64, error)
 	CountUserInvestorReports(ctx context.Context, userid pgtype.Text) (int64, error)
 	CountUserScenarios(ctx context.Context, userid string) (int64, error)
@@ -43,6 +47,10 @@ type Querier interface {
 	CreateActivityLink(ctx context.Context, arg CreateActivityLinkParams) (DiscoverySessionActivity, error)
 	// Admin Audit Log Queries
 	CreateAdminAuditLog(ctx context.Context, arg CreateAdminAuditLogParams) (AdminAuditLog, error)
+	// =========================================================
+	// Admin Credits
+	// =========================================================
+	CreateAdminCredit(ctx context.Context, arg CreateAdminCreditParams) (AdminCredit, error)
 	// Admin Session Queries
 	CreateAdminSession(ctx context.Context, arg CreateAdminSessionParams) (AdminSession, error)
 	CreateAdminTwoFactor(ctx context.Context, arg CreateAdminTwoFactorParams) (AdminTwoFactor, error)
@@ -54,6 +62,14 @@ type Querier interface {
 	CreateBillingCycle(ctx context.Context, arg CreateBillingCycleParams) (BillingCycle, error)
 	CreateCheckoutEvidence(ctx context.Context, arg CreateCheckoutEvidenceParams) (CheckoutEvidence, error)
 	CreateContactSubmission(ctx context.Context, arg CreateContactSubmissionParams) (ContactSubmission, error)
+	// =========================================================
+	// Cron Job Configs
+	// =========================================================
+	CreateCronJobConfig(ctx context.Context, arg CreateCronJobConfigParams) (CronJobConfig, error)
+	// =========================================================
+	// Cron Job Runs
+	// =========================================================
+	CreateCronJobRun(ctx context.Context, arg CreateCronJobRunParams) (CronJobRun, error)
 	// Discovery Session Queries
 	CreateDiscoverySession(ctx context.Context, arg CreateDiscoverySessionParams) (DiscoverySession, error)
 	// Discovery Session Evaluations Queries
@@ -82,9 +98,18 @@ type Querier interface {
 	CreateSnapshotRequest(ctx context.Context, arg CreateSnapshotRequestParams) (SnapshotRequest, error)
 	CreateSubscription(ctx context.Context, arg CreateSubscriptionParams) (Subscription, error)
 	CreateSystemAlert(ctx context.Context, arg CreateSystemAlertParams) (SystemAlert, error)
+	// =========================================================
+	// Terms Acceptances
+	// =========================================================
+	CreateTermsAcceptance(ctx context.Context, arg CreateTermsAcceptanceParams) (TermsAcceptance, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	// Creates a user with password hash and Stripe customer ID (for guest checkout signup)
 	CreateUserWithPassword(ctx context.Context, arg CreateUserWithPasswordParams) (User, error)
+	// Queries for admin extended tables (vendor contracts, credits, cron tracking, terms)
+	// =========================================================
+	// Vendor Contracts
+	// =========================================================
+	CreateVendorContract(ctx context.Context, arg CreateVendorContractParams) (VendorContract, error)
 	DeactivateSilentLoginSession(ctx context.Context, id string) error
 	DeactivateUserSilentLoginSessions(ctx context.Context, userid string) error
 	DeleteActivityLink(ctx context.Context, arg DeleteActivityLinkParams) error
@@ -113,6 +138,7 @@ type Querier interface {
 	DeleteExpiredSnapshots(ctx context.Context) error
 	DeleteExpiredSystemAlerts(ctx context.Context) error
 	DeleteExpiredSystemCache(ctx context.Context) (int64, error)
+	DeleteOldCronJobRuns(ctx context.Context, dollar_1 pgtype.Text) error
 	// Deletes the oldest N entries from the cache (FIFO eviction)
 	DeleteOldestPropertyCache(ctx context.Context, limit int32) (int64, error)
 	// Delete all snapshots for a user (for regeneration)
@@ -128,6 +154,7 @@ type Querier interface {
 	DeleteSystemCache(ctx context.Context, key string) error
 	DeleteUser(ctx context.Context, id string) error
 	DeleteUserAnalysisPreference(ctx context.Context, arg DeleteUserAnalysisPreferenceParams) error
+	DeleteVendorContract(ctx context.Context, id string) error
 	DisableAdminTwoFactor(ctx context.Context, userid string) error
 	DismissSystemAlert(ctx context.Context, id string) error
 	DismissSystemAlertByKey(ctx context.Context, alertkey string) error
@@ -140,6 +167,7 @@ type Querier interface {
 	GetActiveSilentLoginSessionsByUser(ctx context.Context, userid string) ([]SilentLoginSession, error)
 	GetActivityLink(ctx context.Context, arg GetActivityLinkParams) (DiscoverySessionActivity, error)
 	GetAdminAuditLogByID(ctx context.Context, id string) (AdminAuditLog, error)
+	GetAdminCreditsByUser(ctx context.Context, userid string) ([]AdminCredit, error)
 	GetAdminSessionByID(ctx context.Context, id string) (AdminSession, error)
 	GetAdminSessionByTokenHash(ctx context.Context, tokenhash string) (AdminSession, error)
 	// Admin Two-Factor Queries
@@ -160,6 +188,9 @@ type Querier interface {
 	// Website and Public API Queries
 	// Contact Submissions
 	GetContactSubmissionByID(ctx context.Context, id string) (ContactSubmission, error)
+	GetCronJobConfigByID(ctx context.Context, id string) (CronJobConfig, error)
+	GetCronJobConfigByName(ctx context.Context, name string) (CronJobConfig, error)
+	GetCronJobRun(ctx context.Context, id string) (CronJobRun, error)
 	GetDiscoverySession(ctx context.Context, id string) (DiscoverySession, error)
 	GetDiscoverySessionByUser(ctx context.Context, arg GetDiscoverySessionByUserParams) (DiscoverySession, error)
 	// Get the earliest purchase date from portfolio properties for backfill
@@ -192,6 +223,7 @@ type Querier interface {
 	// Get the most recent snapshot for a user
 	GetLatestPortfolioSnapshot(ctx context.Context, userID string) (V2PortfolioSnapshot, error)
 	GetLatestSnapshotByEmail(ctx context.Context, email pgtype.Text) (SnapshotRequest, error)
+	GetLatestTermsAcceptance(ctx context.Context, userid string) (TermsAcceptance, error)
 	GetPasswordResetTokenByID(ctx context.Context, id string) (PasswordResetToken, error)
 	// Password Reset Token Queries
 	GetPasswordResetTokenByToken(ctx context.Context, token string) (PasswordResetToken, error)
@@ -237,6 +269,7 @@ type Querier interface {
 	// SnapshotRequest Queries
 	GetSnapshotRequestByID(ctx context.Context, id string) (SnapshotRequest, error)
 	GetSnapshotRequestBySessionID(ctx context.Context, sessionid string) (SnapshotRequest, error)
+	GetSubscriptionByAppleTransactionID(ctx context.Context, appleoriginaltransactionid pgtype.Text) (Subscription, error)
 	GetSubscriptionByStripeID(ctx context.Context, stripesubscriptionid pgtype.Text) (Subscription, error)
 	// Subscription Queries
 	GetSubscriptionByUserID(ctx context.Context, userid string) (Subscription, error)
@@ -249,12 +282,15 @@ type Querier interface {
 	// Used when we want stale data as fallback
 	GetSystemCacheIgnoreExpiry(ctx context.Context, key string) (SystemCache, error)
 	GetSystemCacheStats(ctx context.Context) (GetSystemCacheStatsRow, error)
+	GetTermsAcceptancesByUser(ctx context.Context, userid string) ([]TermsAcceptance, error)
 	// User Analysis Preferences Queries
 	GetUserAnalysisPreference(ctx context.Context, arg GetUserAnalysisPreferenceParams) (UserAnalysisPreference, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id string) (User, error)
 	GetUserByStripeCustomerID(ctx context.Context, stripecustomerid pgtype.Text) (User, error)
 	GetUserStats(ctx context.Context) (GetUserStatsRow, error)
+	GetVendorContract(ctx context.Context, vendorid string) (VendorContract, error)
+	GetVendorContractByID(ctx context.Context, id string) (VendorContract, error)
 	IncrementChatSessionCount(ctx context.Context, id string) error
 	IncrementEmailVerificationAttempts(ctx context.Context, id string) error
 	IncrementEvaluationCount(ctx context.Context, id string) error
@@ -270,6 +306,7 @@ type Querier interface {
 	ListAdminAuditLogsByAdmin(ctx context.Context, arg ListAdminAuditLogsByAdminParams) ([]AdminAuditLog, error)
 	ListAdminAuditLogsByDateRange(ctx context.Context, arg ListAdminAuditLogsByDateRangeParams) ([]AdminAuditLog, error)
 	ListAdminAuditLogsByResource(ctx context.Context, arg ListAdminAuditLogsByResourceParams) ([]AdminAuditLog, error)
+	ListAdminCredits(ctx context.Context, arg ListAdminCreditsParams) ([]AdminCredit, error)
 	ListAdminSessionsByUser(ctx context.Context, userid string) ([]AdminSession, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
 	ListAuditLogsByDateRange(ctx context.Context, arg ListAuditLogsByDateRangeParams) ([]AuditLog, error)
@@ -285,11 +322,15 @@ type Querier interface {
 	ListCacheByUser(ctx context.Context, arg ListCacheByUserParams) ([]AnalysisCache, error)
 	ListContactSubmissions(ctx context.Context, arg ListContactSubmissionsParams) ([]ContactSubmission, error)
 	ListContactSubmissionsByStatus(ctx context.Context, arg ListContactSubmissionsByStatusParams) ([]ContactSubmission, error)
+	ListCronJobConfigs(ctx context.Context) ([]CronJobConfig, error)
+	ListCronJobRuns(ctx context.Context, arg ListCronJobRunsParams) ([]CronJobRun, error)
 	ListEarlyAccess(ctx context.Context, arg ListEarlyAccessParams) ([]EarlyAccess, error)
 	ListExpiringInsightAccess(ctx context.Context, periodenddate pgtype.Timestamp) ([]InsightAccess, error)
+	ListExpiringVendorContracts(ctx context.Context, dollar_1 pgtype.Text) ([]VendorContract, error)
 	ListInvitedEarlyAccess(ctx context.Context, limit int32) ([]EarlyAccess, error)
 	ListInvoicesByStatus(ctx context.Context, arg ListInvoicesByStatusParams) ([]Invoice, error)
 	ListPendingEarlyAccess(ctx context.Context, limit int32) ([]EarlyAccess, error)
+	ListRecentCronJobRuns(ctx context.Context, limit int32) ([]CronJobRun, error)
 	ListRenewalNotificationsBySubscription(ctx context.Context, subscriptionid string) ([]RenewalNotification, error)
 	ListSessionActivities(ctx context.Context, discoverysessionid string) ([]DiscoverySessionActivity, error)
 	ListSessionEvaluations(ctx context.Context, discoverysessionid string) ([]DiscoverySessionEvaluation, error)
@@ -297,7 +338,9 @@ type Querier interface {
 	ListSubscriptionsByTier(ctx context.Context, arg ListSubscriptionsByTierParams) ([]Subscription, error)
 	ListSystemAlertsBySeverity(ctx context.Context, arg ListSystemAlertsBySeverityParams) ([]SystemAlert, error)
 	ListSystemAlertsRequiringAction(ctx context.Context) ([]SystemAlert, error)
+	ListTermsAcceptances(ctx context.Context, arg ListTermsAcceptancesParams) ([]TermsAcceptance, error)
 	ListUnprocessedBillingCycles(ctx context.Context, limit int32) ([]BillingCycle, error)
+	ListUnusedAdminCredits(ctx context.Context) ([]AdminCredit, error)
 	ListUserBillingCycles(ctx context.Context, arg ListUserBillingCyclesParams) ([]BillingCycle, error)
 	ListUserCheckoutEvidence(ctx context.Context, arg ListUserCheckoutEvidenceParams) ([]CheckoutEvidence, error)
 	ListUserDiscoverySessions(ctx context.Context, arg ListUserDiscoverySessionsParams) ([]DiscoverySession, error)
@@ -313,23 +356,28 @@ type Querier interface {
 	ListUserSnapshots(ctx context.Context, arg ListUserSnapshotsParams) ([]SnapshotRequest, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
 	ListUsersByRole(ctx context.Context, arg ListUsersByRoleParams) ([]User, error)
+	ListVendorContracts(ctx context.Context) ([]VendorContract, error)
 	MarkBillingCycleProcessed(ctx context.Context, id string) error
 	MarkEmailVerificationCodeVerified(ctx context.Context, id string) error
 	MarkPasswordResetTokenUsed(ctx context.Context, id string) error
 	MarkSnapshotConverted(ctx context.Context, id string) (SnapshotRequest, error)
+	ResetCronJobFailures(ctx context.Context, id string) error
 	RestoreDiscoverySession(ctx context.Context, arg RestoreDiscoverySessionParams) (DiscoverySession, error)
 	RevokeAdminSession(ctx context.Context, id string) error
 	RevokeAllAdminSessionsByUser(ctx context.Context, userid string) error
 	SearchUserScenarios(ctx context.Context, arg SearchUserScenariosParams) ([]Scenario, error)
 	SearchUsersByEmail(ctx context.Context, arg SearchUsersByEmailParams) ([]User, error)
+	SessionExistsByUser(ctx context.Context, arg SessionExistsByUserParams) (bool, error)
 	SupersedeInvestorReport(ctx context.Context, arg SupersedeInvestorReportParams) error
 	SuspendUser(ctx context.Context, arg SuspendUserParams) error
+	ToggleCronJobConfig(ctx context.Context, arg ToggleCronJobConfigParams) (CronJobConfig, error)
 	ToggleScenarioFavorite(ctx context.Context, arg ToggleScenarioFavoriteParams) (Scenario, error)
 	UnsuspendUser(ctx context.Context, id string) error
 	UpdateAdminSessionLastActive(ctx context.Context, id string) error
 	UpdateAdminTwoFactorBackupCodes(ctx context.Context, arg UpdateAdminTwoFactorBackupCodesParams) error
 	UpdateCacheAccess(ctx context.Context, key string) error
 	UpdateContactSubmissionStatus(ctx context.Context, arg UpdateContactSubmissionStatusParams) (ContactSubmission, error)
+	UpdateCronJobLastRun(ctx context.Context, arg UpdateCronJobLastRunParams) error
 	UpdateDiscoverySession(ctx context.Context, arg UpdateDiscoverySessionParams) (DiscoverySession, error)
 	UpdateDiscoverySessionAccess(ctx context.Context, id string) (DiscoverySession, error)
 	UpdateEarlyAccessAccepted(ctx context.Context, id string) (EarlyAccess, error)
@@ -349,9 +397,13 @@ type Querier interface {
 	UpdateReportPackConsumptionHistory(ctx context.Context, arg UpdateReportPackConsumptionHistoryParams) error
 	UpdateScenario(ctx context.Context, arg UpdateScenarioParams) (Scenario, error)
 	UpdateScenarioResults(ctx context.Context, arg UpdateScenarioResultsParams) error
+	UpdateSessionEvaluationCount(ctx context.Context, discoverysessionid string) error
+	UpdateSessionPriceStats(ctx context.Context, id string) error
 	UpdateSilentLoginSessionAccess(ctx context.Context, id string) error
 	UpdateSnapshotRequestResults(ctx context.Context, arg UpdateSnapshotRequestResultsParams) (SnapshotRequest, error)
 	UpdateSnapshotRequestStatus(ctx context.Context, arg UpdateSnapshotRequestStatusParams) (SnapshotRequest, error)
+	UpdateSubscriptionCancelAtPeriodEnd(ctx context.Context, arg UpdateSubscriptionCancelAtPeriodEndParams) error
+	UpdateSubscriptionMetadata(ctx context.Context, arg UpdateSubscriptionMetadataParams) error
 	UpdateSubscriptionPeriod(ctx context.Context, arg UpdateSubscriptionPeriodParams) error
 	UpdateSubscriptionStatus(ctx context.Context, arg UpdateSubscriptionStatusParams) error
 	UpdateSubscriptionTier(ctx context.Context, arg UpdateSubscriptionTierParams) error
@@ -361,11 +413,13 @@ type Querier interface {
 	UpdateUserStripeCustomer(ctx context.Context, arg UpdateUserStripeCustomerParams) error
 	UpdateUserSubscription(ctx context.Context, arg UpdateUserSubscriptionParams) error
 	UpdateUserUpdatedAt(ctx context.Context, id string) error
+	UpdateVendorContract(ctx context.Context, arg UpdateVendorContractParams) (VendorContract, error)
 	// Inserts or updates AI scoring cache entry
 	UpsertAIScoringCache(ctx context.Context, arg UpsertAIScoringCacheParams) error
 	// ADR-074: Upsert analysis report with fullReport column for V2 markdown reports
 	UpsertAnalysisReport(ctx context.Context, arg UpsertAnalysisReportParams) (AnalysisCache, error)
 	UpsertCache(ctx context.Context, arg UpsertCacheParams) (AnalysisCache, error)
+	UpsertCronJobConfig(ctx context.Context, arg UpsertCronJobConfigParams) (CronJobConfig, error)
 	UpsertInvoice(ctx context.Context, arg UpsertInvoiceParams) (Invoice, error)
 	// Inserts or updates a property in the cache
 	UpsertPropertyCache(ctx context.Context, arg UpsertPropertyCacheParams) error

@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,11 +13,13 @@ import (
 
 	"github.com/go-playground/validator/v10"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/db/postgres"
+	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -184,6 +188,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	allowed, retryAfter := h.checkRateLimit(ctx, email)
 	if !allowed {
 		h.logger.Warn("rate limited login attempt", "email", email)
+		h.logAuthAudit(ctx, r, "", "RATE_LIMIT", "Login blocked: account locked due to too many failed attempts", false, "account locked")
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 		httputil.JSON(w, http.StatusTooManyRequests, map[string]interface{}{
 			"error":       "Account temporarily locked due to too many failed attempts",
@@ -198,6 +203,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	user, err := h.getUserByEmail(ctx, email)
 	if err != nil {
 		h.recordFailedLogin(ctx, email)
+		h.logAuthAudit(ctx, r, "", "USER_LOGIN", "Login failed: user not found", false, "user not found")
 		h.logger.Warn("user not found", "email", email, "error", err.Error())
 		httputil.Unauthorized(w, "Invalid credentials")
 		return
@@ -207,6 +213,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	// Verify password
 	if user.Password == nil || *user.Password == "" {
 		h.recordFailedLogin(ctx, email)
+		h.logAuthAudit(ctx, r, user.ID, "USER_LOGIN", "Login failed: account has no password set", false, "no password")
 		h.logger.Warn("user has no password", "email", email)
 		httputil.Unauthorized(w, "Invalid credentials")
 		return
@@ -215,6 +222,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("comparing password", "hashLen", len(*user.Password), "inputLen", len(req.Password))
 	if err := bcrypt.CompareHashAndPassword([]byte(*user.Password), []byte(req.Password)); err != nil {
 		h.recordFailedLogin(ctx, email)
+		h.logAuthAudit(ctx, r, user.ID, "USER_LOGIN", "Login failed: invalid password", false, "invalid password")
 		h.logger.Warn("invalid password", "email", email, "bcryptError", err.Error())
 		httputil.Unauthorized(w, "Invalid credentials")
 		return
@@ -290,6 +298,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		CSRFToken:    csrfToken,      // ADR-066: CSRF token for cookie-based auth
 	}
 
+	h.logAuthAudit(ctx, r, user.ID, "USER_LOGIN", "User logged in successfully", true, "")
 	h.logger.Info("login successful", "user_id", user.ID, "email", email)
 	// Return response directly without wrapping in data object to match www_v1 format
 	httputil.JSON(w, http.StatusOK, response)
@@ -383,6 +392,7 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		CSRFToken:    csrfToken,     // ADR-066: CSRF token
 	}
 
+	h.logAuthAudit(ctx, r, user.ID, "TOKEN_REFRESH", "Token refreshed successfully", true, "")
 	h.logger.Info("token refreshed", "user_id", user.ID)
 	// Return response directly without wrapping in data object to match www_v1 format
 	httputil.JSON(w, http.StatusOK, response)
@@ -480,6 +490,16 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 
 // Logout invalidates the user's session
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Try to extract user ID from token for audit logging
+	userID := ""
+	if claims := middleware.GetUserFromContext(ctx); claims != nil {
+		userID = claims.UserID
+	}
+
+	h.logAuthAudit(ctx, r, userID, "USER_LOGOUT", "User logged out", true, "")
+
 	// ADR-066: Clear all authentication cookies
 	middleware.ClearAuthCookies(w)
 
@@ -682,6 +702,41 @@ func (h *Handler) buildEntitlements(user *User, quota *V2Quota) *Entitlements {
 	}
 
 	return entitlements
+}
+
+// logAuthAudit writes an audit log entry for auth events (login, logout, token refresh, rate limit)
+func (h *Handler) logAuthAudit(ctx context.Context, r *http.Request, userID, eventType, description string, success bool, errMsg string) {
+	idBytes := make([]byte, 12)
+	_, _ = rand.Read(idBytes)
+	id := hex.EncodeToString(idBytes)
+
+	clientIP := r.RemoteAddr
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if idx := strings.Index(xff, ","); idx != -1 {
+			clientIP = xff[:idx]
+		} else {
+			clientIP = xff
+		}
+	} else if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		clientIP = xri
+	}
+
+	q := queries.New(h.db.Main)
+	_, err := q.CreateAuditLog(ctx, queries.CreateAuditLogParams{
+		ID:          id,
+		UserId:      pgtype.Text{String: userID, Valid: userID != ""},
+		EventType:   eventType,
+		Description: pgtype.Text{String: description, Valid: true},
+		IpAddress:   pgtype.Text{String: clientIP, Valid: true},
+		UserAgent:   pgtype.Text{String: r.UserAgent(), Valid: true},
+		Success:     success,
+		Error:       pgtype.Text{String: errMsg, Valid: errMsg != ""},
+		Endpoint:    pgtype.Text{String: r.URL.Path, Valid: true},
+		Severity:    "info",
+	})
+	if err != nil {
+		h.logger.Warn("failed to write audit log", "error", err)
+	}
 }
 
 // Rate limiting helpers

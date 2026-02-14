@@ -79,6 +79,28 @@ UPDATE discovery_sessions SET
     "updatedAt" = NOW()
 WHERE id = $1;
 
+-- name: UpdateSessionPriceStats :exec
+UPDATE discovery_sessions SET
+    median_price = stats.med,
+    mode_price = stats.mod
+FROM (
+    SELECT
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY price)::int AS med,
+        mode() WITHIN GROUP (ORDER BY price) AS mod
+    FROM discovery_session_properties
+    WHERE "discoverySessionId" = $1
+) stats
+WHERE discovery_sessions.id = $1;
+
+-- name: UpdateSessionEvaluationCount :exec
+UPDATE discovery_sessions SET
+    "evaluationCount" = (SELECT COUNT(*) FROM discovery_session_evaluations WHERE "discoverySessionId" = $1),
+    "updatedAt" = NOW()
+WHERE id = $1;
+
+-- name: SessionExistsByUser :one
+SELECT EXISTS(SELECT 1 FROM discovery_sessions WHERE id = $1 AND "userId" = $2);
+
 -- Activity Linking Queries
 
 -- name: CreateActivityLink :one

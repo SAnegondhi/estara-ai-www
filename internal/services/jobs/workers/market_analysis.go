@@ -8,10 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/estara-ai/www/internal/db/postgres"
 	"github.com/estara-ai/www/internal/services/ai/agents"
 	"github.com/estara-ai/www/internal/services/cache"
 	"github.com/estara-ai/www/internal/services/jobs/queue"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
+	"github.com/estara-ai/www/internal/services/market/trends"
 )
 
 // MarketAnalysisWorker processes market analysis jobs
@@ -19,6 +21,8 @@ type MarketAnalysisWorker struct {
 	orchestrator *agents.DualAgentOrchestrator
 	market       *aggregator.Aggregator
 	cache        *cache.HybridCache
+	trends       *trends.Service
+	mainDB       *postgres.Pool
 	logger       *slog.Logger
 }
 
@@ -27,6 +31,8 @@ type MarketAnalysisWorkerConfig struct {
 	Orchestrator *agents.DualAgentOrchestrator
 	Market       *aggregator.Aggregator
 	Cache        *cache.HybridCache
+	Trends       *trends.Service
+	MainDB       *postgres.Pool
 }
 
 // NewMarketAnalysisWorker creates a new market analysis worker
@@ -35,6 +41,8 @@ func NewMarketAnalysisWorker(cfg MarketAnalysisWorkerConfig) *MarketAnalysisWork
 		orchestrator: cfg.Orchestrator,
 		market:       cfg.Market,
 		cache:        cfg.Cache,
+		trends:       cfg.Trends,
+		mainDB:       cfg.MainDB,
 		logger:       slog.Default().With("component", "market_analysis_worker"),
 	}
 }
@@ -179,6 +187,9 @@ func (w *MarketAnalysisWorker) Process(
 		"location", req.Location,
 		"confidence", result.Confidence,
 	)
+
+	// Background: generate trends for the same location
+	w.backgroundGenerateTrends(job.UserID, req.Location)
 
 	return &queue.JobResult{
 		JobID:       job.ID,
@@ -487,6 +498,9 @@ func (w *MarketAnalysisWorker) processV2(
 		"report_length", len(v2Result.FullReport),
 	)
 
+	// Background: generate trends for the same location
+	w.backgroundGenerateTrends(job.UserID, req.Location)
+
 	return &queue.JobResult{
 		JobID:       job.ID,
 		Status:      queue.JobStatusCompleted,
@@ -494,6 +508,88 @@ func (w *MarketAnalysisWorker) processV2(
 		Duration:    duration,
 		CompletedAt: time.Now(),
 	}, nil
+}
+
+// backgroundGenerateTrends fires a goroutine to generate and cache trends for the same location
+func (w *MarketAnalysisWorker) backgroundGenerateTrends(userID, location string) {
+	if w.trends == nil || w.mainDB == nil {
+		return
+	}
+
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
+		cacheKey := "trends_" + normalizeTrendLocation(location)
+
+		w.logger.Info("background trend generation started",
+			"user_id", userID,
+			"location", location,
+			"cache_key", cacheKey,
+		)
+
+		result, err := w.trends.GetTrends(bgCtx, trends.TrendsRequest{
+			Location:  location,
+			Years:     5,
+			IncludeAI: true,
+		})
+		if err != nil {
+			w.logger.Warn("background trend generation failed", "error", err, "location", location)
+			return
+		}
+
+		// Store in analysis_cache for history
+		data, err := json.Marshal(result)
+		if err != nil {
+			w.logger.Warn("failed to marshal background trend result", "error", err)
+			return
+		}
+
+		var fullReport string
+		if result.Synthesis != nil {
+			fullReport = result.Synthesis.Summary
+		}
+
+		expiresAt := time.Now().Add(7 * 24 * time.Hour) // 7-day TTL
+
+		_, err = w.mainDB.Exec(bgCtx, `
+			INSERT INTO analysis_cache (
+				id, key, "userId", location, feature, content, "fullReport",
+				"expiresAt", "createdAt", "lastAccessedAt", metadata
+			) VALUES ($1, $2, $3, $4, 'market_trends', $5, $6, $7, NOW(), NOW(), '{}')
+			ON CONFLICT (key) DO UPDATE SET
+				content = EXCLUDED.content,
+				"fullReport" = EXCLUDED."fullReport",
+				"expiresAt" = EXCLUDED."expiresAt",
+				"lastAccessedAt" = NOW()
+		`,
+			fmt.Sprintf("trends_%s_%d", normalizeTrendLocation(location), time.Now().Unix()),
+			cacheKey,
+			userID,
+			location,
+			string(data),
+			fullReport,
+			expiresAt,
+		)
+		if err != nil {
+			w.logger.Warn("failed to store background trend in cache", "error", err, "location", location)
+			return
+		}
+
+		w.logger.Info("background trend generation complete", "location", location, "cache_key", cacheKey)
+	}()
+}
+
+// normalizeTrendLocation creates a cache-friendly key from a location string
+func normalizeTrendLocation(loc string) string {
+	s := strings.ToLower(strings.TrimSpace(loc))
+	s = strings.ReplaceAll(s, " ", "_")
+	s = strings.ReplaceAll(s, ",", "_")
+	for strings.Contains(s, "__") {
+		s = strings.ReplaceAll(s, "__", "_")
+	}
+	s = strings.Trim(s, "_")
+	return s
 }
 
 // resultToMap converts MarketAnalysisResult to a map for JobResult.Data

@@ -24,6 +24,18 @@ type AdminAuditLog struct {
 	CreatedAt  pgtype.Timestamp `json:"createdAt"`
 }
 
+type AdminCredit struct {
+	ID        string           `json:"id"`
+	UserId    string           `json:"userId"`
+	Amount    pgtype.Numeric   `json:"amount"`
+	Reason    string           `json:"reason"`
+	GrantedBy string           `json:"grantedBy"`
+	Applied   bool             `json:"applied"`
+	AppliedAt pgtype.Timestamp `json:"appliedAt"`
+	ExpiresAt pgtype.Timestamp `json:"expiresAt"`
+	CreatedAt pgtype.Timestamp `json:"createdAt"`
+}
+
 type AdminSession struct {
 	ID         string           `json:"id"`
 	UserId     string           `json:"userId"`
@@ -181,6 +193,37 @@ type ContactSubmission struct {
 	UpdatedAt   pgtype.Timestamp `json:"updatedAt"`
 }
 
+type CronJobConfig struct {
+	ID                     string           `json:"id"`
+	Name                   string           `json:"name"`
+	Description            pgtype.Text      `json:"description"`
+	Schedule               string           `json:"schedule"`
+	Endpoint               string           `json:"endpoint"`
+	IsEnabled              bool             `json:"isEnabled"`
+	TimeoutMs              int32            `json:"timeoutMs"`
+	MaxConsecutiveFailures int32            `json:"maxConsecutiveFailures"`
+	ConsecutiveFailures    int32            `json:"consecutiveFailures"`
+	TotalRuns              int32            `json:"totalRuns"`
+	SuccessfulRuns         int32            `json:"successfulRuns"`
+	LastRunAt              pgtype.Timestamp `json:"lastRunAt"`
+	LastRunStatus          pgtype.Text      `json:"lastRunStatus"`
+	LastRunDurationMs      pgtype.Int4      `json:"lastRunDurationMs"`
+	CreatedAt              pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt              pgtype.Timestamp `json:"updatedAt"`
+}
+
+type CronJobRun struct {
+	ID          string           `json:"id"`
+	JobId       string           `json:"jobId"`
+	Status      string           `json:"status"`
+	StartedAt   pgtype.Timestamp `json:"startedAt"`
+	CompletedAt pgtype.Timestamp `json:"completedAt"`
+	DurationMs  pgtype.Int4      `json:"durationMs"`
+	Error       pgtype.Text      `json:"error"`
+	Output      []byte           `json:"output"`
+	CreatedAt   pgtype.Timestamp `json:"createdAt"`
+}
+
 type DiscoverySession struct {
 	ID                string           `json:"id"`
 	UserId            string           `json:"userId"`
@@ -198,6 +241,8 @@ type DiscoverySession struct {
 	ExpiresAt         pgtype.Timestamp `json:"expiresAt"`
 	ChatSessionCount  int32            `json:"chatSessionCount"`
 	EvaluationCount   int32            `json:"evaluationCount"`
+	MedianPrice       pgtype.Int4      `json:"median_price"`
+	ModePrice         pgtype.Int4      `json:"mode_price"`
 }
 
 type DiscoverySessionActivity struct {
@@ -536,6 +581,15 @@ type SystemCache struct {
 	UpdatedAt time.Time       `json:"updated_at"`
 }
 
+type TermsAcceptance struct {
+	ID         string           `json:"id"`
+	UserId     string           `json:"userId"`
+	Version    string           `json:"version"`
+	AcceptedAt pgtype.Timestamp `json:"acceptedAt"`
+	IpAddress  pgtype.Text      `json:"ipAddress"`
+	UserAgent  pgtype.Text      `json:"userAgent"`
+}
+
 type User struct {
 	ID                         string           `json:"id"`
 	CreatedAt                  pgtype.Timestamp `json:"createdAt"`
@@ -641,4 +695,49 @@ type V2PortfolioSnapshot struct {
 	PropertyCount    int32            `json:"property_count"`
 	MetricsJson      []byte           `json:"metrics_json"`
 	CreatedAt        pgtype.Timestamp `json:"created_at"`
+}
+
+type VendorConfig struct {
+	ID                    string           `json:"id"`
+	Name                  string           `json:"name"`
+	DisplayName           string           `json:"displayName"`
+	Category              interface{}      `json:"category"`
+	BillingModel          interface{}      `json:"billingModel"`
+	MonthlyCost           pgtype.Numeric   `json:"monthlyCost"`
+	ApiKeyEnvVar          pgtype.Text      `json:"apiKeyEnvVar"`
+	HealthCheckUrl        pgtype.Text      `json:"healthCheckUrl"`
+	HealthUrl             pgtype.Text      `json:"healthUrl"`
+	LastHealthCheck       pgtype.Timestamp `json:"lastHealthCheck"`
+	HealthStatus          interface{}      `json:"healthStatus"`
+	LastChecked           pgtype.Timestamp `json:"lastChecked"`
+	Status                pgtype.Text      `json:"status"`
+	CurrentBalance        pgtype.Numeric   `json:"currentBalance"`
+	BalanceAlertThreshold pgtype.Numeric   `json:"balanceAlertThreshold"`
+	TotalRequests         int32            `json:"totalRequests"`
+	TotalCost             pgtype.Numeric   `json:"totalCost"`
+	IsActive              bool             `json:"isActive"`
+	IsPrimary             bool             `json:"isPrimary"`
+	Enabled               bool             `json:"enabled"`
+	Notes                 pgtype.Text      `json:"notes"`
+	CreatedAt             pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt             pgtype.Timestamp `json:"updatedAt"`
+}
+
+type VendorContract struct {
+	ID                    string           `json:"id"`
+	VendorId              string           `json:"vendorId"`
+	StartDate             pgtype.Timestamp `json:"startDate"`
+	EndDate               pgtype.Timestamp `json:"endDate"`
+	AutoRenew             bool             `json:"autoRenew"`
+	RenewalTermMonths     pgtype.Int4      `json:"renewalTermMonths"`
+	TerminationNoticeDays pgtype.Int4      `json:"terminationNoticeDays"`
+	PricingTiers          []byte           `json:"pricingTiers"`
+	UsageLimits           []byte           `json:"usageLimits"`
+	SlaTerms              []byte           `json:"slaTerms"`
+	LegalRestrictions     pgtype.Text      `json:"legalRestrictions"`
+	ContactName           pgtype.Text      `json:"contactName"`
+	ContactEmail          pgtype.Text      `json:"contactEmail"`
+	Notes                 pgtype.Text      `json:"notes"`
+	CreatedAt             pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt             pgtype.Timestamp `json:"updatedAt"`
 }

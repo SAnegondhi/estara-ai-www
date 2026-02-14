@@ -49,19 +49,27 @@ type GoogleService struct {
 
 // NewGoogleService creates a new Google Play IAP service
 func NewGoogleService(ctx context.Context, cfg *config.Config) (*GoogleService, error) {
-	// TODO: Add GOOGLE_SERVICE_ACCOUNT_JSON and GOOGLE_PLAY_PACKAGE_NAME to config
-	// For now, return a service that will fail gracefully
 	logger := slog.Default().With("component", "google_iap_service")
 
-	// Try to initialize with service account credentials
-	// In production, these would come from environment variables
-	serviceAccountJSON := []byte(`{}`) // TODO: Get from config
+	packageName := cfg.IAP.GooglePlayPackageName
+	if packageName == "" {
+		packageName = "com.estara.ai"
+	}
 
-	creds, err := google.CredentialsFromJSON(ctx, serviceAccountJSON, androidpublisher.AndroidpublisherScope)
+	serviceAccountJSON := cfg.IAP.GoogleServiceAccountJSON
+	if serviceAccountJSON == "" {
+		logger.Warn("GOOGLE_SERVICE_ACCOUNT_JSON not configured, Google Play IAP disabled")
+		return &GoogleService{
+			packageName: packageName,
+			logger:      logger,
+		}, nil
+	}
+
+	creds, err := google.CredentialsFromJSON(ctx, []byte(serviceAccountJSON), androidpublisher.AndroidpublisherScope)
 	if err != nil {
 		logger.Warn("failed to parse Google service account credentials", "error", err)
 		return &GoogleService{
-			packageName: "com.estara.ai",
+			packageName: packageName,
 			logger:      logger,
 		}, nil
 	}
@@ -70,13 +78,13 @@ func NewGoogleService(ctx context.Context, cfg *config.Config) (*GoogleService, 
 	if err != nil {
 		logger.Warn("failed to create Google Play client", "error", err)
 		return &GoogleService{
-			packageName: "com.estara.ai",
+			packageName: packageName,
 			logger:      logger,
 		}, nil
 	}
 
 	return &GoogleService{
-		packageName: "com.estara.ai", // TODO: Get from config
+		packageName: packageName,
 		client:      client,
 		logger:      logger,
 	}, nil

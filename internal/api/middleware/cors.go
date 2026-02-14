@@ -15,6 +15,7 @@ func NewCORSMiddleware(cfg *config.Config) func(http.Handler) http.Handler {
 		// Default allowed origins for development
 		if cfg.IsDevelopment() {
 			allowedOrigins = []string{
+				"http://localhost:3001",  // admin
 				"http://localhost:3002",  // client
 				"http://localhost:3500",  // website
 				"http://localhost:3100",  // scout API

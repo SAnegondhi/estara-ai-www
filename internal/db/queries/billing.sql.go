@@ -838,6 +838,38 @@ func (q *Queries) GetRecentRenewalNotification(ctx context.Context, arg GetRecen
 	return i, err
 }
 
+const GetSubscriptionByAppleTransactionID = `-- name: GetSubscriptionByAppleTransactionID :one
+SELECT s.id, s."createdAt", s."updatedAt", s."userId", s."stripeSubscriptionId", s."stripePriceId", s."stripeCustomerId", s.tier, s.status, s."currentPeriodStart", s."currentPeriodEnd", s."trialStart", s."trialEnd", s."canceledAt", s."cancelAtPeriodEnd", s.metadata FROM subscriptions s
+JOIN billing_audit_logs bal ON s."userId" = bal."userId"
+WHERE bal."appleOriginalTransactionId" = $1
+ORDER BY bal."createdAt" DESC
+LIMIT 1
+`
+
+func (q *Queries) GetSubscriptionByAppleTransactionID(ctx context.Context, appleoriginaltransactionid pgtype.Text) (Subscription, error) {
+	row := q.db.QueryRow(ctx, GetSubscriptionByAppleTransactionID, appleoriginaltransactionid)
+	var i Subscription
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.UserId,
+		&i.StripeSubscriptionId,
+		&i.StripePriceId,
+		&i.StripeCustomerId,
+		&i.Tier,
+		&i.Status,
+		&i.CurrentPeriodStart,
+		&i.CurrentPeriodEnd,
+		&i.TrialStart,
+		&i.TrialEnd,
+		&i.CanceledAt,
+		&i.CancelAtPeriodEnd,
+		&i.Metadata,
+	)
+	return i, err
+}
+
 const GetSubscriptionByStripeID = `-- name: GetSubscriptionByStripeID :one
 SELECT id, "createdAt", "updatedAt", "userId", "stripeSubscriptionId", "stripePriceId", "stripeCustomerId", tier, status, "currentPeriodStart", "currentPeriodEnd", "trialStart", "trialEnd", "canceledAt", "cancelAtPeriodEnd", metadata FROM subscriptions WHERE "stripeSubscriptionId" = $1
 `
@@ -1702,6 +1734,40 @@ WHERE id = $1
 
 func (q *Queries) UpdateRenewalNotificationOpened(ctx context.Context, id string) error {
 	_, err := q.db.Exec(ctx, UpdateRenewalNotificationOpened, id)
+	return err
+}
+
+const UpdateSubscriptionCancelAtPeriodEnd = `-- name: UpdateSubscriptionCancelAtPeriodEnd :exec
+UPDATE subscriptions SET
+    "cancelAtPeriodEnd" = $2,
+    "updatedAt" = NOW()
+WHERE id = $1
+`
+
+type UpdateSubscriptionCancelAtPeriodEndParams struct {
+	ID                string `json:"id"`
+	CancelAtPeriodEnd bool   `json:"cancelAtPeriodEnd"`
+}
+
+func (q *Queries) UpdateSubscriptionCancelAtPeriodEnd(ctx context.Context, arg UpdateSubscriptionCancelAtPeriodEndParams) error {
+	_, err := q.db.Exec(ctx, UpdateSubscriptionCancelAtPeriodEnd, arg.ID, arg.CancelAtPeriodEnd)
+	return err
+}
+
+const UpdateSubscriptionMetadata = `-- name: UpdateSubscriptionMetadata :exec
+UPDATE subscriptions SET
+    metadata = $2,
+    "updatedAt" = NOW()
+WHERE id = $1
+`
+
+type UpdateSubscriptionMetadataParams struct {
+	ID       string `json:"id"`
+	Metadata []byte `json:"metadata"`
+}
+
+func (q *Queries) UpdateSubscriptionMetadata(ctx context.Context, arg UpdateSubscriptionMetadataParams) error {
+	_, err := q.db.Exec(ctx, UpdateSubscriptionMetadata, arg.ID, arg.Metadata)
 	return err
 }
 

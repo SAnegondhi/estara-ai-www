@@ -917,6 +917,58 @@ func (h *Handler) deleteExpiredDiscoverySessions(ctx context.Context) (int64, er
 	return result.RowsAffected(), nil
 }
 
+// ExpireIAPSubscriptions expires IAP subscriptions past their expiry date
+// POST /api/cron/expire-iap-subscriptions
+func (h *Handler) ExpireIAPSubscriptions(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	start := time.Now()
+	result := newCronResult(start)
+
+	h.logger.Info("starting IAP subscription expiration")
+
+	expired, err := h.expireIAPSubscriptions(ctx)
+	if err != nil {
+		h.logger.Error("failed to expire IAP subscriptions", "error", err)
+		result.Status = "error"
+		result.Message = "failed to expire IAP subscriptions"
+		httputil.Error(w, http.StatusInternalServerError, result.Message)
+		return
+	}
+
+	result.Status = "completed"
+	result.Message = "IAP subscriptions expired"
+	result.AffectedRows = expired
+	result.Duration = time.Since(start).String()
+
+	h.logger.Info("IAP subscription expiration completed",
+		"expired", expired,
+		"duration", result.Duration,
+	)
+
+	httputil.Success(w, result)
+}
+
+func (h *Handler) expireIAPSubscriptions(ctx context.Context) (int64, error) {
+	// Expire subscriptions where IAP expiry has passed and subscription is still active
+	res, err := h.db.Main.Exec(ctx, `
+		UPDATE subscriptions SET
+			status = 'EXPIRED',
+			"canceledAt" = NOW(),
+			"updatedAt" = NOW()
+		WHERE status IN ('ACTIVE', 'TRIALING')
+		  AND "userId" IN (
+			SELECT id FROM users
+			WHERE "iapPlatform" IS NOT NULL
+			  AND "iapExpiresAt" IS NOT NULL
+			  AND "iapExpiresAt" < NOW()
+		  )
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected(), nil
+}
+
 // ===============================
 // Market Data Import Endpoints (ADR-075)
 // ===============================

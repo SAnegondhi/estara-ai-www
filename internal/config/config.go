@@ -26,6 +26,14 @@ type Config struct {
 	Email    EmailConfig
 	Stripe   StripeConfig
 	Security SecurityConfig
+	IAP      IAPConfig
+}
+
+// IAPConfig holds In-App Purchase configuration for Apple and Google
+type IAPConfig struct {
+	AppleSharedSecret         string `mapstructure:"APPLE_IAP_SHARED_SECRET"`
+	GoogleServiceAccountJSON  string `mapstructure:"GOOGLE_SERVICE_ACCOUNT_JSON"`
+	GooglePlayPackageName     string `mapstructure:"GOOGLE_PLAY_PACKAGE_NAME"`
 }
 
 // SecurityConfig holds security-related configuration
@@ -310,6 +318,13 @@ func Load() (*Config, error) {
 
 	cfg.Security = SecurityConfig{
 		CheckoutEncryptionKey: v.GetString("CHECKOUT_ENCRYPTION_KEY"),
+	}
+
+	// IAP config
+	cfg.IAP = IAPConfig{
+		AppleSharedSecret:        v.GetString("APPLE_IAP_SHARED_SECRET"),
+		GoogleServiceAccountJSON: v.GetString("GOOGLE_SERVICE_ACCOUNT_JSON"),
+		GooglePlayPackageName:    v.GetString("GOOGLE_PLAY_PACKAGE_NAME"),
 	}
 
 	// Validate required configuration

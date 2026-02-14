@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -13,9 +15,12 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/db/postgres"
+	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -25,16 +30,18 @@ type Handler struct {
 	db       *postgres.DB
 	redis    *redisClient.Client
 	cfg      *config.Config
+	auth     *middleware.AuthMiddleware
 	validate *validator.Validate
 	logger   *slog.Logger
 }
 
 // NewHandler creates a new admin handler
-func NewHandler(db *postgres.DB, redis *redisClient.Client, cfg *config.Config) *Handler {
+func NewHandler(db *postgres.DB, redis *redisClient.Client, cfg *config.Config, auth *middleware.AuthMiddleware) *Handler {
 	return &Handler{
 		db:       db,
 		redis:    redis,
 		cfg:      cfg,
+		auth:     auth,
 		validate: validator.New(),
 		logger:   slog.Default().With("component", "admin_handler"),
 	}
@@ -355,6 +362,9 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.logAdminAudit(ctx, r, "USER_UPDATE", "user", userID, map[string]interface{}{
+		"changes": req,
+	})
 	h.logger.Info("user updated", "user_id", userID)
 	httputil.Success(w, user)
 }
@@ -388,6 +398,10 @@ func (h *Handler) ImpersonateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.logAdminAudit(ctx, r, "USER_IMPERSONATE", "user", userID, map[string]interface{}{
+		"targetEmail": user.Email,
+		"expiresIn":   3600,
+	})
 	h.logger.Info("impersonation token generated", "target_user_id", userID)
 	httputil.Success(w, map[string]interface{}{
 		"token":     token,
@@ -492,6 +506,10 @@ func (h *Handler) InvalidateCache(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.logAdminAudit(ctx, r, "CACHE_INVALIDATE", "cache", "", map[string]interface{}{
+		"strategy": req.Strategy,
+		"deleted":  deleted,
+	})
 	h.logger.Info("cache invalidated", "strategy", req.Strategy, "deleted", deleted)
 	httputil.Success(w, map[string]interface{}{
 		"strategy": req.Strategy,
@@ -575,6 +593,9 @@ func (h *Handler) ToggleVendor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.logAdminAudit(ctx, r, "WHITELIST_TOGGLE", "vendor", vendorID, map[string]interface{}{
+		"enabled": req.Enabled,
+	})
 	h.logger.Info("vendor toggled", "vendor_id", vendorID, "enabled", req.Enabled)
 	httputil.Success(w, map[string]interface{}{
 		"vendorId": vendorID,
@@ -915,6 +936,7 @@ func (h *Handler) ResolveSystemAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.logAdminAudit(ctx, r, "ALERT_DISMISS", "system_alert", alertID, nil)
 	h.logger.Info("system alert resolved", "alert_id", alertID)
 	httputil.Success(w, map[string]interface{}{
 		"alertId":  alertID,
@@ -956,6 +978,67 @@ func (h *Handler) GetVendorCosts(w http.ResponseWriter, r *http.Request) {
 		"period":        period,
 		"timestamp":     time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+// ===============================
+// Audit Logging
+// ===============================
+
+// logAdminAudit writes an admin audit log entry for admin operations.
+// action must be a valid AdminAction enum value.
+func (h *Handler) logAdminAudit(ctx context.Context, r *http.Request, action, resource, resourceID string, details map[string]interface{}) {
+	idBytes := make([]byte, 12)
+	_, _ = rand.Read(idBytes)
+	id := hex.EncodeToString(idBytes)
+
+	clientIP := r.RemoteAddr
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if idx := strings.Index(xff, ","); idx != -1 {
+			clientIP = xff[:idx]
+		} else {
+			clientIP = xff
+		}
+	} else if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		clientIP = xri
+	}
+
+	// Extract admin identity from JWT claims in context
+	adminID := "unknown"
+	adminEmail := "unknown"
+	if authHeader := r.Header.Get("Authorization"); authHeader != "" {
+		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+		// Parse without validation to extract claims (token was already validated by middleware)
+		parser := jwt.NewParser(jwt.WithoutClaimsValidation())
+		claims := jwt.MapClaims{}
+		_, _, _ = parser.ParseUnverified(tokenStr, claims)
+		if uid, ok := claims["userId"].(string); ok {
+			adminID = uid
+		}
+		if email, ok := claims["email"].(string); ok {
+			adminEmail = email
+		}
+	}
+
+	var detailsJSON json.RawMessage
+	if details != nil {
+		detailsJSON, _ = json.Marshal(details)
+	}
+
+	q := queries.New(h.db.Main)
+	_, err := q.CreateAdminAuditLog(ctx, queries.CreateAdminAuditLogParams{
+		ID:         id,
+		AdminId:    adminID,
+		AdminEmail: adminEmail,
+		Action:     action,
+		Resource:   resource,
+		ResourceId: pgtype.Text{String: resourceID, Valid: resourceID != ""},
+		Details:    detailsJSON,
+		IpAddress:  clientIP,
+		UserAgent:  r.UserAgent(),
+	})
+	if err != nil {
+		h.logger.Warn("failed to write admin audit log", "error", err, "action", action)
+	}
 }
 
 // ===============================
@@ -1285,6 +1368,7 @@ func (h *Handler) checkVendorHealth(ctx context.Context, vendor *Vendor) *Vendor
 		result.Status = "unhealthy"
 		result.Message = fmt.Sprintf("health check failed: %v", err)
 		h.updateVendorStatus(ctx, vendor.ID, "unhealthy")
+		h.createVendorHealthAlert(ctx, vendor, result.Message)
 		return result
 	}
 	defer resp.Body.Close()
@@ -1297,9 +1381,29 @@ func (h *Handler) checkVendorHealth(ctx context.Context, vendor *Vendor) *Vendor
 		result.Status = "unhealthy"
 		result.Message = fmt.Sprintf("unexpected status code: %d", resp.StatusCode)
 		h.updateVendorStatus(ctx, vendor.ID, "unhealthy")
+		h.createVendorHealthAlert(ctx, vendor, result.Message)
 	}
 
 	return result
+}
+
+// createVendorHealthAlert creates a system alert when a vendor health check fails
+func (h *Handler) createVendorHealthAlert(ctx context.Context, vendor *Vendor, message string) {
+	alertKey := fmt.Sprintf("vendor_unhealthy_%s", vendor.ID)
+	q := queries.New(h.db.Main)
+	_, err := q.UpsertSystemAlert(ctx, queries.UpsertSystemAlertParams{
+		ID:             alertKey,
+		Type:           "vendor_error",
+		Severity:       "warning",
+		Title:          fmt.Sprintf("Vendor Unhealthy: %s", vendor.Name),
+		Description:    fmt.Sprintf("Health check failed for %s (%s): %s", vendor.Name, vendor.Category, message),
+		AlertKey:       alertKey,
+		Metadata:       fmt.Sprintf(`{"vendor_id":"%s","vendor_name":"%s","category":"%s"}`, vendor.ID, vendor.Name, vendor.Category),
+		ActionRequired: true,
+	})
+	if err != nil {
+		h.logger.Warn("failed to create vendor health alert", "error", err)
+	}
 }
 
 func (h *Handler) updateVendorStatus(ctx context.Context, id, status string) {
@@ -1684,11 +1788,11 @@ func (h *Handler) getAnalytics(ctx context.Context) (*Analytics, error) {
 	err := h.db.Main.QueryRow(ctx, `
 		SELECT
 			COUNT(*) as total,
-			COUNT(*) FILTER (WHERE "lastLoginAt" > NOW() - INTERVAL '7 days') as active_this_week,
-			COUNT(*) FILTER (WHERE "lastLoginAt" > NOW() - INTERVAL '30 days') as active_this_month,
+			COUNT(*) FILTER (WHERE "updatedAt" > NOW() - INTERVAL '7 days') as active_this_week,
+			COUNT(*) FILTER (WHERE "updatedAt" > NOW() - INTERVAL '30 days') as active_this_month,
 			COUNT(*) FILTER (WHERE "createdAt" > NOW() - INTERVAL '7 days') as new_this_week,
 			COUNT(*) FILTER (WHERE "createdAt" > NOW() - INTERVAL '30 days') as new_this_month
-		FROM "User"
+		FROM users
 	`).Scan(
 		&analytics.Users.Total,
 		&analytics.Users.ActiveThisWeek,
@@ -1704,9 +1808,9 @@ func (h *Handler) getAnalytics(ctx context.Context) (*Analytics, error) {
 	err = h.db.Main.QueryRow(ctx, `
 		SELECT
 			COUNT(*) as total_generated,
-			COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '7 days') as this_week,
-			COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days') as this_month,
-			COUNT(*) FILTER (WHERE status = 'FAILED' AND created_at > NOW() - INTERVAL '7 days') as failed_this_week
+			COUNT(*) FILTER (WHERE "createdAt" > NOW() - INTERVAL '7 days') as this_week,
+			COUNT(*) FILTER (WHERE "createdAt" > NOW() - INTERVAL '30 days') as this_month,
+			COUNT(*) FILTER (WHERE status = 'FAILED' AND "createdAt" > NOW() - INTERVAL '7 days') as failed_this_week
 		FROM investor_reports
 	`).Scan(
 		&analytics.Reports.TotalGenerated,
@@ -1735,11 +1839,18 @@ func (h *Handler) getAnalytics(ctx context.Context) (*Analytics, error) {
 	// Revenue analytics from subscriptions
 	err = h.db.Main.QueryRow(ctx, `
 		SELECT
-			COUNT(*) FILTER (WHERE "subscriptionStatus" = 'active' AND "subscriptionPlan" = 'pro') * 29.99 +
-			COUNT(*) FILTER (WHERE "subscriptionStatus" = 'active' AND "subscriptionPlan" = 'enterprise') * 99.99 as mrr,
-			COUNT(*) FILTER (WHERE "subscriptionStatus" = 'active' AND "createdAt" > NOW() - INTERVAL '30 days') as new_subs,
-			COUNT(*) FILTER (WHERE "subscriptionStatus" = 'canceled' AND "updatedAt" > NOW() - INTERVAL '30 days') as churned
-		FROM "User"
+			COALESCE(SUM(CASE
+				WHEN status = 'ACTIVE' AND tier = 'INVESTOR' THEN 29.99
+				WHEN status = 'ACTIVE' AND tier = 'PROFESSIONAL' THEN 49.99
+				WHEN status = 'ACTIVE' AND tier = 'ANNUAL_ACCESS' THEN 99.99
+				WHEN status = 'ACTIVE' AND tier = 'PROFESSIONAL_ALLOCATOR' THEN 149.99
+				WHEN status = 'ACTIVE' AND tier = 'AAPI_INVESTOR' THEN 79.99
+				WHEN status = 'ACTIVE' AND tier = 'AAPI_ALLOCATOR' THEN 199.99
+				ELSE 0
+			END), 0) as mrr,
+			COUNT(*) FILTER (WHERE status = 'ACTIVE' AND "createdAt" > NOW() - INTERVAL '30 days') as new_subs,
+			COUNT(*) FILTER (WHERE status = 'CANCELED' AND "updatedAt" > NOW() - INTERVAL '30 days') as churned
+		FROM subscriptions
 	`).Scan(
 		&analytics.Revenue.TotalMRR,
 		&analytics.Revenue.NewSubscriptions,

@@ -74,9 +74,9 @@ func NewMarketContextService(
 	return &MarketContextService{
 		client: anthropic.NewClient(anthropic.ClientConfig{
 			APIKey:     apiKey,
+			Model:      "claude-haiku-4-5-20251001",
 			MaxTokens:  maxTokens,
 			OnAPIError: errorFunc,
-			// Uses default Sonnet model (per ADR-074: Sonnet preferred over Haiku)
 		}),
 		queries: q,
 		redis:   redis,

@@ -2,6 +2,8 @@
 package market
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -9,9 +11,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
+	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/db/marketqueries"
 	"github.com/estara-ai/www/internal/db/postgres"
+	"github.com/estara-ai/www/internal/db/queries"
+	"github.com/estara-ai/www/internal/services/cache"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
 	"github.com/estara-ai/www/internal/services/market/bls"
 	"github.com/estara-ai/www/internal/services/market/census"
@@ -24,9 +31,11 @@ import (
 // Handler handles market data HTTP requests
 type Handler struct {
 	cfg                  *config.Config
+	mainDB               *postgres.Pool         // Main database for analysis_cache queries
 	marketDB             *postgres.Pool         // Market database for sqlc queries (ADR-073)
 	aggregator           *aggregator.Aggregator
 	trendsService        *trends.Service
+	hybridCache          *cache.HybridCache     // Hybrid cache for trend results
 	fredService          *fred.Service          // Centralized FRED service with smart caching
 	censusService        *census.Service        // Census demographics service (ADR-068 Phase 2)
 	blsService           *bls.Service           // BLS labor market service (ADR-068 Phase 3)
@@ -72,9 +81,19 @@ func (h *Handler) SetEconomicsAggregator(agg *economics.Aggregator) {
 	h.economicsAggregator = agg
 }
 
+// SetMainDB sets the main database pool for analysis_cache queries
+func (h *Handler) SetMainDB(pool *postgres.Pool) {
+	h.mainDB = pool
+}
+
 // SetMarketDB sets the market database pool for sqlc queries (ADR-073)
 func (h *Handler) SetMarketDB(pool *postgres.Pool) {
 	h.marketDB = pool
+}
+
+// SetHybridCache sets the hybrid cache for trend result caching
+func (h *Handler) SetHybridCache(c *cache.HybridCache) {
+	h.hybridCache = c
 }
 
 // MortgageRateResponse represents the mortgage rate response
@@ -933,4 +952,346 @@ func (h *Handler) GetUnifiedEconomics(w http.ResponseWriter, r *http.Request) {
 		Errors:      data.Errors,
 		Message:     "Unified economics data fetched successfully",
 	})
+}
+
+// =============================================================================
+// Market Trends History & Caching
+// =============================================================================
+
+// GenerateFullTrendsRequest represents a request to generate full trends
+type GenerateFullTrendsRequest struct {
+	Location     string `json:"location"`
+	ForceRefresh bool   `json:"forceRefresh"`
+}
+
+// normalizeLocation creates a cache-friendly key from a location string
+func normalizeLocation(loc string) string {
+	s := strings.ToLower(strings.TrimSpace(loc))
+	s = strings.ReplaceAll(s, " ", "_")
+	s = strings.ReplaceAll(s, ",", "_")
+	// Collapse multiple underscores
+	for strings.Contains(s, "__") {
+		s = strings.ReplaceAll(s, "__", "_")
+	}
+	s = strings.Trim(s, "_")
+	return s
+}
+
+// GenerateFullTrends generates or retrieves cached trend data for a location
+// POST /api/market-trends/generate
+func (h *Handler) GenerateFullTrends(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user := middleware.GetUserFromContext(ctx)
+	if user == nil {
+		httputil.Error(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	var req GenerateFullTrendsRequest
+	if err := httputil.DecodeJSON(r, &req); err != nil {
+		httputil.BadRequest(w, "Invalid request body")
+		return
+	}
+	if req.Location == "" {
+		httputil.BadRequest(w, "location is required")
+		return
+	}
+
+	if h.trendsService == nil {
+		httputil.Error(w, http.StatusServiceUnavailable, "Trends service not available")
+		return
+	}
+
+	cacheKey := "trends_" + normalizeLocation(req.Location)
+
+	// Check cache first (unless force refresh)
+	if !req.ForceRefresh && h.mainDB != nil {
+		cached, err := h.loadCachedTrend(ctx, user.UserID, cacheKey)
+		if err == nil && cached != nil {
+			h.logger.Info("returning cached trend", "location", req.Location, "cache_key", cacheKey)
+			httputil.JSON(w, http.StatusOK, map[string]interface{}{
+				"success": true,
+				"data":    cached,
+				"cached":  true,
+			})
+			return
+		}
+	}
+
+	// Generate fresh trends with AI synthesis
+	// NOTE: Do NOT pass CacheKey/UserID here — the service would create a second
+	// cache entry with a prefixed key and empty location. We handle caching
+	// explicitly via storeTrendInCache below with the proper location.
+	result, err := h.trendsService.GetTrends(ctx, trends.TrendsRequest{
+		Location:  req.Location,
+		Years:     5,
+		IncludeAI: true,
+	})
+	if err != nil {
+		h.logger.Error("failed to generate trends", "error", err, "location", req.Location)
+		httputil.Error(w, http.StatusInternalServerError, "Failed to generate trends")
+		return
+	}
+
+	// Store in analysis_cache for history
+	if h.mainDB != nil {
+		if storeErr := h.storeTrendInCache(ctx, user.UserID, req.Location, cacheKey, result); storeErr != nil {
+			h.logger.Warn("failed to store trend in cache", "error", storeErr)
+		}
+	}
+
+	httputil.JSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"data":    result,
+		"cached":  false,
+	})
+}
+
+// TrendHistoryItem represents a trend history entry for the API response
+type TrendHistoryItem struct {
+	ID                string               `json:"id"`
+	Location          string               `json:"location"`
+	CacheKey          string               `json:"cacheKey"`
+	CreatedAt         string               `json:"createdAt"`
+	Preview           string               `json:"preview"`
+	CurrentMetrics    *trends.CurrentMetrics    `json:"currentMetrics,omitempty"`
+	Synthesis         *trends.TrendSynthesis    `json:"synthesis,omitempty"`
+	CalculatedMetrics *trends.CalculatedMetrics `json:"calculatedMetrics,omitempty"`
+}
+
+// GetTrendsHistory returns the user's market trends history
+// GET /api/market-trends/history
+func (h *Handler) GetTrendsHistory(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user := middleware.GetUserFromContext(ctx)
+	if user == nil {
+		httputil.Error(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	if h.mainDB == nil {
+		httputil.JSON(w, http.StatusOK, map[string]interface{}{
+			"success": true,
+			"trends":  []TrendHistoryItem{},
+			"total":   0,
+		})
+		return
+	}
+
+	page := 1
+	limit := 50
+	if p := r.URL.Query().Get("page"); p != "" {
+		if v, err := strconv.Atoi(p); err == nil && v > 0 {
+			page = v
+		}
+	}
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 100 {
+			limit = v
+		}
+	}
+	offset := (page - 1) * limit
+
+	query := `
+		SELECT id, key, location, content, "lastAccessedAt"
+		FROM analysis_cache
+		WHERE "userId" = $1
+			AND feature = 'market_trends'
+			AND "supersededBy" IS NULL
+			AND "expiresAt" > NOW()
+		ORDER BY "lastAccessedAt" DESC
+		LIMIT $2 OFFSET $3
+	`
+
+	rows, err := h.mainDB.Query(ctx, query, user.UserID, limit, offset)
+	if err != nil {
+		h.logger.Error("failed to get trends history", "error", err)
+		httputil.JSON(w, http.StatusOK, map[string]interface{}{
+			"success": true,
+			"trends":  []TrendHistoryItem{},
+			"total":   0,
+		})
+		return
+	}
+	defer rows.Close()
+
+	items := make([]TrendHistoryItem, 0)
+	for rows.Next() {
+		var item TrendHistoryItem
+		var content string
+		var lastAccessedAt time.Time
+
+		if err := rows.Scan(&item.ID, &item.CacheKey, &item.Location, &content, &lastAccessedAt); err != nil {
+			h.logger.Warn("failed to scan trend history item", "error", err)
+			continue
+		}
+		item.CreatedAt = lastAccessedAt.Format(time.RFC3339)
+
+		// Parse stored TrendsResult to extract preview data
+		var result trends.TrendsResult
+		if json.Unmarshal([]byte(content), &result) == nil {
+			item.CurrentMetrics = result.CurrentMetrics
+			item.CalculatedMetrics = result.CalculatedMetrics
+			item.Synthesis = result.Synthesis
+			if result.Synthesis != nil && result.Synthesis.Summary != "" {
+				item.Preview = result.Synthesis.Summary
+				if len(item.Preview) > 200 {
+					item.Preview = item.Preview[:200] + "..."
+				}
+			}
+		}
+
+		items = append(items, item)
+	}
+
+	// Get total count
+	var total int
+	_ = h.mainDB.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM analysis_cache
+		WHERE "userId" = $1
+			AND feature = 'market_trends'
+			AND "supersededBy" IS NULL
+			AND "expiresAt" > NOW()
+	`, user.UserID).Scan(&total)
+
+	httputil.JSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"trends":  items,
+		"total":   total,
+	})
+}
+
+// DismissTrend removes a trend from the user's history
+// DELETE /api/market-trends/history/{id}
+func (h *Handler) DismissTrend(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user := middleware.GetUserFromContext(ctx)
+	if user == nil {
+		httputil.Error(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		httputil.BadRequest(w, "id is required")
+		return
+	}
+
+	if h.mainDB == nil {
+		httputil.JSON(w, http.StatusOK, map[string]interface{}{
+			"success": true,
+		})
+		return
+	}
+
+	// Look up the cache entry to verify ownership
+	q := queries.New(h.mainDB)
+	cacheRow, err := q.GetCacheByID(ctx, id)
+	if err != nil {
+		h.logger.Info("trend not found in cache", "id", id)
+		httputil.JSON(w, http.StatusOK, map[string]interface{}{
+			"success": true,
+		})
+		return
+	}
+
+	if cacheRow.UserId != user.UserID {
+		httputil.NotFound(w, "trend not found")
+		return
+	}
+
+	// Delete from L2 (PostgreSQL)
+	if delErr := q.DeleteCacheByUserAndKey(ctx, queries.DeleteCacheByUserAndKeyParams{
+		UserId: cacheRow.UserId,
+		Key:    cacheRow.Key,
+	}); delErr != nil {
+		h.logger.Warn("failed to delete trend from cache", "key", cacheRow.Key, "error", delErr)
+	}
+
+	// Delete from L1 (Redis) via hybrid cache
+	if h.hybridCache != nil {
+		_ = h.hybridCache.Delete(ctx, cacheRow.UserId, cacheRow.Key)
+	}
+
+	h.logger.Info("trend dismissed", "id", id, "key", cacheRow.Key, "user_id", user.UserID)
+	httputil.JSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+	})
+}
+
+// loadCachedTrend checks analysis_cache for an existing trend result
+func (h *Handler) loadCachedTrend(ctx context.Context, userID, cacheKey string) (*trends.TrendsResult, error) {
+	query := `
+		SELECT content
+		FROM analysis_cache
+		WHERE "userId" = $1 AND key = $2
+			AND feature = 'market_trends'
+			AND "expiresAt" > NOW()
+			AND "supersededBy" IS NULL
+	`
+	var content string
+	err := h.mainDB.QueryRow(ctx, query, userID, cacheKey).Scan(&content)
+	if err != nil {
+		return nil, err
+	}
+
+	var result trends.TrendsResult
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
+		return nil, err
+	}
+
+	// Update access count
+	_, _ = h.mainDB.Exec(ctx,
+		`UPDATE analysis_cache SET "lastAccessedAt" = NOW(), "accessCount" = "accessCount" + 1 WHERE "userId" = $1 AND key = $2`,
+		userID, cacheKey,
+	)
+
+	now := time.Now()
+	result.CachedAt = &now
+	return &result, nil
+}
+
+// StoreTrendInCache stores a trend result in analysis_cache for history
+// Exported for use by market_analysis worker for background trend generation
+func (h *Handler) StoreTrendInCache(ctx context.Context, userID, location, cacheKey string, result *trends.TrendsResult) error {
+	return h.storeTrendInCache(ctx, userID, location, cacheKey, result)
+}
+
+// storeTrendInCache stores a trend result in analysis_cache for history
+func (h *Handler) storeTrendInCache(ctx context.Context, userID, location, cacheKey string, result *trends.TrendsResult) error {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("failed to marshal trend result: %w", err)
+	}
+
+	// Extract synthesis summary for preview
+	var fullReport string
+	if result.Synthesis != nil {
+		fullReport = result.Synthesis.Summary
+	}
+
+	expiresAt := time.Now().Add(7 * 24 * time.Hour) // 7-day TTL
+
+	_, err = h.mainDB.Exec(ctx, `
+		INSERT INTO analysis_cache (
+			id, key, "userId", location, feature, content, "fullReport",
+			"expiresAt", "createdAt", "lastAccessedAt", metadata
+		) VALUES ($1, $2, $3, $4, 'market_trends', $5, $6, $7, NOW(), NOW(), '{}')
+		ON CONFLICT (key) DO UPDATE SET
+			content = EXCLUDED.content,
+			"fullReport" = EXCLUDED."fullReport",
+			"expiresAt" = EXCLUDED."expiresAt",
+			"lastAccessedAt" = NOW()
+	`,
+		fmt.Sprintf("trends_%s_%d", normalizeLocation(location), time.Now().Unix()),
+		cacheKey,
+		userID,
+		location,
+		string(data),
+		fullReport,
+		expiresAt,
+	)
+
+	return err
 }

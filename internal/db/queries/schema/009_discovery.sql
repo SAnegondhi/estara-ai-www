@@ -28,7 +28,11 @@ CREATE TABLE IF NOT EXISTS discovery_sessions (
 
     -- Metrics
     "chatSessionCount" INTEGER NOT NULL DEFAULT 0,
-    "evaluationCount" INTEGER NOT NULL DEFAULT 0
+    "evaluationCount" INTEGER NOT NULL DEFAULT 0,
+
+    -- Price statistics (computed from discovery_session_properties)
+    median_price INTEGER,
+    mode_price INTEGER
 );
 
 -- Indexes for discovery_sessions

@@ -172,6 +172,25 @@ WHERE "userId" = $1
 ORDER BY "paidAt" DESC
 LIMIT $2 OFFSET $3;
 
+-- name: GetSubscriptionByAppleTransactionID :one
+SELECT s.* FROM subscriptions s
+JOIN billing_audit_logs bal ON s."userId" = bal."userId"
+WHERE bal."appleOriginalTransactionId" = $1
+ORDER BY bal."createdAt" DESC
+LIMIT 1;
+
+-- name: UpdateSubscriptionCancelAtPeriodEnd :exec
+UPDATE subscriptions SET
+    "cancelAtPeriodEnd" = $2,
+    "updatedAt" = NOW()
+WHERE id = $1;
+
+-- name: UpdateSubscriptionMetadata :exec
+UPDATE subscriptions SET
+    metadata = $2,
+    "updatedAt" = NOW()
+WHERE id = $1;
+
 -- Billing Audit Log Queries
 
 -- name: CreateBillingAuditLog :one

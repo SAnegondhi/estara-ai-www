@@ -1052,6 +1052,22 @@ func (s *WebhookService) handleInvoicePaymentFailed(ctx context.Context, event *
 
 	q := queries.New(s.db.Main)
 
+	// Create system alert for payment failure
+	alertKey := fmt.Sprintf("stripe_payment_failed_%s", customerID)
+	_, alertErr := q.UpsertSystemAlert(ctx, queries.UpsertSystemAlertParams{
+		ID:             alertKey,
+		Type:           "billing_error",
+		Severity:       "critical",
+		Title:          "Stripe Payment Failed",
+		Description:    fmt.Sprintf("Payment failed for invoice %s (customer %s)", invoice.ID, customerID),
+		AlertKey:       alertKey,
+		Metadata:       fmt.Sprintf(`{"invoice_id":"%s","customer_id":"%s","subscription_id":"%s"}`, invoice.ID, customerID, subscriptionID),
+		ActionRequired: true,
+	})
+	if alertErr != nil {
+		s.logger.Warn("failed to create payment failure alert", "error", alertErr)
+	}
+
 	// Update subscription status to past due if applicable
 	if invoice.Subscription != nil {
 		sub, err := q.GetSubscriptionByStripeID(ctx, pgtype.Text{
@@ -1107,8 +1123,26 @@ func (s *WebhookService) handleDisputeCreated(ctx context.Context, event *stripe
 		"reason", dispute.Reason,
 	)
 
-	// TODO: Send dispute notification to admin
-	// TODO: Auto-submit evidence if available
+	// Create system alert for dispute — requires immediate admin attention
+	q := queries.New(s.db.Main)
+	alertKey := fmt.Sprintf("stripe_dispute_%s", dispute.ID)
+	chargeID := ""
+	if dispute.Charge != nil {
+		chargeID = dispute.Charge.ID
+	}
+	_, alertErr := q.UpsertSystemAlert(ctx, queries.UpsertSystemAlertParams{
+		ID:             alertKey,
+		Type:           "billing_error",
+		Severity:       "critical",
+		Title:          "Stripe Chargeback Dispute Created",
+		Description:    fmt.Sprintf("Dispute %s — Reason: %s — Amount: $%.2f", dispute.ID, dispute.Reason, float64(dispute.Amount)/100),
+		AlertKey:       alertKey,
+		Metadata:       fmt.Sprintf(`{"dispute_id":"%s","charge_id":"%s","amount":%d,"reason":"%s"}`, dispute.ID, chargeID, dispute.Amount, dispute.Reason),
+		ActionRequired: true,
+	})
+	if alertErr != nil {
+		s.logger.Warn("failed to create dispute alert", "error", alertErr)
+	}
 
 	// Record billing audit log
 	eventData, _ := json.Marshal(dispute)

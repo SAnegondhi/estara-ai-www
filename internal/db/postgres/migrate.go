@@ -75,26 +75,42 @@ func RunMigrations(ctx context.Context, pool *Pool) error {
 			return fmt.Errorf("failed to read migration %s: %w", filename, err)
 		}
 
-		// Execute migration in a transaction
-		tx, err := pool.Begin(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to begin transaction for %s: %w", filename, err)
-		}
+		sql := string(content)
 
-		// Execute migration SQL
-		if _, err := tx.Exec(ctx, string(content)); err != nil {
-			tx.Rollback(ctx)
-			return fmt.Errorf("failed to execute migration %s: %w", filename, err)
-		}
+		// Migrations containing ALTER TYPE ... ADD VALUE cannot run inside a
+		// transaction in PostgreSQL. Detect this and execute statements individually.
+		if strings.Contains(sql, "ALTER TYPE") && strings.Contains(sql, "ADD VALUE") {
+			// Execute each statement outside a transaction
+			stmts := splitStatements(sql)
+			for _, stmt := range stmts {
+				if _, err := pool.Exec(ctx, stmt); err != nil {
+					return fmt.Errorf("failed to execute migration %s: %w", filename, err)
+				}
+			}
+			// Record migration
+			if _, err := pool.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1)", version); err != nil {
+				return fmt.Errorf("failed to record migration %s: %w", filename, err)
+			}
+		} else {
+			// Execute migration in a transaction
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to begin transaction for %s: %w", filename, err)
+			}
 
-		// Record migration as applied
-		if _, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1)", version); err != nil {
-			tx.Rollback(ctx)
-			return fmt.Errorf("failed to record migration %s: %w", filename, err)
-		}
+			if _, err := tx.Exec(ctx, sql); err != nil {
+				tx.Rollback(ctx)
+				return fmt.Errorf("failed to execute migration %s: %w", filename, err)
+			}
 
-		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("failed to commit migration %s: %w", filename, err)
+			if _, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1)", version); err != nil {
+				tx.Rollback(ctx)
+				return fmt.Errorf("failed to record migration %s: %w", filename, err)
+			}
+
+			if err := tx.Commit(ctx); err != nil {
+				return fmt.Errorf("failed to commit migration %s: %w", filename, err)
+			}
 		}
 
 		logger.Info("applied migration", "version", version)
@@ -108,4 +124,30 @@ func RunMigrations(ctx context.Context, pool *Pool) error {
 	}
 
 	return nil
+}
+
+// splitStatements splits a SQL string into individual statements on semicolons,
+// skipping comments and empty lines.
+func splitStatements(sql string) []string {
+	var stmts []string
+	for _, part := range strings.Split(sql, ";") {
+		stmt := strings.TrimSpace(part)
+		if stmt == "" {
+			continue
+		}
+		// Skip comment-only blocks
+		lines := strings.Split(stmt, "\n")
+		hasCode := false
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line != "" && !strings.HasPrefix(line, "--") {
+				hasCode = true
+				break
+			}
+		}
+		if hasCode {
+			stmts = append(stmts, stmt)
+		}
+	}
+	return stmts
 }

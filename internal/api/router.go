@@ -91,7 +91,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		Discover:      discover.NewHandler(db, redis, cfg, svc.PropertyFinder, svc.MarketData),
 		AI:            ai.NewHandler(db, redis, cfg, svc.ChatAgent, svc.JobQueue, svc.EconomicsAggregator),
 		Portfolio:     portfolio.NewHandler(db, cfg),
-		Admin:         admin.NewHandler(db, redis, cfg),
+		Admin:         admin.NewHandler(db, redis, cfg, authMiddleware),
 		Cron:          cron.NewHandler(db, redis, cfg),
 		Location:      location.NewHandler(db, redis, cfg),
 		Market:        market.NewHandler(cfg),
@@ -123,6 +123,12 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	if svc.TrendsService != nil {
 		handlers.Market.SetTrendsService(svc.TrendsService)
 	}
+	if svc.HybridCache != nil {
+		handlers.Market.SetHybridCache(svc.HybridCache)
+	}
+	if db.Main != nil {
+		handlers.Market.SetMainDB(db.Main)
+	}
 	if db.Market != nil {
 		handlers.Market.SetMarketDB(db.Market)
 
@@ -150,6 +156,9 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		// Standard login/refresh endpoints
 		r.Post("/login", handlers.Auth.Login)
 		r.Post("/refresh", handlers.Auth.RefreshToken)
+
+		// Admin login (no auth required — validates admin role internally)
+		r.Post("/admin-login", handlers.Admin.AdminLogin)
 
 		// Client-specific endpoints (www_v1 API contract compatibility)
 		// These are used by the Estara Insight client app
@@ -293,6 +302,11 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Post("/synthesize", handlers.Market.SynthesizeTrends)
 		r.Post("/export", handlers.Market.ExportTrendsPDF)
 		r.Get("/location-autocomplete", handlers.Market.SearchLocations) // ADR-073
+
+		// Trends history & caching
+		r.Post("/generate", handlers.Market.GenerateFullTrends)
+		r.Get("/history", handlers.Market.GetTrendsHistory)
+		r.Delete("/history/{id}", handlers.Market.DismissTrend)
 	})
 
 	// AI Evaluation Chat
@@ -399,9 +413,16 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		// User management
 		r.Route("/users", func(r chi.Router) {
 			r.Get("/", handlers.Admin.ListUsers)
+			r.Post("/", handlers.Admin.CreateUser)
 			r.Get("/{id}", handlers.Admin.GetUser)
 			r.Put("/{id}", handlers.Admin.UpdateUser)
 			r.Post("/{id}/impersonate", handlers.Admin.ImpersonateUser)
+			r.Post("/{id}/suspend", handlers.Admin.SuspendUser)
+			r.Post("/{id}/unsuspend", handlers.Admin.UnsuspendUser)
+			r.Get("/{id}/activity", handlers.Admin.GetUserActivity)
+			r.Get("/{id}/financial-profile", handlers.Admin.GetUserFinancialProfile)
+			r.Post("/{id}/export", handlers.Admin.ExportUserData)
+			r.Delete("/{id}/data", handlers.Admin.DeleteUserData)
 		})
 
 		// Cache management
@@ -441,6 +462,20 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 			r.Get("/costs", handlers.Admin.GetVendorCosts)
 		})
 
+		// Two-Factor Authentication
+		r.Route("/2fa", func(r chi.Router) {
+			r.Get("/status", handlers.Admin.Get2FAStatus)
+			r.Post("/setup", handlers.Admin.Setup2FA)
+			r.Post("/verify", handlers.Admin.Verify2FA)
+			r.Post("/disable", handlers.Admin.Disable2FA)
+		})
+
+		// Session Management
+		r.Route("/sessions", func(r chi.Router) {
+			r.Get("/", handlers.Admin.ListSessions)
+			r.Delete("/{id}", handlers.Admin.RevokeSession)
+		})
+
 		// Monitoring
 		r.Get("/metrics", handlers.Admin.Metrics)
 		r.Get("/health", handlers.Admin.HealthCheck)
@@ -450,32 +485,34 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	r.Route("/api/cron", func(r chi.Router) {
 		r.Use(middleware.CronAuth(cfg.Cron.Secret))
 
-		r.Post("/market-alerts", handlers.Cron.ProcessMarketAlerts)
-		r.Post("/cache-cleanup", handlers.Cron.CleanupCaches)
-		r.Post("/vendor-costs", handlers.Cron.AggregateVendorCosts)
-		r.Post("/renewal-reminders", handlers.Cron.SendRenewalReminders)
-		r.Post("/subscription-sync", handlers.Cron.SyncSubscriptions)
-		r.Post("/usage-reset", handlers.Cron.ResetMonthlyUsage)
-		r.Post("/stale-jobs", handlers.Cron.CleanupStaleJobs)
-		r.Post("/audit-archive", handlers.Cron.ArchiveAuditLogs)
-		r.Post("/market-data-refresh", handlers.Cron.RefreshMarketData)
-		r.Post("/property-cache-prune", handlers.Cron.PrunePropertyCache)
-		r.Post("/expire-free-trials", handlers.Cron.ExpireFreeTrials)
-		r.Post("/reports", handlers.Cron.ProcessScheduledReports)
-		r.Post("/ai-estimate-refresh", handlers.Cron.RefreshAIEstimates)
-		r.Post("/cleanup-guest-sessions", handlers.Cron.CleanupGuestSessions)
-		r.Post("/discovery-cleanup", handlers.Cron.DiscoveryCleanup)
+		c := handlers.Cron
+		r.Post("/market-alerts", c.Tracked("market-alerts", c.ProcessMarketAlerts))
+		r.Post("/cache-cleanup", c.Tracked("cache-cleanup", c.CleanupCaches))
+		r.Post("/vendor-costs", c.Tracked("vendor-costs", c.AggregateVendorCosts))
+		r.Post("/renewal-reminders", c.Tracked("renewal-reminders", c.SendRenewalReminders))
+		r.Post("/subscription-sync", c.Tracked("subscription-sync", c.SyncSubscriptions))
+		r.Post("/usage-reset", c.Tracked("usage-reset", c.ResetMonthlyUsage))
+		r.Post("/stale-jobs", c.Tracked("stale-jobs", c.CleanupStaleJobs))
+		r.Post("/audit-archive", c.Tracked("audit-archive", c.ArchiveAuditLogs))
+		r.Post("/market-data-refresh", c.Tracked("market-data-refresh", c.RefreshMarketData))
+		r.Post("/property-cache-prune", c.Tracked("property-cache-prune", c.PrunePropertyCache))
+		r.Post("/expire-free-trials", c.Tracked("expire-free-trials", c.ExpireFreeTrials))
+		r.Post("/reports", c.Tracked("reports", c.ProcessScheduledReports))
+		r.Post("/ai-estimate-refresh", c.Tracked("ai-estimate-refresh", c.RefreshAIEstimates))
+		r.Post("/cleanup-guest-sessions", c.Tracked("cleanup-guest-sessions", c.CleanupGuestSessions))
+		r.Post("/discovery-cleanup", c.Tracked("discovery-cleanup", c.DiscoveryCleanup))
+		r.Post("/expire-iap-subscriptions", c.Tracked("expire-iap-subscriptions", c.ExpireIAPSubscriptions))
 
 		// Market data import endpoints (ADR-075)
 		r.Route("/market-data", func(r chi.Router) {
-			r.Post("/zillow-zhvi", handlers.Cron.ImportZillowZHVI)
-			r.Post("/zillow-zori", handlers.Cron.ImportZillowZORI)
-			r.Post("/zillow-forecasts", handlers.Cron.ImportZillowForecasts)
-			r.Post("/zillow-metrics", handlers.Cron.ImportZillowMetrics)
-			r.Post("/redfin", handlers.Cron.ImportRedfinData)
-			r.Post("/compute-national", handlers.Cron.ComputeNational)
-			r.Post("/full-refresh", handlers.Cron.FullRefreshMarketData)
-			r.Get("/status", handlers.Cron.MarketDataStatus)
+			r.Post("/zillow-zhvi", c.Tracked("zillow-zhvi", c.ImportZillowZHVI))
+			r.Post("/zillow-zori", c.Tracked("zillow-zori", c.ImportZillowZORI))
+			r.Post("/zillow-forecasts", c.Tracked("zillow-forecasts", c.ImportZillowForecasts))
+			r.Post("/zillow-metrics", c.Tracked("zillow-metrics", c.ImportZillowMetrics))
+			r.Post("/redfin", c.Tracked("redfin", c.ImportRedfinData))
+			r.Post("/compute-national", c.Tracked("compute-national", c.ComputeNational))
+			r.Post("/full-refresh", c.Tracked("full-refresh", c.FullRefreshMarketData))
+			r.Get("/status", c.MarketDataStatus) // GET endpoint, no tracking needed
 		})
 	})
 

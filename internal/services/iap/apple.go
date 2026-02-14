@@ -50,7 +50,7 @@ type AppleService struct {
 // NewAppleService creates a new Apple IAP service
 func NewAppleService(cfg *config.Config) *AppleService {
 	return &AppleService{
-		sharedSecret: cfg.Server.Env, // TODO: Add APPLE_IAP_SHARED_SECRET to config
+		sharedSecret: cfg.IAP.AppleSharedSecret,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},

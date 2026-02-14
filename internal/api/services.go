@@ -357,10 +357,18 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 				services.MarketData,
 				orchCfg,
 			)
+			// Determine main DB pool for background trend storage
+			var mainDBPool *postgres.Pool
+			if cfg.DB != nil && cfg.DB.Main != nil {
+				mainDBPool = cfg.DB.Main
+			}
+
 			analysisWorker := workers.NewMarketAnalysisWorker(workers.MarketAnalysisWorkerConfig{
 				Orchestrator: orchestrator,
 				Market:       services.MarketData,
 				Cache:        services.HybridCache,
+				Trends:       services.TrendsService,
+				MainDB:       mainDBPool,
 			})
 			services.JobQueue.RegisterHandler(queue.JobTypeMarketAnalysis, analysisWorker.GetHandler())
 			logger.Info("market analysis worker registered",

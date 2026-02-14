@@ -18,7 +18,7 @@ UPDATE discovery_sessions SET
     "archivedAt" = NOW(),
     "updatedAt" = NOW()
 WHERE id = $1 AND "userId" = $2
-RETURNING id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount"
+RETURNING id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount", median_price, mode_price
 `
 
 type ArchiveDiscoverySessionParams struct {
@@ -46,6 +46,8 @@ func (q *Queries) ArchiveDiscoverySession(ctx context.Context, arg ArchiveDiscov
 		&i.ExpiresAt,
 		&i.ChatSessionCount,
 		&i.EvaluationCount,
+		&i.MedianPrice,
+		&i.ModePrice,
 	)
 	return i, err
 }
@@ -166,7 +168,7 @@ INSERT INTO discovery_sessions (
     "cachedPropertyIds", status, "createdAt", "updatedAt", "lastAccessedAt", "expiresAt"
 ) VALUES (
     $1, $2, $3, $4, $5, $6, 'ACTIVE', NOW(), NOW(), NOW(), NOW() + INTERVAL '180 days'
-) RETURNING id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount"
+) RETURNING id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount", median_price, mode_price
 `
 
 type CreateDiscoverySessionParams struct {
@@ -206,6 +208,8 @@ func (q *Queries) CreateDiscoverySession(ctx context.Context, arg CreateDiscover
 		&i.ExpiresAt,
 		&i.ChatSessionCount,
 		&i.EvaluationCount,
+		&i.MedianPrice,
+		&i.ModePrice,
 	)
 	return i, err
 }
@@ -442,7 +446,7 @@ func (q *Queries) GetActivityLink(ctx context.Context, arg GetActivityLinkParams
 }
 
 const GetDiscoverySession = `-- name: GetDiscoverySession :one
-SELECT id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount" FROM discovery_sessions WHERE id = $1
+SELECT id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount", median_price, mode_price FROM discovery_sessions WHERE id = $1
 `
 
 func (q *Queries) GetDiscoverySession(ctx context.Context, id string) (DiscoverySession, error) {
@@ -465,12 +469,14 @@ func (q *Queries) GetDiscoverySession(ctx context.Context, id string) (Discovery
 		&i.ExpiresAt,
 		&i.ChatSessionCount,
 		&i.EvaluationCount,
+		&i.MedianPrice,
+		&i.ModePrice,
 	)
 	return i, err
 }
 
 const GetDiscoverySessionByUser = `-- name: GetDiscoverySessionByUser :one
-SELECT id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount" FROM discovery_sessions WHERE id = $1 AND "userId" = $2
+SELECT id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount", median_price, mode_price FROM discovery_sessions WHERE id = $1 AND "userId" = $2
 `
 
 type GetDiscoverySessionByUserParams struct {
@@ -498,6 +504,8 @@ func (q *Queries) GetDiscoverySessionByUser(ctx context.Context, arg GetDiscover
 		&i.ExpiresAt,
 		&i.ChatSessionCount,
 		&i.EvaluationCount,
+		&i.MedianPrice,
+		&i.ModePrice,
 	)
 	return i, err
 }
@@ -721,7 +729,7 @@ func (q *Queries) ListSessionProperties(ctx context.Context, discoverysessionid 
 }
 
 const ListUserDiscoverySessions = `-- name: ListUserDiscoverySessions :many
-SELECT id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount" FROM discovery_sessions
+SELECT id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount", median_price, mode_price FROM discovery_sessions
 WHERE "userId" = $1 AND status = $2
 ORDER BY "lastAccessedAt" DESC
 LIMIT $3 OFFSET $4
@@ -765,6 +773,8 @@ func (q *Queries) ListUserDiscoverySessions(ctx context.Context, arg ListUserDis
 			&i.ExpiresAt,
 			&i.ChatSessionCount,
 			&i.EvaluationCount,
+			&i.MedianPrice,
+			&i.ModePrice,
 		); err != nil {
 			return nil, err
 		}
@@ -782,7 +792,7 @@ UPDATE discovery_sessions SET
     "archivedAt" = NULL,
     "updatedAt" = NOW()
 WHERE id = $1 AND "userId" = $2
-RETURNING id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount"
+RETURNING id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount", median_price, mode_price
 `
 
 type RestoreDiscoverySessionParams struct {
@@ -810,8 +820,26 @@ func (q *Queries) RestoreDiscoverySession(ctx context.Context, arg RestoreDiscov
 		&i.ExpiresAt,
 		&i.ChatSessionCount,
 		&i.EvaluationCount,
+		&i.MedianPrice,
+		&i.ModePrice,
 	)
 	return i, err
+}
+
+const SessionExistsByUser = `-- name: SessionExistsByUser :one
+SELECT EXISTS(SELECT 1 FROM discovery_sessions WHERE id = $1 AND "userId" = $2)
+`
+
+type SessionExistsByUserParams struct {
+	ID     string `json:"id"`
+	UserId string `json:"userId"`
+}
+
+func (q *Queries) SessionExistsByUser(ctx context.Context, arg SessionExistsByUserParams) (bool, error) {
+	row := q.db.QueryRow(ctx, SessionExistsByUser, arg.ID, arg.UserId)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const UpdateDiscoverySession = `-- name: UpdateDiscoverySession :one
@@ -820,7 +848,7 @@ UPDATE discovery_sessions SET
     notes = COALESCE($3, notes),
     "updatedAt" = NOW()
 WHERE id = $1 AND "userId" = $2
-RETURNING id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount"
+RETURNING id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount", median_price, mode_price
 `
 
 type UpdateDiscoverySessionParams struct {
@@ -849,6 +877,8 @@ func (q *Queries) UpdateDiscoverySession(ctx context.Context, arg UpdateDiscover
 		&i.ExpiresAt,
 		&i.ChatSessionCount,
 		&i.EvaluationCount,
+		&i.MedianPrice,
+		&i.ModePrice,
 	)
 	return i, err
 }
@@ -858,7 +888,7 @@ UPDATE discovery_sessions SET
     "lastAccessedAt" = NOW(),
     "updatedAt" = NOW()
 WHERE id = $1
-RETURNING id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount"
+RETURNING id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount", median_price, mode_price
 `
 
 func (q *Queries) UpdateDiscoverySessionAccess(ctx context.Context, id string) (DiscoverySession, error) {
@@ -881,6 +911,39 @@ func (q *Queries) UpdateDiscoverySessionAccess(ctx context.Context, id string) (
 		&i.ExpiresAt,
 		&i.ChatSessionCount,
 		&i.EvaluationCount,
+		&i.MedianPrice,
+		&i.ModePrice,
 	)
 	return i, err
+}
+
+const UpdateSessionEvaluationCount = `-- name: UpdateSessionEvaluationCount :exec
+UPDATE discovery_sessions SET
+    "evaluationCount" = (SELECT COUNT(*) FROM discovery_session_evaluations WHERE "discoverySessionId" = $1),
+    "updatedAt" = NOW()
+WHERE id = $1
+`
+
+func (q *Queries) UpdateSessionEvaluationCount(ctx context.Context, discoverysessionid string) error {
+	_, err := q.db.Exec(ctx, UpdateSessionEvaluationCount, discoverysessionid)
+	return err
+}
+
+const UpdateSessionPriceStats = `-- name: UpdateSessionPriceStats :exec
+UPDATE discovery_sessions SET
+    median_price = stats.med,
+    mode_price = stats.mod
+FROM (
+    SELECT
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY price)::int AS med,
+        mode() WITHIN GROUP (ORDER BY price) AS mod
+    FROM discovery_session_properties
+    WHERE "discoverySessionId" = $1
+) stats
+WHERE discovery_sessions.id = $1
+`
+
+func (q *Queries) UpdateSessionPriceStats(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, UpdateSessionPriceStats, id)
+	return err
 }
