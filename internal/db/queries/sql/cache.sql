@@ -113,3 +113,9 @@ SELECT * FROM analysis_cache
 WHERE location = $1
 ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3;
+
+-- name: ListCacheByUserAndFeature :many
+SELECT * FROM analysis_cache
+WHERE "userId" = $1 AND feature = $2 AND "expiresAt" > NOW()
+ORDER BY "lastAccessedAt" DESC
+LIMIT $3 OFFSET $4;

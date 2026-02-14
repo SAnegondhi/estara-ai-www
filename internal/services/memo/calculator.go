@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/investment/expenses"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
 )
@@ -498,4 +499,94 @@ func (c *Calculator) rentGrowthVariance(input CalculationInput) string {
 		return fmt.Sprintf("%+.1f%%", -diff)
 	}
 	return "In line"
+}
+
+// ComputePortfolioImpacts calculates how acquiring each candidate property
+// would change the user's portfolio metrics relative to the current snapshot.
+func (c *Calculator) ComputePortfolioImpacts(snapshot queries.V2PortfolioSnapshot, properties []BatchPropertyInput) []*PortfolioImpactData {
+	results := make([]*PortfolioImpactData, len(properties))
+
+	currentValue := snapshot.TotalValue
+	currentEquity := snapshot.TotalEquity
+	currentCapRate := snapshot.PortfolioCapRate
+	propCount := int(snapshot.PropertyCount)
+	currentCF := snapshot.MonthlyCashFlow * 12 // annualize
+
+	for i, prop := range properties {
+		if prop.Price <= 0 {
+			continue
+		}
+		price := float64(prop.Price)
+		downPayment := price * 0.25
+		annualRent := float64(prop.EstimatedRent) * 12
+		// Rough NOI estimate: 55% of gross rent (conservative)
+		newNOI := annualRent * 0.55
+
+		newValue := currentValue + price
+		newEquity := currentEquity + downPayment
+		newCapRate := 0.0
+		if newValue > 0 {
+			// Blend: (currentNOI + newNOI) / newValue * 100
+			currentNOI := (currentCapRate / 100) * currentValue
+			newCapRate = (currentNOI + newNOI) / newValue * 100
+		}
+		newCount := propCount + 1
+
+		// Cash flow impact (rough: NOI minus rough debt service)
+		monthlyRate := 0.07 / 12
+		numPay := 360.0
+		loanAmt := price - downPayment
+		monthlyPayment := loanAmt * (monthlyRate * math.Pow(1+monthlyRate, numPay)) / (math.Pow(1+monthlyRate, numPay) - 1)
+		newAnnualCF := currentCF + newNOI - (monthlyPayment * 12)
+
+		rows := []PortfolioImpactRow{
+			{
+				Dimension:       "Total Value",
+				Current:         fmt.Sprintf("$%s", formatNumber(int(currentValue))),
+				PostAcquisition: fmt.Sprintf("$%s", formatNumber(int(newValue))),
+				Threshold:       "",
+			},
+			{
+				Dimension:       "Total Equity",
+				Current:         fmt.Sprintf("$%s", formatNumber(int(currentEquity))),
+				PostAcquisition: fmt.Sprintf("$%s", formatNumber(int(newEquity))),
+				Threshold:       "",
+			},
+			{
+				Dimension:       "Portfolio Cap Rate",
+				Current:         fmt.Sprintf("%.2f%%", currentCapRate),
+				PostAcquisition: fmt.Sprintf("%.2f%%", newCapRate),
+				Threshold:       "",
+				IsWarning:       newCapRate < currentCapRate-0.5,
+			},
+			{
+				Dimension:       "Property Count",
+				Current:         fmt.Sprintf("%d", propCount),
+				PostAcquisition: fmt.Sprintf("%d", newCount),
+				Threshold:       "",
+			},
+			{
+				Dimension:       "Annual Cash Flow",
+				Current:         fmt.Sprintf("$%s", formatNumber(int(currentCF))),
+				PostAcquisition: fmt.Sprintf("$%s", formatNumber(int(newAnnualCF))),
+				Threshold:       "",
+				IsWarning:       newAnnualCF < currentCF,
+			},
+		}
+
+		impact := &PortfolioImpactData{Rows: rows}
+
+		// Concentration warning if one property becomes >40% of portfolio value
+		propPct := price / newValue * 100
+		if propPct > 40 {
+			impact.ConcentrationWarning = fmt.Sprintf("This acquisition would represent %.0f%% of total portfolio value", propPct)
+		}
+		if newCapRate > currentCapRate+0.25 {
+			impact.DiversificationNote = fmt.Sprintf("Improves blended cap rate by %.2f%%", newCapRate-currentCapRate)
+		}
+
+		results[i] = impact
+	}
+
+	return results
 }

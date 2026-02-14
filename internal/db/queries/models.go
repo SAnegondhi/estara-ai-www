@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -630,6 +631,18 @@ type UserAnalysisPreference struct {
 	Notes     pgtype.Text      `json:"notes"`
 	CreatedAt pgtype.Timestamp `json:"createdAt"`
 	UpdatedAt pgtype.Timestamp `json:"updatedAt"`
+}
+
+type UserConsent struct {
+	ID          uuid.UUID          `json:"id"`
+	UserID      uuid.UUID          `json:"user_id"`
+	ConsentType string             `json:"consent_type"`
+	Version     string             `json:"version"`
+	GrantedAt   time.Time          `json:"granted_at"`
+	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
+	IpAddress   pgtype.Text        `json:"ip_address"`
+	UserAgent   pgtype.Text        `json:"user_agent"`
+	CreatedAt   time.Time          `json:"created_at"`
 }
 
 type V2BaselineChange struct {

@@ -7,6 +7,7 @@ import (
 	"github.com/stripe/stripe-go/v76/billingportal/session"
 	checkoutSession "github.com/stripe/stripe-go/v76/checkout/session"
 	"github.com/stripe/stripe-go/v76/customer"
+	stripeDispute "github.com/stripe/stripe-go/v76/dispute"
 	"github.com/stripe/stripe-go/v76/subscription"
 
 	"github.com/estara-ai/www/internal/config"
@@ -284,4 +285,84 @@ func (c *StripeClient) GetTierFromPriceID(priceID string) SubscriptionTier {
 	default:
 		return TierAnnualAccess // Default to annual access tier
 	}
+}
+
+// ListDisputes retrieves a list of disputes from Stripe
+func (c *StripeClient) ListDisputes(limit int64, startingAfter string) ([]*stripe.Dispute, bool, error) {
+	params := &stripe.DisputeListParams{}
+	if limit > 0 {
+		params.Limit = stripe.Int64(limit)
+	} else {
+		params.Limit = stripe.Int64(25)
+	}
+	if startingAfter != "" {
+		params.StartingAfter = stripe.String(startingAfter)
+	}
+
+	iter := stripeDispute.List(params)
+	var disputes []*stripe.Dispute
+	for iter.Next() {
+		disputes = append(disputes, iter.Dispute())
+	}
+	if err := iter.Err(); err != nil {
+		return nil, false, fmt.Errorf("failed to list disputes: %w", err)
+	}
+
+	hasMore := iter.Meta().HasMore
+	return disputes, hasMore, nil
+}
+
+// GetDispute retrieves a specific dispute by ID
+func (c *StripeClient) GetDispute(id string) (*stripe.Dispute, error) {
+	d, err := stripeDispute.Get(id, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get dispute: %w", err)
+	}
+	return d, nil
+}
+
+// UpdateDispute updates a dispute with evidence
+func (c *StripeClient) UpdateDispute(id string, evidence *ChargebackEvidence) (*stripe.Dispute, error) {
+	params := &stripe.DisputeParams{
+		Evidence: &stripe.DisputeEvidenceParams{},
+	}
+	if evidence.CustomerName != "" {
+		params.Evidence.CustomerName = stripe.String(evidence.CustomerName)
+	}
+	if evidence.CustomerEmail != "" {
+		params.Evidence.CustomerEmailAddress = stripe.String(evidence.CustomerEmail)
+	}
+	if evidence.BillingAddress != "" {
+		params.Evidence.BillingAddress = stripe.String(evidence.BillingAddress)
+	}
+	if evidence.ProductDescription != "" {
+		params.Evidence.ProductDescription = stripe.String(evidence.ProductDescription)
+	}
+	if evidence.ServiceDate != "" {
+		params.Evidence.ServiceDate = stripe.String(evidence.ServiceDate)
+	}
+	if evidence.CancellationPolicy != "" {
+		params.Evidence.CancellationPolicy = stripe.String(evidence.CancellationPolicy)
+	}
+	if evidence.RefundPolicy != "" {
+		params.Evidence.RefundPolicy = stripe.String(evidence.RefundPolicy)
+	}
+	if evidence.UncategorizedText != "" {
+		params.Evidence.UncategorizedText = stripe.String(evidence.UncategorizedText)
+	}
+
+	d, err := stripeDispute.Update(id, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update dispute: %w", err)
+	}
+	return d, nil
+}
+
+// CloseDispute closes (accepts) a dispute
+func (c *StripeClient) CloseDispute(id string) (*stripe.Dispute, error) {
+	d, err := stripeDispute.Close(id, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to close dispute: %w", err)
+	}
+	return d, nil
 }

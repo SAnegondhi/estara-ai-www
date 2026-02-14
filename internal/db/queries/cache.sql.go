@@ -486,6 +486,70 @@ func (q *Queries) ListCacheByUser(ctx context.Context, arg ListCacheByUserParams
 	return items, nil
 }
 
+const ListCacheByUserAndFeature = `-- name: ListCacheByUserAndFeature :many
+SELECT id, key, "userId", location, feature, prompt, "promptHash", complexity, "investorProfile", "marketData", content, "fullReport", "metricsData", "narrativeData", metadata, "createdAt", "expiresAt", "lastAccessedAt", "accessCount", "supersededBy", "supersededAt", "cacheHits", "generationCost", "savingsGenerated" FROM analysis_cache
+WHERE "userId" = $1 AND feature = $2 AND "expiresAt" > NOW()
+ORDER BY "lastAccessedAt" DESC
+LIMIT $3 OFFSET $4
+`
+
+type ListCacheByUserAndFeatureParams struct {
+	UserId  string `json:"userId"`
+	Feature string `json:"feature"`
+	Limit   int32  `json:"limit"`
+	Offset  int32  `json:"offset"`
+}
+
+func (q *Queries) ListCacheByUserAndFeature(ctx context.Context, arg ListCacheByUserAndFeatureParams) ([]AnalysisCache, error) {
+	rows, err := q.db.Query(ctx, ListCacheByUserAndFeature,
+		arg.UserId,
+		arg.Feature,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AnalysisCache{}
+	for rows.Next() {
+		var i AnalysisCache
+		if err := rows.Scan(
+			&i.ID,
+			&i.Key,
+			&i.UserId,
+			&i.Location,
+			&i.Feature,
+			&i.Prompt,
+			&i.PromptHash,
+			&i.Complexity,
+			&i.InvestorProfile,
+			&i.MarketData,
+			&i.Content,
+			&i.FullReport,
+			&i.MetricsData,
+			&i.NarrativeData,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.ExpiresAt,
+			&i.LastAccessedAt,
+			&i.AccessCount,
+			&i.SupersededBy,
+			&i.SupersededAt,
+			&i.CacheHits,
+			&i.GenerationCost,
+			&i.SavingsGenerated,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const UpdateCacheAccess = `-- name: UpdateCacheAccess :exec
 UPDATE analysis_cache
 SET "lastAccessedAt" = NOW(), "accessCount" = "accessCount" + 1

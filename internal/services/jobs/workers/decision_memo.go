@@ -2,30 +2,38 @@ package workers
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
+	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/jobs/queue"
 	"github.com/estara-ai/www/internal/services/memo"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // DecisionMemoWorker processes decision memo generation jobs.
 type DecisionMemoWorker struct {
 	memoService *memo.Service
+	db          *queries.Queries
 	logger      *slog.Logger
 }
 
 // DecisionMemoWorkerConfig holds configuration for the worker.
 type DecisionMemoWorkerConfig struct {
 	MemoService *memo.Service
+	DB          *queries.Queries
 }
 
 // NewDecisionMemoWorker creates a new decision memo worker.
 func NewDecisionMemoWorker(cfg DecisionMemoWorkerConfig) *DecisionMemoWorker {
 	return &DecisionMemoWorker{
 		memoService: cfg.MemoService,
+		db:          cfg.DB,
 		logger:      slog.Default().With("component", "decision_memo_worker"),
 	}
 }
@@ -105,26 +113,19 @@ func (w *DecisionMemoWorker) Process(
 		return w.failedResult(job, fmt.Errorf("memo generation failed: %w", err))
 	}
 
-	// Convert memos to map for job result
-	memosJSON, err := json.Marshal(memos)
-	if err != nil {
-		return w.failedResult(job, fmt.Errorf("failed to serialize memos: %w", err))
+	// Cache memos in analysis_cache for history retrieval
+	cacheKey := w.buildMemoCacheKey(userID, properties)
+	location := fmt.Sprintf("%s, %s", properties[0].City, properties[0].State)
+	if w.db != nil {
+		w.cacheMemos(ctx, cacheKey, userID, location, memos, len(properties))
 	}
 
-	var resultData map[string]interface{}
-	if err := json.Unmarshal(memosJSON, &resultData); err != nil {
-		// Fallback: store as array under "memos" key
-		resultData = map[string]interface{}{
-			"memos": memos,
-		}
-	}
-	// The Unmarshal above would fail since memos is an array, not object.
-	// Always use the memos key.
-	resultData = map[string]interface{}{
+	resultData := map[string]interface{}{
 		"memos":      memos,
 		"count":      len(memos),
 		"strategy":   strategy,
 		"properties": len(properties),
+		"cacheKey":   cacheKey,
 	}
 
 	w.logger.Info("decision memo generation complete",
@@ -165,4 +166,54 @@ func (w *DecisionMemoWorker) failedResult(job *queue.Job, err error) (*queue.Job
 		Error:       err.Error(),
 		CompletedAt: time.Now(),
 	}, err
+}
+
+// buildMemoCacheKey creates a deterministic cache key from user ID and property IDs.
+func (w *DecisionMemoWorker) buildMemoCacheKey(userID string, properties []memo.BatchPropertyInput) string {
+	ids := make([]string, len(properties))
+	for i, p := range properties {
+		ids[i] = p.ID
+	}
+	sort.Strings(ids)
+	h := sha256.New()
+	for _, id := range ids {
+		h.Write([]byte(id))
+	}
+	return fmt.Sprintf("memo_%s_%x", userID, h.Sum(nil)[:8])
+}
+
+// cacheMemos stores generated memos in analysis_cache for later retrieval.
+func (w *DecisionMemoWorker) cacheMemos(ctx context.Context, key, userID, location string, memos []memo.MemoData, propertyCount int) {
+	content, err := json.Marshal(map[string]interface{}{
+		"memos":         memos,
+		"propertyCount": propertyCount,
+		"location":      location,
+	})
+	if err != nil {
+		w.logger.Warn("failed to marshal memos for cache", "error", err)
+		return
+	}
+
+	metadata, _ := json.Marshal(map[string]interface{}{
+		"propertyCount": propertyCount,
+		"preview":       memos[0].PropertyAddress,
+	})
+
+	exp := time.Now().AddDate(0, 0, 30)
+	_, err = w.db.UpsertCache(ctx, queries.UpsertCacheParams{
+		ID:       uuid.New().String(),
+		Key:      key,
+		UserId:   userID,
+		Location: location,
+		Feature:  "decision_memo",
+		Content:  string(content),
+		ExpiresAt: pgtype.Timestamp{
+			Time:  exp,
+			Valid: true,
+		},
+		Metadata: metadata,
+	})
+	if err != nil {
+		w.logger.Warn("failed to cache memos", "error", err)
+	}
 }

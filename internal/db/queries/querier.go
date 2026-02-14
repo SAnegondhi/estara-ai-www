@@ -39,6 +39,8 @@ type Querier interface {
 	CountSnapshotsByEmail(ctx context.Context, email pgtype.Text) (int64, error)
 	CountSubscriptionsByStatus(ctx context.Context) (CountSubscriptionsByStatusRow, error)
 	CountTermsAcceptancesByVersion(ctx context.Context, version string) (int64, error)
+	CountUserConsents(ctx context.Context) (int64, error)
+	CountUserConsentsByType(ctx context.Context, consentType string) (int64, error)
 	CountUserDiscoverySessions(ctx context.Context, arg CountUserDiscoverySessionsParams) (int64, error)
 	CountUserInvestorReports(ctx context.Context, userid pgtype.Text) (int64, error)
 	CountUserScenarios(ctx context.Context, userid string) (int64, error)
@@ -103,6 +105,7 @@ type Querier interface {
 	// =========================================================
 	CreateTermsAcceptance(ctx context.Context, arg CreateTermsAcceptanceParams) (TermsAcceptance, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	CreateUserConsent(ctx context.Context, arg CreateUserConsentParams) (UserConsent, error)
 	// Creates a user with password hash and Stripe customer ID (for guest checkout signup)
 	CreateUserWithPassword(ctx context.Context, arg CreateUserWithPasswordParams) (User, error)
 	// Queries for admin extended tables (vendor contracts, credits, cron tracking, terms)
@@ -185,6 +188,7 @@ type Querier interface {
 	// Checkout Evidence Queries
 	GetCheckoutEvidenceByPaymentIntent(ctx context.Context, stripepaymentintentid pgtype.Text) (CheckoutEvidence, error)
 	GetCheckoutEvidenceBySubscription(ctx context.Context, stripesubscriptionid pgtype.Text) (CheckoutEvidence, error)
+	GetConsentSummary(ctx context.Context) ([]GetConsentSummaryRow, error)
 	// Website and Public API Queries
 	// Contact Submissions
 	GetContactSubmissionByID(ctx context.Context, id string) (ContactSubmission, error)
@@ -288,6 +292,7 @@ type Querier interface {
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id string) (User, error)
 	GetUserByStripeCustomerID(ctx context.Context, stripecustomerid pgtype.Text) (User, error)
+	GetUserConsent(ctx context.Context, arg GetUserConsentParams) (UserConsent, error)
 	GetUserStats(ctx context.Context) (GetUserStatsRow, error)
 	GetVendorContract(ctx context.Context, vendorid string) (VendorContract, error)
 	GetVendorContractByID(ctx context.Context, id string) (VendorContract, error)
@@ -320,6 +325,7 @@ type Querier interface {
 	ListCacheByFeature(ctx context.Context, arg ListCacheByFeatureParams) ([]AnalysisCache, error)
 	ListCacheByLocation(ctx context.Context, arg ListCacheByLocationParams) ([]AnalysisCache, error)
 	ListCacheByUser(ctx context.Context, arg ListCacheByUserParams) ([]AnalysisCache, error)
+	ListCacheByUserAndFeature(ctx context.Context, arg ListCacheByUserAndFeatureParams) ([]AnalysisCache, error)
 	ListContactSubmissions(ctx context.Context, arg ListContactSubmissionsParams) ([]ContactSubmission, error)
 	ListContactSubmissionsByStatus(ctx context.Context, arg ListContactSubmissionsByStatusParams) ([]ContactSubmission, error)
 	ListCronJobConfigs(ctx context.Context) ([]CronJobConfig, error)
@@ -343,6 +349,9 @@ type Querier interface {
 	ListUnusedAdminCredits(ctx context.Context) ([]AdminCredit, error)
 	ListUserBillingCycles(ctx context.Context, arg ListUserBillingCyclesParams) ([]BillingCycle, error)
 	ListUserCheckoutEvidence(ctx context.Context, arg ListUserCheckoutEvidenceParams) ([]CheckoutEvidence, error)
+	// Compliance Queries
+	ListUserConsents(ctx context.Context, arg ListUserConsentsParams) ([]UserConsent, error)
+	ListUserConsentsByType(ctx context.Context, arg ListUserConsentsByTypeParams) ([]UserConsent, error)
 	ListUserDiscoverySessions(ctx context.Context, arg ListUserDiscoverySessionsParams) ([]DiscoverySession, error)
 	ListUserFavoriteScenarios(ctx context.Context, arg ListUserFavoriteScenariosParams) ([]Scenario, error)
 	ListUserFavoritedAnalyses(ctx context.Context, arg ListUserFavoritedAnalysesParams) ([]UserAnalysisPreference, error)
@@ -365,6 +374,7 @@ type Querier interface {
 	RestoreDiscoverySession(ctx context.Context, arg RestoreDiscoverySessionParams) (DiscoverySession, error)
 	RevokeAdminSession(ctx context.Context, id string) error
 	RevokeAllAdminSessionsByUser(ctx context.Context, userid string) error
+	RevokeUserConsent(ctx context.Context, arg RevokeUserConsentParams) error
 	SearchUserScenarios(ctx context.Context, arg SearchUserScenariosParams) ([]Scenario, error)
 	SearchUsersByEmail(ctx context.Context, arg SearchUsersByEmailParams) ([]User, error)
 	SessionExistsByUser(ctx context.Context, arg SessionExistsByUserParams) (bool, error)

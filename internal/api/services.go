@@ -382,16 +382,22 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 		// Create investment planning worker and register with queue
 		// Create decision memo service and worker (ADR-079)
 		if services.Anthropic != nil {
+			var memoQueries *queries.Queries
+			if cfg.DB != nil && cfg.DB.Main != nil {
+				memoQueries = queries.New(cfg.DB.Main)
+			}
 			services.MemoService = memo.NewService(memo.ServiceConfig{
 				AIClient:    services.Anthropic,
 				Aggregator:  services.MarketData,
 				MetroReader: metroReader,
 				FREDService: services.FREDService,
 				GeoSpatial:  geospatial.NewStub(),
+				DB:          memoQueries,
 			})
 
 			memoWorker := workers.NewDecisionMemoWorker(workers.DecisionMemoWorkerConfig{
 				MemoService: services.MemoService,
+				DB:          memoQueries,
 			})
 			services.JobQueue.RegisterHandler(queue.JobTypeDecisionMemo, memoWorker.GetHandler())
 			logger.Info("decision memo worker registered")

@@ -241,6 +241,9 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Post("/decision-memo", handlers.Discover.QueueDecisionMemos)
 		r.Get("/decision-memo/{jobId}/stream", handlers.Discover.StreamDecisionMemoProgress)
 		r.Post("/decision-memo/export", handlers.Discover.ExportDecisionMemoPDF)
+		r.Get("/decision-memo/history", handlers.Discover.GetMemoHistory)
+		r.Get("/decision-memo/cached/{key}", handlers.Discover.GetCachedMemo)
+		r.Delete("/decision-memo/cached/{key}", handlers.Discover.DeleteCachedMemo)
 
 		// Discovery Sessions
 		r.Route("/sessions", func(r chi.Router) {
@@ -505,6 +508,31 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 			r.Post("/refunds", handlers.Admin.ProcessRefund)
 			r.Get("/invoices", handlers.Admin.ListInvoices)
 			r.Get("/webhook-status", handlers.Admin.WebhookStatus)
+
+			// Dispute management
+			r.Get("/disputes", handlers.Admin.ListDisputes)
+			r.Get("/disputes/metrics", handlers.Admin.GetDisputeMetrics)
+			r.Get("/disputes/{id}", handlers.Admin.GetDisputeDetail)
+			r.Post("/disputes/{id}/submit-evidence", handlers.Admin.SubmitEvidence)
+			r.Post("/disputes/{id}/auto-evidence", handlers.Admin.AutoCompileEvidence)
+		})
+
+		// Revenue analytics
+		r.Route("/revenue", func(r chi.Router) {
+			r.Get("/summary", handlers.Admin.GetRevenueSummary)
+			r.Get("/trend", handlers.Admin.GetRevenueTrend)
+			r.Get("/by-tier", handlers.Admin.GetRevenueByTier)
+			r.Get("/at-risk", handlers.Admin.GetAtRiskCustomers)
+			r.Get("/leakage", handlers.Admin.GetRevenueLeakage)
+			r.Get("/chargeback-rate", handlers.Admin.GetChargebackRate)
+			r.Get("/segments", handlers.Admin.GetRevenueSegments)
+		})
+
+		// IAP monitoring
+		r.Route("/iap", func(r chi.Router) {
+			r.Get("/renewal-status", handlers.Admin.GetIAPRenewalStatus)
+			r.Get("/webhook-events", handlers.Admin.GetIAPWebhookEvents)
+			r.Post("/subscriptions/{id}/downgrade", handlers.Admin.DowngradeIAPSubscription)
 		})
 
 		// Two-Factor Authentication
@@ -533,6 +561,22 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Route("/market-data", func(r chi.Router) {
 			r.Get("/status", handlers.Admin.MarketDataStatus)
 			r.Post("/trigger-import", handlers.Admin.TriggerMarketDataImport)
+		})
+
+		// Compliance
+		r.Route("/compliance", func(r chi.Router) {
+			r.Get("/consents", handlers.Admin.GetConsents)
+			r.Get("/terms-log", handlers.Admin.GetTermsLog)
+			r.Get("/tax-summary", handlers.Admin.GetTaxSummary)
+		})
+
+		// Accounting
+		r.Route("/accounting", func(r chi.Router) {
+			r.Get("/revenue-journal", handlers.Admin.GetRevenueJournal)
+			r.Get("/deferred-revenue", handlers.Admin.GetDeferredRevenue)
+			r.Get("/vendor-expenses", handlers.Admin.GetVendorExpenses)
+			r.Get("/profitability", handlers.Admin.GetProfitability)
+			r.Post("/export", handlers.Admin.ExportAccounting)
 		})
 
 		// Monitoring

@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/estara-ai/www/internal/api/middleware"
+	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/jobs/queue"
 	"github.com/estara-ai/www/internal/services/memo"
 	"github.com/estara-ai/www/internal/services/pdf"
@@ -112,12 +113,10 @@ func (h *Handler) QueueDecisionMemos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	streamToken := fmt.Sprintf("%s:%s", user.UserID, jobID)
 	httputil.JSON(w, http.StatusAccepted, map[string]interface{}{
-		"success":   true,
-		"jobId":     jobID,
-		"cached":    false,
-		"streamUrl": fmt.Sprintf("/api/v2/discover/decision-memo/%s/stream?token=%s", jobID, streamToken),
+		"success": true,
+		"jobId":   jobID,
+		"cached":  false,
 	})
 }
 
@@ -126,28 +125,21 @@ func (h *Handler) QueueDecisionMemos(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) StreamDecisionMemoProgress(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	jobID := chi.URLParam(r, "jobId")
-	token := r.URL.Query().Get("token")
 
 	if jobID == "" {
 		httputil.BadRequest(w, "jobId required")
 		return
 	}
 
-	// Validate token
-	var userID string
-	for i, c := range token {
-		if c == ':' {
-			userID = token[:i]
-			break
-		}
-	}
-	if userID == "" {
-		httputil.Unauthorized(w, "invalid token")
+	// Auth handled by middleware — user is already validated
+	user := middleware.GetUserFromContext(ctx)
+	if user == nil {
+		httputil.Unauthorized(w, "unauthorized")
 		return
 	}
 
 	logger := slog.Default().With("component", "memo_stream", "job_id", jobID)
-	logger.Info("starting memo stream", "user_id", userID)
+	logger.Info("starting memo stream", "user_id", user.UserID)
 
 	sseWriter, err := sse.NewWriter(w)
 	if err != nil {
@@ -215,6 +207,147 @@ func (h *Handler) StreamDecisionMemoProgress(w http.ResponseWriter, r *http.Requ
 			})
 		}
 	}
+}
+
+// MemoHistoryEntry is one item in the memo history list.
+type MemoHistoryEntry struct {
+	ID            string    `json:"id"`
+	Key           string    `json:"key"`
+	Location      string    `json:"location"`
+	CreatedAt     time.Time `json:"createdAt"`
+	PropertyCount int       `json:"propertyCount"`
+	Preview       string    `json:"preview"`
+}
+
+// GetMemoHistory handles GET /api/v2/discover/decision-memo/history
+// Returns cached memos for the current user.
+func (h *Handler) GetMemoHistory(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserFromContext(r.Context())
+	if user == nil {
+		httputil.Unauthorized(w, "unauthorized")
+		return
+	}
+
+	if h.db == nil || h.db.Main == nil {
+		httputil.JSON(w, http.StatusOK, map[string]interface{}{"entries": []MemoHistoryEntry{}})
+		return
+	}
+
+	q := queries.New(h.db.Main)
+	rows, err := q.ListCacheByUserAndFeature(r.Context(), queries.ListCacheByUserAndFeatureParams{
+		UserId:  user.UserID,
+		Feature: "decision_memo",
+		Limit:   20,
+		Offset:  0,
+	})
+	if err != nil {
+		h.logger.Error("failed to list memo history", "error", err)
+		httputil.JSON(w, http.StatusOK, map[string]interface{}{"entries": []MemoHistoryEntry{}})
+		return
+	}
+
+	entries := make([]MemoHistoryEntry, 0, len(rows))
+	for _, row := range rows {
+		entry := MemoHistoryEntry{
+			ID:       row.ID,
+			Key:      row.Key,
+			Location: row.Location,
+		}
+		if row.CreatedAt.Valid {
+			entry.CreatedAt = row.CreatedAt.Time
+		}
+		// Extract propertyCount and preview from metadata
+		if len(row.Metadata) > 0 {
+			var meta map[string]interface{}
+			if err := json.Unmarshal(row.Metadata, &meta); err == nil {
+				if cnt, ok := meta["propertyCount"].(float64); ok {
+					entry.PropertyCount = int(cnt)
+				}
+				if prev, ok := meta["preview"].(string); ok {
+					entry.Preview = prev
+				}
+			}
+		}
+		entries = append(entries, entry)
+	}
+
+	httputil.JSON(w, http.StatusOK, map[string]interface{}{"entries": entries})
+}
+
+// GetCachedMemo handles GET /api/v2/discover/decision-memo/cached/{key}
+// Returns full memo data from cache.
+func (h *Handler) GetCachedMemo(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserFromContext(r.Context())
+	if user == nil {
+		httputil.Unauthorized(w, "unauthorized")
+		return
+	}
+
+	key := chi.URLParam(r, "key")
+	if key == "" {
+		httputil.BadRequest(w, "cache key required")
+		return
+	}
+
+	if h.db == nil || h.db.Main == nil {
+		httputil.Error(w, http.StatusNotFound, "memo not found")
+		return
+	}
+
+	q := queries.New(h.db.Main)
+	row, err := q.GetCacheByUserAndKey(r.Context(), queries.GetCacheByUserAndKeyParams{
+		UserId: user.UserID,
+		Key:    key,
+	})
+	if err != nil {
+		httputil.Error(w, http.StatusNotFound, "memo not found")
+		return
+	}
+
+	// Update access time
+	_ = q.UpdateCacheAccess(r.Context(), key)
+
+	// Parse cached content and return the memos
+	var cached map[string]interface{}
+	if err := json.Unmarshal([]byte(row.Content), &cached); err != nil {
+		httputil.InternalError(w, fmt.Errorf("failed to parse cached memo: %w", err))
+		return
+	}
+
+	httputil.JSON(w, http.StatusOK, cached)
+}
+
+// DeleteCachedMemo handles DELETE /api/v2/discover/decision-memo/cached/{key}
+// Deletes a memo from cache.
+func (h *Handler) DeleteCachedMemo(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserFromContext(r.Context())
+	if user == nil {
+		httputil.Unauthorized(w, "unauthorized")
+		return
+	}
+
+	key := chi.URLParam(r, "key")
+	if key == "" {
+		httputil.BadRequest(w, "cache key required")
+		return
+	}
+
+	if h.db == nil || h.db.Main == nil {
+		httputil.Error(w, http.StatusNotFound, "memo not found")
+		return
+	}
+
+	q := queries.New(h.db.Main)
+	err := q.DeleteCacheByUserAndKey(r.Context(), queries.DeleteCacheByUserAndKeyParams{
+		UserId: user.UserID,
+		Key:    key,
+	})
+	if err != nil {
+		httputil.InternalError(w, fmt.Errorf("failed to delete memo: %w", err))
+		return
+	}
+
+	httputil.JSON(w, http.StatusOK, map[string]interface{}{"success": true})
 }
 
 // ExportDecisionMemoPDF handles POST /api/v2/discover/decision-memo/export

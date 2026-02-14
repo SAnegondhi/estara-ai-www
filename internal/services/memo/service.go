@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/ai/anthropic"
 	"github.com/estara-ai/www/internal/services/ai/prompts"
 	"github.com/estara-ai/www/internal/services/geospatial"
@@ -24,6 +25,7 @@ type Service struct {
 	metroReader *timeseries.MetroReader
 	fredService *fred.Service
 	geoSpatial  geospatial.Service
+	db          *queries.Queries
 	calculator  *Calculator
 	logger      *slog.Logger
 }
@@ -35,6 +37,7 @@ type ServiceConfig struct {
 	MetroReader *timeseries.MetroReader
 	FREDService *fred.Service
 	GeoSpatial  geospatial.Service
+	DB          *queries.Queries
 }
 
 // NewService creates a new memo generation service.
@@ -45,6 +48,7 @@ func NewService(cfg ServiceConfig) *Service {
 		metroReader: cfg.MetroReader,
 		fredService: cfg.FREDService,
 		geoSpatial:  cfg.GeoSpatial,
+		db:          cfg.DB,
 		calculator:  NewCalculator(),
 		logger:      slog.Default().With("component", "memo_service"),
 	}
@@ -76,7 +80,7 @@ func (s *Service) GenerateMemos(ctx context.Context, properties []BatchPropertyI
 		s.logger.Warn("failed to fetch market data", "error", err)
 	}
 
-	// Step 2: Fetch FRED rates (25%)
+	// Step 2: Fetch FRED rates (20%)
 	report(20, "Fetching economic rates")
 	var mortgageRate, vacancyRate float64
 	if s.fredService != nil {
@@ -84,6 +88,18 @@ func (s *Service) GenerateMemos(ctx context.Context, properties []BatchPropertyI
 		if err == nil {
 			mortgageRate = rates.MortgageRate30Year
 			vacancyRate = rates.RentalVacancyRate
+		}
+	}
+
+	// Step 2b: Check portfolio snapshot (27%)
+	report(27, "Checking portfolio impact")
+	hasInvestmentPlan := false
+	var portfolioImpacts []*PortfolioImpactData
+	if s.db != nil && opts.UserID != "" {
+		snapshot, err := s.db.GetLatestPortfolioSnapshot(ctx, opts.UserID)
+		if err == nil {
+			hasInvestmentPlan = true
+			portfolioImpacts = s.calculator.ComputePortfolioImpacts(snapshot, properties)
 		}
 	}
 
@@ -115,7 +131,7 @@ func (s *Service) GenerateMemos(ctx context.Context, properties []BatchPropertyI
 
 	// Step 6: Call AI for narratives (55-85%)
 	report(55, "Generating analysis")
-	aiOutput, err := s.generateNarratives(ctx, properties, calculations, marketData, opts.Strategy, city, state)
+	aiOutput, err := s.generateNarratives(ctx, properties, calculations, marketData, opts.Strategy, city, state, hasInvestmentPlan)
 	if err != nil {
 		s.logger.Error("AI narrative generation failed", "error", err)
 		// Continue with empty narratives rather than failing entirely
@@ -157,6 +173,11 @@ func (s *Service) GenerateMemos(ctx context.Context, properties []BatchPropertyI
 
 		// Merge comps
 		memo.Comparables = comps[i]
+
+		// Merge portfolio impact
+		if i < len(portfolioImpacts) && portfolioImpacts[i] != nil {
+			memo.PortfolioImpact = portfolioImpacts[i]
+		}
 
 		// Merge AI output
 		if i < len(aiOutput.Properties) {
@@ -287,6 +308,7 @@ func (s *Service) generateNarratives(
 	calculations []*CalculationOutput,
 	marketData *aggregator.MarketData,
 	strategy, city, state string,
+	hasInvestmentPlan bool,
 ) (*AIBatchOutput, error) {
 	if s.aiClient == nil {
 		return nil, fmt.Errorf("AI client not configured")
@@ -350,7 +372,7 @@ func (s *Service) generateNarratives(
 		propContexts[i] = pc
 	}
 
-	userPrompt := prompts.BuildMemoUserPrompt(propContexts, strategy, city, state, false)
+	userPrompt := prompts.BuildMemoUserPrompt(propContexts, strategy, city, state, hasInvestmentPlan)
 	response, err := s.aiClient.CompleteWithMaxTokens(ctx, prompts.MemoSystemPrompt, userPrompt, 8192)
 	if err != nil {
 		return nil, fmt.Errorf("AI call failed: %w", err)
