@@ -24,6 +24,7 @@ import (
 	"github.com/estara-ai/www/internal/api/handlers/website"
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
+	billingService "github.com/estara-ai/www/internal/services/billing"
 	"github.com/estara-ai/www/internal/services/market/importer"
 	"github.com/estara-ai/www/internal/services/pdf"
 	"github.com/estara-ai/www/internal/db/postgres"
@@ -144,6 +145,12 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		handlers.Portfolio.SetPropertyFinder(svc.PropertyFinder)
 	}
 	handlers.Portfolio.SetQueries(queries.New(db.Main))
+
+	// Wire Stripe billing client into admin handler for subscription management
+	if cfg.Stripe.SecretKey != "" {
+		stripeClient := billingService.NewStripeClient(&cfg.Stripe)
+		handlers.Admin.SetBilling(stripeClient)
+	}
 
 	// Wire Decision Memo service into discover handler (ADR-079)
 	if svc.JobQueue != nil {
@@ -472,9 +479,32 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		// Vendor management
 		r.Route("/vendors", func(r chi.Router) {
 			r.Get("/", handlers.Admin.ListVendors)
+			r.Post("/", handlers.Admin.CreateVendor)
+			r.Get("/costs", handlers.Admin.GetVendorCosts)
+			r.Get("/alerts", handlers.Admin.GetVendorAlerts)
 			r.Get("/{id}/health", handlers.Admin.VendorHealth)
 			r.Post("/{id}/toggle", handlers.Admin.ToggleVendor)
-			r.Get("/costs", handlers.Admin.GetVendorCosts)
+			r.Put("/{id}", handlers.Admin.UpdateVendor)
+			r.Delete("/{id}", handlers.Admin.DeleteVendor)
+			r.Get("/{id}/contract", handlers.Admin.GetVendorContract)
+			r.Post("/{id}/contract", handlers.Admin.CreateOrUpdateContract)
+		})
+
+		// Subscription management
+		r.Route("/subscriptions", func(r chi.Router) {
+			r.Get("/", handlers.Admin.ListSubscriptions)
+			r.Get("/{id}", handlers.Admin.GetSubscriptionDetail)
+			r.Post("/{id}/change-plan", handlers.Admin.ChangePlan)
+			r.Post("/{id}/apply-credit", handlers.Admin.ApplyCredit)
+			r.Post("/{id}/cancel", handlers.Admin.AdminCancelSubscription)
+		})
+
+		// Stripe console
+		r.Route("/stripe", func(r chi.Router) {
+			r.Get("/payments", handlers.Admin.ListPayments)
+			r.Post("/refunds", handlers.Admin.ProcessRefund)
+			r.Get("/invoices", handlers.Admin.ListInvoices)
+			r.Get("/webhook-status", handlers.Admin.WebhookStatus)
 		})
 
 		// Two-Factor Authentication

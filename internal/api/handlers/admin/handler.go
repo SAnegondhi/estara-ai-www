@@ -22,6 +22,7 @@ import (
 	"github.com/estara-ai/www/internal/db/postgres"
 	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
+	billingService "github.com/estara-ai/www/internal/services/billing"
 	"github.com/estara-ai/www/internal/services/market/importer"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -35,6 +36,12 @@ type Handler struct {
 	validate *validator.Validate
 	logger   *slog.Logger
 	importer *importer.Service
+	billing  *billingService.StripeClient
+}
+
+// SetBilling injects the Stripe billing client into the handler.
+func (h *Handler) SetBilling(b *billingService.StripeClient) {
+	h.billing = b
 }
 
 // NewHandler creates a new admin handler
