@@ -598,7 +598,7 @@ type User struct {
 	FirstName                  pgtype.Text      `json:"firstName"`
 	LastName                   pgtype.Text      `json:"lastName"`
 	StripeCustomerId           pgtype.Text      `json:"stripeCustomerId"`
-	Role                       interface{}      `json:"role"`
+	Role                       string           `json:"role"`
 	HasDataTier                pgtype.Text      `json:"hasDataTier"`
 	Password                   pgtype.Text      `json:"password"`
 	Theme                      pgtype.Text      `json:"theme"`

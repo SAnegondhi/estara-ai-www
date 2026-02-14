@@ -30,6 +30,8 @@ sql:
             go_type:
               import: "encoding/json"
               type: "RawMessage"
+          - db_type: "UserRole"
+            go_type: "string"
 
   # Market database queries (separate PostgreSQL for time series data)
   - engine: "postgresql"

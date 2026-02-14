@@ -105,14 +105,13 @@ func (h *Handler) AdminLogin(w http.ResponseWriter, r *http.Request) {
 	q := queries.New(h.db.Main)
 	user, err := q.GetUserByEmail(ctx, email)
 	if err != nil {
-		h.logger.Warn("admin login: user not found", "email", email)
+		h.logger.Warn("admin login: user not found", "email", email, "error", err.Error())
 		httputil.Unauthorized(w, "Invalid credentials")
 		return
 	}
 
 	// Verify user is an admin
-	userRole := fmt.Sprintf("%v", user.Role)
-	isAdmin := strings.EqualFold(userRole, "ADMIN") || h.auth.IsAdmin(user.ID)
+	isAdmin := strings.EqualFold(user.Role, "ADMIN") || strings.EqualFold(user.Role, "SUPER_ADMIN") || h.auth.IsAdmin(user.ID)
 	if !isAdmin {
 		h.logger.Warn("admin login: non-admin user attempted admin login", "email", email, "user_id", user.ID)
 		httputil.Forbidden(w, "admin access required")

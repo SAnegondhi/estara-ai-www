@@ -36,7 +36,7 @@ type CreateUserParams struct {
 	Email            string      `json:"email"`
 	FirstName        pgtype.Text `json:"firstName"`
 	LastName         pgtype.Text `json:"lastName"`
-	Role             interface{} `json:"role"`
+	Role             string      `json:"role"`
 	SubscriptionTier pgtype.Text `json:"subscriptionTier"`
 }
 
@@ -98,7 +98,7 @@ type CreateUserWithPasswordParams struct {
 	Password         pgtype.Text `json:"password"`
 	FirstName        pgtype.Text `json:"firstName"`
 	LastName         pgtype.Text `json:"lastName"`
-	Role             interface{} `json:"role"`
+	Role             string      `json:"role"`
 	SubscriptionTier pgtype.Text `json:"subscriptionTier"`
 	StripeCustomerId pgtype.Text `json:"stripeCustomerId"`
 }
@@ -374,9 +374,9 @@ LIMIT $2 OFFSET $3
 `
 
 type ListUsersByRoleParams struct {
-	Role   interface{} `json:"role"`
-	Limit  int32       `json:"limit"`
-	Offset int32       `json:"offset"`
+	Role   string `json:"role"`
+	Limit  int32  `json:"limit"`
+	Offset int32  `json:"offset"`
 }
 
 func (q *Queries) ListUsersByRole(ctx context.Context, arg ListUsersByRoleParams) ([]User, error) {
@@ -575,8 +575,8 @@ WHERE id = $1
 `
 
 type UpdateUserRoleParams struct {
-	ID   string      `json:"id"`
-	Role interface{} `json:"role"`
+	ID   string `json:"id"`
+	Role string `json:"role"`
 }
 
 func (q *Queries) UpdateUserRole(ctx context.Context, arg UpdateUserRoleParams) error {

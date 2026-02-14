@@ -4,7 +4,7 @@
 
 -- UserRole enum (matches Prisma)
 DO $$ BEGIN
-    CREATE TYPE "UserRole" AS ENUM ('USER', 'ADMIN');
+    CREATE TYPE "UserRole" AS ENUM ('USER', 'ADMIN', 'SUPER_ADMIN');
 EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
