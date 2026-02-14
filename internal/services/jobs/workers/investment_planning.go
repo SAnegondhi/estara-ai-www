@@ -142,7 +142,7 @@ func (w *InvestmentPlanningWorker) Process(
 
 	// ADR-059: Model cash flow reinvestment if enabled
 	if params.ReinvestSurplusCashFlows && len(result.SelectedProperties) > 0 {
-		w.reportProgress(progress, job.ID, 80, "Modeling cash flow reinvestment")
+		w.reportProgressWithStage(progress, job.ID, 80, "Modeling cash flow reinvestment", "analyzing")
 		reinvestAnalysis, err := w.modelReinvestment(ctx, params, result.SelectedProperties, mortgageRate, result.MarketQuality)
 		if err != nil {
 			w.logger.Warn("failed to model reinvestment", "error", err)
@@ -152,7 +152,7 @@ func (w *InvestmentPlanningWorker) Process(
 	}
 
 	// Calculate growth projections (85%)
-	w.reportProgress(progress, job.ID, 85, "Calculating growth projections")
+	w.reportProgressWithStage(progress, job.ID, 85, "Calculating growth projections", "analyzing")
 	projectionYears := params.ProjectionYears
 	if projectionYears <= 0 {
 		projectionYears = 10
@@ -184,7 +184,7 @@ func (w *InvestmentPlanningWorker) Process(
 	result.UserAssumptions = userAssumptions
 
 	// ADR-063: Generate all 3 scenario projections using unified cohort engine
-	w.reportProgress(progress, job.ID, 87, "Generating scenario projections")
+	w.reportProgressWithStage(progress, job.ID, 87, "Generating scenario projections", "analyzing")
 	scenarioYears := min(5, projectionYears)
 	// Build market lookup map from slice for the unified engine
 	scenarioMarketLookup := make(map[string]*investment.LocationMarketAnalysis, len(result.MarketQuality))
@@ -226,7 +226,7 @@ func (w *InvestmentPlanningWorker) Process(
 		w.logger.Warn("failed to fetch existing portfolio, proceeding without", "error", err)
 	}
 	if existingPortfolio != nil {
-		w.reportProgress(progress, job.ID, 90, "Calculating combined portfolio metrics")
+		w.reportProgressWithStage(progress, job.ID, 90, "Calculating combined portfolio metrics", "analyzing")
 		result.ExistingPortfolio = w.calculator.SummarizeExistingPortfolio(existingPortfolio)
 		result.CombinedMetrics = w.calculator.CalculateCombinedMetrics(
 			result.ExistingPortfolio,
@@ -235,7 +235,7 @@ func (w *InvestmentPlanningWorker) Process(
 	}
 
 	// Cache the result (95%)
-	w.reportProgress(progress, job.ID, 95, "Caching results")
+	w.reportProgressWithStage(progress, job.ID, 95, "Caching results", "caching")
 	// Note: Handler stores "cache_key" (snake_case) in payload
 	if cacheKey, ok := job.Payload["cache_key"].(string); ok && cacheKey != "" {
 		if err := w.cacheResult(ctx, job.UserID, cacheKey, params, result, mortgageRate); err != nil {
@@ -244,7 +244,7 @@ func (w *InvestmentPlanningWorker) Process(
 	}
 
 	// Complete
-	w.reportProgress(progress, job.ID, 100, "Investment planning complete")
+	w.reportProgressWithStage(progress, job.ID, 100, "Investment planning complete", "completed")
 
 	duration := time.Since(startTime)
 	w.logger.Info("investment planning job complete",
@@ -292,7 +292,7 @@ func (w *InvestmentPlanningWorker) processSearchMode(
 	progress chan<- queue.ProgressEvent,
 ) (*investment.InvestmentPlanningResult, error) {
 	// Search for properties in specified locations (30%)
-	w.reportProgress(progress, job.ID, 20, "Searching for properties")
+	w.reportProgressWithStage(progress, job.ID, 20, "Searching for properties", "searching")
 	properties, err := w.searchProperties(ctx, params.InvestmentPlanningParams, progress, job.ID)
 	if err != nil {
 		return nil, fmt.Errorf("property search failed: %w", err)
@@ -308,7 +308,7 @@ func (w *InvestmentPlanningWorker) processSearchMode(
 	)
 
 	// Fetch existing portfolio (40%)
-	w.reportProgress(progress, job.ID, 40, "Analyzing existing portfolio")
+	w.reportProgressWithStage(progress, job.ID, 40, "Analyzing existing portfolio", "analyzing")
 	existingPortfolio, err := w.fetchExistingPortfolio(ctx, job.UserID)
 	if err != nil {
 		w.logger.Warn("failed to fetch existing portfolio, proceeding without", "error", err)
@@ -316,7 +316,7 @@ func (w *InvestmentPlanningWorker) processSearchMode(
 	params.ExistingPortfolio = existingPortfolio
 
 	// Score and rank properties (45%)
-	w.reportProgress(progress, job.ID, 45, fmt.Sprintf("Scoring %d properties", len(properties)))
+	w.reportProgressWithStage(progress, job.ID, 45, fmt.Sprintf("Scoring %d properties", len(properties)), "scoring")
 
 	// Optimize portfolio (50-75%)
 	// Start synthetic progress ticker to keep the UI moving during optimization
@@ -326,10 +326,10 @@ func (w *InvestmentPlanningWorker) processSearchMode(
 	var result *investment.InvestmentPlanningResult
 
 	if len(params.YearlyBudgets) > 0 {
-		w.reportProgress(progress, job.ID, 50, "Running multi-year optimization")
+		w.reportProgressWithStage(progress, job.ID, 50, "Running multi-year optimization", "optimizing")
 		result, err = w.runMultiYearOptimization(ctx, params.InvestmentPlanningParams, properties, mortgageRate)
 	} else {
-		w.reportProgress(progress, job.ID, 50, "Running portfolio optimization")
+		w.reportProgressWithStage(progress, job.ID, 50, "Running portfolio optimization", "optimizing")
 		result, err = w.runSingleYearOptimization(ctx, params.InvestmentPlanningParams, properties, mortgageRate)
 	}
 
@@ -340,8 +340,8 @@ func (w *InvestmentPlanningWorker) processSearchMode(
 	}
 
 	// Post-optimization progress (75%)
-	w.reportProgress(progress, job.ID, 75,
-		fmt.Sprintf("Selected %d optimal properties", len(result.SelectedProperties)))
+	w.reportProgressWithStage(progress, job.ID, 75,
+		fmt.Sprintf("Selected %d optimal properties", len(result.SelectedProperties)), "optimizing")
 
 	return result, nil
 }
@@ -360,11 +360,11 @@ func (w *InvestmentPlanningWorker) processSelectionMode(
 	)
 
 	// Step 1: Convert selected properties to investment.Property (15%)
-	w.reportProgress(progress, job.ID, 15, "Validating selected properties")
+	w.reportProgressWithStage(progress, job.ID, 15, "Validating selected properties", "analyzing")
 	properties := analysis.ConvertSelectedToProperties(params.SelectedProperties)
 
 	// Step 2: Run divest analysis on selected properties (35%)
-	w.reportProgress(progress, job.ID, 25, "Analyzing properties for keep/divest")
+	w.reportProgressWithStage(progress, job.ID, 25, "Analyzing properties for keep/divest", "analyzing")
 	divestParams := analysis.DivestAnalysisParams{
 		Properties:      properties,
 		Strategy:        params.Strategy,
@@ -402,7 +402,7 @@ func (w *InvestmentPlanningWorker) processSelectionMode(
 	acquireRecommendations := make([]investment.PropertyRecommendation, 0)
 
 	if totalBudget > 0 && w.finder != nil {
-		w.reportProgress(progress, job.ID, 45, "Searching for acquisition candidates")
+		w.reportProgressWithStage(progress, job.ID, 45, "Searching for acquisition candidates", "searching")
 
 		// Search in same locations as selected properties
 		acquisitionCandidates, err := w.searchProperties(ctx, params.InvestmentPlanningParams, progress, job.ID)
@@ -410,7 +410,7 @@ func (w *InvestmentPlanningWorker) processSelectionMode(
 			w.logger.Warn("acquisition search failed", "error", err)
 		} else if len(acquisitionCandidates) > 0 {
 			// Score candidates
-			w.reportProgress(progress, job.ID, 55, "Scoring acquisition candidates")
+			w.reportProgressWithStage(progress, job.ID, 55, "Scoring acquisition candidates", "scoring")
 
 			// Convert to ScoredProperty (use optimizer for AI scoring)
 			scoredCandidates, err := w.optimizer.ScoreProperties(ctx, acquisitionCandidates, investment.InvestorProfile{
@@ -422,7 +422,7 @@ func (w *InvestmentPlanningWorker) processSelectionMode(
 				w.logger.Warn("candidate scoring failed", "error", err)
 			} else {
 				// Generate acquisition recommendations
-				w.reportProgress(progress, job.ID, 65, "Generating acquisition recommendations")
+				w.reportProgressWithStage(progress, job.ID, 65, "Generating acquisition recommendations", "optimizing")
 				acquireParams := analysis.AcquisitionParams{
 					AvailableBudget:   totalBudget,
 					Candidates:        scoredCandidates,
@@ -447,7 +447,7 @@ func (w *InvestmentPlanningWorker) processSelectionMode(
 	allRecommendations := append(recommendations, acquireRecommendations...)
 
 	// Step 5: Build selected properties from KEEP + ACQUIRE (70%)
-	w.reportProgress(progress, job.ID, 70, "Building optimized portfolio")
+	w.reportProgressWithStage(progress, job.ID, 70, "Building optimized portfolio", "optimizing")
 	selectedProperties := make([]investment.PropertyInPortfolio, 0)
 	for _, rec := range allRecommendations {
 		if rec.Action == investment.RecommendationActionKeep || rec.Action == investment.RecommendationActionAcquire {
@@ -840,7 +840,7 @@ func (w *InvestmentPlanningWorker) searchProperties(
 
 	locations := params.Locations
 	if params.IncludeSuburbs && w.expander != nil {
-		w.reportProgress(progress, jobID, 15, "Expanding locations")
+		w.reportProgressWithStage(progress, jobID, 15, "Expanding locations to include suburbs", "expanding_locations")
 		expansions, err := w.expander.ExpandLocations(ctx, params.Locations, locationexpander.LocationExpansionOptions{})
 		if err != nil {
 			w.logger.Warn("failed to expand locations, using originals", "error", err)
@@ -863,7 +863,7 @@ func (w *InvestmentPlanningWorker) searchProperties(
 		locationBase := searchStart + (float64(i)/float64(len(locations)))*searchRange
 		locationDone := searchStart + (float64(i+1)/float64(len(locations)))*searchRange
 
-		w.reportProgress(progress, jobID, locationBase, fmt.Sprintf("Searching in %s", location))
+		w.reportProgressWithStage(progress, jobID, locationBase, fmt.Sprintf("Searching in %s", location), "searching")
 
 		// Calculate max price based on budget and down payment
 		maxPrice := int(float64(params.Budget) / params.DownPaymentPct)
@@ -876,19 +876,25 @@ func (w *InvestmentPlanningWorker) searchProperties(
 			state = strings.TrimSpace(parts[1])
 		}
 
-		// Search properties
+		// Launch heartbeat goroutine — sends 30s ticks while Search() blocks
+		heartbeatDone := make(chan struct{})
+		go w.searchHeartbeat(progress, jobID, locationBase, locationDone, location, heartbeatDone)
+
+		// Search properties (blocks for 3-7 min during enrichment)
 		results, err := w.finder.Search(ctx, providers.SearchParams{
 			City:     city,
 			State:    state,
 			MaxPrice: maxPrice,
 			Limit:    50, // Get up to 50 per location
 		})
+		close(heartbeatDone) // Stop heartbeat
+
 		if err != nil {
 			w.logger.Warn("search failed for location",
 				"location", location,
 				"error", err,
 			)
-			w.reportProgress(progress, jobID, locationDone, fmt.Sprintf("No results in %s", location))
+			w.reportProgressWithStage(progress, jobID, locationDone, fmt.Sprintf("No results in %s", location), "searching")
 			continue
 		}
 
@@ -922,8 +928,8 @@ func (w *InvestmentPlanningWorker) searchProperties(
 			})
 		}
 
-		w.reportProgress(progress, jobID, locationDone,
-			fmt.Sprintf("Found %d properties in %s", len(results.Properties), location))
+		w.reportProgressWithStage(progress, jobID, locationDone,
+			fmt.Sprintf("Found %d properties in %s", len(results.Properties), location), "searching")
 	}
 
 	return allProperties, nil
@@ -1144,12 +1150,28 @@ func (w *InvestmentPlanningWorker) syntheticProgress(
 	}
 }
 
-// reportProgress sends a progress event
+// reportProgress sends a progress event with a generic "processing" stage
 func (w *InvestmentPlanningWorker) reportProgress(
 	progress chan<- queue.ProgressEvent,
 	jobID string,
 	percent float64,
 	message string,
+) {
+	w.reportProgressWithStage(progress, jobID, percent, message, "processing")
+}
+
+// reportProgressWithStage sends a progress event with a specific stage value.
+// The stage maps to client-facing status in the SSE handler:
+//   - "searching", "expanding_locations" → AGENT1_RUNNING
+//   - "scoring", "analyzing" → AGENT1_COMPLETE
+//   - "optimizing", "portfolio_optimization" → AGENT2_RUNNING
+//   - "finalizing", "caching" → STORING
+func (w *InvestmentPlanningWorker) reportProgressWithStage(
+	progress chan<- queue.ProgressEvent,
+	jobID string,
+	percent float64,
+	message string,
+	stage string,
 ) {
 	if progress == nil {
 		return
@@ -1159,11 +1181,49 @@ func (w *InvestmentPlanningWorker) reportProgress(
 	case progress <- queue.ProgressEvent{
 		JobID:    jobID,
 		Progress: percent,
-		Stage:    "processing",
+		Stage:    stage,
 		Message:  message,
 	}:
 	default:
 		// Channel full, skip
+	}
+}
+
+// searchHeartbeat sends periodic progress ticks during long-running property searches.
+// It increments progress linearly from startPct to endPct every 30s with rotating messages.
+// Close the done channel to stop.
+func (w *InvestmentPlanningWorker) searchHeartbeat(
+	progress chan<- queue.ProgressEvent,
+	jobID string,
+	startPct, endPct float64,
+	location string,
+	done <-chan struct{},
+) {
+	messages := []string{
+		fmt.Sprintf("Searching for properties in %s...", location),
+		fmt.Sprintf("Enriching property data for %s...", location),
+		fmt.Sprintf("Still enriching property data for %s...", location),
+		fmt.Sprintf("Finalizing search for %s...", location),
+	}
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	pctRange := endPct - startPct
+	maxTicks := 12 // 6 minutes of 30s ticks
+	tick := 0
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			tick++
+			if tick > maxTicks {
+				tick = maxTicks // Clamp to endPct
+			}
+			pct := startPct + (float64(tick)/float64(maxTicks))*pctRange
+			msg := messages[tick%len(messages)]
+			w.reportProgressWithStage(progress, jobID, pct, msg, "searching")
+		}
 	}
 }
 

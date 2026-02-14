@@ -1283,14 +1283,27 @@ func (h *Handler) streamInvestmentPlanByID(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Calculate dynamic timeout based on location count (matches www_v1)
-	// Base: 5 minutes + 30 seconds per location
-	timeout := 5 * time.Minute
+	// Calculate dynamic timeout: base 8min + 2min/location + 5min if suburbs, cap 15min
+	timeout := 8 * time.Minute
 	if job, err := h.jobQueue.GetJob(jobID); err == nil {
+		var locationCount int
 		if locations, ok := job.Payload["locations"].([]interface{}); ok {
-			timeout += 30 * time.Second * time.Duration(len(locations))
+			locationCount = len(locations)
 		} else if locations, ok := job.Payload["locations"].([]string); ok {
-			timeout += 30 * time.Second * time.Duration(len(locations))
+			locationCount = len(locations)
+		}
+		timeout += 2 * time.Minute * time.Duration(locationCount)
+
+		// Suburbs expand 1 location into 10-15 sub-locations, needs more time
+		if includeSuburbs, ok := job.Payload["include_suburbs"].(bool); ok && includeSuburbs {
+			timeout += 5 * time.Minute
+		} else if includeSuburbs, ok := job.Payload["includeSuburbs"].(bool); ok && includeSuburbs {
+			timeout += 5 * time.Minute
+		}
+
+		// Cap at 15 minutes (matches client hard timeout)
+		if timeout > 15*time.Minute {
+			timeout = 15 * time.Minute
 		}
 	}
 
@@ -1309,12 +1322,11 @@ func (h *Handler) streamInvestmentPlanByID(w http.ResponseWriter, r *http.Reques
 		case <-ctx.Done():
 			if ctx.Err() == context.DeadlineExceeded {
 				h.logger.Warn("investment planning stream timeout", "job_id", jobID, "timeout", timeout)
-				// Send unnamed error event with status field
+				// Send TIMED_OUT (not FAILED) — the job is still running, only SSE died
 				sseWriter.WriteDataJSON(map[string]interface{}{
 					"jobId":   jobID,
-					"status":  "FAILED",
-					"error":   "Request timed out",
-					"message": "Request timed out",
+					"status":  "TIMED_OUT",
+					"message": "SSE connection timed out, job still processing",
 				})
 			} else {
 				h.logger.Info("client disconnected", "job_id", jobID)
