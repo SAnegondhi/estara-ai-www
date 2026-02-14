@@ -162,17 +162,22 @@ type AuditLogEntry struct {
 	CreatedAt  time.Time              `json:"createdAt"`
 }
 
-// SystemAlert represents a system alert
+// SystemAlert represents a system alert (matches system_alerts table schema)
 type SystemAlert struct {
-	ID         string    `json:"id"`
-	Type       string    `json:"type"`
-	Severity   string    `json:"severity"`
-	Title      string    `json:"title"`
-	Message    string    `json:"message"`
-	Resolved   bool      `json:"resolved"`
-	ResolvedAt *time.Time `json:"resolvedAt,omitempty"`
-	ResolvedBy *string   `json:"resolvedBy,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
+	ID              string     `json:"id"`
+	Type            string     `json:"type"`
+	Severity        string     `json:"severity"`
+	Title           string     `json:"title"`
+	Description     string     `json:"description"`
+	AlertKey        string     `json:"alertKey"`
+	Metadata        string     `json:"metadata"`
+	FirstSeen       time.Time  `json:"firstSeen"`
+	LastSeen        time.Time  `json:"lastSeen"`
+	OccurrenceCount int        `json:"occurrenceCount"`
+	Dismissed       bool       `json:"dismissed"`
+	ActionRequired  bool       `json:"actionRequired"`
+	ExpiresAt       *time.Time `json:"expiresAt,omitempty"`
+	CreatedAt       time.Time  `json:"createdAt"`
 }
 
 // Analytics represents application analytics
@@ -212,9 +217,19 @@ type APIAnalytics struct {
 
 // RevenueAnalytics represents revenue analytics
 type RevenueAnalytics struct {
-	TotalMRR         float64 `json:"totalMrr"`
-	NewSubscriptions int64   `json:"newSubscriptions"`
-	Churned          int64   `json:"churned"`
+	TotalMRR            float64 `json:"totalMrr"`
+	ActiveSubscriptions int64   `json:"activeSubscriptions"`
+	NewSubscriptions    int64   `json:"newSubscriptions"`
+	Churned             int64   `json:"churned"`
+}
+
+// PlatformCounts represents counts of key entities in the system
+type PlatformCounts struct {
+	Users               int64 `json:"users"`
+	ActiveSubscriptions int64 `json:"activeSubscriptions"`
+	Vendors             int64 `json:"vendors"`
+	CronJobs            int64 `json:"cronJobs"`
+	MarketDataCities    int64 `json:"marketDataCities"`
 }
 
 // VendorCostRecord represents vendor usage costs
@@ -680,11 +695,34 @@ func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Gather platform counts
+	counts := map[string]int64{}
+	countQueries := map[string]string{
+		"users":              `SELECT COUNT(*) FROM users`,
+		"activeSubscriptions": `SELECT COUNT(*) FROM subscriptions WHERE status = 'ACTIVE'`,
+		"vendors":            `SELECT COUNT(*) FROM vendor_configs`,
+		"cronJobs":           `SELECT COUNT(*) FROM cron_job_configs`,
+	}
+	for key, q := range countQueries {
+		var c int64
+		if err := h.db.Main.QueryRow(ctx, q).Scan(&c); err == nil {
+			counts[key] = c
+		}
+	}
+	// Market data cities from market DB
+	if h.db.Market != nil {
+		var c int64
+		if err := h.db.Market.QueryRow(ctx, `SELECT COUNT(*) FROM city_market_cache`).Scan(&c); err == nil {
+			counts["marketDataCities"] = c
+		}
+	}
+
 	response := map[string]interface{}{
 		"status":    status,
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 		"version":   "2.0.0",
 		"details":   details,
+		"counts":    counts,
 	}
 
 	if status == "healthy" {
@@ -1849,11 +1887,13 @@ func (h *Handler) getAnalytics(ctx context.Context) (*Analytics, error) {
 				WHEN status = 'ACTIVE' AND tier = 'AAPI_ALLOCATOR' THEN 199.99
 				ELSE 0
 			END), 0) as mrr,
+			COUNT(*) FILTER (WHERE status = 'ACTIVE') as active_subs,
 			COUNT(*) FILTER (WHERE status = 'ACTIVE' AND "createdAt" > NOW() - INTERVAL '30 days') as new_subs,
 			COUNT(*) FILTER (WHERE status = 'CANCELED' AND "updatedAt" > NOW() - INTERVAL '30 days') as churned
 		FROM subscriptions
 	`).Scan(
 		&analytics.Revenue.TotalMRR,
+		&analytics.Revenue.ActiveSubscriptions,
 		&analytics.Revenue.NewSubscriptions,
 		&analytics.Revenue.Churned,
 	)
@@ -1871,7 +1911,7 @@ func (h *Handler) getAnalytics(ctx context.Context) (*Analytics, error) {
 func (h *Handler) getSystemAlerts(ctx context.Context, showResolved bool, limit, offset int) ([]SystemAlert, int64, error) {
 	whereClause := "1=1"
 	if !showResolved {
-		whereClause = "resolved = false"
+		whereClause = "dismissed = false"
 	}
 
 	// Get total count
@@ -1886,7 +1926,9 @@ func (h *Handler) getSystemAlerts(ctx context.Context, showResolved bool, limit,
 
 	// Get alerts with pagination
 	query := fmt.Sprintf(`
-		SELECT id, type, severity, title, message, resolved, "resolvedAt", "resolvedBy", "createdAt"
+		SELECT id, type, severity, title, description, "alertKey", metadata,
+			"firstSeen", "lastSeen", "occurrenceCount", dismissed, "actionRequired",
+			"expiresAt", "createdAt"
 		FROM system_alerts
 		WHERE %s
 		ORDER BY
@@ -1906,8 +1948,10 @@ func (h *Handler) getSystemAlerts(ctx context.Context, showResolved bool, limit,
 	for rows.Next() {
 		var a SystemAlert
 		err := rows.Scan(
-			&a.ID, &a.Type, &a.Severity, &a.Title, &a.Message,
-			&a.Resolved, &a.ResolvedAt, &a.ResolvedBy, &a.CreatedAt,
+			&a.ID, &a.Type, &a.Severity, &a.Title, &a.Description,
+			&a.AlertKey, &a.Metadata, &a.FirstSeen, &a.LastSeen,
+			&a.OccurrenceCount, &a.Dismissed, &a.ActionRequired,
+			&a.ExpiresAt, &a.CreatedAt,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -1925,9 +1969,9 @@ func (h *Handler) getSystemAlerts(ctx context.Context, showResolved bool, limit,
 func (h *Handler) resolveSystemAlert(ctx context.Context, alertID, resolvedBy string) error {
 	result, err := h.db.Main.Exec(ctx, `
 		UPDATE system_alerts
-		SET resolved = true, "resolvedAt" = NOW(), "resolvedBy" = $2
-		WHERE id = $1 AND resolved = false
-	`, alertID, resolvedBy)
+		SET dismissed = true, "updatedAt" = NOW()
+		WHERE id = $1 AND dismissed = false
+	`, alertID)
 	if err != nil {
 		return err
 	}

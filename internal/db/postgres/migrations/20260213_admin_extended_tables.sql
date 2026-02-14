@@ -29,7 +29,7 @@ END $$;
 -- vendor_contracts
 CREATE TABLE IF NOT EXISTS vendor_contracts (
     id TEXT PRIMARY KEY,
-    "vendorId" TEXT NOT NULL REFERENCES "VendorConfig"(id) ON DELETE CASCADE,
+    "vendorId" TEXT NOT NULL REFERENCES vendor_configs(id) ON DELETE CASCADE,
     "startDate" TIMESTAMP(3) NOT NULL,
     "endDate" TIMESTAMP(3),
     "autoRenew" BOOLEAN NOT NULL DEFAULT false,

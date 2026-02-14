@@ -412,9 +412,11 @@ func (h *Handler) GetVendorAlerts(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	rows, err := h.db.Main.Query(ctx, `
-		SELECT id, type, severity, title, message, resolved, "resolvedAt", "resolvedBy", "createdAt"
+		SELECT id, type, severity, title, description, "alertKey", metadata,
+			"firstSeen", "lastSeen", "occurrenceCount", dismissed, "actionRequired",
+			"expiresAt", "createdAt"
 		FROM system_alerts
-		WHERE type LIKE 'vendor_%' AND resolved = false
+		WHERE type LIKE 'vendor_%' AND dismissed = false
 		ORDER BY "createdAt" DESC
 		LIMIT 50
 	`)
@@ -428,7 +430,10 @@ func (h *Handler) GetVendorAlerts(w http.ResponseWriter, r *http.Request) {
 	var alerts []SystemAlert
 	for rows.Next() {
 		var a SystemAlert
-		if err := rows.Scan(&a.ID, &a.Type, &a.Severity, &a.Title, &a.Message, &a.Resolved, &a.ResolvedAt, &a.ResolvedBy, &a.CreatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.Type, &a.Severity, &a.Title, &a.Description,
+			&a.AlertKey, &a.Metadata, &a.FirstSeen, &a.LastSeen,
+			&a.OccurrenceCount, &a.Dismissed, &a.ActionRequired,
+			&a.ExpiresAt, &a.CreatedAt); err != nil {
 			h.logger.Warn("failed to scan vendor alert", "error", err)
 			continue
 		}

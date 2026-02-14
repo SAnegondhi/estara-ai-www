@@ -12,6 +12,7 @@ railway.env
 
 # Binary and build artifacts
 /www
+/marketdata
 *.exe
 *.dll
 *.so
