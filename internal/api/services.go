@@ -14,10 +14,12 @@ import (
 	aicontext "github.com/estara-ai/www/internal/services/ai/context"
 	"github.com/estara-ai/www/internal/services/ai/prompts"
 	"github.com/estara-ai/www/internal/services/cache"
+	"github.com/estara-ai/www/internal/services/geospatial"
 	"github.com/estara-ai/www/internal/services/investment/optimization"
 	"github.com/estara-ai/www/internal/services/jobs/queue"
 	"github.com/estara-ai/www/internal/services/jobs/workers"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
+	"github.com/estara-ai/www/internal/services/memo"
 	"github.com/estara-ai/www/internal/services/market/bls"
 	"github.com/estara-ai/www/internal/services/market/census"
 	"github.com/estara-ai/www/internal/services/market/economics"
@@ -43,6 +45,7 @@ type Services struct {
 	HybridCache          *cache.HybridCache
 	PropertyCache        *cache.PropertyCache // Size-based FIFO cache for property reads (ADR-061)
 	Anthropic            *anthropic.Client
+	MemoService          *memo.Service         // Decision Memo generation (ADR-079)
 }
 
 // ServiceConfig holds configuration for creating services
@@ -377,6 +380,23 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 		}
 
 		// Create investment planning worker and register with queue
+		// Create decision memo service and worker (ADR-079)
+		if services.Anthropic != nil {
+			services.MemoService = memo.NewService(memo.ServiceConfig{
+				AIClient:    services.Anthropic,
+				Aggregator:  services.MarketData,
+				MetroReader: metroReader,
+				FREDService: services.FREDService,
+				GeoSpatial:  geospatial.NewStub(),
+			})
+
+			memoWorker := workers.NewDecisionMemoWorker(workers.DecisionMemoWorkerConfig{
+				MemoService: services.MemoService,
+			})
+			services.JobQueue.RegisterHandler(queue.JobTypeDecisionMemo, memoWorker.GetHandler())
+			logger.Info("decision memo worker registered")
+		}
+
 		investmentWorker := workers.NewInvestmentPlanningWorker(workers.InvestmentPlanningWorkerConfig{
 			Optimizer: optimizer,
 			Finder:    services.PropertyFinder,

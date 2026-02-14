@@ -17,6 +17,8 @@ const (
 	JobTypeEvaluationChat JobType = "evaluation_chat"
 	// JobTypePropertySearch is for property search jobs
 	JobTypePropertySearch JobType = "property_search"
+	// JobTypeDecisionMemo is for decision memo generation jobs
+	JobTypeDecisionMemo JobType = "decision_memo"
 )
 
 // JobStatus represents the current status of a job

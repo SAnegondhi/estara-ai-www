@@ -25,6 +25,7 @@ import (
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/services/market/importer"
+	"github.com/estara-ai/www/internal/services/pdf"
 	"github.com/estara-ai/www/internal/db/postgres"
 	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
@@ -144,6 +145,14 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	}
 	handlers.Portfolio.SetQueries(queries.New(db.Main))
 
+	// Wire Decision Memo service into discover handler (ADR-079)
+	if svc.JobQueue != nil {
+		handlers.Discover.SetMemoService(svc.JobQueue)
+	}
+	if svc.MemoService != nil {
+		handlers.Discover.SetMemoPDFBuilder(pdf.NewDecisionMemoBuilder())
+	}
+
 	// Health check (no auth required)
 	r.Get("/health", handlers.Auth.Health)
 	r.Get("/api/health", handlers.Auth.Health) // Alias for Railway health checks
@@ -220,6 +229,11 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 
 		// Cache management
 		r.Post("/cache/invalidate", handlers.Discover.InvalidateSearchCache)
+
+		// Decision Memo (ADR-079)
+		r.Post("/decision-memo", handlers.Discover.QueueDecisionMemos)
+		r.Get("/decision-memo/{jobId}/stream", handlers.Discover.StreamDecisionMemoProgress)
+		r.Post("/decision-memo/export", handlers.Discover.ExportDecisionMemoPDF)
 
 		// Discovery Sessions
 		r.Route("/sessions", func(r chi.Router) {
