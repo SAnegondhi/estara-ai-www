@@ -198,12 +198,23 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Post("/send-verification-code", handlers.Auth.SendVerificationCode)
 		r.Post("/verify-code", handlers.Auth.VerifyCode)
 
+		// ADR-081: Passkey login endpoints (no auth required)
+		r.Post("/passkey/login/begin", handlers.Auth.BeginPasskeyLogin)
+		r.Post("/passkey/login/finish", handlers.Auth.FinishPasskeyLogin)
+
 		// Protected auth routes
 		r.Group(func(r chi.Router) {
 			r.Use(authMiddleware.Authenticate)
 			r.Get("/me", handlers.Auth.Me) // ADR-066: Returns user, entitlements, and CSRF token
 			r.Post("/logout", handlers.Auth.Logout)
 			r.Post("/update-password", handlers.Auth.UpdatePassword)
+
+			// ADR-081: Passkey management (authenticated)
+			r.Post("/passkey/register/begin", handlers.Auth.BeginPasskeyRegistration)
+			r.Post("/passkey/register/finish", handlers.Auth.FinishPasskeyRegistration)
+			r.Get("/passkey", handlers.Auth.ListPasskeys)
+			r.Put("/passkey/{id}", handlers.Auth.RenamePasskey)
+			r.Delete("/passkey/{id}", handlers.Auth.DeletePasskey)
 		})
 	})
 
@@ -566,6 +577,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 			r.Get("/", handlers.Admin.ListWaitlist)
 			r.Get("/{id}", handlers.Admin.GetWaitlistEntry)
 			r.Post("/{id}/invite", handlers.Admin.InviteWaitlistEntry)
+			r.Post("/{id}/status", handlers.Admin.UpdateWaitlistEntryStatus)
 			r.Delete("/{id}", handlers.Admin.DeleteWaitlistEntry)
 		})
 

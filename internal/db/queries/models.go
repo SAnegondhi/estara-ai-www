@@ -177,21 +177,31 @@ type CheckoutEvidence struct {
 }
 
 type ContactSubmission struct {
-	ID          string           `json:"id"`
-	Name        string           `json:"name"`
-	Email       string           `json:"email"`
-	Phone       pgtype.Text      `json:"phone"`
-	Subject     pgtype.Text      `json:"subject"`
-	Message     string           `json:"message"`
-	Source      pgtype.Text      `json:"source"`
-	IpAddress   pgtype.Text      `json:"ipAddress"`
-	UserAgent   pgtype.Text      `json:"userAgent"`
-	Status      string           `json:"status"`
-	Notes       pgtype.Text      `json:"notes"`
-	RespondedAt pgtype.Timestamp `json:"respondedAt"`
-	RespondedBy pgtype.Text      `json:"respondedBy"`
-	CreatedAt   pgtype.Timestamp `json:"createdAt"`
-	UpdatedAt   pgtype.Timestamp `json:"updatedAt"`
+	ID                 string           `json:"id"`
+	Name               string           `json:"name"`
+	Email              string           `json:"email"`
+	Company            pgtype.Text      `json:"company"`
+	Phone              pgtype.Text      `json:"phone"`
+	Subject            pgtype.Text      `json:"subject"`
+	Message            string           `json:"message"`
+	Category           string           `json:"category"`
+	CategoryConfidence pgtype.Float8    `json:"categoryConfidence"`
+	CategoryReasoning  pgtype.Text      `json:"categoryReasoning"`
+	Source             pgtype.Text      `json:"source"`
+	InquiryType        pgtype.Text      `json:"inquiryType"`
+	Status             string           `json:"status"`
+	AssignedTo         pgtype.Text      `json:"assignedTo"`
+	Notes              pgtype.Text      `json:"notes"`
+	FirstResponseAt    pgtype.Timestamp `json:"firstResponseAt"`
+	ResolvedAt         pgtype.Timestamp `json:"resolvedAt"`
+	ResponseCount      int32            `json:"responseCount"`
+	IpAddress          pgtype.Text      `json:"ipAddress"`
+	UserAgent          pgtype.Text      `json:"userAgent"`
+	NotificationSent   bool             `json:"notificationSent"`
+	ConfirmationSent   bool             `json:"confirmationSent"`
+	SendgridMessageId  pgtype.Text      `json:"sendgridMessageId"`
+	CreatedAt          pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt          pgtype.Timestamp `json:"updatedAt"`
 }
 
 type CronJobConfig struct {
@@ -297,14 +307,17 @@ type DiscoverySessionProperty struct {
 }
 
 type EarlyAccess struct {
-	ID         string           `json:"id"`
-	Email      string           `json:"email"`
-	Name       pgtype.Text      `json:"name"`
-	Source     pgtype.Text      `json:"source"`
-	IpAddress  pgtype.Text      `json:"ipAddress"`
-	InvitedAt  pgtype.Timestamp `json:"invitedAt"`
-	AcceptedAt pgtype.Timestamp `json:"acceptedAt"`
-	CreatedAt  pgtype.Timestamp `json:"createdAt"`
+	ID          string           `json:"id"`
+	Email       string           `json:"email"`
+	RequestedAt pgtype.Timestamp `json:"requestedAt"`
+	Source      pgtype.Text      `json:"source"`
+	Metadata    []byte           `json:"metadata"`
+	Contacted   bool             `json:"contacted"`
+	Invited     bool             `json:"invited"`
+	Status      string           `json:"status"`
+	Notes       pgtype.Text      `json:"notes"`
+	CreatedAt   pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt   pgtype.Timestamp `json:"updatedAt"`
 }
 
 type EmailVerificationCode struct {
@@ -753,6 +766,23 @@ type VendorContract struct {
 	Notes                 pgtype.Text      `json:"notes"`
 	CreatedAt             pgtype.Timestamp `json:"createdAt"`
 	UpdatedAt             pgtype.Timestamp `json:"updatedAt"`
+}
+
+type WebauthnCredential struct {
+	ID              string           `json:"id"`
+	UserId          string           `json:"userId"`
+	CredentialID    []byte           `json:"credential_id"`
+	PublicKey       []byte           `json:"public_key"`
+	AttestationType string           `json:"attestation_type"`
+	Transport       []string         `json:"transport"`
+	FlagsValue      int32            `json:"flags_value"`
+	SignCount       int64            `json:"sign_count"`
+	Aaguid          []byte           `json:"aaguid"`
+	CloneWarning    bool             `json:"clone_warning"`
+	FriendlyName    string           `json:"friendly_name"`
+	CreatedAt       pgtype.Timestamp `json:"createdAt"`
+	LastUsedAt      pgtype.Timestamp `json:"lastUsedAt"`
+	UpdatedAt       pgtype.Timestamp `json:"updatedAt"`
 }
 
 type WhitelistedEmail struct {

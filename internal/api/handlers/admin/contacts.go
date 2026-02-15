@@ -16,37 +16,42 @@ import (
 
 // ContactSubmission represents a contact form submission for admin view
 type ContactSubmission struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	Email       string     `json:"email"`
-	Phone       *string    `json:"phone,omitempty"`
-	Subject     *string    `json:"subject,omitempty"`
-	Message     string     `json:"message"`
-	Source      *string    `json:"source,omitempty"`
-	IPAddress   *string    `json:"ipAddress,omitempty"`
-	UserAgent   *string    `json:"userAgent,omitempty"`
-	Status      string     `json:"status"`
-	Notes       *string    `json:"notes,omitempty"`
-	RespondedAt *time.Time `json:"respondedAt,omitempty"`
-	RespondedBy *string    `json:"respondedBy,omitempty"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	UpdatedAt   time.Time  `json:"updatedAt"`
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	Email           string     `json:"email"`
+	Company         *string    `json:"company,omitempty"`
+	Phone           *string    `json:"phone,omitempty"`
+	Subject         *string    `json:"subject,omitempty"`
+	Message         string     `json:"message"`
+	Category        string     `json:"category"`
+	Source          *string    `json:"source,omitempty"`
+	IPAddress       *string    `json:"ipAddress,omitempty"`
+	UserAgent       *string    `json:"userAgent,omitempty"`
+	Status          string     `json:"status"`
+	AssignedTo      *string    `json:"assignedTo,omitempty"`
+	Notes           *string    `json:"notes,omitempty"`
+	FirstResponseAt *time.Time `json:"firstResponseAt,omitempty"`
+	ResolvedAt      *time.Time `json:"resolvedAt,omitempty"`
+	ResponseCount   int        `json:"responseCount"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	UpdatedAt       time.Time  `json:"updatedAt"`
 }
 
 // UpdateContactRequest represents a request to update a contact submission
 type UpdateContactRequest struct {
-	Status *string `json:"status,omitempty" validate:"omitempty,oneof=NEW IN_PROGRESS RESPONDED RESOLVED CLOSED"`
+	Status *string `json:"status,omitempty" validate:"omitempty,oneof=NEW ASSIGNED IN_PROGRESS AWAITING_RESPONSE RESOLVED CLOSED"`
 	Notes  *string `json:"notes,omitempty"`
 }
 
 // ContactSummary represents aggregate contact statistics
 type ContactSummary struct {
-	Total       int64 `json:"total"`
-	New         int64 `json:"new"`
-	InProgress  int64 `json:"inProgress"`
-	Responded   int64 `json:"responded"`
-	Resolved    int64 `json:"resolved"`
-	Closed      int64 `json:"closed"`
+	Total            int64 `json:"total"`
+	New              int64 `json:"new"`
+	Assigned         int64 `json:"assigned"`
+	InProgress       int64 `json:"inProgress"`
+	AwaitingResponse int64 `json:"awaitingResponse"`
+	Resolved         int64 `json:"resolved"`
+	Closed           int64 `json:"closed"`
 }
 
 // ===============================
@@ -130,7 +135,7 @@ func (h *Handler) UpdateContact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	adminEmail := "admin"
+	adminEmail := h.getAdminEmailFromRequest(r)
 
 	contact, err := h.updateContact(ctx, id, req.Status, req.Notes, adminEmail)
 	if err != nil {
@@ -183,7 +188,7 @@ func (h *Handler) listContacts(ctx context.Context, status, search string, limit
 	argIndex := 1
 
 	if status != "" {
-		whereClause += fmt.Sprintf(` AND status = $%d`, argIndex)
+		whereClause += fmt.Sprintf(` AND status::text = $%d`, argIndex)
 		args = append(args, status)
 		argIndex++
 	}
@@ -203,8 +208,9 @@ func (h *Handler) listContacts(ctx context.Context, status, search string, limit
 
 	args = append(args, limit, offset)
 	query := fmt.Sprintf(`
-		SELECT id, name, email, phone, subject, message, source, "ipAddress", "userAgent",
-		       status, notes, "respondedAt", "respondedBy", "createdAt", "updatedAt"
+		SELECT id, name, email, company, phone, subject, message, category::text,
+		       source, "ipAddress", "userAgent", status::text, "assignedTo", notes,
+		       "firstResponseAt", "resolvedAt", "responseCount", "createdAt", "updatedAt"
 		FROM contact_submissions
 		WHERE %s
 		ORDER BY "createdAt" DESC
@@ -221,9 +227,10 @@ func (h *Handler) listContacts(ctx context.Context, status, search string, limit
 	for rows.Next() {
 		var c ContactSubmission
 		err := rows.Scan(
-			&c.ID, &c.Name, &c.Email, &c.Phone, &c.Subject, &c.Message,
-			&c.Source, &c.IPAddress, &c.UserAgent, &c.Status, &c.Notes,
-			&c.RespondedAt, &c.RespondedBy, &c.CreatedAt, &c.UpdatedAt,
+			&c.ID, &c.Name, &c.Email, &c.Company, &c.Phone, &c.Subject, &c.Message,
+			&c.Category, &c.Source, &c.IPAddress, &c.UserAgent, &c.Status, &c.AssignedTo,
+			&c.Notes, &c.FirstResponseAt, &c.ResolvedAt, &c.ResponseCount,
+			&c.CreatedAt, &c.UpdatedAt,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -236,13 +243,15 @@ func (h *Handler) listContacts(ctx context.Context, status, search string, limit
 func (h *Handler) getContactByID(ctx context.Context, id string) (*ContactSubmission, error) {
 	var c ContactSubmission
 	err := h.db.Main.QueryRow(ctx, `
-		SELECT id, name, email, phone, subject, message, source, "ipAddress", "userAgent",
-		       status, notes, "respondedAt", "respondedBy", "createdAt", "updatedAt"
+		SELECT id, name, email, company, phone, subject, message, category::text,
+		       source, "ipAddress", "userAgent", status::text, "assignedTo", notes,
+		       "firstResponseAt", "resolvedAt", "responseCount", "createdAt", "updatedAt"
 		FROM contact_submissions WHERE id = $1
 	`, id).Scan(
-		&c.ID, &c.Name, &c.Email, &c.Phone, &c.Subject, &c.Message,
-		&c.Source, &c.IPAddress, &c.UserAgent, &c.Status, &c.Notes,
-		&c.RespondedAt, &c.RespondedBy, &c.CreatedAt, &c.UpdatedAt,
+		&c.ID, &c.Name, &c.Email, &c.Company, &c.Phone, &c.Subject, &c.Message,
+		&c.Category, &c.Source, &c.IPAddress, &c.UserAgent, &c.Status, &c.AssignedTo,
+		&c.Notes, &c.FirstResponseAt, &c.ResolvedAt, &c.ResponseCount,
+		&c.CreatedAt, &c.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -250,22 +259,25 @@ func (h *Handler) getContactByID(ctx context.Context, id string) (*ContactSubmis
 	return &c, nil
 }
 
-func (h *Handler) updateContact(ctx context.Context, id string, status, notes *string, respondedBy string) (*ContactSubmission, error) {
+func (h *Handler) updateContact(ctx context.Context, id string, status, notes *string, assignedTo string) (*ContactSubmission, error) {
 	var c ContactSubmission
 	err := h.db.Main.QueryRow(ctx, `
 		UPDATE contact_submissions SET
-			status = COALESCE($2, status),
+			status = COALESCE($2::"ContactStatus", status),
 			notes = COALESCE($3, notes),
-			"respondedAt" = CASE WHEN $2 = 'RESPONDED' THEN NOW() ELSE "respondedAt" END,
-			"respondedBy" = CASE WHEN $2 = 'RESPONDED' THEN $4 ELSE "respondedBy" END,
+			"assignedTo" = CASE WHEN $2 IS NOT NULL AND $2 IN ('ASSIGNED', 'IN_PROGRESS') THEN $4 ELSE "assignedTo" END,
+			"firstResponseAt" = CASE WHEN $2 = 'ASSIGNED' AND "firstResponseAt" IS NULL THEN NOW() ELSE "firstResponseAt" END,
+			"resolvedAt" = CASE WHEN $2 = 'RESOLVED' THEN NOW() ELSE "resolvedAt" END,
 			"updatedAt" = NOW()
 		WHERE id = $1
-		RETURNING id, name, email, phone, subject, message, source, "ipAddress", "userAgent",
-		          status, notes, "respondedAt", "respondedBy", "createdAt", "updatedAt"
-	`, id, status, notes, respondedBy).Scan(
-		&c.ID, &c.Name, &c.Email, &c.Phone, &c.Subject, &c.Message,
-		&c.Source, &c.IPAddress, &c.UserAgent, &c.Status, &c.Notes,
-		&c.RespondedAt, &c.RespondedBy, &c.CreatedAt, &c.UpdatedAt,
+		RETURNING id, name, email, company, phone, subject, message, category::text,
+		          source, "ipAddress", "userAgent", status::text, "assignedTo", notes,
+		          "firstResponseAt", "resolvedAt", "responseCount", "createdAt", "updatedAt"
+	`, id, status, notes, assignedTo).Scan(
+		&c.ID, &c.Name, &c.Email, &c.Company, &c.Phone, &c.Subject, &c.Message,
+		&c.Category, &c.Source, &c.IPAddress, &c.UserAgent, &c.Status, &c.AssignedTo,
+		&c.Notes, &c.FirstResponseAt, &c.ResolvedAt, &c.ResponseCount,
+		&c.CreatedAt, &c.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -278,13 +290,14 @@ func (h *Handler) getContactSummary(ctx context.Context) (*ContactSummary, error
 	err := h.db.Main.QueryRow(ctx, `
 		SELECT
 			COUNT(*) as total,
-			COUNT(*) FILTER (WHERE status = 'NEW') as new,
-			COUNT(*) FILTER (WHERE status = 'IN_PROGRESS') as in_progress,
-			COUNT(*) FILTER (WHERE status = 'RESPONDED') as responded,
-			COUNT(*) FILTER (WHERE status = 'RESOLVED') as resolved,
-			COUNT(*) FILTER (WHERE status = 'CLOSED') as closed
+			COUNT(*) FILTER (WHERE status::text = 'NEW') as new,
+			COUNT(*) FILTER (WHERE status::text = 'ASSIGNED') as assigned,
+			COUNT(*) FILTER (WHERE status::text = 'IN_PROGRESS') as in_progress,
+			COUNT(*) FILTER (WHERE status::text = 'AWAITING_RESPONSE') as awaiting_response,
+			COUNT(*) FILTER (WHERE status::text = 'RESOLVED') as resolved,
+			COUNT(*) FILTER (WHERE status::text = 'CLOSED') as closed
 		FROM contact_submissions
-	`).Scan(&s.Total, &s.New, &s.InProgress, &s.Responded, &s.Resolved, &s.Closed)
+	`).Scan(&s.Total, &s.New, &s.Assigned, &s.InProgress, &s.AwaitingResponse, &s.Resolved, &s.Closed)
 	if err != nil {
 		return nil, err
 	}

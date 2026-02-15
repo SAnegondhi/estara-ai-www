@@ -1,0 +1,18 @@
+ESTARA AI
+Decision Infrastructure for Real Estate Investors
+
+---
+
+Access Suspended
+
+{{.FirstName}}, your access to Estara Insight has been temporarily suspended. You will not be able to sign in while the suspension is in effect.
+
+If you believe this is an error, please contact us at the email below. We will review your account promptly.
+
+---
+
+Independent decision-support platform. Not investment advice. No deal promotion.
+
+Questions? Contact support@estara-ai.com
+
+(c) {{.Year}} Estara AI. All rights reserved.

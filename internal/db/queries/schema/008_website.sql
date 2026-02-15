@@ -6,16 +6,26 @@ CREATE TABLE IF NOT EXISTS contact_submissions (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     email TEXT NOT NULL,
+    company TEXT,
     phone TEXT,
     subject TEXT,
     message TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'GENERAL',
+    "categoryConfidence" DOUBLE PRECISION,
+    "categoryReasoning" TEXT,
     source TEXT,
+    "inquiryType" TEXT,
+    status TEXT NOT NULL DEFAULT 'NEW',
+    "assignedTo" TEXT,
+    notes TEXT,
+    "firstResponseAt" TIMESTAMP(3),
+    "resolvedAt" TIMESTAMP(3),
+    "responseCount" INTEGER NOT NULL DEFAULT 0,
     "ipAddress" TEXT,
     "userAgent" TEXT,
-    status TEXT NOT NULL DEFAULT 'NEW',
-    notes TEXT,
-    "respondedAt" TIMESTAMP(3),
-    "respondedBy" TEXT,
+    "notificationSent" BOOLEAN NOT NULL DEFAULT false,
+    "confirmationSent" BOOLEAN NOT NULL DEFAULT false,
+    "sendgridMessageId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -28,17 +38,20 @@ CREATE INDEX IF NOT EXISTS idx_contact_created ON contact_submissions("createdAt
 CREATE TABLE IF NOT EXISTS early_access (
     id TEXT PRIMARY KEY,
     email TEXT UNIQUE NOT NULL,
-    name TEXT,
+    "requestedAt" TIMESTAMP(3),
     source TEXT,
-    "ipAddress" TEXT,
-    "invitedAt" TIMESTAMP(3),
-    "acceptedAt" TIMESTAMP(3),
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    metadata JSONB,
+    contacted BOOLEAN NOT NULL DEFAULT false,
+    invited BOOLEAN NOT NULL DEFAULT false,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    notes TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_early_access_email ON early_access(email);
 CREATE INDEX IF NOT EXISTS idx_early_access_created ON early_access("createdAt");
-CREATE INDEX IF NOT EXISTS idx_early_access_invited ON early_access("invitedAt");
+CREATE INDEX IF NOT EXISTS idx_early_access_invited ON early_access(invited);
 
 -- guest_sessions table (unauthenticated tracking)
 CREATE TABLE IF NOT EXISTS guest_sessions (

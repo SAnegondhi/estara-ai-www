@@ -27,8 +27,10 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Skip CSRF for login endpoint (no session yet)
-		if strings.HasSuffix(r.URL.Path, "/client-login") {
+		// Skip CSRF for login endpoints (no session yet)
+		if strings.HasSuffix(r.URL.Path, "/client-login") ||
+			strings.HasSuffix(r.URL.Path, "/passkey/login/begin") ||
+			strings.HasSuffix(r.URL.Path, "/passkey/login/finish") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -84,8 +86,10 @@ func StrictCSRFMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Skip CSRF for login endpoint
-		if strings.HasSuffix(r.URL.Path, "/client-login") {
+		// Skip CSRF for login endpoints
+		if strings.HasSuffix(r.URL.Path, "/client-login") ||
+			strings.HasSuffix(r.URL.Path, "/passkey/login/begin") ||
+			strings.HasSuffix(r.URL.Path, "/passkey/login/finish") {
 			next.ServeHTTP(w, r)
 			return
 		}

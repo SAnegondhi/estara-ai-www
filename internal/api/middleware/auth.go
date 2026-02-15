@@ -104,7 +104,7 @@ func (m *AuthMiddleware) RequireAdmin(next http.Handler) http.Handler {
 		}
 
 		// Check if user is admin by role or explicit admin list
-		isAdmin := user.Role == "admin" || m.adminIDs[user.UserID]
+		isAdmin := strings.EqualFold(user.Role, "admin") || strings.EqualFold(user.Role, "SUPER_ADMIN") || m.adminIDs[user.UserID]
 		if !isAdmin {
 			m.logger.Warn("admin access denied",
 				"user_id", user.UserID,

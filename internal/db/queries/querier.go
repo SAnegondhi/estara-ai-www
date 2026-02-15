@@ -47,6 +47,7 @@ type Querier interface {
 	CountUserInvestorReports(ctx context.Context, userid pgtype.Text) (int64, error)
 	CountUserScenarios(ctx context.Context, userid string) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
+	CountWebAuthnCredentialsByUser(ctx context.Context, userid string) (int64, error)
 	CountWhitelistedEmails(ctx context.Context) (int64, error)
 	// Activity Linking Queries
 	CreateActivityLink(ctx context.Context, arg CreateActivityLinkParams) (DiscoverySessionActivity, error)
@@ -66,7 +67,7 @@ type Querier interface {
 	CreateBillingAuditLog(ctx context.Context, arg CreateBillingAuditLogParams) (BillingAuditLog, error)
 	CreateBillingCycle(ctx context.Context, arg CreateBillingCycleParams) (BillingCycle, error)
 	CreateCheckoutEvidence(ctx context.Context, arg CreateCheckoutEvidenceParams) (CheckoutEvidence, error)
-	CreateContactSubmission(ctx context.Context, arg CreateContactSubmissionParams) (ContactSubmission, error)
+	CreateContactSubmission(ctx context.Context, arg CreateContactSubmissionParams) (CreateContactSubmissionRow, error)
 	// =========================================================
 	// Cron Job Configs
 	// =========================================================
@@ -116,6 +117,7 @@ type Querier interface {
 	// Vendor Contracts
 	// =========================================================
 	CreateVendorContract(ctx context.Context, arg CreateVendorContractParams) (VendorContract, error)
+	CreateWebAuthnCredential(ctx context.Context, arg CreateWebAuthnCredentialParams) (WebauthnCredential, error)
 	CreateWhitelistedEmail(ctx context.Context, arg CreateWhitelistedEmailParams) (CreateWhitelistedEmailRow, error)
 	DeactivateSilentLoginSession(ctx context.Context, id string) error
 	DeactivateUserSilentLoginSessions(ctx context.Context, userid string) error
@@ -162,6 +164,7 @@ type Querier interface {
 	DeleteUser(ctx context.Context, id string) error
 	DeleteUserAnalysisPreference(ctx context.Context, arg DeleteUserAnalysisPreferenceParams) error
 	DeleteVendorContract(ctx context.Context, id string) error
+	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) error
 	DeleteWhitelistedEmail(ctx context.Context, id string) error
 	DisableAdminTwoFactor(ctx context.Context, userid string) error
 	DismissSystemAlert(ctx context.Context, id string) error
@@ -196,7 +199,7 @@ type Querier interface {
 	GetConsentSummary(ctx context.Context) ([]GetConsentSummaryRow, error)
 	// Website and Public API Queries
 	// Contact Submissions
-	GetContactSubmissionByID(ctx context.Context, id string) (ContactSubmission, error)
+	GetContactSubmissionByID(ctx context.Context, id string) (GetContactSubmissionByIDRow, error)
 	GetCronJobConfigByID(ctx context.Context, id string) (CronJobConfig, error)
 	GetCronJobConfigByName(ctx context.Context, name string) (CronJobConfig, error)
 	GetCronJobRun(ctx context.Context, id string) (CronJobRun, error)
@@ -301,6 +304,8 @@ type Querier interface {
 	GetUserStats(ctx context.Context) (GetUserStatsRow, error)
 	GetVendorContract(ctx context.Context, vendorid string) (VendorContract, error)
 	GetVendorContractByID(ctx context.Context, id string) (VendorContract, error)
+	GetWebAuthnCredentialByCredentialID(ctx context.Context, credentialID []byte) (WebauthnCredential, error)
+	GetWebAuthnCredentialsByUserID(ctx context.Context, userid string) ([]WebauthnCredential, error)
 	GetWhitelistedEmailByEmail(ctx context.Context, email string) (GetWhitelistedEmailByEmailRow, error)
 	GetWhitelistedEmailByID(ctx context.Context, id string) (GetWhitelistedEmailByIDRow, error)
 	IncrementChatSessionCount(ctx context.Context, id string) error
@@ -334,8 +339,8 @@ type Querier interface {
 	ListCacheByLocation(ctx context.Context, arg ListCacheByLocationParams) ([]AnalysisCache, error)
 	ListCacheByUser(ctx context.Context, arg ListCacheByUserParams) ([]AnalysisCache, error)
 	ListCacheByUserAndFeature(ctx context.Context, arg ListCacheByUserAndFeatureParams) ([]AnalysisCache, error)
-	ListContactSubmissions(ctx context.Context, arg ListContactSubmissionsParams) ([]ContactSubmission, error)
-	ListContactSubmissionsByStatus(ctx context.Context, arg ListContactSubmissionsByStatusParams) ([]ContactSubmission, error)
+	ListContactSubmissions(ctx context.Context, arg ListContactSubmissionsParams) ([]ListContactSubmissionsRow, error)
+	ListContactSubmissionsByStatus(ctx context.Context, arg ListContactSubmissionsByStatusParams) ([]ListContactSubmissionsByStatusRow, error)
 	ListCronJobConfigs(ctx context.Context) ([]CronJobConfig, error)
 	ListCronJobRuns(ctx context.Context, arg ListCronJobRunsParams) ([]CronJobRun, error)
 	ListEarlyAccess(ctx context.Context, arg ListEarlyAccessParams) ([]EarlyAccess, error)
@@ -398,11 +403,10 @@ type Querier interface {
 	UpdateAdminSessionLastActive(ctx context.Context, id string) error
 	UpdateAdminTwoFactorBackupCodes(ctx context.Context, arg UpdateAdminTwoFactorBackupCodesParams) error
 	UpdateCacheAccess(ctx context.Context, key string) error
-	UpdateContactSubmissionStatus(ctx context.Context, arg UpdateContactSubmissionStatusParams) (ContactSubmission, error)
+	UpdateContactSubmissionStatus(ctx context.Context, arg UpdateContactSubmissionStatusParams) (UpdateContactSubmissionStatusRow, error)
 	UpdateCronJobLastRun(ctx context.Context, arg UpdateCronJobLastRunParams) error
 	UpdateDiscoverySession(ctx context.Context, arg UpdateDiscoverySessionParams) (DiscoverySession, error)
 	UpdateDiscoverySessionAccess(ctx context.Context, id string) (DiscoverySession, error)
-	UpdateEarlyAccessAccepted(ctx context.Context, id string) (EarlyAccess, error)
 	UpdateEarlyAccessInvited(ctx context.Context, id string) (EarlyAccess, error)
 	UpdateGuestSessionActivity(ctx context.Context, arg UpdateGuestSessionActivityParams) (GuestSession, error)
 	UpdateInsightAccess(ctx context.Context, arg UpdateInsightAccessParams) (InsightAccess, error)
@@ -436,6 +440,8 @@ type Querier interface {
 	UpdateUserSubscription(ctx context.Context, arg UpdateUserSubscriptionParams) error
 	UpdateUserUpdatedAt(ctx context.Context, id string) error
 	UpdateVendorContract(ctx context.Context, arg UpdateVendorContractParams) (VendorContract, error)
+	UpdateWebAuthnCredentialName(ctx context.Context, arg UpdateWebAuthnCredentialNameParams) error
+	UpdateWebAuthnCredentialSignCount(ctx context.Context, arg UpdateWebAuthnCredentialSignCountParams) error
 	UpdateWhitelistedEmail(ctx context.Context, arg UpdateWhitelistedEmailParams) (UpdateWhitelistedEmailRow, error)
 	// Inserts or updates AI scoring cache entry
 	UpsertAIScoringCache(ctx context.Context, arg UpsertAIScoringCacheParams) error

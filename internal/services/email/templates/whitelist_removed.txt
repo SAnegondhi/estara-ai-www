@@ -1,0 +1,18 @@
+ESTARA AI
+Decision Infrastructure for Real Estate Investors
+
+---
+
+Access Removed
+
+{{.FirstName}}, your access to Estara Insight has been removed. You will no longer be able to sign in to the platform.
+
+If you believe this is an error or would like to discuss your account status, please contact us at the email below.
+
+---
+
+Independent decision-support platform. Not investment advice. No deal promotion.
+
+Questions? Contact support@estara-ai.com
+
+(c) {{.Year}} Estara AI. All rights reserved.

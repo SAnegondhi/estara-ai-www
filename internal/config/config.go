@@ -27,6 +27,14 @@ type Config struct {
 	Stripe   StripeConfig
 	Security SecurityConfig
 	IAP      IAPConfig
+	WebAuthn WebAuthnConfig
+}
+
+// WebAuthnConfig holds WebAuthn/Passkey configuration (ADR-081)
+type WebAuthnConfig struct {
+	RPDisplayName string   `mapstructure:"WEBAUTHN_RP_DISPLAY_NAME"`
+	RPID          string   `mapstructure:"WEBAUTHN_RP_ID"`
+	RPOrigins     []string `mapstructure:"WEBAUTHN_RP_ORIGINS"`
 }
 
 // IAPConfig holds In-App Purchase configuration for Apple and Google
@@ -320,6 +328,21 @@ func Load() (*Config, error) {
 		CheckoutEncryptionKey: v.GetString("CHECKOUT_ENCRYPTION_KEY"),
 	}
 
+	// WebAuthn config (ADR-081)
+	rpOriginsStr := v.GetString("WEBAUTHN_RP_ORIGINS")
+	var rpOrigins []string
+	if rpOriginsStr != "" {
+		rpOrigins = strings.Split(rpOriginsStr, ",")
+		for i := range rpOrigins {
+			rpOrigins[i] = strings.TrimSpace(rpOrigins[i])
+		}
+	}
+	cfg.WebAuthn = WebAuthnConfig{
+		RPDisplayName: v.GetString("WEBAUTHN_RP_DISPLAY_NAME"),
+		RPID:          v.GetString("WEBAUTHN_RP_ID"),
+		RPOrigins:     rpOrigins,
+	}
+
 	// IAP config
 	cfg.IAP = IAPConfig{
 		AppleSharedSecret:        v.GetString("APPLE_IAP_SHARED_SECRET"),
@@ -385,6 +408,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("COOKIE_DOMAIN", "")       // Empty = exact host match (__Host- prefix)
 	v.SetDefault("COOKIE_SECURE", true)     // Always true in production
 	v.SetDefault("CSRF_TOKEN_LENGTH", 32)   // 32 bytes = 256 bits
+
+	// WebAuthn defaults (ADR-081)
+	v.SetDefault("WEBAUTHN_RP_DISPLAY_NAME", "Estara Insight")
+	v.SetDefault("WEBAUTHN_RP_ID", "localhost")
+	v.SetDefault("WEBAUTHN_RP_ORIGINS", "http://localhost:3002")
 }
 
 // Validate checks required configuration values

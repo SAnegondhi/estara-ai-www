@@ -180,8 +180,9 @@ func (s *Service) Send(params EmailParams) (*Result, error) {
 
 // SendPasswordReset sends a password reset email
 func (s *Service) SendPasswordReset(to, resetToken, firstName string) (*Result, error) {
+	toName := firstName
 	if firstName == "" {
-		firstName = "User"
+		firstName = "Hi there"
 	}
 
 	resetURL := fmt.Sprintf("%s/reset-password/%s", s.cfg.Server.MarketingURL, resetToken)
@@ -199,7 +200,7 @@ func (s *Service) SendPasswordReset(to, resetToken, firstName string) (*Result, 
 
 	return s.Send(EmailParams{
 		To:      to,
-		ToName:  firstName,
+		ToName:  toName,
 		Subject: "Reset Your Estara AI Password",
 		HTML:    html,
 		Text:    text,
@@ -208,8 +209,9 @@ func (s *Service) SendPasswordReset(to, resetToken, firstName string) (*Result, 
 
 // SendVerificationCode sends an email verification code
 func (s *Service) SendVerificationCode(to, code, firstName string) (*Result, error) {
+	toName := firstName
 	if firstName == "" {
-		firstName = "there"
+		firstName = "Hi there"
 	}
 
 	html := s.renderHTML("verification_code.html", map[string]interface{}{
@@ -225,7 +227,7 @@ func (s *Service) SendVerificationCode(to, code, firstName string) (*Result, err
 
 	return s.Send(EmailParams{
 		To:      to,
-		ToName:  firstName,
+		ToName:  toName,
 		Subject: "Your Estara AI Verification Code",
 		HTML:    html,
 		Text:    text,
@@ -234,8 +236,9 @@ func (s *Service) SendVerificationCode(to, code, firstName string) (*Result, err
 
 // SendSubscriptionActivated sends a subscription activation confirmation email.
 func (s *Service) SendSubscriptionActivated(to, firstName string) (*Result, error) {
+	toName := firstName
 	if firstName == "" {
-		firstName = "there"
+		firstName = "Hi there"
 	}
 
 	subject := "Your Estara AI subscription is active"
@@ -244,7 +247,7 @@ func (s *Service) SendSubscriptionActivated(to, firstName string) (*Result, erro
 
 	return s.Send(EmailParams{
 		To:      to,
-		ToName:  firstName,
+		ToName:  toName,
 		Subject: subject,
 		HTML:    html,
 		Text:    text,
@@ -253,8 +256,9 @@ func (s *Service) SendSubscriptionActivated(to, firstName string) (*Result, erro
 
 // SendSubscriptionCancelled sends a subscription cancellation email.
 func (s *Service) SendSubscriptionCancelled(to, firstName string, endDate *time.Time) (*Result, error) {
+	toName := firstName
 	if firstName == "" {
-		firstName = "there"
+		firstName = "Hi there"
 	}
 
 	subject := "Your Estara AI subscription was cancelled"
@@ -268,7 +272,7 @@ func (s *Service) SendSubscriptionCancelled(to, firstName string, endDate *time.
 
 	return s.Send(EmailParams{
 		To:      to,
-		ToName:  firstName,
+		ToName:  toName,
 		Subject: subject,
 		HTML:    html,
 		Text:    text,
@@ -277,8 +281,9 @@ func (s *Service) SendSubscriptionCancelled(to, firstName string, endDate *time.
 
 // SendPaymentSucceeded sends a successful payment email.
 func (s *Service) SendPaymentSucceeded(to, firstName string, amount int64, currency string, invoiceURL string) (*Result, error) {
+	toName := firstName
 	if firstName == "" {
-		firstName = "there"
+		firstName = "Hi there"
 	}
 
 	subject := "Payment received for your Estara AI subscription"
@@ -293,7 +298,7 @@ func (s *Service) SendPaymentSucceeded(to, firstName string, amount int64, curre
 
 	return s.Send(EmailParams{
 		To:      to,
-		ToName:  firstName,
+		ToName:  toName,
 		Subject: subject,
 		HTML:    html,
 		Text:    text,
@@ -302,8 +307,9 @@ func (s *Service) SendPaymentSucceeded(to, firstName string, amount int64, curre
 
 // SendPaymentFailed sends a payment failure email.
 func (s *Service) SendPaymentFailed(to, firstName string, amount int64, currency string) (*Result, error) {
+	toName := firstName
 	if firstName == "" {
-		firstName = "there"
+		firstName = "Hi there"
 	}
 
 	subject := "Payment failed for your Estara AI subscription"
@@ -315,7 +321,7 @@ func (s *Service) SendPaymentFailed(to, firstName string, amount int64, currency
 
 	return s.Send(EmailParams{
 		To:      to,
-		ToName:  firstName,
+		ToName:  toName,
 		Subject: subject,
 		HTML:    html,
 		Text:    text,
@@ -324,8 +330,9 @@ func (s *Service) SendPaymentFailed(to, firstName string, amount int64, currency
 
 // SendTrialEnding sends a trial ending reminder email.
 func (s *Service) SendTrialEnding(to, firstName string, endDate time.Time) (*Result, error) {
+	toName := firstName
 	if firstName == "" {
-		firstName = "there"
+		firstName = "Hi there"
 	}
 
 	subject := "Your Estara AI trial is ending soon"
@@ -336,7 +343,7 @@ func (s *Service) SendTrialEnding(to, firstName string, endDate time.Time) (*Res
 
 	return s.Send(EmailParams{
 		To:      to,
-		ToName:  firstName,
+		ToName:  toName,
 		Subject: subject,
 		HTML:    html,
 		Text:    text,
@@ -355,7 +362,7 @@ type WelcomeEmailParams struct {
 func (s *Service) SendWelcomeEmail(params WelcomeEmailParams) (*Result, error) {
 	firstName := params.FirstName
 	if firstName == "" {
-		firstName = "Investor"
+		firstName = "there"
 	}
 
 	tier := strings.ToUpper(params.Tier)
@@ -500,8 +507,9 @@ func (s *Service) SendRenewalReminder(params RenewalReminderParams) (*Result, er
 
 // SendWhitelistInvite sends an invite email when an admin whitelists a user for beta access.
 func (s *Service) SendWhitelistInvite(to, firstName string) (*Result, error) {
+	toName := firstName
 	if firstName == "" {
-		firstName = "Investor"
+		firstName = "Hi there"
 	}
 
 	appURL := s.cfg.Server.ClientURL
@@ -530,8 +538,90 @@ func (s *Service) SendWhitelistInvite(to, firstName string) (*Result, error) {
 
 	return s.Send(EmailParams{
 		To:      to,
-		ToName:  firstName,
+		ToName:  toName,
 		Subject: "You're Invited to Estara Insight",
+		HTML:    html,
+		Text:    text,
+	})
+}
+
+// SendWhitelistSuspended sends a notification when an admin suspends (disables) a whitelist entry.
+func (s *Service) SendWhitelistSuspended(to, firstName string) (*Result, error) {
+	toName := firstName
+	if firstName == "" {
+		firstName = "Hi there"
+	}
+
+	html := s.renderHTML("whitelist_suspended.html", map[string]interface{}{
+		"FirstName": firstName,
+		"Year":      time.Now().Year(),
+	})
+	text := s.renderText("whitelist_suspended.txt", map[string]interface{}{
+		"FirstName": firstName,
+		"Year":      time.Now().Year(),
+	})
+
+	return s.Send(EmailParams{
+		To:      to,
+		ToName:  toName,
+		Subject: "Your Estara Insight Access Has Been Suspended",
+		HTML:    html,
+		Text:    text,
+	})
+}
+
+// SendWhitelistRestored sends a notification when an admin restores (re-enables) a whitelist entry.
+func (s *Service) SendWhitelistRestored(to, firstName string) (*Result, error) {
+	toName := firstName
+	if firstName == "" {
+		firstName = "Hi there"
+	}
+
+	appURL := s.cfg.Server.ClientURL
+	if appURL == "" {
+		appURL = "https://insight.estara-ai.com"
+	}
+
+	html := s.renderHTML("whitelist_restored.html", map[string]interface{}{
+		"FirstName": firstName,
+		"AppURL":    appURL,
+		"Year":      time.Now().Year(),
+	})
+	text := s.renderText("whitelist_restored.txt", map[string]interface{}{
+		"FirstName": firstName,
+		"AppURL":    appURL,
+		"Year":      time.Now().Year(),
+	})
+
+	return s.Send(EmailParams{
+		To:      to,
+		ToName:  toName,
+		Subject: "Your Estara Insight Access Has Been Restored",
+		HTML:    html,
+		Text:    text,
+	})
+}
+
+// SendWhitelistRemoved sends a notification when an admin removes a whitelist entry.
+func (s *Service) SendWhitelistRemoved(to, firstName string) (*Result, error) {
+	toName := firstName
+	if firstName == "" {
+		firstName = "Hi there"
+	}
+
+	html := s.renderHTML("whitelist_removed.html", map[string]interface{}{
+		"FirstName": firstName,
+		"Year":      time.Now().Year(),
+	})
+	text := s.renderText("whitelist_removed.txt", map[string]interface{}{
+		"FirstName": firstName,
+		"Year":      time.Now().Year(),
+	})
+
+	return s.Send(EmailParams{
+		To:      to,
+		ToName:  toName,
+		Subject: "Your Estara Insight Access Has Been Removed",
 		HTML:    html,
 		Text:    text,
 	})

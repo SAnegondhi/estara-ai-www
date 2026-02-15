@@ -86,17 +86,14 @@ func TestEarlyAccessRequest_Validation(t *testing.T) {
 			expectValid: true,
 		},
 		{
-			name: "missing email",
-			request: EarlyAccessRequest{
-				Name: "John Doe",
-			},
+			name:        "missing email",
+			request:     EarlyAccessRequest{},
 			expectValid: false,
 		},
 		{
 			name: "with optional fields",
 			request: EarlyAccessRequest{
 				Email:  "john@example.com",
-				Name:   "John Doe",
 				Source: "referral",
 			},
 			expectValid: true,

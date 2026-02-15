@@ -1,0 +1,20 @@
+ESTARA AI
+Decision Infrastructure for Real Estate Investors
+
+---
+
+Access Restored
+
+{{.FirstName}}, your access to Estara Insight has been restored. You can sign in again using your existing credentials.
+
+Sign in at: {{.AppURL}}
+
+Your account and data remain intact. Pick up right where you left off.
+
+---
+
+Independent decision-support platform. Not investment advice. No deal promotion.
+
+Questions? Contact support@estara-ai.com
+
+(c) {{.Year}} Estara AI. All rights reserved.

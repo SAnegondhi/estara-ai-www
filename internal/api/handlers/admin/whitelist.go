@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
@@ -18,15 +19,15 @@ import (
 
 // WhitelistedEmail represents a whitelisted email/domain entry
 type WhitelistedEmail struct {
-	ID        string  `json:"id"`
-	Email     string  `json:"email"`
-	Name      *string `json:"name,omitempty"`
-	Type      string  `json:"type"` // EMAIL or DOMAIN
-	AddedBy   *string `json:"addedBy,omitempty"`
-	Reason    *string `json:"reason,omitempty"`
-	Active    bool    `json:"active"`
-	CreatedAt string  `json:"createdAt"`
-	UpdatedAt string  `json:"updatedAt"`
+	ID        string    `json:"id"`
+	Email     string    `json:"email"`
+	Name      *string   `json:"name,omitempty"`
+	Type      string    `json:"type"` // EMAIL or DOMAIN
+	AddedBy   *string   `json:"addedBy,omitempty"`
+	Reason    *string   `json:"reason,omitempty"`
+	Active    bool      `json:"active"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // CreateWhitelistRequest represents a request to add a whitelist entry
@@ -170,8 +171,10 @@ func (h *Handler) CreateWhitelistEntry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send invite email for EMAIL type entries (not domains)
+	var emailSent bool
+	var emailError string
 	if req.Type == "EMAIL" {
-		go h.sendWhitelistInviteEmail(req.Email, req.Name)
+		emailSent, emailError = h.sendWhitelistInviteEmail(req.Email, req.Name)
 	}
 
 	h.logAdminAudit(ctx, r, "WHITELIST_CREATE", "whitelist", id, map[string]interface{}{
@@ -179,10 +182,16 @@ func (h *Handler) CreateWhitelistEntry(w http.ResponseWriter, r *http.Request) {
 		"type":  req.Type,
 	})
 	h.logger.Info("whitelist entry created", "email", req.Email, "type", req.Type)
-	httputil.JSON(w, http.StatusCreated, map[string]interface{}{
-		"success": true,
-		"data":    entry,
-	})
+
+	resp := map[string]interface{}{
+		"success":   true,
+		"data":      entry,
+		"emailSent": emailSent,
+	}
+	if emailError != "" {
+		resp["emailError"] = emailError
+	}
+	httputil.JSON(w, http.StatusCreated, resp)
 }
 
 // UpdateWhitelistEntry updates a whitelist entry
@@ -248,10 +257,26 @@ func (h *Handler) ToggleWhitelistEntry(w http.ResponseWriter, r *http.Request) {
 		h.whitelist.InvalidateCache()
 	}
 
+	// Send notification email for EMAIL type entries
+	var emailSent bool
+	var emailError string
+	if entry.Type == "EMAIL" {
+		emailSent, emailError = h.sendWhitelistToggleEmail(entry.Email, entry.Name, req.Active)
+	}
+
 	h.logAdminAudit(ctx, r, "WHITELIST_TOGGLE", "whitelist", id, map[string]interface{}{
 		"active": req.Active,
 	})
-	httputil.Success(w, entry)
+
+	resp := map[string]interface{}{
+		"success":   true,
+		"data":      entry,
+		"emailSent": emailSent,
+	}
+	if emailError != "" {
+		resp["emailError"] = emailError
+	}
+	httputil.JSON(w, http.StatusOK, resp)
 }
 
 // DeleteWhitelistEntry removes a whitelist entry
@@ -286,12 +311,31 @@ func (h *Handler) DeleteWhitelistEntry(w http.ResponseWriter, r *http.Request) {
 		h.whitelist.InvalidateCache()
 	}
 
+	// Cascade: revoke the corresponding waitlist entry if one exists
+	if entry.Type == "EMAIL" {
+		h.revokeWaitlistByEmail(ctx, entry.Email)
+	}
+
+	// Send removal notification for EMAIL type entries
+	var emailSent bool
+	var emailError string
+	if entry.Type == "EMAIL" {
+		emailSent, emailError = h.sendWhitelistRemovedEmail(entry.Email, entry.Name)
+	}
+
 	h.logAdminAudit(ctx, r, "WHITELIST_DELETE", "whitelist", id, map[string]interface{}{
 		"email": entry.Email,
 	})
-	httputil.Success(w, map[string]interface{}{
-		"deleted": true,
-	})
+
+	resp := map[string]interface{}{
+		"success":   true,
+		"deleted":   true,
+		"emailSent": emailSent,
+	}
+	if emailError != "" {
+		resp["emailError"] = emailError
+	}
+	httputil.JSON(w, http.StatusOK, resp)
 }
 
 // ===============================
@@ -477,10 +521,11 @@ func (h *Handler) getAdminEmailFromRequest(r *http.Request) string {
 }
 
 // sendWhitelistInviteEmail sends an invite email when an admin whitelists an email address.
-func (h *Handler) sendWhitelistInviteEmail(emailAddr string, name *string) {
+// Returns (sent bool, errorMsg string).
+func (h *Handler) sendWhitelistInviteEmail(emailAddr string, name *string) (bool, string) {
 	emailSvc := email.NewService(h.cfg)
 
-	firstName := "Investor"
+	firstName := ""
 	if name != nil && *name != "" {
 		firstName = *name
 	}
@@ -488,11 +533,70 @@ func (h *Handler) sendWhitelistInviteEmail(emailAddr string, name *string) {
 	result, err := emailSvc.SendWhitelistInvite(emailAddr, firstName)
 	if err != nil {
 		h.logger.Error("failed to send whitelist invite email", "email", emailAddr, "error", err)
-		return
+		return false, err.Error()
 	}
 	if !result.Success {
 		h.logger.Warn("whitelist invite email not sent", "email", emailAddr, "error", result.Error)
-		return
+		return false, result.Error
 	}
 	h.logger.Info("whitelist invite email sent", "email", emailAddr)
+	return true, ""
+}
+
+// sendWhitelistToggleEmail sends a suspend or restore notification.
+// Returns (sent bool, errorMsg string).
+func (h *Handler) sendWhitelistToggleEmail(emailAddr string, name *string, active bool) (bool, string) {
+	emailSvc := email.NewService(h.cfg)
+
+	firstName := ""
+	if name != nil && *name != "" {
+		firstName = *name
+	}
+
+	var result *email.Result
+	var err error
+	if active {
+		result, err = emailSvc.SendWhitelistRestored(emailAddr, firstName)
+	} else {
+		result, err = emailSvc.SendWhitelistSuspended(emailAddr, firstName)
+	}
+
+	action := "suspended"
+	if active {
+		action = "restored"
+	}
+
+	if err != nil {
+		h.logger.Error("failed to send whitelist "+action+" email", "email", emailAddr, "error", err)
+		return false, err.Error()
+	}
+	if !result.Success {
+		h.logger.Warn("whitelist "+action+" email not sent", "email", emailAddr, "error", result.Error)
+		return false, result.Error
+	}
+	h.logger.Info("whitelist "+action+" email sent", "email", emailAddr)
+	return true, ""
+}
+
+// sendWhitelistRemovedEmail sends a removal notification.
+// Returns (sent bool, errorMsg string).
+func (h *Handler) sendWhitelistRemovedEmail(emailAddr string, name *string) (bool, string) {
+	emailSvc := email.NewService(h.cfg)
+
+	firstName := ""
+	if name != nil && *name != "" {
+		firstName = *name
+	}
+
+	result, err := emailSvc.SendWhitelistRemoved(emailAddr, firstName)
+	if err != nil {
+		h.logger.Error("failed to send whitelist removed email", "email", emailAddr, "error", err)
+		return false, err.Error()
+	}
+	if !result.Success {
+		h.logger.Warn("whitelist removed email not sent", "email", emailAddr, "error", result.Error)
+		return false, result.Error
+	}
+	h.logger.Info("whitelist removed email sent", "email", emailAddr)
+	return true, ""
 }

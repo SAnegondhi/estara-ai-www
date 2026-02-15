@@ -23,7 +23,7 @@ func (q *Queries) CountContactSubmissions(ctx context.Context) (int64, error) {
 }
 
 const CountContactSubmissionsByStatus = `-- name: CountContactSubmissionsByStatus :one
-SELECT COUNT(*) FROM contact_submissions WHERE status = $1
+SELECT COUNT(*) FROM contact_submissions WHERE status::text = $1
 `
 
 func (q *Queries) CountContactSubmissionsByStatus(ctx context.Context, status string) (int64, error) {
@@ -45,7 +45,7 @@ func (q *Queries) CountEarlyAccess(ctx context.Context) (int64, error) {
 }
 
 const CountPendingEarlyAccess = `-- name: CountPendingEarlyAccess :one
-SELECT COUNT(*) FROM early_access WHERE "invitedAt" IS NULL
+SELECT COUNT(*) FROM early_access WHERE status = 'PENDING'
 `
 
 func (q *Queries) CountPendingEarlyAccess(ctx context.Context) (int64, error) {
@@ -57,54 +57,95 @@ func (q *Queries) CountPendingEarlyAccess(ctx context.Context) (int64, error) {
 
 const CreateContactSubmission = `-- name: CreateContactSubmission :one
 INSERT INTO contact_submissions (
-    id, name, email, phone, subject, message, source,
-    "ipAddress", "userAgent", status, "createdAt", "updatedAt"
+    id, name, email, company, phone, subject, message,
+    category, source, "ipAddress", "userAgent",
+    status, "createdAt", "updatedAt"
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW()
-) RETURNING id, name, email, phone, subject, message, source, "ipAddress", "userAgent", status, notes, "respondedAt", "respondedBy", "createdAt", "updatedAt"
+    $1, $2, $3, $4,
+    $5, $6, $7,
+    $8::"ContactCategory", $9,
+    $10, $11,
+    $12::"ContactStatus", NOW(), NOW()
+) RETURNING id, name, email, company, phone, subject, message,
+           category::text as category, source, "inquiryType",
+           status::text as status, "assignedTo", notes,
+           "firstResponseAt", "resolvedAt", "responseCount",
+           "ipAddress", "userAgent", "createdAt", "updatedAt"
 `
 
 type CreateContactSubmissionParams struct {
 	ID        string      `json:"id"`
 	Name      string      `json:"name"`
 	Email     string      `json:"email"`
+	Company   pgtype.Text `json:"company"`
 	Phone     pgtype.Text `json:"phone"`
 	Subject   pgtype.Text `json:"subject"`
 	Message   string      `json:"message"`
+	Category  interface{} `json:"category"`
 	Source    pgtype.Text `json:"source"`
-	IpAddress pgtype.Text `json:"ipAddress"`
-	UserAgent pgtype.Text `json:"userAgent"`
-	Status    string      `json:"status"`
+	IpAddress pgtype.Text `json:"ip_address"`
+	UserAgent pgtype.Text `json:"user_agent"`
+	Status    interface{} `json:"status"`
 }
 
-func (q *Queries) CreateContactSubmission(ctx context.Context, arg CreateContactSubmissionParams) (ContactSubmission, error) {
+type CreateContactSubmissionRow struct {
+	ID              string           `json:"id"`
+	Name            string           `json:"name"`
+	Email           string           `json:"email"`
+	Company         pgtype.Text      `json:"company"`
+	Phone           pgtype.Text      `json:"phone"`
+	Subject         pgtype.Text      `json:"subject"`
+	Message         string           `json:"message"`
+	Category        string           `json:"category"`
+	Source          pgtype.Text      `json:"source"`
+	InquiryType     pgtype.Text      `json:"inquiryType"`
+	Status          string           `json:"status"`
+	AssignedTo      pgtype.Text      `json:"assignedTo"`
+	Notes           pgtype.Text      `json:"notes"`
+	FirstResponseAt pgtype.Timestamp `json:"firstResponseAt"`
+	ResolvedAt      pgtype.Timestamp `json:"resolvedAt"`
+	ResponseCount   int32            `json:"responseCount"`
+	IpAddress       pgtype.Text      `json:"ipAddress"`
+	UserAgent       pgtype.Text      `json:"userAgent"`
+	CreatedAt       pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt       pgtype.Timestamp `json:"updatedAt"`
+}
+
+func (q *Queries) CreateContactSubmission(ctx context.Context, arg CreateContactSubmissionParams) (CreateContactSubmissionRow, error) {
 	row := q.db.QueryRow(ctx, CreateContactSubmission,
 		arg.ID,
 		arg.Name,
 		arg.Email,
+		arg.Company,
 		arg.Phone,
 		arg.Subject,
 		arg.Message,
+		arg.Category,
 		arg.Source,
 		arg.IpAddress,
 		arg.UserAgent,
 		arg.Status,
 	)
-	var i ContactSubmission
+	var i CreateContactSubmissionRow
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
 		&i.Email,
+		&i.Company,
 		&i.Phone,
 		&i.Subject,
 		&i.Message,
+		&i.Category,
 		&i.Source,
+		&i.InquiryType,
+		&i.Status,
+		&i.AssignedTo,
+		&i.Notes,
+		&i.FirstResponseAt,
+		&i.ResolvedAt,
+		&i.ResponseCount,
 		&i.IpAddress,
 		&i.UserAgent,
-		&i.Status,
-		&i.Notes,
-		&i.RespondedAt,
-		&i.RespondedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -113,38 +154,40 @@ func (q *Queries) CreateContactSubmission(ctx context.Context, arg CreateContact
 
 const CreateEarlyAccess = `-- name: CreateEarlyAccess :one
 INSERT INTO early_access (
-    id, email, name, source, "ipAddress", "createdAt"
+    id, email, source, metadata, status, "requestedAt", "createdAt", "updatedAt"
 ) VALUES (
-    $1, $2, $3, $4, $5, NOW()
-) RETURNING id, email, name, source, "ipAddress", "invitedAt", "acceptedAt", "createdAt"
+    $1, $2, $3, $4, 'PENDING', NOW(), NOW(), NOW()
+) RETURNING id, email, "requestedAt", source, metadata,
+           contacted, invited, status, notes, "createdAt", "updatedAt"
 `
 
 type CreateEarlyAccessParams struct {
-	ID        string      `json:"id"`
-	Email     string      `json:"email"`
-	Name      pgtype.Text `json:"name"`
-	Source    pgtype.Text `json:"source"`
-	IpAddress pgtype.Text `json:"ipAddress"`
+	ID       string      `json:"id"`
+	Email    string      `json:"email"`
+	Source   pgtype.Text `json:"source"`
+	Metadata []byte      `json:"metadata"`
 }
 
 func (q *Queries) CreateEarlyAccess(ctx context.Context, arg CreateEarlyAccessParams) (EarlyAccess, error) {
 	row := q.db.QueryRow(ctx, CreateEarlyAccess,
 		arg.ID,
 		arg.Email,
-		arg.Name,
 		arg.Source,
-		arg.IpAddress,
+		arg.Metadata,
 	)
 	var i EarlyAccess
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
-		&i.Name,
+		&i.RequestedAt,
 		&i.Source,
-		&i.IpAddress,
-		&i.InvitedAt,
-		&i.AcceptedAt,
+		&i.Metadata,
+		&i.Contacted,
+		&i.Invited,
+		&i.Status,
+		&i.Notes,
 		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -204,28 +247,61 @@ func (q *Queries) DeleteExpiredGuestSessions(ctx context.Context) error {
 const GetContactSubmissionByID = `-- name: GetContactSubmissionByID :one
 
 
-SELECT id, name, email, phone, subject, message, source, "ipAddress", "userAgent", status, notes, "respondedAt", "respondedBy", "createdAt", "updatedAt" FROM contact_submissions WHERE id = $1
+SELECT id, name, email, company, phone, subject, message,
+       category::text as category, source, "inquiryType",
+       status::text as status, "assignedTo", notes,
+       "firstResponseAt", "resolvedAt", "responseCount",
+       "ipAddress", "userAgent", "createdAt", "updatedAt"
+FROM contact_submissions WHERE id = $1
 `
+
+type GetContactSubmissionByIDRow struct {
+	ID              string           `json:"id"`
+	Name            string           `json:"name"`
+	Email           string           `json:"email"`
+	Company         pgtype.Text      `json:"company"`
+	Phone           pgtype.Text      `json:"phone"`
+	Subject         pgtype.Text      `json:"subject"`
+	Message         string           `json:"message"`
+	Category        string           `json:"category"`
+	Source          pgtype.Text      `json:"source"`
+	InquiryType     pgtype.Text      `json:"inquiryType"`
+	Status          string           `json:"status"`
+	AssignedTo      pgtype.Text      `json:"assignedTo"`
+	Notes           pgtype.Text      `json:"notes"`
+	FirstResponseAt pgtype.Timestamp `json:"firstResponseAt"`
+	ResolvedAt      pgtype.Timestamp `json:"resolvedAt"`
+	ResponseCount   int32            `json:"responseCount"`
+	IpAddress       pgtype.Text      `json:"ipAddress"`
+	UserAgent       pgtype.Text      `json:"userAgent"`
+	CreatedAt       pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt       pgtype.Timestamp `json:"updatedAt"`
+}
 
 // Website and Public API Queries
 // Contact Submissions
-func (q *Queries) GetContactSubmissionByID(ctx context.Context, id string) (ContactSubmission, error) {
+func (q *Queries) GetContactSubmissionByID(ctx context.Context, id string) (GetContactSubmissionByIDRow, error) {
 	row := q.db.QueryRow(ctx, GetContactSubmissionByID, id)
-	var i ContactSubmission
+	var i GetContactSubmissionByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
 		&i.Email,
+		&i.Company,
 		&i.Phone,
 		&i.Subject,
 		&i.Message,
+		&i.Category,
 		&i.Source,
+		&i.InquiryType,
+		&i.Status,
+		&i.AssignedTo,
+		&i.Notes,
+		&i.FirstResponseAt,
+		&i.ResolvedAt,
+		&i.ResponseCount,
 		&i.IpAddress,
 		&i.UserAgent,
-		&i.Status,
-		&i.Notes,
-		&i.RespondedAt,
-		&i.RespondedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -233,7 +309,9 @@ func (q *Queries) GetContactSubmissionByID(ctx context.Context, id string) (Cont
 }
 
 const GetEarlyAccessByEmail = `-- name: GetEarlyAccessByEmail :one
-SELECT id, email, name, source, "ipAddress", "invitedAt", "acceptedAt", "createdAt" FROM early_access WHERE email = $1
+SELECT id, email, "requestedAt", source, metadata,
+       contacted, invited, status, notes, "createdAt", "updatedAt"
+FROM early_access WHERE email = $1
 `
 
 func (q *Queries) GetEarlyAccessByEmail(ctx context.Context, email string) (EarlyAccess, error) {
@@ -242,19 +320,24 @@ func (q *Queries) GetEarlyAccessByEmail(ctx context.Context, email string) (Earl
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
-		&i.Name,
+		&i.RequestedAt,
 		&i.Source,
-		&i.IpAddress,
-		&i.InvitedAt,
-		&i.AcceptedAt,
+		&i.Metadata,
+		&i.Contacted,
+		&i.Invited,
+		&i.Status,
+		&i.Notes,
 		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
 
 const GetEarlyAccessByID = `-- name: GetEarlyAccessByID :one
 
-SELECT id, email, name, source, "ipAddress", "invitedAt", "acceptedAt", "createdAt" FROM early_access WHERE id = $1
+SELECT id, email, "requestedAt", source, metadata,
+       contacted, invited, status, notes, "createdAt", "updatedAt"
+FROM early_access WHERE id = $1
 `
 
 // Early Access (Waitlist)
@@ -264,12 +347,15 @@ func (q *Queries) GetEarlyAccessByID(ctx context.Context, id string) (EarlyAcces
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
-		&i.Name,
+		&i.RequestedAt,
 		&i.Source,
-		&i.IpAddress,
-		&i.InvitedAt,
-		&i.AcceptedAt,
+		&i.Metadata,
+		&i.Contacted,
+		&i.Invited,
+		&i.Status,
+		&i.Notes,
 		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -344,7 +430,12 @@ func (q *Queries) IncrementGuestSessionSnapshots(ctx context.Context, id string)
 }
 
 const ListContactSubmissions = `-- name: ListContactSubmissions :many
-SELECT id, name, email, phone, subject, message, source, "ipAddress", "userAgent", status, notes, "respondedAt", "respondedBy", "createdAt", "updatedAt" FROM contact_submissions
+SELECT id, name, email, company, phone, subject, message,
+       category::text as category, source, "inquiryType",
+       status::text as status, "assignedTo", notes,
+       "firstResponseAt", "resolvedAt", "responseCount",
+       "ipAddress", "userAgent", "createdAt", "updatedAt"
+FROM contact_submissions
 ORDER BY "createdAt" DESC
 LIMIT $1 OFFSET $2
 `
@@ -354,29 +445,57 @@ type ListContactSubmissionsParams struct {
 	Offset int32 `json:"offset"`
 }
 
-func (q *Queries) ListContactSubmissions(ctx context.Context, arg ListContactSubmissionsParams) ([]ContactSubmission, error) {
+type ListContactSubmissionsRow struct {
+	ID              string           `json:"id"`
+	Name            string           `json:"name"`
+	Email           string           `json:"email"`
+	Company         pgtype.Text      `json:"company"`
+	Phone           pgtype.Text      `json:"phone"`
+	Subject         pgtype.Text      `json:"subject"`
+	Message         string           `json:"message"`
+	Category        string           `json:"category"`
+	Source          pgtype.Text      `json:"source"`
+	InquiryType     pgtype.Text      `json:"inquiryType"`
+	Status          string           `json:"status"`
+	AssignedTo      pgtype.Text      `json:"assignedTo"`
+	Notes           pgtype.Text      `json:"notes"`
+	FirstResponseAt pgtype.Timestamp `json:"firstResponseAt"`
+	ResolvedAt      pgtype.Timestamp `json:"resolvedAt"`
+	ResponseCount   int32            `json:"responseCount"`
+	IpAddress       pgtype.Text      `json:"ipAddress"`
+	UserAgent       pgtype.Text      `json:"userAgent"`
+	CreatedAt       pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt       pgtype.Timestamp `json:"updatedAt"`
+}
+
+func (q *Queries) ListContactSubmissions(ctx context.Context, arg ListContactSubmissionsParams) ([]ListContactSubmissionsRow, error) {
 	rows, err := q.db.Query(ctx, ListContactSubmissions, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ContactSubmission{}
+	items := []ListContactSubmissionsRow{}
 	for rows.Next() {
-		var i ContactSubmission
+		var i ListContactSubmissionsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,
 			&i.Email,
+			&i.Company,
 			&i.Phone,
 			&i.Subject,
 			&i.Message,
+			&i.Category,
 			&i.Source,
+			&i.InquiryType,
+			&i.Status,
+			&i.AssignedTo,
+			&i.Notes,
+			&i.FirstResponseAt,
+			&i.ResolvedAt,
+			&i.ResponseCount,
 			&i.IpAddress,
 			&i.UserAgent,
-			&i.Status,
-			&i.Notes,
-			&i.RespondedAt,
-			&i.RespondedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -391,8 +510,13 @@ func (q *Queries) ListContactSubmissions(ctx context.Context, arg ListContactSub
 }
 
 const ListContactSubmissionsByStatus = `-- name: ListContactSubmissionsByStatus :many
-SELECT id, name, email, phone, subject, message, source, "ipAddress", "userAgent", status, notes, "respondedAt", "respondedBy", "createdAt", "updatedAt" FROM contact_submissions
-WHERE status = $1
+SELECT id, name, email, company, phone, subject, message,
+       category::text as category, source, "inquiryType",
+       status::text as status, "assignedTo", notes,
+       "firstResponseAt", "resolvedAt", "responseCount",
+       "ipAddress", "userAgent", "createdAt", "updatedAt"
+FROM contact_submissions
+WHERE status::text = $1
 ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3
 `
@@ -403,29 +527,57 @@ type ListContactSubmissionsByStatusParams struct {
 	Offset int32  `json:"offset"`
 }
 
-func (q *Queries) ListContactSubmissionsByStatus(ctx context.Context, arg ListContactSubmissionsByStatusParams) ([]ContactSubmission, error) {
+type ListContactSubmissionsByStatusRow struct {
+	ID              string           `json:"id"`
+	Name            string           `json:"name"`
+	Email           string           `json:"email"`
+	Company         pgtype.Text      `json:"company"`
+	Phone           pgtype.Text      `json:"phone"`
+	Subject         pgtype.Text      `json:"subject"`
+	Message         string           `json:"message"`
+	Category        string           `json:"category"`
+	Source          pgtype.Text      `json:"source"`
+	InquiryType     pgtype.Text      `json:"inquiryType"`
+	Status          string           `json:"status"`
+	AssignedTo      pgtype.Text      `json:"assignedTo"`
+	Notes           pgtype.Text      `json:"notes"`
+	FirstResponseAt pgtype.Timestamp `json:"firstResponseAt"`
+	ResolvedAt      pgtype.Timestamp `json:"resolvedAt"`
+	ResponseCount   int32            `json:"responseCount"`
+	IpAddress       pgtype.Text      `json:"ipAddress"`
+	UserAgent       pgtype.Text      `json:"userAgent"`
+	CreatedAt       pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt       pgtype.Timestamp `json:"updatedAt"`
+}
+
+func (q *Queries) ListContactSubmissionsByStatus(ctx context.Context, arg ListContactSubmissionsByStatusParams) ([]ListContactSubmissionsByStatusRow, error) {
 	rows, err := q.db.Query(ctx, ListContactSubmissionsByStatus, arg.Status, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ContactSubmission{}
+	items := []ListContactSubmissionsByStatusRow{}
 	for rows.Next() {
-		var i ContactSubmission
+		var i ListContactSubmissionsByStatusRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,
 			&i.Email,
+			&i.Company,
 			&i.Phone,
 			&i.Subject,
 			&i.Message,
+			&i.Category,
 			&i.Source,
+			&i.InquiryType,
+			&i.Status,
+			&i.AssignedTo,
+			&i.Notes,
+			&i.FirstResponseAt,
+			&i.ResolvedAt,
+			&i.ResponseCount,
 			&i.IpAddress,
 			&i.UserAgent,
-			&i.Status,
-			&i.Notes,
-			&i.RespondedAt,
-			&i.RespondedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -440,7 +592,9 @@ func (q *Queries) ListContactSubmissionsByStatus(ctx context.Context, arg ListCo
 }
 
 const ListEarlyAccess = `-- name: ListEarlyAccess :many
-SELECT id, email, name, source, "ipAddress", "invitedAt", "acceptedAt", "createdAt" FROM early_access
+SELECT id, email, "requestedAt", source, metadata,
+       contacted, invited, status, notes, "createdAt", "updatedAt"
+FROM early_access
 ORDER BY "createdAt" DESC
 LIMIT $1 OFFSET $2
 `
@@ -462,12 +616,15 @@ func (q *Queries) ListEarlyAccess(ctx context.Context, arg ListEarlyAccessParams
 		if err := rows.Scan(
 			&i.ID,
 			&i.Email,
-			&i.Name,
+			&i.RequestedAt,
 			&i.Source,
-			&i.IpAddress,
-			&i.InvitedAt,
-			&i.AcceptedAt,
+			&i.Metadata,
+			&i.Contacted,
+			&i.Invited,
+			&i.Status,
+			&i.Notes,
 			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -480,9 +637,11 @@ func (q *Queries) ListEarlyAccess(ctx context.Context, arg ListEarlyAccessParams
 }
 
 const ListInvitedEarlyAccess = `-- name: ListInvitedEarlyAccess :many
-SELECT id, email, name, source, "ipAddress", "invitedAt", "acceptedAt", "createdAt" FROM early_access
-WHERE "invitedAt" IS NOT NULL AND "acceptedAt" IS NULL
-ORDER BY "invitedAt" ASC
+SELECT id, email, "requestedAt", source, metadata,
+       contacted, invited, status, notes, "createdAt", "updatedAt"
+FROM early_access
+WHERE status = 'INVITED'
+ORDER BY "updatedAt" ASC
 LIMIT $1
 `
 
@@ -498,12 +657,15 @@ func (q *Queries) ListInvitedEarlyAccess(ctx context.Context, limit int32) ([]Ea
 		if err := rows.Scan(
 			&i.ID,
 			&i.Email,
-			&i.Name,
+			&i.RequestedAt,
 			&i.Source,
-			&i.IpAddress,
-			&i.InvitedAt,
-			&i.AcceptedAt,
+			&i.Metadata,
+			&i.Contacted,
+			&i.Invited,
+			&i.Status,
+			&i.Notes,
 			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -516,8 +678,10 @@ func (q *Queries) ListInvitedEarlyAccess(ctx context.Context, limit int32) ([]Ea
 }
 
 const ListPendingEarlyAccess = `-- name: ListPendingEarlyAccess :many
-SELECT id, email, name, source, "ipAddress", "invitedAt", "acceptedAt", "createdAt" FROM early_access
-WHERE "invitedAt" IS NULL
+SELECT id, email, "requestedAt", source, metadata,
+       contacted, invited, status, notes, "createdAt", "updatedAt"
+FROM early_access
+WHERE status = 'PENDING'
 ORDER BY "createdAt" ASC
 LIMIT $1
 `
@@ -534,12 +698,15 @@ func (q *Queries) ListPendingEarlyAccess(ctx context.Context, limit int32) ([]Ea
 		if err := rows.Scan(
 			&i.ID,
 			&i.Email,
-			&i.Name,
+			&i.RequestedAt,
 			&i.Source,
-			&i.IpAddress,
-			&i.InvitedAt,
-			&i.AcceptedAt,
+			&i.Metadata,
+			&i.Contacted,
+			&i.Invited,
+			&i.Status,
+			&i.Notes,
 			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -553,78 +720,90 @@ func (q *Queries) ListPendingEarlyAccess(ctx context.Context, limit int32) ([]Ea
 
 const UpdateContactSubmissionStatus = `-- name: UpdateContactSubmissionStatus :one
 UPDATE contact_submissions SET
-    status = $2,
-    notes = COALESCE($3, notes),
-    "respondedAt" = CASE WHEN $2 = 'RESPONDED' THEN NOW() ELSE "respondedAt" END,
-    "respondedBy" = COALESCE($4, "respondedBy"),
+    status = $1::"ContactStatus",
+    notes = COALESCE($2, notes),
+    "assignedTo" = COALESCE($3, "assignedTo"),
+    "firstResponseAt" = CASE WHEN $1 = 'ASSIGNED' AND "firstResponseAt" IS NULL THEN NOW() ELSE "firstResponseAt" END,
     "updatedAt" = NOW()
-WHERE id = $1
-RETURNING id, name, email, phone, subject, message, source, "ipAddress", "userAgent", status, notes, "respondedAt", "respondedBy", "createdAt", "updatedAt"
+WHERE id = $4
+RETURNING id, name, email, company, phone, subject, message,
+          category::text as category, source, "inquiryType",
+          status::text as status, "assignedTo", notes,
+          "firstResponseAt", "resolvedAt", "responseCount",
+          "ipAddress", "userAgent", "createdAt", "updatedAt"
 `
 
 type UpdateContactSubmissionStatusParams struct {
-	ID          string      `json:"id"`
-	Status      string      `json:"status"`
-	Notes       pgtype.Text `json:"notes"`
-	RespondedBy pgtype.Text `json:"respondedBy"`
+	Status     interface{} `json:"status"`
+	Notes      pgtype.Text `json:"notes"`
+	AssignedTo pgtype.Text `json:"assigned_to"`
+	ID         string      `json:"id"`
 }
 
-func (q *Queries) UpdateContactSubmissionStatus(ctx context.Context, arg UpdateContactSubmissionStatusParams) (ContactSubmission, error) {
+type UpdateContactSubmissionStatusRow struct {
+	ID              string           `json:"id"`
+	Name            string           `json:"name"`
+	Email           string           `json:"email"`
+	Company         pgtype.Text      `json:"company"`
+	Phone           pgtype.Text      `json:"phone"`
+	Subject         pgtype.Text      `json:"subject"`
+	Message         string           `json:"message"`
+	Category        string           `json:"category"`
+	Source          pgtype.Text      `json:"source"`
+	InquiryType     pgtype.Text      `json:"inquiryType"`
+	Status          string           `json:"status"`
+	AssignedTo      pgtype.Text      `json:"assignedTo"`
+	Notes           pgtype.Text      `json:"notes"`
+	FirstResponseAt pgtype.Timestamp `json:"firstResponseAt"`
+	ResolvedAt      pgtype.Timestamp `json:"resolvedAt"`
+	ResponseCount   int32            `json:"responseCount"`
+	IpAddress       pgtype.Text      `json:"ipAddress"`
+	UserAgent       pgtype.Text      `json:"userAgent"`
+	CreatedAt       pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt       pgtype.Timestamp `json:"updatedAt"`
+}
+
+func (q *Queries) UpdateContactSubmissionStatus(ctx context.Context, arg UpdateContactSubmissionStatusParams) (UpdateContactSubmissionStatusRow, error) {
 	row := q.db.QueryRow(ctx, UpdateContactSubmissionStatus,
-		arg.ID,
 		arg.Status,
 		arg.Notes,
-		arg.RespondedBy,
+		arg.AssignedTo,
+		arg.ID,
 	)
-	var i ContactSubmission
+	var i UpdateContactSubmissionStatusRow
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
 		&i.Email,
+		&i.Company,
 		&i.Phone,
 		&i.Subject,
 		&i.Message,
+		&i.Category,
 		&i.Source,
+		&i.InquiryType,
+		&i.Status,
+		&i.AssignedTo,
+		&i.Notes,
+		&i.FirstResponseAt,
+		&i.ResolvedAt,
+		&i.ResponseCount,
 		&i.IpAddress,
 		&i.UserAgent,
-		&i.Status,
-		&i.Notes,
-		&i.RespondedAt,
-		&i.RespondedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
 }
 
-const UpdateEarlyAccessAccepted = `-- name: UpdateEarlyAccessAccepted :one
-UPDATE early_access SET
-    "acceptedAt" = NOW()
-WHERE id = $1
-RETURNING id, email, name, source, "ipAddress", "invitedAt", "acceptedAt", "createdAt"
-`
-
-func (q *Queries) UpdateEarlyAccessAccepted(ctx context.Context, id string) (EarlyAccess, error) {
-	row := q.db.QueryRow(ctx, UpdateEarlyAccessAccepted, id)
-	var i EarlyAccess
-	err := row.Scan(
-		&i.ID,
-		&i.Email,
-		&i.Name,
-		&i.Source,
-		&i.IpAddress,
-		&i.InvitedAt,
-		&i.AcceptedAt,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const UpdateEarlyAccessInvited = `-- name: UpdateEarlyAccessInvited :one
 UPDATE early_access SET
-    "invitedAt" = NOW()
+    invited = true,
+    status = 'INVITED',
+    "updatedAt" = NOW()
 WHERE id = $1
-RETURNING id, email, name, source, "ipAddress", "invitedAt", "acceptedAt", "createdAt"
+RETURNING id, email, "requestedAt", source, metadata,
+          contacted, invited, status, notes, "createdAt", "updatedAt"
 `
 
 func (q *Queries) UpdateEarlyAccessInvited(ctx context.Context, id string) (EarlyAccess, error) {
@@ -633,12 +812,15 @@ func (q *Queries) UpdateEarlyAccessInvited(ctx context.Context, id string) (Earl
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
-		&i.Name,
+		&i.RequestedAt,
 		&i.Source,
-		&i.IpAddress,
-		&i.InvitedAt,
-		&i.AcceptedAt,
+		&i.Metadata,
+		&i.Contacted,
+		&i.Invited,
+		&i.Status,
+		&i.Notes,
 		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }

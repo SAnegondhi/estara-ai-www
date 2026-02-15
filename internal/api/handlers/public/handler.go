@@ -1,6 +1,7 @@
 package public
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -34,6 +35,7 @@ func NewHandler(db *postgres.DB, cfg *config.Config) *Handler {
 type ContactSubmissionRequest struct {
 	Name      string `json:"name"`
 	Email     string `json:"email"`
+	Company   string `json:"company,omitempty"`
 	Phone     string `json:"phone,omitempty"`
 	Subject   string `json:"subject,omitempty"`
 	Message   string `json:"message"`
@@ -86,9 +88,11 @@ func (h *Handler) SubmitContact(w http.ResponseWriter, r *http.Request) {
 		ID:        submissionID,
 		Name:      req.Name,
 		Email:     req.Email,
+		Company:   pgtype.Text{String: req.Company, Valid: req.Company != ""},
 		Phone:     pgtype.Text{String: req.Phone, Valid: req.Phone != ""},
 		Subject:   pgtype.Text{String: req.Subject, Valid: req.Subject != ""},
 		Message:   req.Message,
+		Category:  "GENERAL",
 		Source:    pgtype.Text{String: req.Source, Valid: req.Source != ""},
 		IpAddress: pgtype.Text{String: req.IPAddress, Valid: req.IPAddress != ""},
 		UserAgent: pgtype.Text{String: req.UserAgent, Valid: req.UserAgent != ""},
@@ -169,14 +173,17 @@ func (h *Handler) SignupEarlyAccess(w http.ResponseWriter, r *http.Request) {
 		count = 0
 	}
 
-	// Create early access entry
+	// Create early access entry with optional name in metadata
 	entryID := uuid.New().String()
+	var metadata []byte
+	if req.Name != "" {
+		metadata, _ = json.Marshal(map[string]string{"name": req.Name})
+	}
 	_, err = q.CreateEarlyAccess(ctx, queries.CreateEarlyAccessParams{
-		ID:        entryID,
-		Email:     req.Email,
-		Name:      pgtype.Text{String: req.Name, Valid: req.Name != ""},
-		Source:    pgtype.Text{String: req.Source, Valid: req.Source != ""},
-		IpAddress: pgtype.Text{String: req.IPAddress, Valid: req.IPAddress != ""},
+		ID:       entryID,
+		Email:    req.Email,
+		Source:   pgtype.Text{String: req.Source, Valid: req.Source != ""},
+		Metadata: metadata,
 	})
 	if err != nil {
 		h.logger.Error("failed to create early access entry", "error", err)

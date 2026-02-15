@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-playground/validator/v10"
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"golang.org/x/crypto/bcrypt"
@@ -34,11 +35,12 @@ type Handler struct {
 	validate  *validator.Validate
 	logger    *slog.Logger
 	whitelist *whitelist.Service
+	webauthn  *webauthn.WebAuthn
 }
 
 // NewHandler creates a new auth handler
 func NewHandler(auth *middleware.AuthMiddleware, db *postgres.DB, redis *redisClient.Client, cfg *config.Config) *Handler {
-	return &Handler{
+	h := &Handler{
 		auth:     auth,
 		db:       db,
 		redis:    redis,
@@ -46,6 +48,23 @@ func NewHandler(auth *middleware.AuthMiddleware, db *postgres.DB, redis *redisCl
 		validate: validator.New(),
 		logger:   slog.Default().With("component", "auth_handler"),
 	}
+
+	// ADR-081: Initialize WebAuthn if configured
+	if cfg.WebAuthn.RPID != "" {
+		wa, err := webauthn.New(&webauthn.Config{
+			RPDisplayName: cfg.WebAuthn.RPDisplayName,
+			RPID:          cfg.WebAuthn.RPID,
+			RPOrigins:     cfg.WebAuthn.RPOrigins,
+		})
+		if err != nil {
+			slog.Error("failed to initialize WebAuthn", "error", err)
+		} else {
+			h.webauthn = wa
+			slog.Info("WebAuthn initialized", "rpID", cfg.WebAuthn.RPID)
+		}
+	}
+
+	return h
 }
 
 // SetWhitelist injects the whitelist service for beta access control.
