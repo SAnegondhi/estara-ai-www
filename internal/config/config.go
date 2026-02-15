@@ -330,26 +330,28 @@ func Load() (*Config, error) {
 	}
 
 	// WebAuthn config (ADR-081)
-	// Derive RP ID and origins from CLIENT_URL when not explicitly set via env vars.
-	// This avoids requiring separate WEBAUTHN_RP_* env vars in production —
-	// CLIENT_URL (e.g. https://insight.estara-ai.com) provides both hostname and origin.
+	// RPID and RPOrigins are derived from CLIENT_URL when not explicitly set.
+	// Dev: CLIENT_URL=http://localhost:3002 → RPID=localhost, Origin=http://localhost:3002
+	// Prod: CLIENT_URL=https://insight.estara-ai.com → RPID=insight.estara-ai.com, Origin=https://insight.estara-ai.com
 	rpID := v.GetString("WEBAUTHN_RP_ID")
 	rpOriginsStr := v.GetString("WEBAUTHN_RP_ORIGINS")
-	var rpOrigins []string
 
-	// If WEBAUTHN_RP_ID is still the default "localhost" and CLIENT_URL is a real domain, derive from it
-	clientURL := cfg.Server.ClientURL
-	if clientURL != "" && clientURL != "http://localhost:3002" {
-		if parsed, err := url.Parse(clientURL); err == nil && parsed.Hostname() != "" {
-			if rpID == "localhost" || rpID == "" {
-				rpID = parsed.Hostname()
-			}
-			if rpOriginsStr == "http://localhost:3002" || rpOriginsStr == "" {
-				rpOriginsStr = strings.TrimRight(clientURL, "/")
+	// Derive from CLIENT_URL when not explicitly configured
+	if rpID == "" || rpOriginsStr == "" {
+		clientURL := cfg.Server.ClientURL
+		if clientURL != "" {
+			if parsed, err := url.Parse(clientURL); err == nil && parsed.Hostname() != "" {
+				if rpID == "" {
+					rpID = parsed.Hostname()
+				}
+				if rpOriginsStr == "" {
+					rpOriginsStr = strings.TrimRight(clientURL, "/")
+				}
 			}
 		}
 	}
 
+	var rpOrigins []string
 	if rpOriginsStr != "" {
 		rpOrigins = strings.Split(rpOriginsStr, ",")
 		for i := range rpOrigins {
@@ -361,6 +363,7 @@ func Load() (*Config, error) {
 		RPID:          rpID,
 		RPOrigins:     rpOrigins,
 	}
+	slog.Info("WebAuthn config", "rpID", rpID, "rpOrigins", rpOrigins)
 
 	// IAP config
 	cfg.IAP = IAPConfig{
@@ -428,10 +431,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("COOKIE_SECURE", true)     // Always true in production
 	v.SetDefault("CSRF_TOKEN_LENGTH", 32)   // 32 bytes = 256 bits
 
-	// WebAuthn defaults (ADR-081)
+	// WebAuthn defaults (ADR-081) — RPID and Origins derived from CLIENT_URL at load time
 	v.SetDefault("WEBAUTHN_RP_DISPLAY_NAME", "Estara Insight")
-	v.SetDefault("WEBAUTHN_RP_ID", "localhost")
-	v.SetDefault("WEBAUTHN_RP_ORIGINS", "http://localhost:3002")
 }
 
 // Validate checks required configuration values
