@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
@@ -329,8 +330,26 @@ func Load() (*Config, error) {
 	}
 
 	// WebAuthn config (ADR-081)
+	// Derive RP ID and origins from CLIENT_URL when not explicitly set via env vars.
+	// This avoids requiring separate WEBAUTHN_RP_* env vars in production —
+	// CLIENT_URL (e.g. https://insight.estara-ai.com) provides both hostname and origin.
+	rpID := v.GetString("WEBAUTHN_RP_ID")
 	rpOriginsStr := v.GetString("WEBAUTHN_RP_ORIGINS")
 	var rpOrigins []string
+
+	// If WEBAUTHN_RP_ID is still the default "localhost" and CLIENT_URL is a real domain, derive from it
+	clientURL := cfg.Server.ClientURL
+	if clientURL != "" && clientURL != "http://localhost:3002" {
+		if parsed, err := url.Parse(clientURL); err == nil && parsed.Hostname() != "" {
+			if rpID == "localhost" || rpID == "" {
+				rpID = parsed.Hostname()
+			}
+			if rpOriginsStr == "http://localhost:3002" || rpOriginsStr == "" {
+				rpOriginsStr = strings.TrimRight(clientURL, "/")
+			}
+		}
+	}
+
 	if rpOriginsStr != "" {
 		rpOrigins = strings.Split(rpOriginsStr, ",")
 		for i := range rpOrigins {
@@ -339,7 +358,7 @@ func Load() (*Config, error) {
 	}
 	cfg.WebAuthn = WebAuthnConfig{
 		RPDisplayName: v.GetString("WEBAUTHN_RP_DISPLAY_NAME"),
-		RPID:          v.GetString("WEBAUTHN_RP_ID"),
+		RPID:          rpID,
 		RPOrigins:     rpOrigins,
 	}
 
