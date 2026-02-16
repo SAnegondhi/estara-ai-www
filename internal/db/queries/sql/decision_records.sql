@@ -31,6 +31,21 @@ FROM v2_decision_records d
 JOIN v2_evaluations e ON d.evaluation_id = e.id
 WHERE d.id = $1 AND d.user_id = $2;
 
+-- name: GetDecisionRecordByID :one
+-- Get decision record by ID only (no user filter) for export operations
+SELECT
+    r.id, r.user_id, r.exported_at,
+    e.id AS evaluation_id,
+    e.property_address, e.property_city, e.property_state, e.property_zip,
+    e.property_details, e.purchase_price, e.down_payment_pct,
+    e.interest_rate, e.loan_term_years, e.monthly_rent,
+    e.vacancy_rate_pct, e.maintenance_cost, e.property_tax,
+    e.insurance, e.hoa_fees, e.appreciation_rate,
+    e.scenarios, e.status::text
+FROM v2_decision_records r
+JOIN v2_evaluations e ON r.evaluation_id = e.id
+WHERE r.id = $1;
+
 -- name: GetEvaluationsWithDecisionRecords :many
 SELECT
     e.id, e.user_id, e.property_id, e.property_address, e.property_city,
@@ -89,6 +104,12 @@ RETURNING id, user_id, property_id, property_address, property_city, property_st
 UPDATE v2_evaluations
 SET status = $2::text::"V2EvaluationStatus", updated_at = NOW()
 WHERE id = $1;
+
+-- name: UpdateV2EvaluationsStatusBulk :exec
+-- Update status for multiple evaluations (for batch exports)
+UPDATE v2_evaluations
+SET status = $2::text::"V2EvaluationStatus", updated_at = NOW()
+WHERE id = ANY($1::text[]);
 
 -- name: GetV2EvaluationByID :one
 SELECT id, user_id, property_id, property_address, property_city, property_state,

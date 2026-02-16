@@ -301,6 +301,8 @@ type Querier interface {
 	GetCronJobConfigByID(ctx context.Context, id string) (CronJobConfig, error)
 	GetCronJobConfigByName(ctx context.Context, name string) (CronJobConfig, error)
 	GetCronJobRun(ctx context.Context, id string) (CronJobRun, error)
+	// Get decision record by ID only (no user filter) for export operations
+	GetDecisionRecordByID(ctx context.Context, id string) (GetDecisionRecordByIDRow, error)
 	GetDecisionRecordWithEvaluation(ctx context.Context, arg GetDecisionRecordWithEvaluationParams) (GetDecisionRecordWithEvaluationRow, error)
 	GetDiscoverySession(ctx context.Context, id string) (DiscoverySession, error)
 	GetDiscoverySessionByUser(ctx context.Context, arg GetDiscoverySessionByUserParams) (DiscoverySession, error)
@@ -465,6 +467,8 @@ type Querier interface {
 	IncrementInsightAccessUsage(ctx context.Context, id string) (InsightAccess, error)
 	IncrementReportPackUsage(ctx context.Context, id string) (ReportPack, error)
 	IncrementV2EvaluationQuotaUsage(ctx context.Context, userID string) error
+	// Increment quota usage and return updated values (for batch exports)
+	IncrementV2EvaluationQuotaUsageReturning(ctx context.Context, userID string) (IncrementV2EvaluationQuotaUsageReturningRow, error)
 	InvalidateUserPasswordResetTokens(ctx context.Context, userid string) error
 	InviteWaitlistEntry(ctx context.Context, id string) (InviteWaitlistEntryRow, error)
 	ListAIUsageRecords(ctx context.Context, arg ListAIUsageRecordsParams) ([]ListAIUsageRecordsRow, error)
@@ -645,6 +649,8 @@ type Querier interface {
 	UpdateUserSubscription(ctx context.Context, arg UpdateUserSubscriptionParams) error
 	UpdateUserUpdatedAt(ctx context.Context, id string) error
 	UpdateV2EvaluationStatus(ctx context.Context, arg UpdateV2EvaluationStatusParams) error
+	// Update status for multiple evaluations (for batch exports)
+	UpdateV2EvaluationsStatusBulk(ctx context.Context, arg UpdateV2EvaluationsStatusBulkParams) error
 	UpdateVendorConfig(ctx context.Context, arg UpdateVendorConfigParams) (UpdateVendorConfigRow, error)
 	UpdateVendorContract(ctx context.Context, arg UpdateVendorContractParams) (VendorContract, error)
 	UpdateVendorHealthCheck(ctx context.Context, arg UpdateVendorHealthCheckParams) error

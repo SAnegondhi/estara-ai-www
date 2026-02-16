@@ -268,6 +268,77 @@ func (q *Queries) FetchEvaluationsByIDs(ctx context.Context, arg FetchEvaluation
 	return items, nil
 }
 
+const GetDecisionRecordByID = `-- name: GetDecisionRecordByID :one
+SELECT
+    r.id, r.user_id, r.exported_at,
+    e.id AS evaluation_id,
+    e.property_address, e.property_city, e.property_state, e.property_zip,
+    e.property_details, e.purchase_price, e.down_payment_pct,
+    e.interest_rate, e.loan_term_years, e.monthly_rent,
+    e.vacancy_rate_pct, e.maintenance_cost, e.property_tax,
+    e.insurance, e.hoa_fees, e.appreciation_rate,
+    e.scenarios, e.status::text
+FROM v2_decision_records r
+JOIN v2_evaluations e ON r.evaluation_id = e.id
+WHERE r.id = $1
+`
+
+type GetDecisionRecordByIDRow struct {
+	ID               string           `json:"id"`
+	UserID           string           `json:"user_id"`
+	ExportedAt       pgtype.Timestamp `json:"exported_at"`
+	EvaluationID     string           `json:"evaluation_id"`
+	PropertyAddress  string           `json:"property_address"`
+	PropertyCity     string           `json:"property_city"`
+	PropertyState    string           `json:"property_state"`
+	PropertyZip      pgtype.Text      `json:"property_zip"`
+	PropertyDetails  []byte           `json:"property_details"`
+	PurchasePrice    float64          `json:"purchase_price"`
+	DownPaymentPct   float64          `json:"down_payment_pct"`
+	InterestRate     float64          `json:"interest_rate"`
+	LoanTermYears    int32            `json:"loan_term_years"`
+	MonthlyRent      float64          `json:"monthly_rent"`
+	VacancyRatePct   float64          `json:"vacancy_rate_pct"`
+	MaintenanceCost  float64          `json:"maintenance_cost"`
+	PropertyTax      float64          `json:"property_tax"`
+	Insurance        float64          `json:"insurance"`
+	HoaFees          pgtype.Float8    `json:"hoa_fees"`
+	AppreciationRate float64          `json:"appreciation_rate"`
+	Scenarios        []byte           `json:"scenarios"`
+	EStatus          string           `json:"e_status"`
+}
+
+// Get decision record by ID only (no user filter) for export operations
+func (q *Queries) GetDecisionRecordByID(ctx context.Context, id string) (GetDecisionRecordByIDRow, error) {
+	row := q.db.QueryRow(ctx, GetDecisionRecordByID, id)
+	var i GetDecisionRecordByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ExportedAt,
+		&i.EvaluationID,
+		&i.PropertyAddress,
+		&i.PropertyCity,
+		&i.PropertyState,
+		&i.PropertyZip,
+		&i.PropertyDetails,
+		&i.PurchasePrice,
+		&i.DownPaymentPct,
+		&i.InterestRate,
+		&i.LoanTermYears,
+		&i.MonthlyRent,
+		&i.VacancyRatePct,
+		&i.MaintenanceCost,
+		&i.PropertyTax,
+		&i.Insurance,
+		&i.HoaFees,
+		&i.AppreciationRate,
+		&i.Scenarios,
+		&i.EStatus,
+	)
+	return i, err
+}
+
 const GetDecisionRecordWithEvaluation = `-- name: GetDecisionRecordWithEvaluation :one
 SELECT
     d.id, d.evaluation_id, d.user_id, d.memo_content, d.pdf_url,
@@ -613,5 +684,22 @@ type UpdateV2EvaluationStatusParams struct {
 
 func (q *Queries) UpdateV2EvaluationStatus(ctx context.Context, arg UpdateV2EvaluationStatusParams) error {
 	_, err := q.db.Exec(ctx, UpdateV2EvaluationStatus, arg.ID, arg.Column2)
+	return err
+}
+
+const UpdateV2EvaluationsStatusBulk = `-- name: UpdateV2EvaluationsStatusBulk :exec
+UPDATE v2_evaluations
+SET status = $2::text::"V2EvaluationStatus", updated_at = NOW()
+WHERE id = ANY($1::text[])
+`
+
+type UpdateV2EvaluationsStatusBulkParams struct {
+	Column1 []string `json:"column_1"`
+	Column2 string   `json:"column_2"`
+}
+
+// Update status for multiple evaluations (for batch exports)
+func (q *Queries) UpdateV2EvaluationsStatusBulk(ctx context.Context, arg UpdateV2EvaluationsStatusBulkParams) error {
+	_, err := q.db.Exec(ctx, UpdateV2EvaluationsStatusBulk, arg.Column1, arg.Column2)
 	return err
 }

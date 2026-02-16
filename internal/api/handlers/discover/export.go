@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/estara-ai/www/internal/api/middleware"
+	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/pdf"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -301,160 +302,93 @@ type decisionRecord struct {
 }
 
 func (h *Handler) getEvaluationQuota(ctx context.Context, userID string) (evaluationQuota, error) {
-	query := `
-		SELECT tier, annual_limit, used_this_period, period_end_date
-		FROM v2_evaluation_quotas
-		WHERE user_id = $1
-	`
-
-	var quota evaluationQuota
-	err := h.store.Pool().QueryRow(ctx, query, userID).Scan(&quota.Tier, &quota.AnnualLimit, &quota.UsedThisPeriod, &quota.PeriodEnd)
+	dbQuota, err := h.store.Q().GetV2EvaluationQuota(ctx, userID)
 	if err != nil {
 		return evaluationQuota{}, err
 	}
-	return quota, nil
+
+	return evaluationQuota{
+		Tier:           dbQuota.Tier,
+		AnnualLimit:    int(dbQuota.AnnualLimit),
+		UsedThisPeriod: int(dbQuota.UsedThisPeriod),
+		PeriodEnd:      dbQuota.PeriodEndDate.Time,
+	}, nil
 }
 
 func (h *Handler) fetchEvaluations(ctx context.Context, userID string, evaluationIDs []string) ([]evaluationRow, error) {
-	query := `
-		SELECT
-			e.id,
-			e.property_address,
-			e.property_city,
-			e.property_state,
-			e.property_zip,
-			e.property_details,
-			e.purchase_price,
-			e.down_payment_pct,
-			e.interest_rate,
-			e.loan_term_years,
-			e.monthly_rent,
-			e.vacancy_rate_pct,
-			e.maintenance_cost,
-			e.property_tax,
-			e.insurance,
-			e.hoa_fees,
-			e.appreciation_rate,
-			e.scenarios,
-			e.status,
-			r.id AS decision_record_id
-		FROM v2_evaluations e
-		LEFT JOIN v2_decision_records r ON r.evaluation_id = e.id
-		WHERE e.user_id = $1 AND e.id = ANY($2::text[])
-	`
-
-	rows, err := h.store.Pool().Query(ctx, query, userID, evaluationIDs)
+	dbRows, err := h.store.Q().FetchEvaluationsByIDs(ctx, queries.FetchEvaluationsByIDsParams{
+		UserID: userID,
+		Column2: evaluationIDs,
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	results := make([]evaluationRow, 0)
-	for rows.Next() {
-		var row evaluationRow
-		if err := rows.Scan(
-			&row.ID,
-			&row.PropertyAddress,
-			&row.PropertyCity,
-			&row.PropertyState,
-			&row.PropertyZip,
-			&row.PropertyDetails,
-			&row.PurchasePrice,
-			&row.DownPaymentPct,
-			&row.InterestRate,
-			&row.LoanTermYears,
-			&row.MonthlyRent,
-			&row.VacancyRatePct,
-			&row.MaintenanceCost,
-			&row.PropertyTax,
-			&row.Insurance,
-			&row.HoaFees,
-			&row.AppreciationRate,
-			&row.Scenarios,
-			&row.Status,
-			&row.DecisionRecordID,
-		); err != nil {
-			return nil, err
-		}
-		results = append(results, row)
+	results := make([]evaluationRow, 0, len(dbRows))
+	for _, row := range dbRows {
+		results = append(results, evaluationRow{
+			ID:               row.ID,
+			PropertyAddress:  row.PropertyAddress,
+			PropertyCity:     row.PropertyCity,
+			PropertyState:    row.PropertyState,
+			PropertyZip:      row.PropertyZip,
+			PropertyDetails:  row.PropertyDetails,
+			PurchasePrice:    row.PurchasePrice,
+			DownPaymentPct:   row.DownPaymentPct,
+			InterestRate:     row.InterestRate,
+			LoanTermYears:    int(row.LoanTermYears),
+			MonthlyRent:      row.MonthlyRent,
+			VacancyRatePct:   row.VacancyRatePct,
+			MaintenanceCost:  row.MaintenanceCost,
+			PropertyTax:      row.PropertyTax,
+			Insurance:        row.Insurance,
+			HoaFees:          row.HoaFees,
+			AppreciationRate: row.AppreciationRate,
+			Scenarios:        row.Scenarios,
+			Status:           row.EStatus,
+			DecisionRecordID: row.DecisionRecordID,
+		})
 	}
-	return results, rows.Err()
+	return results, nil
 }
 
 func (h *Handler) fetchDecisionRecord(ctx context.Context, recordID string) (decisionRecord, error) {
-	query := `
-		SELECT
-			r.id,
-			r.user_id,
-			r.exported_at,
-			e.id,
-			e.property_address,
-			e.property_city,
-			e.property_state,
-			e.property_zip,
-			e.property_details,
-			e.purchase_price,
-			e.down_payment_pct,
-			e.interest_rate,
-			e.loan_term_years,
-			e.monthly_rent,
-			e.vacancy_rate_pct,
-			e.maintenance_cost,
-			e.property_tax,
-			e.insurance,
-			e.hoa_fees,
-			e.appreciation_rate,
-			e.scenarios,
-			e.status
-		FROM v2_decision_records r
-		JOIN v2_evaluations e ON r.evaluation_id = e.id
-		WHERE r.id = $1
-	`
-
-	var record decisionRecord
-	var eval evaluationRow
-	if err := h.store.Pool().QueryRow(ctx, query, recordID).Scan(
-		&record.ID,
-		&record.UserID,
-		&record.ExportedAt,
-		&eval.ID,
-		&eval.PropertyAddress,
-		&eval.PropertyCity,
-		&eval.PropertyState,
-		&eval.PropertyZip,
-		&eval.PropertyDetails,
-		&eval.PurchasePrice,
-		&eval.DownPaymentPct,
-		&eval.InterestRate,
-		&eval.LoanTermYears,
-		&eval.MonthlyRent,
-		&eval.VacancyRatePct,
-		&eval.MaintenanceCost,
-		&eval.PropertyTax,
-		&eval.Insurance,
-		&eval.HoaFees,
-		&eval.AppreciationRate,
-		&eval.Scenarios,
-		&eval.Status,
-	); err != nil {
+	dbRow, err := h.store.Q().GetDecisionRecordByID(ctx, recordID)
+	if err != nil {
 		return decisionRecord{}, err
 	}
-	record.Evaluation = eval
-	return record, nil
+
+	eval := evaluationRow{
+		ID:               dbRow.EvaluationID,
+		PropertyAddress:  dbRow.PropertyAddress,
+		PropertyCity:     dbRow.PropertyCity,
+		PropertyState:    dbRow.PropertyState,
+		PropertyZip:      dbRow.PropertyZip,
+		PropertyDetails:  dbRow.PropertyDetails,
+		PurchasePrice:    dbRow.PurchasePrice,
+		DownPaymentPct:   dbRow.DownPaymentPct,
+		InterestRate:     dbRow.InterestRate,
+		LoanTermYears:    int(dbRow.LoanTermYears),
+		MonthlyRent:      dbRow.MonthlyRent,
+		VacancyRatePct:   dbRow.VacancyRatePct,
+		MaintenanceCost:  dbRow.MaintenanceCost,
+		PropertyTax:      dbRow.PropertyTax,
+		Insurance:        dbRow.Insurance,
+		HoaFees:          dbRow.HoaFees,
+		AppreciationRate: dbRow.AppreciationRate,
+		Scenarios:        dbRow.Scenarios,
+		Status:           dbRow.EStatus,
+	}
+
+	return decisionRecord{
+		ID:         dbRow.ID,
+		UserID:     dbRow.UserID,
+		ExportedAt: dbRow.ExportedAt.Time,
+		Evaluation: eval,
+	}, nil
 }
 
 func (h *Handler) createDecisionRecords(ctx context.Context, userID, reportID string, evaluationIDs []string, now time.Time) (evaluationQuota, error) {
-	tx, err := h.store.Pool().Begin(ctx)
-	if err != nil {
-		return evaluationQuota{}, err
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback(ctx)
-		}
-	}()
-
 	memo := map[string]interface{}{
 		"version":       "2.0",
 		"reportId":      reportID,
@@ -464,46 +398,52 @@ func (h *Handler) createDecisionRecords(ctx context.Context, userID, reportID st
 	}
 	memoBytes, err := json.Marshal(memo)
 	if err != nil {
-		_ = tx.Rollback(ctx)
-		return evaluationQuota{}, err
-	}
-
-	insertQuery := `
-		INSERT INTO v2_decision_records (id, evaluation_id, user_id, memo_content)
-		VALUES ($1, $2, $3, $4)
-	`
-	for _, evalID := range evaluationIDs {
-		_, err = tx.Exec(ctx, insertQuery, uuid.New().String(), evalID, userID, memoBytes)
-		if err != nil {
-			return evaluationQuota{}, err
-		}
-	}
-
-	_, err = tx.Exec(ctx, `
-		UPDATE v2_evaluations
-		SET status = 'EXPORTED'
-		WHERE id = ANY($1::text[])
-	`, evaluationIDs)
-	if err != nil {
 		return evaluationQuota{}, err
 	}
 
 	var updated evaluationQuota
-	err = tx.QueryRow(ctx, `
-		UPDATE v2_evaluation_quotas
-		SET used_this_period = used_this_period + 1
-		WHERE user_id = $1
-		RETURNING tier, annual_limit, used_this_period, period_end_date
-	`, userID).Scan(&updated.Tier, &updated.AnnualLimit, &updated.UsedThisPeriod, &updated.PeriodEnd)
+	err = h.store.WithTx(ctx, func(q *queries.Queries) error {
+		// Create decision records for each evaluation
+		for _, evalID := range evaluationIDs {
+			_, err := q.CreateDecisionRecord(ctx, queries.CreateDecisionRecordParams{
+				ID:           uuid.New().String(),
+				EvaluationID: evalID,
+				UserID:       userID,
+				MemoContent:  memoBytes,
+				PdfUrl:       pgtype.Text{Valid: false}, // No PDF URL yet
+			})
+			if err != nil {
+				return err
+			}
+		}
+
+		// Update all evaluations to EXPORTED status
+		err := q.UpdateV2EvaluationsStatusBulk(ctx, queries.UpdateV2EvaluationsStatusBulkParams{
+			Column1: evaluationIDs,
+			Column2: "EXPORTED",
+		})
+		if err != nil {
+			return err
+		}
+
+		// Increment quota usage and get updated values
+		dbQuota, err := q.IncrementV2EvaluationQuotaUsageReturning(ctx, userID)
+		if err != nil {
+			return err
+		}
+
+		updated = evaluationQuota{
+			Tier:           dbQuota.Tier,
+			AnnualLimit:    int(dbQuota.AnnualLimit),
+			UsedThisPeriod: int(dbQuota.UsedThisPeriod),
+			PeriodEnd:      dbQuota.PeriodEndDate.Time,
+		}
+		return nil
+	})
+
 	if err != nil {
 		return evaluationQuota{}, err
 	}
-
-	if err = tx.Commit(ctx); err != nil {
-		return evaluationQuota{}, err
-	}
-	committed = true
-
 	return updated, nil
 }
 

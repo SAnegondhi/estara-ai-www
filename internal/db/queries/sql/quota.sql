@@ -26,6 +26,14 @@ SET used_this_period = used_this_period + 1,
     updated_at = NOW()
 WHERE user_id = $1;
 
+-- name: IncrementV2EvaluationQuotaUsageReturning :one
+-- Increment quota usage and return updated values (for batch exports)
+UPDATE v2_evaluation_quotas
+SET used_this_period = used_this_period + 1,
+    updated_at = NOW()
+WHERE user_id = $1
+RETURNING tier::text, annual_limit, used_this_period, period_end_date;
+
 -- name: ResetV2EvaluationQuotaUsage :exec
 UPDATE v2_evaluation_quotas
 SET used_this_period = 0,

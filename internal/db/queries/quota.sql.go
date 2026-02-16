@@ -93,6 +93,34 @@ func (q *Queries) IncrementV2EvaluationQuotaUsage(ctx context.Context, userID st
 	return err
 }
 
+const IncrementV2EvaluationQuotaUsageReturning = `-- name: IncrementV2EvaluationQuotaUsageReturning :one
+UPDATE v2_evaluation_quotas
+SET used_this_period = used_this_period + 1,
+    updated_at = NOW()
+WHERE user_id = $1
+RETURNING tier::text, annual_limit, used_this_period, period_end_date
+`
+
+type IncrementV2EvaluationQuotaUsageReturningRow struct {
+	Tier           string           `json:"tier"`
+	AnnualLimit    int32            `json:"annual_limit"`
+	UsedThisPeriod int32            `json:"used_this_period"`
+	PeriodEndDate  pgtype.Timestamp `json:"period_end_date"`
+}
+
+// Increment quota usage and return updated values (for batch exports)
+func (q *Queries) IncrementV2EvaluationQuotaUsageReturning(ctx context.Context, userID string) (IncrementV2EvaluationQuotaUsageReturningRow, error) {
+	row := q.db.QueryRow(ctx, IncrementV2EvaluationQuotaUsageReturning, userID)
+	var i IncrementV2EvaluationQuotaUsageReturningRow
+	err := row.Scan(
+		&i.Tier,
+		&i.AnnualLimit,
+		&i.UsedThisPeriod,
+		&i.PeriodEndDate,
+	)
+	return i, err
+}
+
 const ResetV2EvaluationQuotaUsage = `-- name: ResetV2EvaluationQuotaUsage :exec
 UPDATE v2_evaluation_quotas
 SET used_this_period = 0,
