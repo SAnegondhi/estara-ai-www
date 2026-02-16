@@ -56,6 +56,30 @@ type CityMarketCache struct {
 	AiEstimatedAt         pgtype.Timestamptz `json:"ai_estimated_at"`
 }
 
+type CityState struct {
+	ID           string           `json:"id"`
+	ExternalID   string           `json:"external_id"`
+	City         string           `json:"city"`
+	CityAscii    string           `json:"city_ascii"`
+	CityLower    string           `json:"city_lower"`
+	StateID      string           `json:"state_id"`
+	StateName    string           `json:"state_name"`
+	CountyFips   string           `json:"county_fips"`
+	CountyName   string           `json:"county_name"`
+	Latitude     float64          `json:"latitude"`
+	Longitude    float64          `json:"longitude"`
+	Population   int32            `json:"population"`
+	Density      float64          `json:"density"`
+	Source       pgtype.Text      `json:"source"`
+	Military     bool             `json:"military"`
+	Incorporated bool             `json:"incorporated"`
+	Timezone     pgtype.Text      `json:"timezone"`
+	Ranking      int32            `json:"ranking"`
+	ZipsRaw      pgtype.Text      `json:"zips_raw"`
+	CreatedAt    pgtype.Timestamp `json:"created_at"`
+	UpdatedAt    pgtype.Timestamp `json:"updated_at"`
+}
+
 type CityTimeSeries struct {
 	ID            int32            `json:"id"`
 	CityRegionID  int32            `json:"city_region_id"`
