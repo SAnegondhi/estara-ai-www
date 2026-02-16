@@ -98,6 +98,10 @@ type Querier interface {
 	ListMetrosByState(ctx context.Context, stateName pgtype.Text) ([]ListMetrosByStateRow, error)
 	// Search cities by name for autocomplete
 	SearchCities(ctx context.Context, arg SearchCitiesParams) ([]SearchCitiesRow, error)
+	// Search cities by prefix, ordered by population
+	SearchLocationsByCity(ctx context.Context, arg SearchLocationsByCityParams) ([]SearchLocationsByCityRow, error)
+	// Search cities by prefix and state filter, ordered by population
+	SearchLocationsByCityAndState(ctx context.Context, arg SearchLocationsByCityAndStateParams) ([]SearchLocationsByCityAndStateRow, error)
 	// Search metros by name pattern
 	SearchMetros(ctx context.Context, arg SearchMetrosParams) ([]SearchMetrosRow, error)
 	// Upsert city Redfin data (keyed by city_name + state since Redfin has no region IDs)

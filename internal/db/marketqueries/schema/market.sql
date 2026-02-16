@@ -186,3 +186,36 @@ CREATE TABLE county_time_series (
 
 CREATE INDEX county_time_series_state_code_idx ON county_time_series(state_code);
 CREATE INDEX county_time_series_metro_region_id_idx ON county_time_series(metro_region_id);
+
+-- ============================================================================
+-- CITY STATES (SimpleMaps ~31K US cities)
+-- Used for location autocomplete in property search
+-- ============================================================================
+CREATE TABLE city_states (
+    id TEXT PRIMARY KEY,
+    external_id TEXT NOT NULL,
+    city TEXT NOT NULL,
+    city_ascii TEXT NOT NULL,
+    city_lower TEXT NOT NULL,               -- Lowercase city name for case-insensitive search
+    state_id TEXT NOT NULL,                 -- 2-letter state code (e.g., 'CA', 'NY')
+    state_name TEXT NOT NULL,               -- Full state name (e.g., 'California', 'New York')
+    county_fips TEXT NOT NULL,
+    county_name TEXT NOT NULL,
+    latitude DOUBLE PRECISION NOT NULL,
+    longitude DOUBLE PRECISION NOT NULL,
+    population INTEGER NOT NULL DEFAULT 0,
+    density DOUBLE PRECISION NOT NULL DEFAULT 0,
+    source TEXT,
+    military BOOLEAN NOT NULL DEFAULT false,
+    incorporated BOOLEAN NOT NULL DEFAULT true,
+    timezone TEXT,
+    ranking INTEGER NOT NULL DEFAULT 0,
+    zips_raw TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE INDEX city_states_city_lower_idx ON city_states(city_lower);
+CREATE INDEX city_states_state_id_idx ON city_states(state_id);
+CREATE INDEX city_states_population_idx ON city_states(population DESC);
+CREATE INDEX city_states_city_lower_state_id_idx ON city_states(city_lower, state_id);

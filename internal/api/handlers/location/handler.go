@@ -10,9 +10,11 @@ import (
 
 	"github.com/estara-ai/www/internal/config"
 	db "github.com/estara-ai/www/internal/db"
+	"github.com/estara-ai/www/internal/db/marketqueries"
 	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 	"github.com/estara-ai/www/pkg/httputil"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // Handler handles location-related HTTP requests
@@ -184,71 +186,56 @@ func (h *Handler) searchLocations(ctx context.Context, query string, limit int) 
 		return h.searchStatesOnly(queryLower)
 	}
 
-	// Build query based on whether state filter is provided
-	var sqlQuery string
-	var args []interface{}
-
+	// Execute query based on whether state filter is provided
 	if stateFilter != "" {
 		// User typed "City, State" format - filter by both city prefix AND state
-		sqlQuery = `
-			SELECT
-				id,
-				city,
-				state_id,
-				state_name,
-				population
-			FROM city_states
-			WHERE city_lower LIKE $1 || '%' AND state_id = $2
-			ORDER BY population DESC, city
-			LIMIT $3
-		`
-		args = []interface{}{cityPart, stateFilter, limit}
-	} else {
-		// User typed city only - prefix search on city
-		sqlQuery = `
-			SELECT
-				id,
-				city,
-				state_id,
-				state_name,
-				population
-			FROM city_states
-			WHERE city_lower LIKE $1 || '%'
-			ORDER BY population DESC, city
-			LIMIT $2
-		`
-		args = []interface{}{cityPart, limit}
-	}
-
-	rows, err := h.store.MarketPool().Query(ctx, sqlQuery, args...)
-	if err != nil {
-		h.logger.Error("city_states query failed", "error", err, "query", query)
-		// Fall back to state-only suggestions on error
-		return h.searchStatesOnly(queryLower)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var id, city, stateId, stateName string
-		var population int
-		if err := rows.Scan(&id, &city, &stateId, &stateName, &population); err != nil {
-			h.logger.Warn("failed to scan city row", "error", err)
-			continue
+		rows, err := h.store.MQ().SearchLocationsByCityAndState(ctx, marketqueries.SearchLocationsByCityAndStateParams{
+			Column1: pgtype.Text{String: cityPart, Valid: true},
+			StateID: stateFilter,
+			Limit:   int32(limit),
+		})
+		if err != nil {
+			h.logger.Error("city_states query failed", "error", err, "query", query)
+			// Fall back to state-only suggestions on error
+			return h.searchStatesOnly(queryLower)
 		}
 
-		suggestions = append(suggestions, LocationSuggestion{
-			ID:            "city:" + id,
-			Display:       city + ", " + stateId,
-			Canonical:     city + ", " + stateId,
-			Type:          "city",
-			State:         stateId,
-			DataAvailable: true,
-			Population:    &population,
+		for _, row := range rows {
+			population := int(row.Population)
+			suggestions = append(suggestions, LocationSuggestion{
+				ID:            "city:" + row.ID,
+				Display:       row.City + ", " + row.StateID,
+				Canonical:     row.City + ", " + row.StateID,
+				Type:          "city",
+				State:         row.StateID,
+				DataAvailable: true,
+				Population:    &population,
+			})
+		}
+	} else {
+		// User typed city only - prefix search on city
+		rows, err := h.store.MQ().SearchLocationsByCity(ctx, marketqueries.SearchLocationsByCityParams{
+			Column1: pgtype.Text{String: cityPart, Valid: true},
+			Limit:   int32(limit),
 		})
-	}
+		if err != nil {
+			h.logger.Error("city_states query failed", "error", err, "query", query)
+			// Fall back to state-only suggestions on error
+			return h.searchStatesOnly(queryLower)
+		}
 
-	if err := rows.Err(); err != nil {
-		h.logger.Warn("error iterating city rows", "error", err)
+		for _, row := range rows {
+			population := int(row.Population)
+			suggestions = append(suggestions, LocationSuggestion{
+				ID:            "city:" + row.ID,
+				Display:       row.City + ", " + row.StateID,
+				Canonical:     row.City + ", " + row.StateID,
+				Type:          "city",
+				State:         row.StateID,
+				DataAvailable: true,
+				Population:    &population,
+			})
+		}
 	}
 
 	// If we have city results, return them
