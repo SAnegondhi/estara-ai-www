@@ -18,6 +18,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
@@ -2011,26 +2012,12 @@ func (h *Handler) GetInvestmentPlanHistory(w http.ResponseWriter, r *http.Reques
 	// - feature = 'investment_planning'
 	// - supersededBy = null (only current versions)
 	// - order by lastAccessedAt desc
-	query := `
-		SELECT
-			id,
-			key,
-			"userId",
-			location,
-			metadata,
-			"metricsData",
-			"investorProfile",
-			"lastAccessedAt"
-		FROM analysis_cache
-		WHERE "userId" = $1
-			AND feature = 'investment_planning'
-			AND "supersededBy" IS NULL
-			AND ($4 = '' OR location ILIKE '%' || $4 || '%')
-		ORDER BY "lastAccessedAt" DESC
-		LIMIT $2 OFFSET $3
-	`
-
-	rows, err := h.store.Pool().Query(ctx, query, user.UserID, limit, offset, search)
+	dbPlans, err := h.store.Q().ListInvestmentPlanHistory(ctx, queries.ListInvestmentPlanHistoryParams{
+		UserId: user.UserID,
+		Search: pgtype.Text{String: search, Valid: search != ""},
+		Off:    int32(offset),
+		Lim:    int32(limit),
+	})
 	if err != nil {
 		h.logger.Error("failed to get investment plan history", "error", err)
 		// Return empty on error
@@ -2051,29 +2038,31 @@ func (h *Handler) GetInvestmentPlanHistory(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
-	defer rows.Close()
 
-	plans := make([]InvestmentPlanHistoryItem, 0)
-	for rows.Next() {
+	plans := make([]InvestmentPlanHistoryItem, 0, len(dbPlans))
+	for _, dbPlan := range dbPlans {
 		var item InvestmentPlanHistoryItem
-		var location string
-		var metadataData, metricsData, investorProfileData *string
-		var lastAccessedAt time.Time
+		item.ID = dbPlan.ID
+		item.ResponseKey = dbPlan.Key
+		item.UserID = dbPlan.UserId
+		location := dbPlan.Location
 
-		err := rows.Scan(
-			&item.ID,
-			&item.ResponseKey,
-			&item.UserID,
-			&location,
-			&metadataData,
-			&metricsData,
-			&investorProfileData,
-			&lastAccessedAt,
-		)
-		if err != nil {
-			h.logger.Warn("failed to scan plan history item", "error", err)
-			continue
+		// Convert JSONB []byte to *string
+		var metadataData, metricsData, investorProfileData *string
+		if len(dbPlan.Metadata) > 0 {
+			str := string(dbPlan.Metadata)
+			metadataData = &str
 		}
+		if len(dbPlan.MetricsData) > 0 {
+			str := string(dbPlan.MetricsData)
+			metricsData = &str
+		}
+		if len(dbPlan.InvestorProfile) > 0 {
+			str := string(dbPlan.InvestorProfile)
+			investorProfileData = &str
+		}
+
+		lastAccessedAt := dbPlan.LastAccessedAt.Time
 
 		item.Status = "COMPLETED"
 		item.CreatedAt = lastAccessedAt.Format(time.RFC3339)
@@ -2157,15 +2146,11 @@ func (h *Handler) GetInvestmentPlanHistory(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Get total count
-	var total int
-	_ = h.store.Pool().QueryRow(ctx, `
-		SELECT COUNT(*)
-		FROM analysis_cache
-		WHERE "userId" = $1
-			AND feature = 'investment_planning'
-			AND "supersededBy" IS NULL
-			AND ($2 = '' OR location ILIKE '%' || $2 || '%')
-	`, user.UserID, search).Scan(&total)
+	totalCount, _ := h.store.Q().CountInvestmentPlanHistory(ctx, queries.CountInvestmentPlanHistoryParams{
+		UserId: user.UserID,
+		Search: pgtype.Text{String: search, Valid: search != ""},
+	})
+	total := int(totalCount)
 
 	totalPages := total / limit
 	if total%limit > 0 {
@@ -2808,26 +2793,12 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 	offset := (page - 1) * limit
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
 
-	query := `
-		SELECT
-			id,
-			key,
-			location,
-			content,
-			"metricsData",
-			"narrativeData",
-			"lastAccessedAt",
-			COALESCE("fullReport", '') AS "fullReport"
-		FROM analysis_cache
-		WHERE "userId" = $1
-			AND feature IN ('dual_agent_market_analysis', 'market_analysis_v2')
-			AND "supersededBy" IS NULL
-			AND ($4 = '' OR location ILIKE '%' || $4 || '%')
-		ORDER BY "lastAccessedAt" DESC
-		LIMIT $2 OFFSET $3
-	`
-
-	rows, err := h.store.Pool().Query(ctx, query, user.UserID, limit, offset, search)
+	dbAnalyses, err := h.store.Q().ListMarketAnalysisHistory(ctx, queries.ListMarketAnalysisHistoryParams{
+		UserId: user.UserID,
+		Search: pgtype.Text{String: search, Valid: search != ""},
+		Off:    int32(offset),
+		Lim:    int32(limit),
+	})
 	if err != nil {
 		h.logger.Error("failed to get analysis history", "error", err)
 		httputil.JSON(w, http.StatusOK, map[string]interface{}{
@@ -2839,33 +2810,23 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer rows.Close()
 
-	analyses := make([]AnalysisHistoryItem, 0)
-	for rows.Next() {
-		var item AnalysisHistoryItem
-		var content string
-		var metricsData, narrativeData *string
-		var lastAccessedAt time.Time
-		var fullReport string
-
-		err := rows.Scan(
-			&item.ID,
-			&item.CacheKey,
-			&item.Location,
-			&content,
-			&metricsData,
-			&narrativeData,
-			&lastAccessedAt,
-			&fullReport,
-		)
-		if err != nil {
-			h.logger.Warn("failed to scan analysis history item", "error", err)
-			continue
+	analyses := make([]AnalysisHistoryItem, 0, len(dbAnalyses))
+	for _, dbAnalysis := range dbAnalyses {
+		item := AnalysisHistoryItem{
+			ID:        dbAnalysis.ID,
+			CacheKey:  dbAnalysis.Key,
+			Location:  dbAnalysis.Location,
+			Status:    "COMPLETED",
+			CreatedAt: dbAnalysis.LastAccessedAt.Time.Format(time.RFC3339),
 		}
 
-		item.Status = "COMPLETED"
-		item.CreatedAt = lastAccessedAt.Format(time.RFC3339)
+		// Convert JSONB []byte to string
+		content := string(dbAnalysis.Content)
+		fullReport := ""
+		if dbAnalysis.FullReport.Valid {
+			fullReport = dbAnalysis.FullReport.String
+		}
 
 		// V2 reports store markdown in fullReport; V1 stores it in content
 		reportContent := fullReport
@@ -2875,16 +2836,18 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 		item.HasReport = reportContent != ""
 		item.Preview = extractExecutiveSummary(reportContent)
 
-		if metricsData != nil && *metricsData != "" {
+		// Convert JSONB metricsData
+		if len(dbAnalysis.MetricsData) > 0 {
 			var metrics map[string]interface{}
-			if json.Unmarshal([]byte(*metricsData), &metrics) == nil {
+			if json.Unmarshal(dbAnalysis.MetricsData, &metrics) == nil {
 				item.Metrics = metrics
 			}
 		}
 
-		if narrativeData != nil && *narrativeData != "" {
+		// Convert JSONB narrativeData
+		if len(dbAnalysis.NarrativeData) > 0 {
 			var narrative map[string]interface{}
-			if json.Unmarshal([]byte(*narrativeData), &narrative) == nil {
+			if json.Unmarshal(dbAnalysis.NarrativeData, &narrative) == nil {
 				item.Synthesis = narrative
 			}
 		}
@@ -2893,15 +2856,11 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get total count
-	var total int
-	_ = h.store.Pool().QueryRow(ctx, `
-		SELECT COUNT(*)
-		FROM analysis_cache
-		WHERE "userId" = $1
-			AND feature IN ('dual_agent_market_analysis', 'market_analysis_v2')
-			AND "supersededBy" IS NULL
-			AND ($2 = '' OR location ILIKE '%' || $2 || '%')
-	`, user.UserID, search).Scan(&total)
+	totalCount, _ := h.store.Q().CountMarketAnalysisHistory(ctx, queries.CountMarketAnalysisHistoryParams{
+		UserId: user.UserID,
+		Search: pgtype.Text{String: search, Valid: search != ""},
+	})
+	total := int(totalCount)
 
 	totalPages := total / limit
 	if total%limit > 0 {
@@ -3000,37 +2959,32 @@ func (h *Handler) GetAnalysisContext(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if we have a cached analysis for this location
-	var cachedContent, cachedMetrics, cachedNarrative *string
-	var cachedAt time.Time
-	err := h.store.Pool().QueryRow(ctx, `
-		SELECT content, "metricsData", "narrativeData", "lastAccessedAt"
-		FROM analysis_cache
-		WHERE "userId" = $1
-			AND feature = 'dual_agent_market_analysis'
-			AND location ILIKE $2
-			AND "supersededBy" IS NULL
-		ORDER BY "lastAccessedAt" DESC
-		LIMIT 1
-	`, user.UserID, location).Scan(&cachedContent, &cachedMetrics, &cachedNarrative, &cachedAt)
+	dbAnalysis, err := h.store.Q().GetLatestMarketAnalysisByLocation(ctx, queries.GetLatestMarketAnalysisByLocationParams{
+		UserId:   user.UserID,
+		Location: location,
+	})
 
 	contextData := map[string]interface{}{
-		"location":   location,
+		"location":    location,
 		"hasAnalysis": false,
 	}
 
 	if err == nil {
 		contextData["hasAnalysis"] = true
-		contextData["lastAnalyzedAt"] = cachedAt.Format(time.RFC3339)
+		contextData["lastAnalyzedAt"] = dbAnalysis.LastAccessedAt.Time.Format(time.RFC3339)
 
-		if cachedMetrics != nil && *cachedMetrics != "" {
+		// Convert JSONB metricsData
+		if len(dbAnalysis.MetricsData) > 0 {
 			var metrics map[string]interface{}
-			if json.Unmarshal([]byte(*cachedMetrics), &metrics) == nil {
+			if json.Unmarshal(dbAnalysis.MetricsData, &metrics) == nil {
 				contextData["metrics"] = metrics
 			}
 		}
-		if cachedNarrative != nil && *cachedNarrative != "" {
+
+		// Convert JSONB narrativeData
+		if len(dbAnalysis.NarrativeData) > 0 {
 			var narrative map[string]interface{}
-			if json.Unmarshal([]byte(*cachedNarrative), &narrative) == nil {
+			if json.Unmarshal(dbAnalysis.NarrativeData, &narrative) == nil {
 				contextData["synthesis"] = narrative
 			}
 		}
