@@ -35,8 +35,7 @@ func (h *Handler) GenerateMarketAnalysisPDF(w http.ResponseWriter, r *http.Reque
 
 	var pdfData pdf.MarketAnalysisPDFData
 	if req.RequestID != "" {
-		q := queries.New(h.db.Main)
-		cache, err := q.GetCacheByUserAndKey(ctx, queries.GetCacheByUserAndKeyParams{
+		cache, err := h.store.Q().GetCacheByUserAndKey(ctx, queries.GetCacheByUserAndKeyParams{
 			UserId: claims.UserID,
 			Key:    req.RequestID,
 		})

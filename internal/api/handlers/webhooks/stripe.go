@@ -7,7 +7,7 @@ import (
 	"net/http"
 
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	db "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/services/billing"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -20,9 +20,9 @@ type StripeHandler struct {
 }
 
 // NewStripeHandler creates a new Stripe webhook handler
-func NewStripeHandler(db *postgres.DB, cfg *config.Config) *StripeHandler {
+func NewStripeHandler(store *db.Store, cfg *config.Config) *StripeHandler {
 	return &StripeHandler{
-		webhookService: billing.NewWebhookService(db, cfg),
+		webhookService: billing.NewWebhookService(store, cfg),
 		cfg:            cfg,
 		logger:         slog.Default().With("component", "stripe_webhook_handler"),
 	}

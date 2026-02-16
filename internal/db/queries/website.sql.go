@@ -244,6 +244,19 @@ func (q *Queries) DeleteExpiredGuestSessions(ctx context.Context) error {
 	return err
 }
 
+const DeleteExpiredGuestSessionsRows = `-- name: DeleteExpiredGuestSessionsRows :execrows
+DELETE FROM guest_sessions
+WHERE "expiresAt" < NOW()
+`
+
+func (q *Queries) DeleteExpiredGuestSessionsRows(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, DeleteExpiredGuestSessionsRows)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const GetContactSubmissionByID = `-- name: GetContactSubmissionByID :one
 
 

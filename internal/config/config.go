@@ -29,6 +29,14 @@ type Config struct {
 	Security SecurityConfig
 	IAP      IAPConfig
 	WebAuthn WebAuthnConfig
+	OAuth    OAuthConfig
+}
+
+// OAuthConfig holds social login provider configuration (ADR-082)
+type OAuthConfig struct {
+	GoogleClientID string `mapstructure:"GOOGLE_CLIENT_ID"`
+	AzureClientID  string `mapstructure:"AZURE_CLIENT_ID"`
+	AppleClientID  string `mapstructure:"APPLE_CLIENT_ID"`
 }
 
 // WebAuthnConfig holds WebAuthn/Passkey configuration (ADR-081)
@@ -370,6 +378,13 @@ func Load() (*Config, error) {
 		AppleSharedSecret:        v.GetString("APPLE_IAP_SHARED_SECRET"),
 		GoogleServiceAccountJSON: v.GetString("GOOGLE_SERVICE_ACCOUNT_JSON"),
 		GooglePlayPackageName:    v.GetString("GOOGLE_PLAY_PACKAGE_NAME"),
+	}
+
+	// OAuth config (ADR-082)
+	cfg.OAuth = OAuthConfig{
+		GoogleClientID: v.GetString("GOOGLE_CLIENT_ID"),
+		AzureClientID:  v.GetString("AZURE_CLIENT_ID"),
+		AppleClientID:  v.GetString("APPLE_CLIENT_ID"),
 	}
 
 	// Validate required configuration

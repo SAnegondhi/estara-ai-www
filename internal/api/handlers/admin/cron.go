@@ -14,22 +14,27 @@ import (
 
 // CronJobResponse is a JSON-safe representation of a cron job config.
 type CronJobResponse struct {
-	ID                     string  `json:"id"`
-	Name                   string  `json:"name"`
-	Description            *string `json:"description"`
-	Schedule               string  `json:"schedule"`
-	Endpoint               string  `json:"endpoint"`
-	IsEnabled              bool    `json:"isEnabled"`
-	TimeoutMs              int32   `json:"timeoutMs"`
-	MaxConsecutiveFailures int32   `json:"maxConsecutiveFailures"`
-	ConsecutiveFailures    int32   `json:"consecutiveFailures"`
-	TotalRuns              int32   `json:"totalRuns"`
-	SuccessfulRuns         int32   `json:"successfulRuns"`
-	LastRunAt              *string `json:"lastRunAt"`
-	LastRunStatus          *string `json:"lastRunStatus"`
-	LastRunDurationMs      *int32  `json:"lastRunDurationMs"`
-	CreatedAt              string  `json:"createdAt"`
-	UpdatedAt              string  `json:"updatedAt"`
+	ID                  string  `json:"id"`
+	Name                string  `json:"name"`
+	Description         string  `json:"description"`
+	Schedule            string  `json:"schedule"`
+	Endpoint            string  `json:"endpoint"`
+	IsRequired          bool    `json:"isRequired"`
+	IsConfigured        bool    `json:"isConfigured"`
+	IsEnabled           bool    `json:"isEnabled"`
+	TimeoutMs           int32   `json:"timeoutMs"`
+	MaxFailures         int32   `json:"maxFailures"`
+	ConsecutiveFailures int32   `json:"consecutiveFailures"`
+	AlertOnFailure      bool    `json:"alertOnFailure"`
+	TotalRuns           int32   `json:"totalRuns"`
+	SuccessfulRuns      int32   `json:"successfulRuns"`
+	FailedRuns          int32   `json:"failedRuns"`
+	LastRun             *string `json:"lastRun"`
+	LastRunStatus       *string `json:"lastRunStatus"`
+	LastRunDuration     *int32  `json:"lastRunDuration"`
+	LastRunError        *string `json:"lastRunError"`
+	CreatedAt           string  `json:"createdAt"`
+	UpdatedAt           *string `json:"updatedAt"`
 }
 
 // CronJobRunResponse is a JSON-safe representation of a cron job run.
@@ -39,51 +44,60 @@ type CronJobRunResponse struct {
 	Status      string  `json:"status"`
 	StartedAt   string  `json:"startedAt"`
 	CompletedAt *string `json:"completedAt"`
-	DurationMs  *int32  `json:"durationMs"`
+	Duration    *int32  `json:"duration"`
 	Error       *string `json:"error"`
-	CreatedAt   string  `json:"createdAt"`
+	TriggeredBy *string `json:"triggeredBy"`
 }
 
 func cronJobToResponse(c queries.CronJobConfig) CronJobResponse {
 	resp := CronJobResponse{
-		ID:                     c.ID,
-		Name:                   c.Name,
-		Schedule:               c.Schedule,
-		Endpoint:               c.Endpoint,
-		IsEnabled:              c.IsEnabled,
-		TimeoutMs:              c.TimeoutMs,
-		MaxConsecutiveFailures: c.MaxConsecutiveFailures,
-		ConsecutiveFailures:    c.ConsecutiveFailures,
-		TotalRuns:              c.TotalRuns,
-		SuccessfulRuns:         c.SuccessfulRuns,
+		ID:                  c.ID,
+		Name:                c.Name,
+		Description:         c.Description,
+		Schedule:            c.Schedule,
+		Endpoint:            c.Endpoint,
+		IsRequired:          c.IsRequired,
+		IsConfigured:        c.IsConfigured,
+		IsEnabled:           c.IsEnabled,
+		TimeoutMs:           c.TimeoutMs,
+		MaxFailures:         c.MaxFailures,
+		ConsecutiveFailures: c.ConsecutiveFailures,
+		AlertOnFailure:      c.AlertOnFailure,
+		TotalRuns:           c.TotalRuns,
+		SuccessfulRuns:      c.SuccessfulRuns,
+		FailedRuns:          c.FailedRuns,
 	}
-	if c.Description.Valid {
-		resp.Description = &c.Description.String
+	if c.LastRun.Valid {
+		s := c.LastRun.Time.Format(time.RFC3339)
+		resp.LastRun = &s
 	}
-	if c.LastRunAt.Valid {
-		s := c.LastRunAt.Time.Format(time.RFC3339)
-		resp.LastRunAt = &s
+	if c.LastRunStatus != nil {
+		s := fmt.Sprintf("%v", c.LastRunStatus)
+		resp.LastRunStatus = &s
 	}
-	if c.LastRunStatus.Valid {
-		resp.LastRunStatus = &c.LastRunStatus.String
+	if c.LastRunDuration.Valid {
+		resp.LastRunDuration = &c.LastRunDuration.Int32
 	}
-	if c.LastRunDurationMs.Valid {
-		resp.LastRunDurationMs = &c.LastRunDurationMs.Int32
+	if c.LastRunError.Valid {
+		resp.LastRunError = &c.LastRunError.String
 	}
 	if c.CreatedAt.Valid {
 		resp.CreatedAt = c.CreatedAt.Time.Format(time.RFC3339)
 	}
 	if c.UpdatedAt.Valid {
-		resp.UpdatedAt = c.UpdatedAt.Time.Format(time.RFC3339)
+		s := c.UpdatedAt.Time.Format(time.RFC3339)
+		resp.UpdatedAt = &s
 	}
 	return resp
 }
 
 func cronRunToResponse(r queries.CronJobRun) CronJobRunResponse {
 	resp := CronJobRunResponse{
-		ID:     r.ID,
-		JobID:  r.JobId,
-		Status: r.Status,
+		ID:    r.ID,
+		JobID: r.CronJobId,
+	}
+	if r.Status != nil {
+		resp.Status = fmt.Sprintf("%v", r.Status)
 	}
 	if r.StartedAt.Valid {
 		resp.StartedAt = r.StartedAt.Time.Format(time.RFC3339)
@@ -92,14 +106,14 @@ func cronRunToResponse(r queries.CronJobRun) CronJobRunResponse {
 		s := r.CompletedAt.Time.Format(time.RFC3339)
 		resp.CompletedAt = &s
 	}
-	if r.DurationMs.Valid {
-		resp.DurationMs = &r.DurationMs.Int32
+	if r.Duration.Valid {
+		resp.Duration = &r.Duration.Int32
 	}
 	if r.Error.Valid {
 		resp.Error = &r.Error.String
 	}
-	if r.CreatedAt.Valid {
-		resp.CreatedAt = r.CreatedAt.Time.Format(time.RFC3339)
+	if r.TriggeredBy.Valid {
+		resp.TriggeredBy = &r.TriggeredBy.String
 	}
 	return resp
 }
@@ -107,7 +121,7 @@ func cronRunToResponse(r queries.CronJobRun) CronJobRunResponse {
 // ListCronJobs returns all cron job configurations.
 func (h *Handler) ListCronJobs(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 
 	configs, err := q.ListCronJobConfigs(ctx)
 	if err != nil {
@@ -143,12 +157,12 @@ func (h *Handler) GetCronJobRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := (page - 1) * pageSize
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 
 	runs, err := q.ListCronJobRuns(ctx, queries.ListCronJobRunsParams{
-		JobId:  jobID,
-		Limit:  int32(pageSize),
-		Offset: int32(offset),
+		CronJobId: jobID,
+		Limit:     int32(pageSize),
+		Offset:    int32(offset),
 	})
 	if err != nil {
 		h.logger.Error("failed to list cron job runs", "error", err, "job_id", jobID)
@@ -196,7 +210,7 @@ func (h *Handler) ToggleCronJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	config, err := q.ToggleCronJobConfig(ctx, queries.ToggleCronJobConfigParams{
 		ID:        jobID,
 		IsEnabled: req.Enabled,
@@ -223,7 +237,7 @@ func (h *Handler) TriggerCronJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	config, err := q.GetCronJobConfigByID(ctx, jobID)
 	if err != nil {
 		h.logger.Error("failed to get cron job config", "error", err, "job_id", jobID)

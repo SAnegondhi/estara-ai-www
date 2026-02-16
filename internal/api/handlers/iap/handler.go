@@ -7,7 +7,7 @@ import (
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	db "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/services/iap"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -19,8 +19,8 @@ type Handler struct {
 }
 
 // NewHandler creates a new IAP handler
-func NewHandler(ctx context.Context, db *postgres.DB, cfg *config.Config) *Handler {
-	service, _ := iap.NewService(ctx, db, cfg)
+func NewHandler(ctx context.Context, store *db.Store, cfg *config.Config) *Handler {
+	service, _ := iap.NewService(ctx, store, cfg)
 	return &Handler{
 		service: service,
 		logger:  slog.Default().With("component", "iap_handler"),

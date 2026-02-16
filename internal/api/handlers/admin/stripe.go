@@ -213,13 +213,7 @@ func (h *Handler) ListInvoices(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) WebhookStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT id, event_type, status, error_message, created_at
-		FROM billing_audit_logs
-		WHERE event_type IS NOT NULL
-		ORDER BY created_at DESC
-		LIMIT 50
-	`)
+	webhookRows, err := h.store.Q().ListWebhookEvents(ctx, 50)
 	if err != nil {
 		h.logger.Warn("failed to query webhook events", "error", err)
 		httputil.Success(w, map[string]any{
@@ -229,24 +223,22 @@ func (h *Handler) WebhookStatus(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer rows.Close()
 
-	var events []WebhookEventResponse
+	events := make([]WebhookEventResponse, 0, len(webhookRows))
 	var totalCount, failedCount int
-	for rows.Next() {
-		var e WebhookEventResponse
-		if err := rows.Scan(&e.ID, &e.EventType, &e.Status, &e.Error, &e.CreatedAt); err != nil {
-			h.logger.Warn("failed to scan webhook event", "error", err)
-			continue
+	for _, r := range webhookRows {
+		e := WebhookEventResponse{
+			ID:        r.ID,
+			EventType: r.EventType,
 		}
+		if r.CreatedAt.Valid {
+			e.CreatedAt = r.CreatedAt.Time.Format(time.RFC3339)
+		}
+		// ListWebhookEvents returns eventType and eventData but not status/error
+		// We'll mark all as processed since these are from billing_audit_logs
+		e.Status = "PROCESSED"
 		events = append(events, e)
 		totalCount++
-		if e.Status == "FAILED" || e.Status == "ERROR" {
-			failedCount++
-		}
-	}
-	if events == nil {
-		events = []WebhookEventResponse{}
 	}
 
 	var failureRate float64

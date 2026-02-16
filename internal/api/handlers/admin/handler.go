@@ -19,7 +19,7 @@ import (
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	dbstore "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 	billingService "github.com/estara-ai/www/internal/services/billing"
@@ -30,7 +30,7 @@ import (
 
 // Handler handles admin-related HTTP requests
 type Handler struct {
-	db        *postgres.DB
+	store     *dbstore.Store
 	redis     *redisClient.Client
 	cfg       *config.Config
 	auth      *middleware.AuthMiddleware
@@ -52,9 +52,9 @@ func (h *Handler) SetWhitelist(wl *whitelist.Service) {
 }
 
 // NewHandler creates a new admin handler
-func NewHandler(db *postgres.DB, redis *redisClient.Client, cfg *config.Config, auth *middleware.AuthMiddleware) *Handler {
+func NewHandler(store *dbstore.Store, redis *redisClient.Client, cfg *config.Config, auth *middleware.AuthMiddleware) *Handler {
 	return &Handler{
-		db:       db,
+		store:    store,
 		redis:    redis,
 		cfg:      cfg,
 		auth:     auth,
@@ -456,7 +456,24 @@ func (h *Handler) CacheStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get database pool stats
-	stats["database"] = h.db.AllStats()
+	dbStats := map[string]interface{}{}
+	if p := h.store.Pool(); p != nil {
+		s := p.Stat()
+		dbStats["main"] = map[string]interface{}{
+			"total_conns":   s.TotalConns(),
+			"idle_conns":    s.IdleConns(),
+			"acquired_conns": s.AcquiredConns(),
+		}
+	}
+	if p := h.store.MarketPool(); p != nil {
+		s := p.Stat()
+		dbStats["market"] = map[string]interface{}{
+			"total_conns":   s.TotalConns(),
+			"idle_conns":    s.IdleConns(),
+			"acquired_conns": s.AcquiredConns(),
+		}
+	}
+	stats["database"] = dbStats
 
 	// Get cache entry stats from PostgreSQL
 	cacheStats, err := h.getCacheStats(ctx)
@@ -659,7 +676,24 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Database pool stats
-	metrics["database"] = h.db.AllStats()
+	dbStats := map[string]interface{}{}
+	if p := h.store.Pool(); p != nil {
+		s := p.Stat()
+		dbStats["main"] = map[string]interface{}{
+			"total_conns":   s.TotalConns(),
+			"idle_conns":    s.IdleConns(),
+			"acquired_conns": s.AcquiredConns(),
+		}
+	}
+	if p := h.store.MarketPool(); p != nil {
+		s := p.Stat()
+		dbStats["market"] = map[string]interface{}{
+			"total_conns":   s.TotalConns(),
+			"idle_conns":    s.IdleConns(),
+			"acquired_conns": s.AcquiredConns(),
+		}
+	}
+	metrics["database"] = dbStats
 
 	// Redis stats
 	if h.redis != nil {
@@ -680,14 +714,21 @@ func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	details := make(map[string]interface{})
 
 	// Check database connections
-	dbHealth := h.db.Health(ctx)
 	dbDetails := make(map[string]string)
-	for name, err := range dbHealth {
-		if err != nil {
+	if p := h.store.Pool(); p != nil {
+		if err := p.Ping(ctx); err != nil {
 			status = "degraded"
-			dbDetails[name] = err.Error()
+			dbDetails["main"] = err.Error()
 		} else {
-			dbDetails[name] = "healthy"
+			dbDetails["main"] = "healthy"
+		}
+	}
+	if p := h.store.MarketPool(); p != nil {
+		if err := p.Ping(ctx); err != nil {
+			status = "degraded"
+			dbDetails["market"] = err.Error()
+		} else {
+			dbDetails["market"] = "healthy"
 		}
 	}
 	details["database"] = dbDetails
@@ -704,22 +745,22 @@ func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 
 	// Gather platform counts
 	counts := map[string]int64{}
-	countQueries := map[string]string{
-		"users":              `SELECT COUNT(*) FROM users`,
-		"activeSubscriptions": `SELECT COUNT(*) FROM subscriptions WHERE status = 'ACTIVE'`,
-		"vendors":            `SELECT COUNT(*) FROM vendor_configs`,
-		"cronJobs":           `SELECT COUNT(*) FROM cron_job_configs`,
+	q := h.store.Q()
+	if c, err := q.CountUsers(ctx); err == nil {
+		counts["users"] = c
 	}
-	for key, q := range countQueries {
-		var c int64
-		if err := h.db.Main.QueryRow(ctx, q).Scan(&c); err == nil {
-			counts[key] = c
-		}
+	if c, err := q.CountActiveSubscriptions(ctx); err == nil {
+		counts["activeSubscriptions"] = c
+	}
+	if c, err := q.CountVendorConfigs(ctx); err == nil {
+		counts["vendors"] = c
+	}
+	if c, err := q.CountCronJobConfigs(ctx); err == nil {
+		counts["cronJobs"] = c
 	}
 	// Market data cities from market DB
-	if h.db.Market != nil {
-		var c int64
-		if err := h.db.Market.QueryRow(ctx, `SELECT COUNT(*) FROM city_market_cache`).Scan(&c); err == nil {
+	if mq := h.store.MQ(); mq != nil {
+		if c, err := mq.GetCityCount(ctx); err == nil {
 			counts["marketDataCities"] = c
 		}
 	}
@@ -1076,8 +1117,8 @@ func (h *Handler) logAdminAudit(ctx context.Context, r *http.Request, action, re
 		detailsJSON, _ = json.Marshal(details)
 	}
 
-	q := queries.New(h.db.Main)
-	_, err := q.CreateAdminAuditLog(ctx, queries.CreateAdminAuditLogParams{
+	q := h.store.Q()
+	err := q.CreateAdminAuditLog(ctx, queries.CreateAdminAuditLogParams{
 		ID:         id,
 		AdminId:    adminID,
 		AdminEmail: adminEmail,
@@ -1097,140 +1138,137 @@ func (h *Handler) logAdminAudit(ctx context.Context, r *http.Request, action, re
 // Database Helper Methods
 // ===============================
 
+// mapQueryUserToLocal converts a sqlc-generated queries.User to the local admin User type.
+func mapQueryUserToLocal(qu queries.User) User {
+	u := User{
+		ID:    qu.ID,
+		Email: qu.Email,
+		Role:  qu.Role,
+	}
+	if qu.FirstName.Valid {
+		u.FirstName = &qu.FirstName.String
+	}
+	if qu.LastName.Valid {
+		u.LastName = &qu.LastName.String
+	}
+	if qu.SubscriptionTier.Valid {
+		u.SubscriptionTier = &qu.SubscriptionTier.String
+	}
+	if qu.StripeCustomerId.Valid {
+		u.StripeCustomerID = &qu.StripeCustomerId.String
+	}
+	if qu.SuspendedAt.Valid {
+		u.SuspendedAt = &qu.SuspendedAt.Time
+	}
+	if qu.CreatedAt.Valid {
+		u.CreatedAt = qu.CreatedAt.Time
+	}
+	if qu.UpdatedAt.Valid {
+		u.UpdatedAt = qu.UpdatedAt.Time
+	}
+	return u
+}
+
+// pgtextFromPtr converts a *string to pgtype.Text for sqlc narg parameters.
+func pgtextFromPtr(s *string) pgtype.Text {
+	if s == nil {
+		return pgtype.Text{Valid: false}
+	}
+	return pgtype.Text{String: *s, Valid: true}
+}
+
+// pgtextFromString converts a non-empty string to a valid pgtype.Text, or invalid if empty.
+func pgtextFromString(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{Valid: false}
+	}
+	return pgtype.Text{String: s, Valid: true}
+}
+
 func (h *Handler) listAllUsers(ctx context.Context, limit, offset int) ([]User, int64, error) {
-	// Get total count
-	var total int64
-	err := h.db.Main.QueryRow(ctx, `SELECT COUNT(*) FROM users`).Scan(&total)
+	q := h.store.Q()
+
+	total, err := q.CountUsers(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Get users with pagination
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT id, email, "firstName", "lastName", role::text, "subscriptionTier",
-		       "stripeCustomerId", "suspendedAt", "createdAt", "updatedAt"
-		FROM users
-		ORDER BY "createdAt" DESC
-		LIMIT $1 OFFSET $2
-	`, limit, offset)
+	rows, err := q.ListUsers(ctx, queries.ListUsersParams{
+		Limit:  int32(limit),
+		Offset: int32(offset),
+	})
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
 
-	var users []User
-	for rows.Next() {
-		var u User
-		err := rows.Scan(
-			&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Role,
-			&u.SubscriptionTier, &u.StripeCustomerID, &u.SuspendedAt,
-			&u.CreatedAt, &u.UpdatedAt,
-		)
-		if err != nil {
-			return nil, 0, err
-		}
-		users = append(users, u)
+	users := make([]User, 0, len(rows))
+	for _, qu := range rows {
+		users = append(users, mapQueryUserToLocal(qu))
 	}
 
 	return users, total, nil
 }
 
 func (h *Handler) searchUsersByEmail(ctx context.Context, search string, limit, offset int) ([]User, int64, error) {
+	q := h.store.Q()
 	searchPattern := "%" + strings.ToLower(search) + "%"
 
-	// Get total count
-	var total int64
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT COUNT(*) FROM users WHERE LOWER(email) LIKE $1
-	`, searchPattern).Scan(&total)
+	total, err := q.CountSearchUsersByEmail(ctx, searchPattern)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Get users with pagination
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT id, email, "firstName", "lastName", role::text, "subscriptionTier",
-		       "stripeCustomerId", "suspendedAt", "createdAt", "updatedAt"
-		FROM users
-		WHERE LOWER(email) LIKE $1
-		ORDER BY "createdAt" DESC
-		LIMIT $2 OFFSET $3
-	`, searchPattern, limit, offset)
+	rows, err := q.SearchUsersByEmail(ctx, queries.SearchUsersByEmailParams{
+		Column1: pgtype.Text{String: search, Valid: true},
+		Limit:   int32(limit),
+		Offset:  int32(offset),
+	})
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
 
-	var users []User
-	for rows.Next() {
-		var u User
-		err := rows.Scan(
-			&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Role,
-			&u.SubscriptionTier, &u.StripeCustomerID, &u.SuspendedAt,
-			&u.CreatedAt, &u.UpdatedAt,
-		)
-		if err != nil {
-			return nil, 0, err
-		}
-		users = append(users, u)
+	users := make([]User, 0, len(rows))
+	for _, qu := range rows {
+		users = append(users, mapQueryUserToLocal(qu))
 	}
 
 	return users, total, nil
 }
 
 func (h *Handler) getUserByID(ctx context.Context, id string) (*User, error) {
-	var u User
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT id, email, "firstName", "lastName", role::text, "subscriptionTier",
-		       "stripeCustomerId", "suspendedAt", "createdAt", "updatedAt"
-		FROM users
-		WHERE id = $1
-	`, id).Scan(
-		&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.Role,
-		&u.SubscriptionTier, &u.StripeCustomerID, &u.SuspendedAt,
-		&u.CreatedAt, &u.UpdatedAt,
-	)
+	qu, err := h.store.Q().GetUserByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	u := mapQueryUserToLocal(qu)
 	return &u, nil
 }
 
 func (h *Handler) updateUserProfile(ctx context.Context, id string, req *UpdateUserRequest) error {
-	_, err := h.db.Main.Exec(ctx, `
-		UPDATE users SET
-			"firstName" = COALESCE($2, "firstName"),
-			"lastName" = COALESCE($3, "lastName"),
-			email = COALESCE($4, email),
-			role = COALESCE($5::text::"UserRole", role),
-			"subscriptionTier" = COALESCE($6, "subscriptionTier"),
-			"updatedAt" = NOW()
-		WHERE id = $1
-	`, id, req.FirstName, req.LastName, req.Email, req.Role, req.SubscriptionTier)
-	return err
+	return h.store.Q().AdminUpdateUserProfile(ctx, queries.AdminUpdateUserProfileParams{
+		ID:               id,
+		FirstName:        pgtextFromPtr(req.FirstName),
+		LastName:         pgtextFromPtr(req.LastName),
+		Email:            pgtextFromPtr(req.Email),
+		Role:             pgtextFromPtr(req.Role),
+		SubscriptionTier: pgtextFromPtr(req.SubscriptionTier),
+	})
 }
 
 func (h *Handler) getUserStats(ctx context.Context) (*UserStats, error) {
-	var stats UserStats
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT
-			COUNT(*) as total_users,
-			COUNT(*) FILTER (WHERE role::text IN ('ADMIN','SUPER_ADMIN')) as admin_count,
-			COUNT(*) FILTER (WHERE role::text = 'USER') as user_count,
-			COUNT(*) FILTER (WHERE "subscriptionTier" = 'free' OR "subscriptionTier" IS NULL) as free_count,
-			COUNT(*) FILTER (WHERE "subscriptionTier" NOT IN ('free') AND "subscriptionTier" IS NOT NULL) as pro_count,
-			0 as enterprise_count,
-			COUNT(*) FILTER (WHERE "updatedAt" > NOW() - INTERVAL '7 days') as active_last_week
-		FROM users
-	`).Scan(
-		&stats.TotalUsers, &stats.AdminCount, &stats.UserCount,
-		&stats.FreeCount, &stats.ProCount, &stats.EnterpriseCount,
-		&stats.ActiveLastWeek,
-	)
+	row, err := h.store.Q().GetAdminUserStats(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &stats, nil
+	return &UserStats{
+		TotalUsers:      row.TotalUsers,
+		AdminCount:      row.AdminCount,
+		UserCount:       row.UserCount,
+		FreeCount:       row.FreeCount,
+		ProCount:        row.ProCount,
+		EnterpriseCount: 0,
+		ActiveLastWeek:  row.ActiveLastWeek,
+	}, nil
 }
 
 func (h *Handler) generateImpersonationToken(user *User, expiry time.Duration) (string, error) {
@@ -1257,74 +1295,58 @@ func (h *Handler) generateImpersonationToken(user *User, expiry time.Duration) (
 // ===============================
 
 func (h *Handler) getCacheStats(ctx context.Context) (*CacheStats, error) {
-	var stats CacheStats
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT
-			COUNT(*) as total_entries,
-			COUNT(*) FILTER (WHERE "expiresAt" < NOW()) as expired_entries,
-			COALESCE(SUM("inputTokens"), 0) as total_input_tokens,
-			COALESCE(SUM("outputTokens"), 0) as total_output_tokens,
-			COALESCE(SUM("totalCost"), 0) as total_cost,
-			COUNT(DISTINCT "userId") as unique_users,
-			COUNT(DISTINCT "cacheType") as cache_types
-		FROM "AiResponseCache"
-	`).Scan(
-		&stats.TotalEntries, &stats.ExpiredEntries,
-		&stats.TotalInputTokens, &stats.TotalOutputTokens,
-		&stats.TotalCost, &stats.UniqueUsers, &stats.CacheTypes,
-	)
+	q := h.store.Q()
+
+	cacheRow, err := q.GetCacheStatsAdmin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &stats, nil
+
+	stats := &CacheStats{
+		TotalEntries:   cacheRow.TotalEntries,
+		ExpiredEntries: cacheRow.ExpiredEntries,
+		UniqueUsers:    cacheRow.UniqueUsers,
+		CacheTypes:     cacheRow.CacheTypes,
+	}
+
+	// Token/cost stats from ai_usage
+	costRow, costErr := q.GetAIUsageTotalCost(ctx)
+	if costErr == nil {
+		stats.TotalInputTokens = costRow.TotalInputTokens
+		stats.TotalOutputTokens = costRow.TotalOutputTokens
+		if v, ok := costRow.TotalCost.(float64); ok {
+			stats.TotalCost = v
+		}
+	}
+
+	return stats, nil
 }
 
 func (h *Handler) deleteAllCache(ctx context.Context) (int64, error) {
-	result, err := h.db.Main.Exec(ctx, `DELETE FROM "AiResponseCache"`)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+	return h.store.Q().DeleteAllCacheRows(ctx)
 }
 
 func (h *Handler) deleteExpiredCache(ctx context.Context) (int64, error) {
-	result, err := h.db.Main.Exec(ctx, `DELETE FROM "AiResponseCache" WHERE "expiresAt" < NOW()`)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+	return h.store.Q().DeleteExpiredCache(ctx)
 }
 
 func (h *Handler) deleteCacheByType(ctx context.Context, cacheType string) (int64, error) {
-	result, err := h.db.Main.Exec(ctx, `DELETE FROM "AiResponseCache" WHERE "cacheType" = $1`, cacheType)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+	return h.store.Q().DeleteCacheByFeature(ctx, cacheType)
 }
 
 func (h *Handler) deleteCacheByUser(ctx context.Context, userID string) (int64, error) {
-	result, err := h.db.Main.Exec(ctx, `DELETE FROM "AiResponseCache" WHERE "userId" = $1`, userID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+	return h.store.Q().DeleteCacheByUserIDRows(ctx, userID)
 }
 
 func (h *Handler) deleteCacheByKey(ctx context.Context, userID *string, cacheKey string) (int64, error) {
+	q := h.store.Q()
 	if userID != nil && *userID != "" {
-		result, err := h.db.Main.Exec(ctx, `DELETE FROM "AiResponseCache" WHERE "userId" = $1 AND "cacheKey" = $2`, *userID, cacheKey)
-		if err != nil {
-			return 0, err
-		}
-		return result.RowsAffected(), nil
+		return q.DeleteCacheByUserAndKeyRows(ctx, queries.DeleteCacheByUserAndKeyRowsParams{
+			UserId: *userID,
+			Key:    cacheKey,
+		})
 	}
-	// Delete by key only
-	result, err := h.db.Main.Exec(ctx, `DELETE FROM "AiResponseCache" WHERE "cacheKey" = $1`, cacheKey)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+	return q.DeleteCacheByKeyRows(ctx, cacheKey)
 }
 
 // ===============================
@@ -1332,30 +1354,27 @@ func (h *Handler) deleteCacheByKey(ctx context.Context, userID *string, cacheKey
 // ===============================
 
 func (h *Handler) getVendorConfigs(ctx context.Context) ([]Vendor, error) {
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT id, name, category, enabled, "healthUrl", "lastChecked", status
-		FROM "VendorConfig"
-		ORDER BY category, name
-	`)
+	rows, err := h.store.Q().ListVendorConfigsAdmin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var vendors []Vendor
-	for rows.Next() {
-		var v Vendor
-		var healthURL, status *string
-		err := rows.Scan(&v.ID, &v.Name, &v.Category, &v.Enabled, &healthURL, &v.LastChecked, &status)
-		if err != nil {
-			return nil, err
+	vendors := make([]Vendor, 0, len(rows))
+	for _, r := range rows {
+		v := Vendor{
+			ID:       r.ID,
+			Name:     r.Name,
+			Category: r.Category,
+			Enabled:  r.IsActive,
+			Status:   r.HealthStatus,
 		}
-		if healthURL != nil {
-			v.HealthURL = *healthURL
+		if r.HealthCheckUrl.Valid {
+			v.HealthURL = r.HealthCheckUrl.String
 		}
-		if status != nil {
-			v.Status = *status
-		} else {
+		if r.LastHealthCheck.Valid {
+			v.LastChecked = &r.LastHealthCheck.Time
+		}
+		if v.Status == "" {
 			v.Status = "unknown"
 		}
 		vendors = append(vendors, v)
@@ -1365,25 +1384,27 @@ func (h *Handler) getVendorConfigs(ctx context.Context) ([]Vendor, error) {
 }
 
 func (h *Handler) getVendorByID(ctx context.Context, id string) (*Vendor, error) {
-	var v Vendor
-	var healthURL, status *string
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT id, name, category, enabled, "healthUrl", "lastChecked", status
-		FROM "VendorConfig"
-		WHERE id = $1
-	`, id).Scan(&v.ID, &v.Name, &v.Category, &v.Enabled, &healthURL, &v.LastChecked, &status)
+	r, err := h.store.Q().GetVendorConfigAdmin(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if healthURL != nil {
-		v.HealthURL = *healthURL
+	v := &Vendor{
+		ID:       r.ID,
+		Name:     r.Name,
+		Category: r.Category,
+		Enabled:  r.IsActive,
+		Status:   r.HealthStatus,
 	}
-	if status != nil {
-		v.Status = *status
-	} else {
+	if r.HealthCheckUrl.Valid {
+		v.HealthURL = r.HealthCheckUrl.String
+	}
+	if r.LastHealthCheck.Valid {
+		v.LastChecked = &r.LastHealthCheck.Time
+	}
+	if v.Status == "" {
 		v.Status = "unknown"
 	}
-	return &v, nil
+	return v, nil
 }
 
 func (h *Handler) checkVendorHealth(ctx context.Context, vendor *Vendor) *VendorHealthResult {
@@ -1436,7 +1457,7 @@ func (h *Handler) checkVendorHealth(ctx context.Context, vendor *Vendor) *Vendor
 // createVendorHealthAlert creates a system alert when a vendor health check fails
 func (h *Handler) createVendorHealthAlert(ctx context.Context, vendor *Vendor, message string) {
 	alertKey := fmt.Sprintf("vendor_unhealthy_%s", vendor.ID)
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	_, err := q.UpsertSystemAlert(ctx, queries.UpsertSystemAlertParams{
 		ID:             alertKey,
 		Type:           "vendor_error",
@@ -1453,26 +1474,24 @@ func (h *Handler) createVendorHealthAlert(ctx context.Context, vendor *Vendor, m
 }
 
 func (h *Handler) updateVendorStatus(ctx context.Context, id, status string) {
-	_, err := h.db.Main.Exec(ctx, `
-		UPDATE "VendorConfig"
-		SET status = $2, "lastChecked" = NOW(), "updatedAt" = NOW()
-		WHERE id = $1
-	`, id, status)
+	err := h.store.Q().UpdateVendorHealthCheck(ctx, queries.UpdateVendorHealthCheckParams{
+		ID:      id,
+		Column2: status,
+	})
 	if err != nil {
 		h.logger.Warn("failed to update vendor status", "error", err, "vendor_id", id)
 	}
 }
 
 func (h *Handler) updateVendorEnabled(ctx context.Context, id string, enabled bool) error {
-	result, err := h.db.Main.Exec(ctx, `
-		UPDATE "VendorConfig"
-		SET enabled = $2, "updatedAt" = NOW()
-		WHERE id = $1
-	`, id, enabled)
+	rows, err := h.store.Q().ToggleVendorActiveRows(ctx, queries.ToggleVendorActiveRowsParams{
+		ID:       id,
+		IsActive: enabled,
+	})
 	if err != nil {
 		return err
 	}
-	if result.RowsAffected() == 0 {
+	if rows == 0 {
 		return pgx.ErrNoRows
 	}
 	return nil
@@ -1483,163 +1502,115 @@ func (h *Handler) updateVendorEnabled(ctx context.Context, id string, enabled bo
 // ===============================
 
 func (h *Handler) getAIMetrics(ctx context.Context) (*AIMetrics, error) {
+	q := h.store.Q()
 	var metrics AIMetrics
 
-	// Get overall metrics from cache table
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT
-			COUNT(*) as total_requests,
-			COALESCE(SUM("inputTokens"), 0) as total_input_tokens,
-			COALESCE(SUM("outputTokens"), 0) as total_output_tokens,
-			COALESCE(SUM("totalCost"), 0) as total_cost
-		FROM "AiResponseCache"
-	`).Scan(
-		&metrics.TotalRequests,
-		&metrics.TotalInputTokens,
-		&metrics.TotalOutputTokens,
-		&metrics.TotalCost,
-	)
+	// Get overall metrics from ai_usage table
+	allTime, err := q.GetAIUsageStatsAllTime(ctx)
 	if err != nil {
 		return nil, err
 	}
+	metrics.TotalRequests = allTime.TotalRequests
+	metrics.TotalInputTokens = allTime.TotalInputTokens
+	metrics.TotalOutputTokens = allTime.TotalOutputTokens
+	if v, ok := allTime.TotalCost.(float64); ok {
+		metrics.TotalCost = v
+	}
 
 	// Get today's metrics
-	err = h.db.Main.QueryRow(ctx, `
-		SELECT
-			COUNT(*) as requests_today,
-			COALESCE(SUM("totalCost"), 0) as cost_today
-		FROM "AiResponseCache"
-		WHERE "createdAt" >= CURRENT_DATE
-	`).Scan(&metrics.RequestsToday, &metrics.CostToday)
+	today, err := q.GetAIUsageStatsToday(ctx)
 	if err != nil {
 		h.logger.Warn("failed to get today's metrics", "error", err)
+	} else {
+		metrics.RequestsToday = today.RequestsToday
+		if v, ok := today.CostToday.(float64); ok {
+			metrics.CostToday = v
+		}
 	}
 
 	// Get this month's metrics
-	err = h.db.Main.QueryRow(ctx, `
-		SELECT
-			COUNT(*) as requests_this_month,
-			COALESCE(SUM("totalCost"), 0) as cost_this_month
-		FROM "AiResponseCache"
-		WHERE "createdAt" >= DATE_TRUNC('month', CURRENT_DATE)
-	`).Scan(&metrics.RequestsThisMonth, &metrics.CostThisMonth)
+	monthly, err := q.GetAIUsageStatsThisMonth(ctx)
 	if err != nil {
 		h.logger.Warn("failed to get monthly metrics", "error", err)
+	} else {
+		metrics.RequestsThisMonth = monthly.RequestsThisMonth
+		if v, ok := monthly.CostThisMonth.(float64); ok {
+			metrics.CostThisMonth = v
+		}
 	}
 
-	// Calculate cache hit rate (simplified - based on cached responses with hits > 0)
-	var cachedCount, totalCount int64
-	err = h.db.Main.QueryRow(ctx, `
-		SELECT
-			COUNT(*) FILTER (WHERE "hitCount" > 0) as cached_count,
-			COUNT(*) as total_count
-		FROM "AiResponseCache"
-	`).Scan(&cachedCount, &totalCount)
-	if err == nil && totalCount > 0 {
-		metrics.CacheHitRate = float64(cachedCount) / float64(totalCount) * 100
+	// Calculate cache hit rate
+	hitRate, err := q.GetAIUsageCacheHitRate(ctx)
+	if err == nil && hitRate.TotalCount > 0 {
+		metrics.CacheHitRate = float64(hitRate.CachedCount) / float64(hitRate.TotalCount) * 100
 	}
 
 	return &metrics, nil
 }
 
 func (h *Handler) getAIUsageRecords(ctx context.Context, userID, cacheType string, limit, offset int) ([]AIUsageRecord, int64, error) {
-	// Build query with optional filters
-	whereClause := "1=1"
-	args := make([]interface{}, 0)
-	argIndex := 1
+	q := h.store.Q()
 
-	if userID != "" {
-		whereClause += fmt.Sprintf(` AND c."userId" = $%d`, argIndex)
-		args = append(args, userID)
-		argIndex++
+	countParams := queries.CountAIUsageRecordsParams{
+		UserID:  pgtextFromString(userID),
+		Feature: pgtextFromString(cacheType),
 	}
-	if cacheType != "" {
-		whereClause += fmt.Sprintf(` AND c."cacheType" = $%d`, argIndex)
-		args = append(args, cacheType)
-		argIndex++
-	}
-
-	// Get total count
-	var total int64
-	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "AiResponseCache" c WHERE %s`, whereClause)
-	err := h.db.Main.QueryRow(ctx, countQuery, args...).Scan(&total)
+	total, err := q.CountAIUsageRecords(ctx, countParams)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Get records with pagination
-	args = append(args, limit, offset)
-	query := fmt.Sprintf(`
-		SELECT c.id, c."userId", u.email, c."cacheType", c.model, c."inputTokens", c."outputTokens", c."totalCost", c."createdAt"
-		FROM "AiResponseCache" c
-		LEFT JOIN users u ON c."userId" = u.id
-		WHERE %s
-		ORDER BY c."createdAt" DESC
-		LIMIT $%d OFFSET $%d
-	`, whereClause, argIndex, argIndex+1)
-
-	rows, err := h.db.Main.Query(ctx, query, args...)
+	rows, err := q.ListAIUsageRecords(ctx, queries.ListAIUsageRecordsParams{
+		UserID:  pgtextFromString(userID),
+		Feature: pgtextFromString(cacheType),
+		Offset:  int32(offset),
+		Limit:   int32(limit),
+	})
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
 
-	var records []AIUsageRecord
-	for rows.Next() {
-		var r AIUsageRecord
-		err := rows.Scan(
-			&r.ID, &r.UserID, &r.Email, &r.CacheType, &r.Model,
-			&r.InputTokens, &r.OutputTokens, &r.Cost, &r.CreatedAt,
-		)
-		if err != nil {
-			return nil, 0, err
+	records := make([]AIUsageRecord, 0, len(rows))
+	for _, r := range rows {
+		rec := AIUsageRecord{
+			ID:           r.ID,
+			UserID:       r.UserId,
+			CacheType:    r.Feature,
+			Model:        r.Model,
+			InputTokens:  int(r.InputTokens),
+			OutputTokens: int(r.OutputTokens),
 		}
-		records = append(records, r)
-	}
-
-	if records == nil {
-		records = []AIUsageRecord{}
+		if r.Email.Valid {
+			rec.Email = &r.Email.String
+		}
+		if r.TotalCost.Valid {
+			f, _ := r.TotalCost.Float64Value()
+			rec.Cost = f.Float64
+		}
+		if r.CreatedAt.Valid {
+			rec.CreatedAt = r.CreatedAt.Time
+		}
+		records = append(records, rec)
 	}
 
 	return records, total, nil
 }
 
 func (h *Handler) getCacheTypeBreakdown(ctx context.Context) ([]map[string]interface{}, error) {
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT
-			"cacheType",
-			COUNT(*) as count,
-			COALESCE(SUM("inputTokens"), 0) as input_tokens,
-			COALESCE(SUM("outputTokens"), 0) as output_tokens,
-			COALESCE(SUM("totalCost"), 0) as cost
-		FROM "AiResponseCache"
-		GROUP BY "cacheType"
-		ORDER BY count DESC
-	`)
+	rows, err := h.store.Q().GetAIUsageByFeature(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var breakdown []map[string]interface{}
-	for rows.Next() {
-		var cacheType string
-		var count, inputTokens, outputTokens int64
-		var cost float64
-		if err := rows.Scan(&cacheType, &count, &inputTokens, &outputTokens, &cost); err != nil {
-			return nil, err
-		}
+	breakdown := make([]map[string]interface{}, 0, len(rows))
+	for _, r := range rows {
 		breakdown = append(breakdown, map[string]interface{}{
-			"cacheType":    cacheType,
-			"count":        count,
-			"inputTokens":  inputTokens,
-			"outputTokens": outputTokens,
-			"cost":         cost,
+			"cacheType":    r.Feature,
+			"count":        r.Count,
+			"inputTokens":  r.InputTokens,
+			"outputTokens": r.OutputTokens,
+			"cost":         r.Cost,
 		})
-	}
-
-	if breakdown == nil {
-		breakdown = []map[string]interface{}{}
 	}
 
 	return breakdown, nil
@@ -1650,98 +1621,72 @@ func (h *Handler) getCacheTypeBreakdown(ctx context.Context) ([]map[string]inter
 // ===============================
 
 func (h *Handler) getInvestorReports(ctx context.Context, status, userID string, limit, offset int) ([]InvestorReportAdmin, int64, error) {
-	// Build query with optional filters
-	whereClause := "1=1"
-	args := make([]interface{}, 0)
-	argIndex := 1
+	q := h.store.Q()
 
-	if status != "" {
-		whereClause += fmt.Sprintf(` AND r.status = $%d`, argIndex)
-		args = append(args, status)
-		argIndex++
-	}
-	if userID != "" {
-		whereClause += fmt.Sprintf(` AND r."userId" = $%d`, argIndex)
-		args = append(args, userID)
-		argIndex++
-	}
-
-	// Get total count
-	var total int64
-	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM investor_reports r WHERE %s`, whereClause)
-	err := h.db.Main.QueryRow(ctx, countQuery, args...).Scan(&total)
+	total, err := q.CountInvestorReportsFiltered(ctx, queries.CountInvestorReportsFilteredParams{
+		StatusFilter: pgtextFromString(status),
+		UserID:       pgtextFromString(userID),
+	})
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Get reports with pagination
-	args = append(args, limit, offset)
-	query := fmt.Sprintf(`
-		SELECT r.id, r."userId", u.email, r.report_type, r.status, r.address, r.city, r.state,
-		       r.error_message, r.created_at, r.completed_at
-		FROM investor_reports r
-		LEFT JOIN users u ON r."userId" = u.id
-		WHERE %s
-		ORDER BY r.created_at DESC
-		LIMIT $%d OFFSET $%d
-	`, whereClause, argIndex, argIndex+1)
-
-	rows, err := h.db.Main.Query(ctx, query, args...)
+	rows, err := q.ListInvestorReportsFiltered(ctx, queries.ListInvestorReportsFilteredParams{
+		StatusFilter: pgtextFromString(status),
+		UserID:       pgtextFromString(userID),
+		Offset:       int32(offset),
+		Limit:        int32(limit),
+	})
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
 
-	var reports []InvestorReportAdmin
-	for rows.Next() {
-		var r InvestorReportAdmin
-		err := rows.Scan(
-			&r.ID, &r.UserID, &r.Email, &r.ReportType, &r.Status,
-			&r.Address, &r.City, &r.State, &r.ErrorMessage,
-			&r.CreatedAt, &r.CompletedAt,
-		)
-		if err != nil {
-			return nil, 0, err
+	reports := make([]InvestorReportAdmin, 0, len(rows))
+	for _, r := range rows {
+		rpt := InvestorReportAdmin{
+			ID:         r.ID,
+			ReportType: r.ReportType,
+			Status:     r.RStatus,
 		}
-		reports = append(reports, r)
-	}
-
-	if reports == nil {
-		reports = []InvestorReportAdmin{}
+		if r.UserId.Valid {
+			rpt.UserID = r.UserId.String
+		}
+		if r.Email.Valid {
+			rpt.Email = &r.Email.String
+		}
+		if r.PropertyAddress.Valid {
+			rpt.Address = &r.PropertyAddress.String
+		}
+		if r.CreatedAt.Valid {
+			rpt.CreatedAt = r.CreatedAt.Time
+		}
+		if r.CompletedAt.Valid {
+			rpt.CompletedAt = &r.CompletedAt.Time
+		}
+		reports = append(reports, rpt)
 	}
 
 	return reports, total, nil
 }
 
-func (h *Handler) updateReportStatus(ctx context.Context, reportID, status string, errorMsg *string) error {
-	var query string
-	var args []interface{}
+func (h *Handler) updateReportStatus(ctx context.Context, reportID, status string, _ *string) error {
+	q := h.store.Q()
 
 	if status == "PENDING" {
-		// Reset for retry
-		query = `
-			UPDATE investor_reports
-			SET status = $2, error_message = NULL, updated_at = NOW()
-			WHERE id = $1
-		`
-		args = []interface{}{reportID, status}
-	} else {
-		query = `
-			UPDATE investor_reports
-			SET status = $2, error_message = $3, updated_at = NOW()
-			WHERE id = $1
-		`
-		args = []interface{}{reportID, status, errorMsg}
+		rows, err := q.ResetInvestorReportForRetry(ctx, reportID)
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return pgx.ErrNoRows
+		}
+		return nil
 	}
 
-	result, err := h.db.Main.Exec(ctx, query, args...)
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() == 0 {
-		return pgx.ErrNoRows
-	}
-	return nil
+	return q.UpdateInvestorReportStatusAdmin(ctx, queries.UpdateInvestorReportStatusAdminParams{
+		ID:      reportID,
+		Column2: status,
+	})
 }
 
 // ===============================
@@ -1749,73 +1694,58 @@ func (h *Handler) updateReportStatus(ctx context.Context, reportID, status strin
 // ===============================
 
 func (h *Handler) getAuditLogEntries(ctx context.Context, userID, action, resource string, limit, offset int) ([]AuditLogEntry, int64, error) {
-	// Build query with optional filters
-	whereClause := "1=1"
-	args := make([]interface{}, 0)
-	argIndex := 1
+	q := h.store.Q()
 
-	if userID != "" {
-		whereClause += fmt.Sprintf(` AND "userId" = $%d`, argIndex)
-		args = append(args, userID)
-		argIndex++
-	}
-	if action != "" {
-		whereClause += fmt.Sprintf(` AND action = $%d`, argIndex)
-		args = append(args, action)
-		argIndex++
-	}
-	if resource != "" {
-		whereClause += fmt.Sprintf(` AND resource = $%d`, argIndex)
-		args = append(args, resource)
-		argIndex++
+	filterParams := queries.CountAuditLogsFilteredParams{
+		UserID:         pgtextFromString(userID),
+		ActionFilter:   pgtextFromString(action),
+		ResourceFilter: pgtextFromString(resource),
 	}
 
-	// Get total count
-	var total int64
-	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM audit_logs WHERE %s`, whereClause)
-	err := h.db.Main.QueryRow(ctx, countQuery, args...).Scan(&total)
+	total, err := q.CountAuditLogsFiltered(ctx, filterParams)
 	if err != nil {
-		// Table might not exist, return empty results
 		h.logger.Warn("failed to count audit logs", "error", err)
 		return []AuditLogEntry{}, 0, nil
 	}
 
-	// Get entries with pagination
-	args = append(args, limit, offset)
-	query := fmt.Sprintf(`
-		SELECT id, "userId", action, resource, "resourceId", details, "ipAddress", "userAgent", "createdAt"
-		FROM audit_logs
-		WHERE %s
-		ORDER BY "createdAt" DESC
-		LIMIT $%d OFFSET $%d
-	`, whereClause, argIndex, argIndex+1)
-
-	rows, err := h.db.Main.Query(ctx, query, args...)
+	rows, err := q.ListAuditLogsFiltered(ctx, queries.ListAuditLogsFilteredParams{
+		UserID:         pgtextFromString(userID),
+		ActionFilter:   pgtextFromString(action),
+		ResourceFilter: pgtextFromString(resource),
+		Offset:         int32(offset),
+		Limit:          int32(limit),
+	})
 	if err != nil {
 		h.logger.Warn("failed to query audit logs", "error", err)
 		return []AuditLogEntry{}, 0, nil
 	}
-	defer rows.Close()
 
-	var entries []AuditLogEntry
-	for rows.Next() {
-		var e AuditLogEntry
-		var detailsJSON []byte
-		err := rows.Scan(
-			&e.ID, &e.UserID, &e.Action, &e.Resource, &e.ResourceID,
-			&detailsJSON, &e.IPAddress, &e.UserAgent, &e.CreatedAt,
-		)
-		if err != nil {
-			return nil, 0, err
+	entries := make([]AuditLogEntry, 0, len(rows))
+	for _, r := range rows {
+		e := AuditLogEntry{
+			ID:       r.ID,
+			Action:   r.Action,
+			Resource: r.Resource,
 		}
-		if detailsJSON != nil {
-			_ = json.Unmarshal(detailsJSON, &e.Details)
+		if r.UserId.Valid {
+			e.UserID = &r.UserId.String
+		}
+		if e.Action == "" {
+			e.Action = r.Event // Use event type as action if action not set
+		}
+		if r.IpAddress.Valid {
+			e.IPAddress = &r.IpAddress.String
+		}
+		if r.UserAgent.Valid {
+			e.UserAgent = &r.UserAgent.String
+		}
+		if r.CreatedAt.Valid {
+			e.CreatedAt = r.CreatedAt.Time
+		}
+		if r.Metadata != nil {
+			_ = json.Unmarshal(r.Metadata, &e.Details)
 		}
 		entries = append(entries, e)
-	}
-
-	if entries == nil {
-		entries = []AuditLogEntry{}
 	}
 
 	return entries, total, nil
@@ -1826,86 +1756,54 @@ func (h *Handler) getAuditLogEntries(ctx context.Context, userID, action, resour
 // ===============================
 
 func (h *Handler) getAnalytics(ctx context.Context) (*Analytics, error) {
+	q := h.store.Q()
 	analytics := &Analytics{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
 
 	// User analytics
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT
-			COUNT(*) as total,
-			COUNT(*) FILTER (WHERE "updatedAt" > NOW() - INTERVAL '7 days') as active_this_week,
-			COUNT(*) FILTER (WHERE "updatedAt" > NOW() - INTERVAL '30 days') as active_this_month,
-			COUNT(*) FILTER (WHERE "createdAt" > NOW() - INTERVAL '7 days') as new_this_week,
-			COUNT(*) FILTER (WHERE "createdAt" > NOW() - INTERVAL '30 days') as new_this_month
-		FROM users
-	`).Scan(
-		&analytics.Users.Total,
-		&analytics.Users.ActiveThisWeek,
-		&analytics.Users.ActiveThisMonth,
-		&analytics.Users.NewThisWeek,
-		&analytics.Users.NewThisMonth,
-	)
+	userRow, err := q.GetUserAnalytics(ctx)
 	if err != nil {
 		h.logger.Warn("failed to get user analytics", "error", err)
+	} else {
+		analytics.Users.Total = userRow.Total
+		analytics.Users.ActiveThisWeek = userRow.ActiveThisWeek
+		analytics.Users.ActiveThisMonth = userRow.ActiveThisMonth
+		analytics.Users.NewThisWeek = userRow.NewThisWeek
+		analytics.Users.NewThisMonth = userRow.NewThisMonth
 	}
 
 	// Report analytics
-	err = h.db.Main.QueryRow(ctx, `
-		SELECT
-			COUNT(*) as total_generated,
-			COUNT(*) FILTER (WHERE "createdAt" > NOW() - INTERVAL '7 days') as this_week,
-			COUNT(*) FILTER (WHERE "createdAt" > NOW() - INTERVAL '30 days') as this_month,
-			COUNT(*) FILTER (WHERE status = 'FAILED' AND "createdAt" > NOW() - INTERVAL '7 days') as failed_this_week
-		FROM investor_reports
-	`).Scan(
-		&analytics.Reports.TotalGenerated,
-		&analytics.Reports.ThisWeek,
-		&analytics.Reports.ThisMonth,
-		&analytics.Reports.FailedThisWeek,
-	)
+	reportRow, err := q.GetReportAnalytics(ctx)
 	if err != nil {
 		h.logger.Warn("failed to get report analytics", "error", err)
+	} else {
+		analytics.Reports.TotalGenerated = reportRow.TotalGenerated
+		analytics.Reports.ThisWeek = reportRow.ThisWeek
+		analytics.Reports.ThisMonth = reportRow.ThisMonth
+		analytics.Reports.FailedThisWeek = reportRow.FailedThisWeek
 	}
 
-	// API analytics from cache table
-	err = h.db.Main.QueryRow(ctx, `
-		SELECT
-			COUNT(*) as total_requests,
-			COUNT(*) FILTER (WHERE "createdAt" >= CURRENT_DATE) as requests_today
-		FROM "AiResponseCache"
-	`).Scan(
-		&analytics.API.TotalRequests,
-		&analytics.API.RequestsToday,
-	)
+	// API analytics
+	apiRow, err := q.GetAIRequestAnalytics(ctx)
 	if err != nil {
 		h.logger.Warn("failed to get API analytics", "error", err)
+	} else {
+		analytics.API.TotalRequests = apiRow.TotalRequests
+		analytics.API.RequestsToday = apiRow.RequestsToday
 	}
 
-	// Revenue analytics from subscriptions
-	err = h.db.Main.QueryRow(ctx, `
-		SELECT
-			COALESCE(SUM(CASE
-				WHEN status = 'ACTIVE' AND tier = 'INVESTOR' THEN 29.99
-				WHEN status = 'ACTIVE' AND tier = 'PROFESSIONAL' THEN 49.99
-				WHEN status = 'ACTIVE' AND tier = 'ANNUAL_ACCESS' THEN 99.99
-				WHEN status = 'ACTIVE' AND tier = 'PROFESSIONAL_ALLOCATOR' THEN 149.99
-				WHEN status = 'ACTIVE' AND tier = 'AAPI_INVESTOR' THEN 79.99
-				WHEN status = 'ACTIVE' AND tier = 'AAPI_ALLOCATOR' THEN 199.99
-				ELSE 0
-			END), 0) as mrr,
-			COUNT(*) FILTER (WHERE status = 'ACTIVE') as active_subs,
-			COUNT(*) FILTER (WHERE status = 'ACTIVE' AND "createdAt" > NOW() - INTERVAL '30 days') as new_subs,
-			COUNT(*) FILTER (WHERE status = 'CANCELED' AND "updatedAt" > NOW() - INTERVAL '30 days') as churned
-		FROM subscriptions
-	`).Scan(
-		&analytics.Revenue.TotalMRR,
-		&analytics.Revenue.ActiveSubscriptions,
-		&analytics.Revenue.NewSubscriptions,
-		&analytics.Revenue.Churned,
-	)
+	// Revenue analytics
+	revRow, err := q.GetSubscriptionRevenueSummary(ctx)
 	if err != nil {
 		h.logger.Warn("failed to get revenue analytics", "error", err)
+	} else {
+		if v, ok := revRow.Mrr.(float64); ok {
+			analytics.Revenue.TotalMRR = v
+		}
+		analytics.Revenue.ActiveSubscriptions = revRow.ActiveSubs
+		analytics.Revenue.NewSubscriptions = revRow.NewSubs
+		analytics.Revenue.Churned = revRow.Churned
 	}
 
 	return analytics, nil
@@ -1916,73 +1814,68 @@ func (h *Handler) getAnalytics(ctx context.Context) (*Analytics, error) {
 // ===============================
 
 func (h *Handler) getSystemAlerts(ctx context.Context, showResolved bool, limit, offset int) ([]SystemAlert, int64, error) {
-	whereClause := "1=1"
+	q := h.store.Q()
+
+	// For showResolved=true, pass NULL (no filter); for false, filter dismissed=false
+	dismissedFilter := pgtype.Bool{Valid: false} // NULL = no filter (show all)
 	if !showResolved {
-		whereClause = "dismissed = false"
+		dismissedFilter = pgtype.Bool{Bool: false, Valid: true} // dismissed = false
 	}
 
-	// Get total count
-	var total int64
-	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM system_alerts WHERE %s`, whereClause)
-	err := h.db.Main.QueryRow(ctx, countQuery).Scan(&total)
+	total, err := q.CountSystemAlertsFiltered(ctx, dismissedFilter)
 	if err != nil {
-		// Table might not exist, return empty results
 		h.logger.Warn("failed to count system alerts", "error", err)
 		return []SystemAlert{}, 0, nil
 	}
 
-	// Get alerts with pagination
-	query := fmt.Sprintf(`
-		SELECT id, type, severity, title, description, "alertKey", metadata,
-			"firstSeen", "lastSeen", "occurrenceCount", dismissed, "actionRequired",
-			"expiresAt", "createdAt"
-		FROM system_alerts
-		WHERE %s
-		ORDER BY
-			CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END,
-			"createdAt" DESC
-		LIMIT $1 OFFSET $2
-	`, whereClause)
-
-	rows, err := h.db.Main.Query(ctx, query, limit, offset)
+	rows, err := q.ListSystemAlertsFiltered(ctx, queries.ListSystemAlertsFilteredParams{
+		DismissedFilter: dismissedFilter,
+		Offset:          int32(offset),
+		Limit:           int32(limit),
+	})
 	if err != nil {
 		h.logger.Warn("failed to query system alerts", "error", err)
 		return []SystemAlert{}, 0, nil
 	}
-	defer rows.Close()
 
-	var alerts []SystemAlert
-	for rows.Next() {
-		var a SystemAlert
-		err := rows.Scan(
-			&a.ID, &a.Type, &a.Severity, &a.Title, &a.Description,
-			&a.AlertKey, &a.Metadata, &a.FirstSeen, &a.LastSeen,
-			&a.OccurrenceCount, &a.Dismissed, &a.ActionRequired,
-			&a.ExpiresAt, &a.CreatedAt,
-		)
-		if err != nil {
-			return nil, 0, err
+	alerts := make([]SystemAlert, 0, len(rows))
+	for _, r := range rows {
+		a := SystemAlert{
+			ID:              r.ID,
+			Type:            r.Type,
+			Severity:        r.Severity,
+			Title:           r.Title,
+			Description:     r.Description,
+			AlertKey:        r.AlertKey,
+			Metadata:        r.Metadata,
+			OccurrenceCount: int(r.OccurrenceCount),
+			Dismissed:       r.Dismissed,
+			ActionRequired:  r.ActionRequired,
+		}
+		if r.FirstSeen.Valid {
+			a.FirstSeen = r.FirstSeen.Time
+		}
+		if r.LastSeen.Valid {
+			a.LastSeen = r.LastSeen.Time
+		}
+		if r.ExpiresAt.Valid {
+			a.ExpiresAt = &r.ExpiresAt.Time
+		}
+		if r.CreatedAt.Valid {
+			a.CreatedAt = r.CreatedAt.Time
 		}
 		alerts = append(alerts, a)
-	}
-
-	if alerts == nil {
-		alerts = []SystemAlert{}
 	}
 
 	return alerts, total, nil
 }
 
-func (h *Handler) resolveSystemAlert(ctx context.Context, alertID, resolvedBy string) error {
-	result, err := h.db.Main.Exec(ctx, `
-		UPDATE system_alerts
-		SET dismissed = true, "updatedAt" = NOW()
-		WHERE id = $1 AND dismissed = false
-	`, alertID)
+func (h *Handler) resolveSystemAlert(ctx context.Context, alertID, _ string) error {
+	rows, err := h.store.Q().DismissSystemAlertRows(ctx, alertID)
 	if err != nil {
 		return err
 	}
-	if result.RowsAffected() == 0 {
+	if rows == 0 {
 		return pgx.ErrNoRows
 	}
 	return nil
@@ -1993,87 +1886,58 @@ func (h *Handler) resolveSystemAlert(ctx context.Context, alertID, resolvedBy st
 // ===============================
 
 func (h *Handler) getVendorCosts(ctx context.Context, period string) ([]VendorCostRecord, error) {
-	var interval string
-	switch period {
-	case "day":
-		interval = "1 day"
-	case "week":
-		interval = "7 days"
-	default:
-		interval = "30 days"
-	}
+	now := time.Now()
 
-	// Try to get vendor usage summaries
-	query := fmt.Sprintf(`
-		SELECT
-			v.id as vendor_id,
-			v.name as vendor_name,
-			v.category,
-			COALESCE(SUM(s.total_cost), 0) as total_cost,
-			COALESCE(SUM(s.request_count), 0) as request_count,
-			$1 as period,
-			MAX(COALESCE(s.recorded_at, NOW())) as recorded_at
-		FROM "VendorConfig" v
-		LEFT JOIN vendor_usage_summaries s ON v.id = s.vendor_id
-			AND s.recorded_at > NOW() - INTERVAL '%s'
-		GROUP BY v.id, v.name, v.category
-		ORDER BY total_cost DESC
-	`, interval)
-
-	rows, err := h.db.Main.Query(ctx, query, period)
+	rows, err := h.store.Q().GetVendorCostSummary(ctx, queries.GetVendorCostSummaryParams{
+		Month: int32(now.Month()),
+		Year:  int32(now.Year()),
+	})
 	if err != nil {
 		// Table might not exist - return basic vendor info
 		h.logger.Warn("failed to query vendor costs, falling back to basic info", "error", err)
 		return h.getBasicVendorCosts(ctx, period)
 	}
-	defer rows.Close()
 
-	var costs []VendorCostRecord
-	for rows.Next() {
-		var c VendorCostRecord
-		err := rows.Scan(
-			&c.VendorID, &c.VendorName, &c.Category,
-			&c.TotalCost, &c.RequestCount, &c.Period, &c.RecordedAt,
-		)
-		if err != nil {
-			return nil, err
+	costs := make([]VendorCostRecord, 0, len(rows))
+	for _, r := range rows {
+		c := VendorCostRecord{
+			VendorID:     r.VendorID,
+			VendorName:   r.VendorName,
+			Category:     r.VCategory,
+			RequestCount: r.RequestCount,
+			Period:       period,
+			RecordedAt:   now,
+		}
+		if v, ok := r.TotalCost.(float64); ok {
+			c.TotalCost = v
+		}
+		if t, ok := r.RecordedAt.(time.Time); ok {
+			c.RecordedAt = t
 		}
 		costs = append(costs, c)
-	}
-
-	if costs == nil {
-		costs = []VendorCostRecord{}
 	}
 
 	return costs, nil
 }
 
 func (h *Handler) getBasicVendorCosts(ctx context.Context, period string) ([]VendorCostRecord, error) {
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT id, name, category
-		FROM "VendorConfig"
-		WHERE enabled = true
-		ORDER BY name
-	`)
+	rows, err := h.store.Q().ListVendorConfigsAdmin(ctx)
 	if err != nil {
 		return []VendorCostRecord{}, nil
 	}
-	defer rows.Close()
 
-	var costs []VendorCostRecord
-	for rows.Next() {
-		var c VendorCostRecord
-		err := rows.Scan(&c.VendorID, &c.VendorName, &c.Category)
-		if err != nil {
+	costs := make([]VendorCostRecord, 0, len(rows))
+	for _, r := range rows {
+		if !r.IsActive {
 			continue
 		}
-		c.Period = period
-		c.RecordedAt = time.Now()
-		costs = append(costs, c)
-	}
-
-	if costs == nil {
-		costs = []VendorCostRecord{}
+		costs = append(costs, VendorCostRecord{
+			VendorID:   r.ID,
+			VendorName: r.Name,
+			Category:   r.Category,
+			Period:     period,
+			RecordedAt: time.Now(),
+		})
 	}
 
 	return costs, nil

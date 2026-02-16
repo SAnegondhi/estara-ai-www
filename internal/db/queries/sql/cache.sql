@@ -114,8 +114,108 @@ WHERE location = $1
 ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3;
 
+-- name: DeleteAllCacheRows :execrows
+DELETE FROM analysis_cache;
+
+-- name: DeleteCacheByUserIDRows :execrows
+DELETE FROM analysis_cache WHERE "userId" = $1;
+
+-- name: DeleteCacheByKeyRows :execrows
+DELETE FROM analysis_cache WHERE key = $1;
+
+-- name: DeleteCacheByUserAndKeyRows :execrows
+DELETE FROM analysis_cache WHERE "userId" = $1 AND key = $2;
+
 -- name: ListCacheByUserAndFeature :many
 SELECT * FROM analysis_cache
 WHERE "userId" = $1 AND feature = $2 AND "expiresAt" > NOW()
 ORDER BY "lastAccessedAt" DESC
 LIMIT $3 OFFSET $4;
+
+-- name: DeleteCacheByIDAndUserID :exec
+DELETE FROM analysis_cache WHERE id = $1 AND "userId" = $2;
+
+-- name: GetCacheIDAndKeyByUserAndKey :one
+SELECT id, key FROM analysis_cache WHERE key = $1 AND "userId" = $2;
+
+-- name: GetCacheIDAndKeyByIDUserKeyLike :one
+SELECT id, key FROM analysis_cache WHERE id = $1 AND "userId" = $2 AND key LIKE $3;
+
+-- name: ListInvestmentPlanHistory :many
+SELECT
+    id, key, "userId", location, metadata, "metricsData", "investorProfile", "lastAccessedAt"
+FROM analysis_cache
+WHERE "userId" = $1
+    AND feature = 'investment_planning'
+    AND "supersededBy" IS NULL
+    AND (sqlc.narg('search')::text IS NULL OR sqlc.narg('search') = '' OR location ILIKE '%' || sqlc.narg('search') || '%')
+ORDER BY "lastAccessedAt" DESC
+LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
+
+-- name: CountInvestmentPlanHistory :one
+SELECT COUNT(*)
+FROM analysis_cache
+WHERE "userId" = $1
+    AND feature = 'investment_planning'
+    AND "supersededBy" IS NULL
+    AND (sqlc.narg('search')::text IS NULL OR sqlc.narg('search') = '' OR location ILIKE '%' || sqlc.narg('search') || '%');
+
+-- name: ListMarketAnalysisHistory :many
+SELECT
+    id, key, location, content, "metricsData", "narrativeData", "lastAccessedAt", "fullReport"
+FROM analysis_cache
+WHERE "userId" = $1
+    AND feature IN ('dual_agent_market_analysis', 'market_analysis_v2')
+    AND "supersededBy" IS NULL
+    AND (sqlc.narg('search')::text IS NULL OR sqlc.narg('search') = '' OR location ILIKE '%' || sqlc.narg('search') || '%')
+ORDER BY "lastAccessedAt" DESC
+LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
+
+-- name: CountMarketAnalysisHistory :one
+SELECT COUNT(*)
+FROM analysis_cache
+WHERE "userId" = $1
+    AND feature IN ('dual_agent_market_analysis', 'market_analysis_v2')
+    AND "supersededBy" IS NULL
+    AND (sqlc.narg('search')::text IS NULL OR sqlc.narg('search') = '' OR location ILIKE '%' || sqlc.narg('search') || '%');
+
+-- name: GetLatestMarketAnalysisByLocation :one
+SELECT content, "metricsData", "narrativeData", "lastAccessedAt"
+FROM analysis_cache
+WHERE "userId" = $1
+    AND feature = 'dual_agent_market_analysis'
+    AND location ILIKE $2
+    AND "supersededBy" IS NULL
+ORDER BY "lastAccessedAt" DESC
+LIMIT 1;
+
+-- name: CountCacheByUserFeatureActive :one
+SELECT COUNT(*) FROM analysis_cache
+WHERE "userId" = $1 AND feature = $2
+    AND "supersededBy" IS NULL AND "expiresAt" > NOW();
+
+-- name: ListCacheByUserFeatureActive :many
+SELECT id, key, location, content, "lastAccessedAt"
+FROM analysis_cache
+WHERE "userId" = $1 AND feature = $2
+    AND "supersededBy" IS NULL AND "expiresAt" > NOW()
+ORDER BY "lastAccessedAt" DESC
+LIMIT $3 OFFSET $4;
+
+-- name: UpdateCacheAccessByUserAndKey :exec
+UPDATE analysis_cache
+SET "lastAccessedAt" = NOW(), "accessCount" = "accessCount" + 1
+WHERE "userId" = $1 AND key = $2;
+
+-- name: GetActiveTrendCacheContent :one
+SELECT content FROM analysis_cache
+WHERE "userId" = $1 AND key = $2
+    AND feature = 'market_trends'
+    AND "supersededBy" IS NULL
+    AND "expiresAt" > NOW();
+
+-- name: DeleteAiResponseCacheByUserAndKey :exec
+DELETE FROM analysis_cache WHERE "userId" = $1 AND key = $2;
+
+-- name: DeleteAiResponseCacheByUserAndFeature :exec
+DELETE FROM analysis_cache WHERE "userId" = $1 AND feature = $2;

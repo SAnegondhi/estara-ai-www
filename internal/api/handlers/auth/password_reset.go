@@ -275,8 +275,8 @@ type tokenInfo struct {
 	Email  string
 }
 
-// createPasswordResetToken creates a new password reset token
-func (h *Handler) createPasswordResetToken(ctx context.Context, userID, email string) (string, error) {
+// createPasswordResetToken creates a new password reset token using sqlc-generated queries
+func (h *Handler) createPasswordResetToken(ctx context.Context, userID, emailAddr string) (string, error) {
 	// Generate cryptographically secure random token
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
@@ -288,7 +288,7 @@ func (h *Handler) createPasswordResetToken(ctx context.Context, userID, email st
 	expiresAt := time.Now().Add(time.Duration(tokenExpiryMinutes) * time.Minute)
 
 	// Delete any existing reset tokens for this user
-	_, err := h.db.Main.Exec(ctx, `DELETE FROM password_reset_tokens WHERE "userId" = $1`, userID)
+	err := h.store.Q().DeletePasswordResetTokensByUser(ctx, userID)
 	if err != nil {
 		h.logger.Warn("failed to delete existing tokens", "error", err)
 		// Continue anyway
@@ -299,12 +299,14 @@ func (h *Handler) createPasswordResetToken(ctx context.Context, userID, email st
 	_, _ = rand.Read(idBytes)
 	id := hex.EncodeToString(idBytes)
 
-	// Insert new token
-	query := `
-		INSERT INTO password_reset_tokens (id, token, "userId", email, "expiresAt", used, "createdAt", "updatedAt")
-		VALUES ($1, $2, $3, $4, $5, false, NOW(), NOW())
-	`
-	_, err = h.db.Main.Exec(ctx, query, id, token, userID, email, expiresAt)
+	// Insert new token using sqlc
+	_, err = h.store.Q().CreatePasswordResetToken(ctx, queries.CreatePasswordResetTokenParams{
+		ID:        id,
+		Token:     token,
+		UserId:    userID,
+		Email:     emailAddr,
+		ExpiresAt: pgtype.Timestamp{Time: expiresAt, Valid: true},
+	})
 	if err != nil {
 		return "", err
 	}
@@ -314,17 +316,7 @@ func (h *Handler) createPasswordResetToken(ctx context.Context, userID, email st
 
 // validatePasswordResetToken validates a password reset token
 func (h *Handler) validatePasswordResetToken(ctx context.Context, token string) (*tokenInfo, error) {
-	query := `
-		SELECT "userId", email, used, "expiresAt"
-		FROM password_reset_tokens
-		WHERE token = $1
-	`
-
-	var userID, email string
-	var used bool
-	var expiresAt time.Time
-
-	err := h.db.Main.QueryRow(ctx, query, token).Scan(&userID, &email, &used, &expiresAt)
+	row, err := h.store.Q().GetPasswordResetTokenRaw(ctx, token)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, errors.New("Token not found")
@@ -332,37 +324,35 @@ func (h *Handler) validatePasswordResetToken(ctx context.Context, token string) 
 		return nil, err
 	}
 
-	if used {
+	if row.Used {
 		return nil, errors.New("Token has already been used")
 	}
 
-	if time.Now().After(expiresAt) {
+	if row.ExpiresAt.Valid && time.Now().After(row.ExpiresAt.Time) {
 		// Clean up expired token
-		_, _ = h.db.Main.Exec(ctx, `DELETE FROM password_reset_tokens WHERE token = $1`, token)
+		_ = h.store.Q().DeletePasswordResetTokenByToken(ctx, token)
 		return nil, errors.New("Token has expired")
 	}
 
-	return &tokenInfo{UserID: userID, Email: email}, nil
+	return &tokenInfo{UserID: row.UserId, Email: row.Email}, nil
 }
 
 // markPasswordResetTokenUsed marks a token as used
 func (h *Handler) markPasswordResetTokenUsed(ctx context.Context, token string) error {
 	query := `UPDATE password_reset_tokens SET used = true, "updatedAt" = NOW() WHERE token = $1`
-	_, err := h.db.Main.Exec(ctx, query, token)
+	_, err := h.store.Pool().Exec(ctx, query, token)
 	return err
 }
 
-// invalidateUserPasswordResetTokens invalidates all tokens for a user
+// invalidateUserPasswordResetTokens invalidates all tokens for a user using sqlc-generated query
 func (h *Handler) invalidateUserPasswordResetTokens(ctx context.Context, userID string) error {
-	query := `UPDATE password_reset_tokens SET used = true, "updatedAt" = NOW() WHERE "userId" = $1 AND used = false`
-	_, err := h.db.Main.Exec(ctx, query, userID)
-	return err
+	return h.store.Q().InvalidateUserPasswordResetTokens(ctx, userID)
 }
 
 // updateUserPassword updates the user's password in the database
 func (h *Handler) updateUserPassword(ctx context.Context, userID, hashedPassword string) error {
 	query := `UPDATE users SET password = $2, "updatedAt" = NOW() WHERE id = $1`
-	_, err := h.db.Main.Exec(ctx, query, userID, hashedPassword)
+	_, err := h.store.Pool().Exec(ctx, query, userID, hashedPassword)
 	return err
 }
 
@@ -384,11 +374,11 @@ func (h *Handler) logPasswordResetAudit(ctx context.Context, r *http.Request, us
 		clientIP = xri
 	}
 
-	q := queries.New(h.db.Main)
-	_, err := q.CreateAuditLog(ctx, queries.CreateAuditLogParams{
+	q := h.store.Q()
+	err := q.CreateAuditLog(ctx, queries.CreateAuditLogParams{
 		ID:        id,
 		UserId:    pgtype.Text{String: userID, Valid: userID != ""},
-		EventType: eventType,
+		Event: eventType,
 		Description: pgtype.Text{String: description, Valid: true},
 		IpAddress:   pgtype.Text{String: clientIP, Valid: true},
 		UserAgent:   pgtype.Text{String: r.UserAgent(), Valid: true},

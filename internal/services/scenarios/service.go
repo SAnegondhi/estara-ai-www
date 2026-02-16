@@ -5,14 +5,17 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	db "github.com/estara-ai/www/internal/db"
+	"github.com/estara-ai/www/internal/db/queries"
 )
 
 var (
@@ -22,15 +25,15 @@ var (
 
 // Service handles scenario operations
 type Service struct {
-	db     *postgres.DB
+	store  *db.Store
 	cfg    *config.Config
 	logger *slog.Logger
 }
 
 // NewService creates a new scenarios service
-func NewService(db *postgres.DB, cfg *config.Config) *Service {
+func NewService(store *db.Store, cfg *config.Config) *Service {
 	return &Service{
-		db:     db,
+		store:  store,
 		cfg:    cfg,
 		logger: slog.Default().With("component", "scenarios_service"),
 	}
@@ -73,42 +76,18 @@ type UpdateScenarioInput struct {
 
 // List returns all scenarios for a user
 func (s *Service) List(ctx context.Context, userID string) ([]Scenario, error) {
-	query := `
-		SELECT id, name, description, parameters, results, tags, favorite, "hasAIParameters", "createdAt", "lastModified"
-		FROM scenarios
-		WHERE "userId" = $1
-		ORDER BY "lastModified" DESC
-	`
-
-	rows, err := s.db.Main.Query(ctx, query, userID)
+	rows, err := s.store.Q().ListUserScenarios(ctx, queries.ListUserScenariosParams{
+		UserId: userID,
+		Limit:  1000,
+		Offset: 0,
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var scenarios []Scenario
-	for rows.Next() {
-		var sc dbScenario
-		err := rows.Scan(
-			&sc.ID,
-			&sc.Name,
-			&sc.Description,
-			&sc.Parameters,
-			&sc.Results,
-			&sc.Tags,
-			&sc.Favorite,
-			&sc.HasAIParameters,
-			&sc.CreatedAt,
-			&sc.LastModified,
-		)
-		if err != nil {
-			return nil, err
-		}
-		scenarios = append(scenarios, sc.toScenario())
-	}
-
-	if scenarios == nil {
-		scenarios = []Scenario{}
+	scenarios := make([]Scenario, 0, len(rows))
+	for _, row := range rows {
+		scenarios = append(scenarios, dbScenarioToScenario(row))
 	}
 
 	return scenarios, nil
@@ -116,25 +95,10 @@ func (s *Service) List(ctx context.Context, userID string) ([]Scenario, error) {
 
 // Get returns a specific scenario by ID, verifying user ownership
 func (s *Service) Get(ctx context.Context, userID, scenarioID string) (*Scenario, error) {
-	query := `
-		SELECT id, name, description, parameters, results, tags, favorite, "hasAIParameters", "createdAt", "lastModified"
-		FROM scenarios
-		WHERE id = $1 AND "userId" = $2
-	`
-
-	var sc dbScenario
-	err := s.db.Main.QueryRow(ctx, query, scenarioID, userID).Scan(
-		&sc.ID,
-		&sc.Name,
-		&sc.Description,
-		&sc.Parameters,
-		&sc.Results,
-		&sc.Tags,
-		&sc.Favorite,
-		&sc.HasAIParameters,
-		&sc.CreatedAt,
-		&sc.LastModified,
-	)
+	row, err := s.store.Q().GetScenarioByIDAndUser(ctx, queries.GetScenarioByIDAndUserParams{
+		ID:     scenarioID,
+		UserId: userID,
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrScenarioNotFound
@@ -142,8 +106,8 @@ func (s *Service) Get(ctx context.Context, userID, scenarioID string) (*Scenario
 		return nil, err
 	}
 
-	scenario := sc.toScenario()
-	return &scenario, nil
+	sc := dbScenarioToScenario(row)
+	return &sc, nil
 }
 
 // Create creates a new scenario for a user
@@ -159,52 +123,54 @@ func (s *Service) Create(ctx context.Context, userID string, input CreateScenari
 		tags = []string{}
 	}
 
-	now := time.Now()
-
-	query := `
-		INSERT INTO scenarios (id, "userId", name, description, parameters, results, tags, favorite, "hasAIParameters", "createdAt", "lastModified")
-		VALUES ($1, $2, $3, $4, $5, $6, $7, false, $8, $9, $10)
-		RETURNING id, name, description, parameters, results, tags, favorite, "hasAIParameters", "createdAt", "lastModified"
-	`
-
-	var sc dbScenario
-	err := s.db.Main.QueryRow(ctx, query,
-		id,
-		userID,
-		input.Name,
-		input.Description,
-		input.Parameters,
-		input.Results,
-		tags,
-		input.HasAIParameters,
-		now,
-		now,
-	).Scan(
-		&sc.ID,
-		&sc.Name,
-		&sc.Description,
-		&sc.Parameters,
-		&sc.Results,
-		&sc.Tags,
-		&sc.Favorite,
-		&sc.HasAIParameters,
-		&sc.CreatedAt,
-		&sc.LastModified,
-	)
+	// Marshal parameters, results, and tags to JSON
+	paramsJSON, err := json.Marshal(input.Parameters)
 	if err != nil {
 		return nil, err
 	}
 
-	scenario := sc.toScenario()
-	return &scenario, nil
+	var resultsJSON []byte
+	if input.Results != nil {
+		resultsJSON, err = json.Marshal(input.Results)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	tagsJSON, err := json.Marshal(tags)
+	if err != nil {
+		return nil, err
+	}
+
+	row, err := s.store.Q().CreateScenario(ctx, queries.CreateScenarioParams{
+		ID:     id,
+		UserId: userID,
+		Name:   input.Name,
+		Description: pgtype.Text{
+			String: ptrToString(input.Description),
+			Valid:  input.Description != nil,
+		},
+		Parameters:      paramsJSON,
+		Results:         resultsJSON,
+		Tags:            tagsJSON,
+		Favorite:        false,
+		HasAIParameters: input.HasAIParameters,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sc := dbScenarioToScenario(row)
+	return &sc, nil
 }
 
 // Update updates an existing scenario
 func (s *Service) Update(ctx context.Context, userID, scenarioID string, input UpdateScenarioInput) (*Scenario, error) {
 	// First verify ownership
-	existsQuery := `SELECT id FROM scenarios WHERE id = $1 AND "userId" = $2`
-	var existingID string
-	err := s.db.Main.QueryRow(ctx, existsQuery, scenarioID, userID).Scan(&existingID)
+	_, err := s.store.Q().GetScenarioByIDAndUser(ctx, queries.GetScenarioByIDAndUserParams{
+		ID:     scenarioID,
+		UserId: userID,
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrScenarioNotFound
@@ -212,59 +178,79 @@ func (s *Service) Update(ctx context.Context, userID, scenarioID string, input U
 		return nil, err
 	}
 
-	// Build dynamic update query
-	// We use a simpler approach: update all provided fields
-	query := `
-		UPDATE scenarios SET
-			name = COALESCE($3, name),
-			description = COALESCE($4, description),
-			parameters = COALESCE($5, parameters),
-			results = COALESCE($6, results),
-			tags = COALESCE($7, tags),
-			favorite = COALESCE($8, favorite),
-			"hasAIParameters" = COALESCE($9, "hasAIParameters"),
-			"lastModified" = NOW()
-		WHERE id = $1 AND "userId" = $2
-		RETURNING id, name, description, parameters, results, tags, favorite, "hasAIParameters", "createdAt", "lastModified"
-	`
+	// Marshal optional fields to JSON
+	var paramsJSON json.RawMessage
+	if input.Parameters != nil {
+		paramsJSON, err = json.Marshal(input.Parameters)
+		if err != nil {
+			return nil, err
+		}
+	}
 
-	var sc dbScenario
-	err = s.db.Main.QueryRow(ctx, query,
-		scenarioID,
-		userID,
-		input.Name,
-		input.Description,
-		input.Parameters,
-		input.Results,
-		input.Tags,
-		input.Favorite,
-		input.HasAIParameters,
-	).Scan(
-		&sc.ID,
-		&sc.Name,
-		&sc.Description,
-		&sc.Parameters,
-		&sc.Results,
-		&sc.Tags,
-		&sc.Favorite,
-		&sc.HasAIParameters,
-		&sc.CreatedAt,
-		&sc.LastModified,
-	)
+	var resultsJSON []byte
+	if input.Results != nil {
+		resultsJSON, err = json.Marshal(input.Results)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	var tagsJSON json.RawMessage
+	if input.Tags != nil {
+		tagsJSON, err = json.Marshal(input.Tags)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Prepare name - use empty string if nil (COALESCE in SQL handles this)
+	name := ""
+	if input.Name != nil {
+		name = *input.Name
+	}
+
+	// Prepare description
+	desc := pgtype.Text{Valid: false}
+	if input.Description != nil {
+		desc = pgtype.Text{String: *input.Description, Valid: true}
+	}
+
+	// Prepare favorite and hasAIParameters
+	favorite := false
+	if input.Favorite != nil {
+		favorite = *input.Favorite
+	}
+
+	hasAIParams := false
+	if input.HasAIParameters != nil {
+		hasAIParams = *input.HasAIParameters
+	}
+
+	row, err := s.store.Q().UpdateScenario(ctx, queries.UpdateScenarioParams{
+		ID:              scenarioID,
+		Name:            name,
+		Description:     desc,
+		Parameters:      paramsJSON,
+		Results:         resultsJSON,
+		Tags:            tagsJSON,
+		Favorite:        favorite,
+		HasAIParameters: hasAIParams,
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	scenario := sc.toScenario()
-	return &scenario, nil
+	sc := dbScenarioToScenario(row)
+	return &sc, nil
 }
 
 // Delete deletes a scenario
 func (s *Service) Delete(ctx context.Context, userID, scenarioID string) error {
 	// First verify ownership
-	existsQuery := `SELECT id FROM scenarios WHERE id = $1 AND "userId" = $2`
-	var existingID string
-	err := s.db.Main.QueryRow(ctx, existsQuery, scenarioID, userID).Scan(&existingID)
+	_, err := s.store.Q().GetScenarioByIDAndUser(ctx, queries.GetScenarioByIDAndUserParams{
+		ID:     scenarioID,
+		UserId: userID,
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrScenarioNotFound
@@ -272,42 +258,72 @@ func (s *Service) Delete(ctx context.Context, userID, scenarioID string) error {
 		return err
 	}
 
-	query := `DELETE FROM scenarios WHERE id = $1 AND "userId" = $2`
-	_, err = s.db.Main.Exec(ctx, query, scenarioID, userID)
-	return err
+	return s.store.Q().DeleteScenarioByIDAndUser(ctx, queries.DeleteScenarioByIDAndUserParams{
+		ID:     scenarioID,
+		UserId: userID,
+	})
 }
 
-// dbScenario is the database representation of a scenario
-type dbScenario struct {
-	ID              string
-	Name            string
-	Description     *string
-	Parameters      map[string]interface{}
-	Results         map[string]interface{}
-	Tags            []string
-	Favorite        bool
-	HasAIParameters bool
-	CreatedAt       time.Time
-	LastModified    time.Time
-}
+// dbScenarioToScenario converts a sqlc-generated Scenario to the API Scenario type.
+func dbScenarioToScenario(row queries.Scenario) Scenario {
+	// Convert description
+	var desc *string
+	if row.Description.Valid {
+		desc = &row.Description.String
+	}
 
-// toScenario converts a database scenario to API scenario
-func (sc *dbScenario) toScenario() Scenario {
-	tags := sc.Tags
+	// Convert parameters
+	var params map[string]interface{}
+	if len(row.Parameters) > 0 {
+		_ = json.Unmarshal(row.Parameters, &params)
+	}
+	if params == nil {
+		params = map[string]interface{}{}
+	}
+
+	// Convert results
+	var results map[string]interface{}
+	if len(row.Results) > 0 {
+		_ = json.Unmarshal(row.Results, &results)
+	}
+
+	// Convert tags
+	var tags []string
+	if len(row.Tags) > 0 {
+		_ = json.Unmarshal(row.Tags, &tags)
+	}
 	if tags == nil {
 		tags = []string{}
 	}
 
-	return Scenario{
-		ID:              sc.ID,
-		Name:            sc.Name,
-		Description:     sc.Description,
-		Parameters:      sc.Parameters,
-		Results:         sc.Results,
-		Tags:            tags,
-		Favorite:        sc.Favorite,
-		HasAIParameters: sc.HasAIParameters,
-		CreatedAt:       sc.CreatedAt.Format(time.RFC3339),
-		LastModified:    sc.LastModified.Format(time.RFC3339),
+	// Convert timestamps
+	createdAt := ""
+	if row.CreatedAt.Valid {
+		createdAt = row.CreatedAt.Time.Format(time.RFC3339)
 	}
+	lastModified := ""
+	if row.LastModified.Valid {
+		lastModified = row.LastModified.Time.Format(time.RFC3339)
+	}
+
+	return Scenario{
+		ID:              row.ID,
+		Name:            row.Name,
+		Description:     desc,
+		Parameters:      params,
+		Results:         results,
+		Tags:            tags,
+		Favorite:        row.Favorite,
+		HasAIParameters: row.HasAIParameters,
+		CreatedAt:       createdAt,
+		LastModified:    lastModified,
+	}
+}
+
+// ptrToString safely dereferences a string pointer, returning empty string if nil.
+func ptrToString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

@@ -2,95 +2,125 @@
 
 -- Audit Log Queries
 
--- name: CreateAuditLog :one
+-- name: CreateAuditLog :exec
 INSERT INTO audit_logs (
-    id, timestamp, "userId", "eventType", description, "ipAddress", "userAgent",
-    details, success, error, action, "complianceFlags", endpoint,
+    id, "createdAt", "userId", event, description, "ipAddress", "userAgent",
+    metadata, success, error, action, "complianceFlags", endpoint,
     "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity
 ) VALUES (
     $1, NOW(), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
-) RETURNING *;
+);
 
 -- name: GetAuditLogByID :one
-SELECT * FROM audit_logs WHERE id = $1;
+SELECT id, "createdAt", "userId", event::text, description, "ipAddress", "userAgent",
+    metadata, success, error, action, "complianceFlags", endpoint,
+    "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity
+FROM audit_logs WHERE id = $1;
 
 -- name: ListAuditLogs :many
-SELECT * FROM audit_logs
-ORDER BY timestamp DESC
+SELECT id, "createdAt", "userId", event::text, description, "ipAddress", "userAgent",
+    metadata, success, error, action, "complianceFlags", endpoint,
+    "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity
+FROM audit_logs
+ORDER BY "createdAt" DESC
 LIMIT $1 OFFSET $2;
 
 -- name: ListAuditLogsByUser :many
-SELECT * FROM audit_logs
+SELECT id, "createdAt", "userId", event::text, description, "ipAddress", "userAgent",
+    metadata, success, error, action, "complianceFlags", endpoint,
+    "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity
+FROM audit_logs
 WHERE "userId" = $1
-ORDER BY timestamp DESC
+ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3;
 
 -- name: ListAuditLogsByEventType :many
-SELECT * FROM audit_logs
-WHERE "eventType" = $1
-ORDER BY timestamp DESC
+SELECT id, "createdAt", "userId", event::text, description, "ipAddress", "userAgent",
+    metadata, success, error, action, "complianceFlags", endpoint,
+    "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity
+FROM audit_logs
+WHERE event::text = $1
+ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3;
 
 -- name: ListAuditLogsBySeverity :many
-SELECT * FROM audit_logs
+SELECT id, "createdAt", "userId", event::text, description, "ipAddress", "userAgent",
+    metadata, success, error, action, "complianceFlags", endpoint,
+    "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity
+FROM audit_logs
 WHERE severity = $1
-ORDER BY timestamp DESC
+ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3;
 
 -- name: ListAuditLogsByDateRange :many
-SELECT * FROM audit_logs
-WHERE timestamp >= $1 AND timestamp <= $2
-ORDER BY timestamp DESC
+SELECT id, "createdAt", "userId", event::text, description, "ipAddress", "userAgent",
+    metadata, success, error, action, "complianceFlags", endpoint,
+    "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity
+FROM audit_logs
+WHERE "createdAt" >= $1 AND "createdAt" <= $2
+ORDER BY "createdAt" DESC
 LIMIT $3 OFFSET $4;
 
 -- name: CountAuditLogsByEventType :many
-SELECT "eventType", COUNT(*) as count
+SELECT event::text, COUNT(*) as count
 FROM audit_logs
-WHERE timestamp >= $1 AND timestamp <= $2
-GROUP BY "eventType"
+WHERE "createdAt" >= $1 AND "createdAt" <= $2
+GROUP BY event::text
 ORDER BY count DESC;
 
 -- name: DeleteAuditLogsOlderThan :exec
-DELETE FROM audit_logs WHERE timestamp < $1;
+DELETE FROM audit_logs WHERE "createdAt" < $1;
 
 -- Admin Audit Log Queries
 
--- name: CreateAdminAuditLog :one
+-- name: CreateAdminAuditLog :exec
 INSERT INTO admin_audit_log (
     id, "adminId", "adminEmail", action, resource, "resourceId",
     details, "ipAddress", "userAgent", "createdAt"
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()
-) RETURNING *;
+);
 
 -- name: GetAdminAuditLogByID :one
-SELECT * FROM admin_audit_log WHERE id = $1;
+SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+    details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log WHERE id = $1;
 
 -- name: ListAdminAuditLogs :many
-SELECT * FROM admin_audit_log
+SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+    details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log
 ORDER BY "createdAt" DESC
 LIMIT $1 OFFSET $2;
 
 -- name: ListAdminAuditLogsByAdmin :many
-SELECT * FROM admin_audit_log
+SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+    details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log
 WHERE "adminId" = $1
 ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3;
 
 -- name: ListAdminAuditLogsByAction :many
-SELECT * FROM admin_audit_log
-WHERE action = $1
+SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+    details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log
+WHERE action::text = $1
 ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3;
 
 -- name: ListAdminAuditLogsByResource :many
-SELECT * FROM admin_audit_log
+SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+    details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log
 WHERE resource = $1 AND ("resourceId" = $2 OR $2 IS NULL)
 ORDER BY "createdAt" DESC
 LIMIT $3 OFFSET $4;
 
 -- name: ListAdminAuditLogsByDateRange :many
-SELECT * FROM admin_audit_log
+SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+    details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log
 WHERE "createdAt" >= $1 AND "createdAt" <= $2
 ORDER BY "createdAt" DESC
 LIMIT $3 OFFSET $4;

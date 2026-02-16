@@ -13,7 +13,7 @@ import (
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	dbstore "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/services/market/economics"
 	"github.com/estara-ai/www/internal/services/pdf"
 	"github.com/estara-ai/www/internal/services/reports"
@@ -22,28 +22,28 @@ import (
 
 // Handler handles investor report HTTP requests
 type Handler struct {
-	db      *postgres.DB
+	store   *dbstore.Store
 	cfg     *config.Config
 	service *reports.InvestorReportService
 	logger  *slog.Logger
 }
 
 // NewHandler creates a new report handler
-func NewHandler(db *postgres.DB, cfg *config.Config) *Handler {
+func NewHandler(store *dbstore.Store, cfg *config.Config) *Handler {
 	return &Handler{
-		db:      db,
+		store:   store,
 		cfg:     cfg,
-		service: reports.NewInvestorReportService(db, cfg),
+		service: reports.NewInvestorReportService(store, cfg),
 		logger:  slog.Default().With("component", "report_handler"),
 	}
 }
 
 // NewHandlerWithEconomics creates a report handler with economic data integration (ADR-069)
-func NewHandlerWithEconomics(db *postgres.DB, cfg *config.Config, econ economics.Provider) *Handler {
+func NewHandlerWithEconomics(store *dbstore.Store, cfg *config.Config, econ economics.Provider) *Handler {
 	return &Handler{
-		db:      db,
+		store:   store,
 		cfg:     cfg,
-		service: reports.NewInvestorReportServiceWithEconomics(db, cfg, econ),
+		service: reports.NewInvestorReportServiceWithEconomics(store, cfg, econ),
 		logger:  slog.Default().With("component", "report_handler"),
 	}
 }

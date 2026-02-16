@@ -19,7 +19,7 @@ import (
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	dbstore "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 	"github.com/estara-ai/www/internal/services/whitelist"
@@ -29,7 +29,7 @@ import (
 // Handler handles auth-related HTTP requests
 type Handler struct {
 	auth      *middleware.AuthMiddleware
-	db        *postgres.DB
+	store     *dbstore.Store
 	redis     *redisClient.Client
 	cfg       *config.Config
 	validate  *validator.Validate
@@ -39,10 +39,10 @@ type Handler struct {
 }
 
 // NewHandler creates a new auth handler
-func NewHandler(auth *middleware.AuthMiddleware, db *postgres.DB, redis *redisClient.Client, cfg *config.Config) *Handler {
+func NewHandler(auth *middleware.AuthMiddleware, store *dbstore.Store, redis *redisClient.Client, cfg *config.Config) *Handler {
 	h := &Handler{
 		auth:     auth,
-		db:       db,
+		store:    store,
 		redis:    redis,
 		cfg:      cfg,
 		validate: validator.New(),
@@ -157,17 +157,15 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	status := "healthy"
 	details := make(map[string]interface{})
 
-	// Check database
-	dbHealth := h.db.Health(ctx)
-	details["database"] = make(map[string]string)
-	for name, err := range dbHealth {
-		if err != nil {
-			status = "degraded"
-			details["database"].(map[string]string)[name] = err.Error()
-		} else {
-			details["database"].(map[string]string)[name] = "healthy"
-		}
+	// Check database via pool ping
+	dbStatus := make(map[string]string)
+	if err := h.store.Pool().Ping(ctx); err != nil {
+		status = "degraded"
+		dbStatus["main"] = err.Error()
+	} else {
+		dbStatus["main"] = "healthy"
 	}
+	details["database"] = dbStatus
 
 	// Check Redis
 	if h.redis != nil {
@@ -214,7 +212,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	allowed, retryAfter := h.checkRateLimit(ctx, email)
 	if !allowed {
 		h.logger.Warn("rate limited login attempt", "email", email)
-		h.logAuthAudit(ctx, r, "", "RATE_LIMIT", "Login blocked: account locked due to too many failed attempts", false, "account locked")
+		h.logAuthAudit(ctx, r, "", "RATE_LIMIT_EXCEEDED", "Login blocked: account locked due to too many failed attempts", false, "account locked")
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 		httputil.JSON(w, http.StatusTooManyRequests, map[string]interface{}{
 			"error":       "Account temporarily locked due to too many failed attempts",
@@ -229,7 +227,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	user, err := h.getUserByEmail(ctx, email)
 	if err != nil {
 		h.recordFailedLogin(ctx, email)
-		h.logAuthAudit(ctx, r, "", "USER_LOGIN", "Login failed: user not found", false, "user not found")
+		h.logAuthAudit(ctx, r, "", "USER_SIGNIN", "Login failed: user not found", false, "user not found")
 		h.logger.Warn("user not found", "email", email, "error", err.Error())
 		httputil.Unauthorized(w, "Invalid credentials")
 		return
@@ -239,7 +237,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	// Verify password
 	if user.Password == nil || *user.Password == "" {
 		h.recordFailedLogin(ctx, email)
-		h.logAuthAudit(ctx, r, user.ID, "USER_LOGIN", "Login failed: account has no password set", false, "no password")
+		h.logAuthAudit(ctx, r, user.ID, "USER_SIGNIN", "Login failed: account has no password set", false, "no password")
 		h.logger.Warn("user has no password", "email", email)
 		httputil.Unauthorized(w, "Invalid credentials")
 		return
@@ -248,7 +246,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("comparing password", "hashLen", len(*user.Password), "inputLen", len(req.Password))
 	if err := bcrypt.CompareHashAndPassword([]byte(*user.Password), []byte(req.Password)); err != nil {
 		h.recordFailedLogin(ctx, email)
-		h.logAuthAudit(ctx, r, user.ID, "USER_LOGIN", "Login failed: invalid password", false, "invalid password")
+		h.logAuthAudit(ctx, r, user.ID, "USER_SIGNIN", "Login failed: invalid password", false, "invalid password")
 		h.logger.Warn("invalid password", "email", email, "bcryptError", err.Error())
 		httputil.Unauthorized(w, "Invalid credentials")
 		return
@@ -260,7 +258,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	// Check whitelist (beta access control)
 	if h.whitelist != nil && !h.whitelist.IsAllowed(ctx, email) {
-		h.logAuthAudit(ctx, r, user.ID, "USER_LOGIN", "Login blocked: email not whitelisted", false, "not whitelisted")
+		h.logAuthAudit(ctx, r, user.ID, "USER_SIGNIN", "Login blocked: email not whitelisted", false, "not whitelisted")
 		h.logger.Warn("login blocked by whitelist", "email", email)
 		httputil.JSON(w, http.StatusForbidden, map[string]interface{}{
 			"error":   "access_denied",
@@ -336,7 +334,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		CSRFToken:    csrfToken,      // ADR-066: CSRF token for cookie-based auth
 	}
 
-	h.logAuthAudit(ctx, r, user.ID, "USER_LOGIN", "User logged in successfully", true, "")
+	h.logAuthAudit(ctx, r, user.ID, "USER_SIGNIN", "User logged in successfully", true, "")
 	h.logger.Info("login successful", "user_id", user.ID, "email", email)
 	// Return response directly without wrapping in data object to match www_v1 format
 	httputil.JSON(w, http.StatusOK, response)
@@ -430,7 +428,7 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		CSRFToken:    csrfToken,     // ADR-066: CSRF token
 	}
 
-	h.logAuthAudit(ctx, r, user.ID, "TOKEN_REFRESH", "Token refreshed successfully", true, "")
+	h.logAuthAudit(ctx, r, user.ID, "AUTH_TOKEN_REFRESH", "Token refreshed successfully", true, "")
 	h.logger.Info("token refreshed", "user_id", user.ID)
 	// Return response directly without wrapping in data object to match www_v1 format
 	httputil.JSON(w, http.StatusOK, response)
@@ -536,7 +534,7 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		userID = claims.UserID
 	}
 
-	h.logAuthAudit(ctx, r, userID, "USER_LOGOUT", "User logged out", true, "")
+	h.logAuthAudit(ctx, r, userID, "USER_SIGNOUT", "User logged out", true, "")
 
 	// ADR-066: Clear all authentication cookies
 	middleware.ClearAuthCookies(w)
@@ -581,96 +579,148 @@ type V2Quota struct {
 	PeriodEndDate   time.Time
 }
 
-// getUserByEmail looks up a user by email
+// getUserByEmail looks up a user by email using sqlc-generated query
 func (h *Handler) getUserByEmail(ctx context.Context, email string) (*User, error) {
-	query := `
-		SELECT id, email, "firstName", "lastName", password, role, theme, "hasDataTier"
-		FROM users
-		WHERE email = $1
-	`
-
-	var user User
-	err := h.db.Main.QueryRow(ctx, query, email).Scan(
-		&user.ID,
-		&user.Email,
-		&user.FirstName,
-		&user.LastName,
-		&user.Password,
-		&user.Role,
-		&user.Theme,
-		&user.HasDataTier,
-	)
+	dbUser, err := h.store.Q().GetUserByEmail(ctx, email)
 	if err != nil {
 		return nil, err
 	}
-	// ClerkUserID is no longer used - set to empty string for backwards compatibility
-	user.ClerkUserID = ""
 
-	return &user, nil
+	return mapDBUserToLocal(&dbUser), nil
 }
 
-// getUserByID looks up a user by ID
+// getUserByID looks up a user by ID using sqlc-generated query
 func (h *Handler) getUserByID(ctx context.Context, userID string) (*User, error) {
-	query := `
-		SELECT id, email, "firstName", "lastName", password, role, theme, "hasDataTier"
-		FROM users
-		WHERE id = $1
-	`
-
-	var user User
-	err := h.db.Main.QueryRow(ctx, query, userID).Scan(
-		&user.ID,
-		&user.Email,
-		&user.FirstName,
-		&user.LastName,
-		&user.Password,
-		&user.Role,
-		&user.Theme,
-		&user.HasDataTier,
-	)
+	dbUser, err := h.store.Q().GetUserByID(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	// ClerkUserID is no longer used - set to empty string for backwards compatibility
-	user.ClerkUserID = ""
 
-	return &user, nil
+	return mapDBUserToLocal(&dbUser), nil
 }
 
-// getV2Quota retrieves the V2 evaluation quota for a user
+// getV2Quota retrieves the V2 evaluation quota for a user using sqlc-generated query.
+// Self-healing: if no quota exists but an active subscription does, auto-provisions the quota.
+// This handles webhook race conditions where checkout.session.completed and
+// customer.subscription.created fire simultaneously and quota creation is missed.
 func (h *Handler) getV2Quota(ctx context.Context, userID string) (*V2Quota, error) {
-	query := `
-		SELECT id, user_id, tier, annual_limit, used_this_period,
-		       period_start_date, period_end_date
-		FROM v2_evaluation_quotas
-		WHERE user_id = $1
-	`
-
-	var quota V2Quota
-	err := h.db.Main.QueryRow(ctx, query, userID).Scan(
-		&quota.ID,
-		&quota.UserID,
-		&quota.Tier,
-		&quota.AnnualLimit,
-		&quota.UsedThisPeriod,
-		&quota.PeriodStartDate,
-		&quota.PeriodEndDate,
-	)
+	row, err := h.store.Q().GetV2EvaluationQuota(ctx, userID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
+			// Self-heal: check for active subscription and auto-provision quota
+			return h.autoProvisionQuota(ctx, userID)
 		}
 		return nil, err
 	}
 
-	return &quota, nil
+	quota := &V2Quota{
+		ID:             row.ID,
+		UserID:         row.UserID,
+		Tier:           row.Tier,
+		AnnualLimit:    int(row.AnnualLimit),
+		UsedThisPeriod: int(row.UsedThisPeriod),
+	}
+	if row.PeriodStartDate.Valid {
+		quota.PeriodStartDate = row.PeriodStartDate.Time
+	}
+	if row.PeriodEndDate.Valid {
+		quota.PeriodEndDate = row.PeriodEndDate.Time
+	}
+
+	return quota, nil
 }
 
-// updateLastLogin updates the user's last login timestamp
+// autoProvisionQuota checks for an active subscription and creates the missing v2_evaluation_quota.
+// Uses sqlc-generated queries for both subscription lookup and quota upsert.
+func (h *Handler) autoProvisionQuota(ctx context.Context, userID string) (*V2Quota, error) {
+	// Check if user has an active subscription (includes ACTIVE and TRIALING)
+	sub, err := h.store.Q().GetActiveSubscriptionForQuota(ctx, userID)
+	if err != nil {
+		// No active subscription — not an error, just no quota
+		return nil, nil
+	}
+
+	// Map subscription tier to V2 tier
+	v2Tier, annualLimit := mapSubTierToV2(sub.Tier)
+
+	h.logger.Info("auto-provisioning missing v2_evaluation_quota from active subscription",
+		"user_id", userID,
+		"sub_tier", sub.Tier,
+		"v2_tier", v2Tier,
+	)
+
+	// Determine period dates
+	now := time.Now()
+	var periodStart, periodEnd time.Time
+	if sub.CurrentPeriodStart.Valid {
+		periodStart = sub.CurrentPeriodStart.Time
+	}
+	if sub.CurrentPeriodEnd.Valid {
+		periodEnd = sub.CurrentPeriodEnd.Time
+	}
+	if periodEnd.Before(now) {
+		// Subscription period already ended, use current time
+		periodStart = now
+		periodEnd = now.AddDate(1, 0, 0)
+	}
+
+	// Generate a unique ID for the quota record
+	idBytes := make([]byte, 16)
+	_, _ = rand.Read(idBytes)
+	id := hex.EncodeToString(idBytes)
+
+	// Upsert the quota using sqlc
+	row, err := h.store.Q().UpsertV2EvaluationQuota(ctx, queries.UpsertV2EvaluationQuotaParams{
+		ID:              id,
+		UserID:          userID,
+		Column3:         v2Tier,
+		AnnualLimit:     int32(annualLimit),
+		UsedThisPeriod:  0,
+		PeriodStartDate: pgtype.Timestamp{Time: periodStart, Valid: true},
+		PeriodEndDate:   pgtype.Timestamp{Time: periodEnd, Valid: true},
+	})
+	if err != nil {
+		h.logger.Error("failed to auto-provision v2_evaluation_quota", "error", err, "user_id", userID)
+		return nil, nil
+	}
+
+	quota := &V2Quota{
+		ID:             row.ID,
+		UserID:         row.UserID,
+		Tier:           row.Tier,
+		AnnualLimit:    int(row.AnnualLimit),
+		UsedThisPeriod: int(row.UsedThisPeriod),
+	}
+	if row.PeriodStartDate.Valid {
+		quota.PeriodStartDate = row.PeriodStartDate.Time
+	}
+	if row.PeriodEndDate.Valid {
+		quota.PeriodEndDate = row.PeriodEndDate.Time
+	}
+
+	return quota, nil
+}
+
+// mapSubTierToV2 maps a subscription tier to a V2 tier name and annual limit.
+func mapSubTierToV2(subTier string) (string, int) {
+	switch strings.ToUpper(subTier) {
+	case "PROFESSIONAL_ALLOCATOR":
+		return "V2_PROFESSIONAL_ALLOCATOR", 1000
+	case "ANNUAL_ACCESS":
+		return "V2_ANNUAL_ACCESS", 500
+	case "AAPI_ALLOCATOR":
+		return "V2_PROFESSIONAL_ALLOCATOR", 1000
+	case "AAPI_INVESTOR":
+		return "V2_ANNUAL_ACCESS", 500
+	default:
+		return "V2_ANNUAL_ACCESS", 500
+	}
+}
+
+// updateLastLogin updates the user's updatedAt timestamp on login.
+// Note: "lastLoginAt" column does not exist in schema; using UpdateUserUpdatedAt instead.
 func (h *Handler) updateLastLogin(ctx context.Context, userID string) error {
-	query := `UPDATE users SET "lastLoginAt" = NOW(), "updatedAt" = NOW() WHERE id = $1`
-	_, err := h.db.Main.Exec(ctx, query, userID)
-	return err
+	return h.store.Q().UpdateUserUpdatedAt(ctx, userID)
 }
 
 // buildEntitlements builds the entitlements object for a user
@@ -759,11 +809,11 @@ func (h *Handler) logAuthAudit(ctx context.Context, r *http.Request, userID, eve
 		clientIP = xri
 	}
 
-	q := queries.New(h.db.Main)
-	_, err := q.CreateAuditLog(ctx, queries.CreateAuditLogParams{
+	q := h.store.Q()
+	err := q.CreateAuditLog(ctx, queries.CreateAuditLogParams{
 		ID:          id,
 		UserId:      pgtype.Text{String: userID, Valid: userID != ""},
-		EventType:   eventType,
+		Event:       eventType,
 		Description: pgtype.Text{String: description, Valid: true},
 		IpAddress:   pgtype.Text{String: clientIP, Valid: true},
 		UserAgent:   pgtype.Text{String: r.UserAgent(), Valid: true},
@@ -888,4 +938,31 @@ func getTierFeaturesAndPrice(tier string) (map[string]bool, int) {
 	default:
 		return features, 0
 	}
+}
+
+// mapDBUserToLocal converts a sqlc queries.User to the local auth User struct.
+func mapDBUserToLocal(dbUser *queries.User) *User {
+	user := &User{
+		ID:    dbUser.ID,
+		Email: dbUser.Email,
+		Role:  dbUser.Role,
+		// ClerkUserID is no longer used - set to empty string for backwards compatibility
+		ClerkUserID: "",
+	}
+	if dbUser.FirstName.Valid {
+		user.FirstName = &dbUser.FirstName.String
+	}
+	if dbUser.LastName.Valid {
+		user.LastName = &dbUser.LastName.String
+	}
+	if dbUser.Password.Valid {
+		user.Password = &dbUser.Password.String
+	}
+	if dbUser.Theme.Valid {
+		user.Theme = &dbUser.Theme.String
+	}
+	if dbUser.HasDataTier.Valid {
+		user.HasDataTier = &dbUser.HasDataTier.String
+	}
+	return user
 }

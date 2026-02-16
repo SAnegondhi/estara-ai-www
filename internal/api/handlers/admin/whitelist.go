@@ -12,7 +12,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/email"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -46,9 +48,9 @@ type UpdateWhitelistRequest struct {
 
 // WhitelistSummary represents aggregate whitelist statistics
 type WhitelistSummary struct {
-	Total      int64 `json:"total"`
-	Active     int64 `json:"active"`
-	EmailCount int64 `json:"emailCount"`
+	Total       int64 `json:"total"`
+	Active      int64 `json:"active"`
+	EmailCount  int64 `json:"emailCount"`
 	DomainCount int64 `json:"domainCount"`
 }
 
@@ -342,31 +344,49 @@ func (h *Handler) DeleteWhitelistEntry(w http.ResponseWriter, r *http.Request) {
 // Whitelist Helper Methods
 // ===============================
 
+// mapWhitelistedEmailRow converts a sqlc row type to the handler's WhitelistedEmail type
+func mapWhitelistedEmailRow(id, emailAddr string, name, addedBy, reason pgtype.Text, typ string, active bool, createdAt, updatedAt pgtype.Timestamp) WhitelistedEmail {
+	e := WhitelistedEmail{
+		ID:     id,
+		Email:  emailAddr,
+		Type:   typ,
+		Active: active,
+	}
+	if name.Valid {
+		e.Name = &name.String
+	}
+	if addedBy.Valid {
+		e.AddedBy = &addedBy.String
+	}
+	if reason.Valid {
+		e.Reason = &reason.String
+	}
+	if createdAt.Valid {
+		e.CreatedAt = createdAt.Time
+	}
+	if updatedAt.Valid {
+		e.UpdatedAt = updatedAt.Time
+	}
+	return e
+}
+
 func (h *Handler) listWhitelist(ctx context.Context, limit, offset int) ([]WhitelistedEmail, int64, error) {
-	var total int64
-	err := h.db.Main.QueryRow(ctx, `SELECT COUNT(*) FROM whitelisted_emails`).Scan(&total)
+	total, err := h.store.Q().CountWhitelistedEmails(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT id, email, name, type::text, "addedBy", reason, active, "createdAt", "updatedAt"
-		FROM whitelisted_emails
-		ORDER BY "createdAt" DESC
-		LIMIT $1 OFFSET $2
-	`, limit, offset)
+	rows, err := h.store.Q().ListWhitelistedEmails(ctx, queries.ListWhitelistedEmailsParams{
+		Limit:  int32(limit),
+		Offset: int32(offset),
+	})
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
 
 	entries := []WhitelistedEmail{}
-	for rows.Next() {
-		var e WhitelistedEmail
-		if err := rows.Scan(&e.ID, &e.Email, &e.Name, &e.Type, &e.AddedBy, &e.Reason, &e.Active, &e.CreatedAt, &e.UpdatedAt); err != nil {
-			return nil, 0, err
-		}
-		entries = append(entries, e)
+	for _, r := range rows {
+		entries = append(entries, mapWhitelistedEmailRow(r.ID, r.Email, r.Name, r.AddedBy, r.Reason, r.Type, r.Active, r.CreatedAt, r.UpdatedAt))
 	}
 	return entries, total, nil
 }
@@ -374,129 +394,113 @@ func (h *Handler) listWhitelist(ctx context.Context, limit, offset int) ([]White
 func (h *Handler) searchWhitelist(ctx context.Context, search string, limit, offset int) ([]WhitelistedEmail, int64, error) {
 	pattern := "%" + strings.ToLower(search) + "%"
 
-	var total int64
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT COUNT(*) FROM whitelisted_emails
-		WHERE LOWER(email) LIKE $1 OR LOWER(COALESCE(name, '')) LIKE $1
-	`, pattern).Scan(&total)
+	total, err := h.store.Q().CountSearchWhitelistedEmails(ctx, pattern)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT id, email, name, type::text, "addedBy", reason, active, "createdAt", "updatedAt"
-		FROM whitelisted_emails
-		WHERE LOWER(email) LIKE $1 OR LOWER(COALESCE(name, '')) LIKE $1
-		ORDER BY "createdAt" DESC
-		LIMIT $2 OFFSET $3
-	`, pattern, limit, offset)
+	rows, err := h.store.Q().SearchWhitelistedEmails(ctx, queries.SearchWhitelistedEmailsParams{
+		Email:  pattern,
+		Limit:  int32(limit),
+		Offset: int32(offset),
+	})
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
 
 	entries := []WhitelistedEmail{}
-	for rows.Next() {
-		var e WhitelistedEmail
-		if err := rows.Scan(&e.ID, &e.Email, &e.Name, &e.Type, &e.AddedBy, &e.Reason, &e.Active, &e.CreatedAt, &e.UpdatedAt); err != nil {
-			return nil, 0, err
-		}
-		entries = append(entries, e)
+	for _, r := range rows {
+		entries = append(entries, mapWhitelistedEmailRow(r.ID, r.Email, r.Name, r.AddedBy, r.Reason, r.Type, r.Active, r.CreatedAt, r.UpdatedAt))
 	}
 	return entries, total, nil
 }
 
 func (h *Handler) getWhitelistByID(ctx context.Context, id string) (*WhitelistedEmail, error) {
-	var e WhitelistedEmail
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT id, email, name, type::text, "addedBy", reason, active, "createdAt", "updatedAt"
-		FROM whitelisted_emails WHERE id = $1
-	`, id).Scan(&e.ID, &e.Email, &e.Name, &e.Type, &e.AddedBy, &e.Reason, &e.Active, &e.CreatedAt, &e.UpdatedAt)
+	row, err := h.store.Q().GetWhitelistedEmailByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	e := mapWhitelistedEmailRow(row.ID, row.Email, row.Name, row.AddedBy, row.Reason, row.Type, row.Active, row.CreatedAt, row.UpdatedAt)
 	return &e, nil
 }
 
-func (h *Handler) getWhitelistByEmail(ctx context.Context, email string) (*WhitelistedEmail, error) {
-	var e WhitelistedEmail
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT id, email, name, type::text, "addedBy", reason, active, "createdAt", "updatedAt"
-		FROM whitelisted_emails WHERE email = $1
-	`, email).Scan(&e.ID, &e.Email, &e.Name, &e.Type, &e.AddedBy, &e.Reason, &e.Active, &e.CreatedAt, &e.UpdatedAt)
+func (h *Handler) getWhitelistByEmail(ctx context.Context, emailAddr string) (*WhitelistedEmail, error) {
+	row, err := h.store.Q().GetWhitelistedEmailByEmail(ctx, emailAddr)
 	if err != nil {
 		return nil, err
 	}
+	e := mapWhitelistedEmailRow(row.ID, row.Email, row.Name, row.AddedBy, row.Reason, row.Type, row.Active, row.CreatedAt, row.UpdatedAt)
 	return &e, nil
 }
 
 func (h *Handler) createWhitelistEntry(ctx context.Context, id, emailAddr string, name *string, entryType, addedBy string, reason *string) (*WhitelistedEmail, error) {
-	var e WhitelistedEmail
-	err := h.db.Main.QueryRow(ctx, `
-		INSERT INTO whitelisted_emails (id, email, name, type, "addedBy", reason, active, "createdAt", "updatedAt")
-		VALUES ($1, $2, $3, $4::"WhitelistType", $5, $6, true, NOW(), NOW())
-		RETURNING id, email, name, type::text, "addedBy", reason, active, "createdAt", "updatedAt"
-	`, id, emailAddr, name, entryType, addedBy, reason).Scan(
-		&e.ID, &e.Email, &e.Name, &e.Type, &e.AddedBy, &e.Reason, &e.Active, &e.CreatedAt, &e.UpdatedAt,
-	)
+	params := queries.CreateWhitelistedEmailParams{
+		ID:      id,
+		Email:   emailAddr,
+		Column4: entryType,
+	}
+	if name != nil {
+		params.Name = pgtype.Text{String: *name, Valid: true}
+	}
+	params.AddedBy = pgtype.Text{String: addedBy, Valid: true}
+	if reason != nil {
+		params.Reason = pgtype.Text{String: *reason, Valid: true}
+	}
+
+	row, err := h.store.Q().CreateWhitelistedEmail(ctx, params)
 	if err != nil {
 		return nil, err
 	}
+	e := mapWhitelistedEmailRow(row.ID, row.Email, row.Name, row.AddedBy, row.Reason, row.Type, row.Active, row.CreatedAt, row.UpdatedAt)
 	return &e, nil
 }
 
 func (h *Handler) updateWhitelistEntry(ctx context.Context, id string, name, reason *string) (*WhitelistedEmail, error) {
-	var e WhitelistedEmail
-	err := h.db.Main.QueryRow(ctx, `
-		UPDATE whitelisted_emails SET
-			name = COALESCE($2, name),
-			reason = COALESCE($3, reason),
-			"updatedAt" = NOW()
-		WHERE id = $1
-		RETURNING id, email, name, type::text, "addedBy", reason, active, "createdAt", "updatedAt"
-	`, id, name, reason).Scan(
-		&e.ID, &e.Email, &e.Name, &e.Type, &e.AddedBy, &e.Reason, &e.Active, &e.CreatedAt, &e.UpdatedAt,
-	)
+	params := queries.UpdateWhitelistedEmailParams{
+		ID: id,
+	}
+	if name != nil {
+		params.Name = pgtype.Text{String: *name, Valid: true}
+	}
+	if reason != nil {
+		params.Reason = pgtype.Text{String: *reason, Valid: true}
+	}
+
+	row, err := h.store.Q().UpdateWhitelistedEmail(ctx, params)
 	if err != nil {
 		return nil, err
 	}
+	e := mapWhitelistedEmailRow(row.ID, row.Email, row.Name, row.AddedBy, row.Reason, row.Type, row.Active, row.CreatedAt, row.UpdatedAt)
 	return &e, nil
 }
 
 func (h *Handler) toggleWhitelistEntry(ctx context.Context, id string, active bool) (*WhitelistedEmail, error) {
-	var e WhitelistedEmail
-	err := h.db.Main.QueryRow(ctx, `
-		UPDATE whitelisted_emails SET active = $2, "updatedAt" = NOW()
-		WHERE id = $1
-		RETURNING id, email, name, type::text, "addedBy", reason, active, "createdAt", "updatedAt"
-	`, id, active).Scan(
-		&e.ID, &e.Email, &e.Name, &e.Type, &e.AddedBy, &e.Reason, &e.Active, &e.CreatedAt, &e.UpdatedAt,
-	)
+	row, err := h.store.Q().ToggleWhitelistedEmail(ctx, queries.ToggleWhitelistedEmailParams{
+		ID:     id,
+		Active: active,
+	})
 	if err != nil {
 		return nil, err
 	}
+	e := mapWhitelistedEmailRow(row.ID, row.Email, row.Name, row.AddedBy, row.Reason, row.Type, row.Active, row.CreatedAt, row.UpdatedAt)
 	return &e, nil
 }
 
 func (h *Handler) deleteWhitelistEntry(ctx context.Context, id string) error {
-	_, err := h.db.Main.Exec(ctx, `DELETE FROM whitelisted_emails WHERE id = $1`, id)
-	return err
+	return h.store.Q().DeleteWhitelistedEmail(ctx, id)
 }
 
 func (h *Handler) getWhitelistSummary(ctx context.Context) (*WhitelistSummary, error) {
-	var s WhitelistSummary
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT
-			COUNT(*) as total,
-			COUNT(*) FILTER (WHERE active = true) as active,
-			COUNT(*) FILTER (WHERE type = 'EMAIL') as email_count,
-			COUNT(*) FILTER (WHERE type = 'DOMAIN') as domain_count
-		FROM whitelisted_emails
-	`).Scan(&s.Total, &s.Active, &s.EmailCount, &s.DomainCount)
+	row, err := h.store.Q().GetWhitelistSummary(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &s, nil
+	return &WhitelistSummary{
+		Total:       row.Total,
+		Active:      row.Active,
+		EmailCount:  row.EmailCount,
+		DomainCount: row.DomainCount,
+	}, nil
 }
 
 func (h *Handler) getAdminEmailFromRequest(r *http.Request) string {

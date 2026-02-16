@@ -3,7 +3,7 @@
 -- Author: Claude
 -- Date: 2026-02-13
 
-INSERT INTO cron_job_configs (id, name, description, schedule, endpoint, "isEnabled", "timeoutMs", "maxConsecutiveFailures", "createdAt", "updatedAt")
+INSERT INTO cron_job_configs (id, name, description, schedule, endpoint, "isEnabled", "timeoutMs", "maxFailures", "createdAt", "updatedAt")
 VALUES
     ('cron_market_alerts',       'market-alerts',         'Process pending market alerts',                '0 */6 * * *',  '/api/cron/market-alerts',         true, 300000, 3, NOW(), NOW()),
     ('cron_cache_cleanup',       'cache-cleanup',         'Clean up expired cache entries',               '0 3 * * *',    '/api/cron/cache-cleanup',         true, 300000, 3, NOW(), NOW()),

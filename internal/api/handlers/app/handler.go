@@ -7,7 +7,7 @@ import (
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	dbstore "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/services/entitlements"
 	"github.com/estara-ai/www/internal/services/scenarios"
 	"github.com/estara-ai/www/pkg/httputil"
@@ -15,7 +15,7 @@ import (
 
 // Handler handles app-related HTTP requests
 type Handler struct {
-	db                  *postgres.DB
+	store               *dbstore.Store
 	cfg                 *config.Config
 	entitlementService  *entitlements.Service
 	logger              *slog.Logger
@@ -23,12 +23,12 @@ type Handler struct {
 }
 
 // NewHandler creates a new app handler
-func NewHandler(db *postgres.DB, cfg *config.Config) *Handler {
-	scenariosService := scenarios.NewService(db, cfg)
+func NewHandler(store *dbstore.Store, cfg *config.Config) *Handler {
+	scenariosService := scenarios.NewService(store, cfg)
 	return &Handler{
-		db:                 db,
+		store:              store,
 		cfg:                cfg,
-		entitlementService: entitlements.NewService(db, cfg),
+		entitlementService: entitlements.NewService(store, cfg),
 		logger:             slog.Default().With("component", "app_handler"),
 		Scenarios:          NewScenariosHandler(scenariosService),
 	}

@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	db "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/queries"
 )
 
@@ -25,7 +25,7 @@ var (
 
 // Service handles IAP operations for both iOS and Android
 type Service struct {
-	db     *postgres.DB
+	store  *db.Store
 	apple  *AppleService
 	google *GoogleService
 	cfg    *config.Config
@@ -33,7 +33,7 @@ type Service struct {
 }
 
 // NewService creates a new IAP service
-func NewService(ctx context.Context, db *postgres.DB, cfg *config.Config) (*Service, error) {
+func NewService(ctx context.Context, store *db.Store, cfg *config.Config) (*Service, error) {
 	apple := NewAppleService(cfg)
 
 	google, err := NewGoogleService(ctx, cfg)
@@ -43,7 +43,7 @@ func NewService(ctx context.Context, db *postgres.DB, cfg *config.Config) (*Serv
 	}
 
 	return &Service{
-		db:     db,
+		store:  store,
 		apple:  apple,
 		google: google,
 		cfg:    cfg,
@@ -75,7 +75,7 @@ func (s *Service) ValidateAndroidReceipt(ctx context.Context, req *GoogleReceipt
 
 // SyncEntitlements syncs IAP subscription with user entitlements
 func (s *Service) SyncEntitlements(ctx context.Context, userID string, req *SyncEntitlementsRequest) (*SyncEntitlementsResponse, error) {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	// Validate based on platform
 	var tier SubscriptionTier

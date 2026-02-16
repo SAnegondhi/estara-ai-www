@@ -9,7 +9,7 @@ import (
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	db "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/services/billing"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -22,9 +22,9 @@ type Handler struct {
 }
 
 // NewHandler creates a new billing handler
-func NewHandler(db *postgres.DB, cfg *config.Config) *Handler {
+func NewHandler(store *db.Store, cfg *config.Config) *Handler {
 	return &Handler{
-		service: billing.NewService(db, cfg),
+		service: billing.NewService(store, cfg),
 		cfg:     cfg,
 		logger:  slog.Default().With("component", "billing_handler"),
 	}

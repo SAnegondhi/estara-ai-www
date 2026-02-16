@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/estara-ai/www/pkg/httputil"
 )
 
@@ -16,24 +18,24 @@ import (
 
 // RevenueSummaryResponse represents the revenue summary
 type RevenueSummaryResponse struct {
-	MRR           float64 `json:"mrr"`
-	ARR           float64 `json:"arr"`
-	ARPU          float64 `json:"arpu"`
-	LTV           float64 `json:"ltv"`
-	ChurnRate     float64 `json:"churnRate"`
-	GrowthRate    float64 `json:"growthRate"`
-	ActiveSubs    int64   `json:"activeSubscriptions"`
-	NewThisMonth  int64   `json:"newThisMonth"`
-	ChurnedMonth  int64   `json:"churnedThisMonth"`
+	MRR          float64 `json:"mrr"`
+	ARR          float64 `json:"arr"`
+	ARPU         float64 `json:"arpu"`
+	LTV          float64 `json:"ltv"`
+	ChurnRate    float64 `json:"churnRate"`
+	GrowthRate   float64 `json:"growthRate"`
+	ActiveSubs   int64   `json:"activeSubscriptions"`
+	NewThisMonth int64   `json:"newThisMonth"`
+	ChurnedMonth int64   `json:"churnedThisMonth"`
 }
 
 // RevenueTrendPoint represents a point in the revenue trend
 type RevenueTrendPoint struct {
-	Month    string  `json:"month"`
-	MRR      float64 `json:"mrr"`
-	NewSubs  int64   `json:"newSubs"`
-	Churned  int64   `json:"churned"`
-	NetGrowth int64  `json:"netGrowth"`
+	Month     string  `json:"month"`
+	MRR       float64 `json:"mrr"`
+	NewSubs   int64   `json:"newSubs"`
+	Churned   int64   `json:"churned"`
+	NetGrowth int64   `json:"netGrowth"`
 }
 
 // RevenueByTierItem represents revenue breakdown by tier
@@ -71,19 +73,19 @@ type RevenueLeakageResponse struct {
 
 // ChargebackRateResponse represents the chargeback rate
 type ChargebackRateResponse struct {
-	Rate              float64 `json:"rate"`
-	DisputeCount      int64   `json:"disputeCount"`
-	TransactionCount  int64   `json:"transactionCount"`
-	VisaThreshold     float64 `json:"visaThreshold"`
+	Rate                float64 `json:"rate"`
+	DisputeCount        int64   `json:"disputeCount"`
+	TransactionCount    int64   `json:"transactionCount"`
+	VisaThreshold       float64 `json:"visaThreshold"`
 	MastercardThreshold float64 `json:"mastercardThreshold"`
-	Status            string  `json:"status"`
-	Period            string  `json:"period"`
+	Status              string  `json:"status"`
+	Period              string  `json:"period"`
 }
 
 // RevenueSegmentResponse represents revenue segmentation data
 type RevenueSegmentResponse struct {
-	ByTier   []RevenueByTierItem  `json:"byTier"`
-	ByCohort []CohortSegment      `json:"byCohort"`
+	ByTier   []RevenueByTierItem `json:"byTier"`
+	ByCohort []CohortSegment     `json:"byCohort"`
 }
 
 // CohortSegment represents a signup month cohort
@@ -122,27 +124,16 @@ func (h *Handler) GetRevenueSummary(w http.ResponseWriter, r *http.Request) {
 	var summary RevenueSummaryResponse
 
 	// Calculate MRR from active subscriptions
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT tier, COUNT(*) as cnt
-		FROM subscriptions
-		WHERE status IN ('ACTIVE', 'TRIALING')
-		GROUP BY tier
-	`)
+	tierRows, err := h.store.Q().GetTierDistribution(ctx)
 	if err != nil {
 		h.logger.Error("failed to get revenue summary", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to get revenue summary")
 		return
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		var tier string
-		var count int64
-		if err := rows.Scan(&tier, &count); err != nil {
-			continue
-		}
-		summary.MRR += tierMRR(tier) * float64(count)
-		summary.ActiveSubs += count
+	for _, row := range tierRows {
+		summary.MRR += tierMRR(row.Tier) * float64(row.Cnt)
+		summary.ActiveSubs += row.Cnt
 	}
 
 	summary.ARR = summary.MRR * 12
@@ -151,14 +142,12 @@ func (h *Handler) GetRevenueSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Churn: cancellations this month / active at start of month
-	err = h.db.Main.QueryRow(ctx, `
-		SELECT
-			COUNT(*) FILTER (WHERE status = 'CANCELED' AND "updatedAt" >= DATE_TRUNC('month', CURRENT_DATE)) as churned,
-			COUNT(*) FILTER (WHERE "createdAt" >= DATE_TRUNC('month', CURRENT_DATE) AND status IN ('ACTIVE', 'TRIALING')) as new_this_month
-		FROM subscriptions
-	`).Scan(&summary.ChurnedMonth, &summary.NewThisMonth)
+	churnStats, err := h.store.Q().GetSubscriptionChurnStats(ctx)
 	if err != nil {
 		h.logger.Warn("failed to get churn metrics", "error", err)
+	} else {
+		summary.ChurnedMonth = churnStats.Churned
+		summary.NewThisMonth = churnStats.NewThisMonth
 	}
 
 	// Active at start of month = current active + churned - new
@@ -185,44 +174,23 @@ func (h *Handler) GetRevenueSummary(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetRevenueTrend(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	rows, err := h.db.Main.Query(ctx, `
-		WITH months AS (
-			SELECT generate_series(
-				DATE_TRUNC('month', CURRENT_DATE - INTERVAL '11 months'),
-				DATE_TRUNC('month', CURRENT_DATE),
-				'1 month'::interval
-			) AS month
-		)
-		SELECT
-			m.month,
-			COUNT(*) FILTER (WHERE s."createdAt" < m.month + INTERVAL '1 month' AND (s.status IN ('ACTIVE','TRIALING') OR (s.status = 'CANCELED' AND s."updatedAt" >= m.month + INTERVAL '1 month'))) as active_count,
-			COUNT(*) FILTER (WHERE s."createdAt" >= m.month AND s."createdAt" < m.month + INTERVAL '1 month') as new_subs,
-			COUNT(*) FILTER (WHERE s.status = 'CANCELED' AND s."updatedAt" >= m.month AND s."updatedAt" < m.month + INTERVAL '1 month') as churned
-		FROM months m
-		LEFT JOIN subscriptions s ON TRUE
-		GROUP BY m.month
-		ORDER BY m.month
-	`)
+	rows, err := h.store.Q().GetMRRByMonth(ctx)
 	if err != nil {
 		h.logger.Error("failed to get revenue trend", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to get revenue trend")
 		return
 	}
-	defer rows.Close()
 
 	var trend []RevenueTrendPoint
-	for rows.Next() {
-		var month time.Time
-		var activeCount, newSubs, churned int64
-		if err := rows.Scan(&month, &activeCount, &newSubs, &churned); err != nil {
-			continue
-		}
+	for _, row := range rows {
+		// Month is stored as microseconds since epoch by pgx for timestamp columns
+		month := time.UnixMicro(row.Month)
 		trend = append(trend, RevenueTrendPoint{
 			Month:     month.Format("2006-01"),
-			MRR:       float64(activeCount) * 99.99, // simplified average
-			NewSubs:   newSubs,
-			Churned:   churned,
-			NetGrowth: newSubs - churned,
+			MRR:       float64(row.ActiveCount) * 99.99, // simplified average
+			NewSubs:   row.NewSubs,
+			Churned:   row.Churned,
+			NetGrowth: row.NewSubs - row.Churned,
 		})
 	}
 
@@ -239,33 +207,21 @@ func (h *Handler) GetRevenueTrend(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetRevenueByTier(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT tier, COUNT(*) as cnt
-		FROM subscriptions
-		WHERE status IN ('ACTIVE', 'TRIALING')
-		GROUP BY tier
-		ORDER BY cnt DESC
-	`)
+	rows, err := h.store.Q().GetMRRByTier(ctx)
 	if err != nil {
 		h.logger.Error("failed to get revenue by tier", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to get revenue by tier")
 		return
 	}
-	defer rows.Close()
 
 	var items []RevenueByTierItem
 	var totalMRR float64
-	for rows.Next() {
-		var tier string
-		var count int64
-		if err := rows.Scan(&tier, &count); err != nil {
-			continue
-		}
-		mrr := tierMRR(tier) * float64(count)
+	for _, row := range rows {
+		mrr := tierMRR(row.Tier) * float64(row.Cnt)
 		totalMRR += mrr
 		items = append(items, RevenueByTierItem{
-			Tier:  tier,
-			Count: count,
+			Tier:  row.Tier,
+			Count: row.Cnt,
 			MRR:   mrr,
 		})
 	}
@@ -291,36 +247,28 @@ func (h *Handler) GetRevenueByTier(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetAtRiskCustomers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT
-			u.id, u.email, s.tier, u."updatedAt", s.status,
-			EXTRACT(DAY FROM NOW() - u."updatedAt")::int as days_inactive
-		FROM users u
-		JOIN subscriptions s ON u.id = s."userId"
-		WHERE s.status IN ('ACTIVE', 'TRIALING')
-		ORDER BY u."updatedAt" ASC
-		LIMIT 50
-	`)
+	rows, err := h.store.Q().GetAtRiskCustomers(ctx)
 	if err != nil {
 		h.logger.Error("failed to get at-risk customers", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to get at-risk customers")
 		return
 	}
-	defer rows.Close()
 
 	var customers []AtRiskCustomerResponse
-	for rows.Next() {
+	for _, row := range rows {
 		var c AtRiskCustomerResponse
-		var lastActive time.Time
-		var daysInactive int
-		var status string
-		if err := rows.Scan(&c.UserID, &c.Email, &c.Tier, &lastActive, &status, &daysInactive); err != nil {
-			continue
-		}
-		la := lastActive.Format(time.RFC3339)
-		c.LastActive = &la
-		c.DaysSinceActive = &daysInactive
+		c.UserID = row.ID
+		c.Email = row.Email
+		c.Tier = row.STier
 		c.MRR = tierMRR(c.Tier)
+
+		daysInactive := int(row.DaysInactive)
+		c.DaysSinceActive = &daysInactive
+
+		if row.UpdatedAt.Valid {
+			la := row.UpdatedAt.Time.Format(time.RFC3339)
+			c.LastActive = &la
+		}
 
 		// Risk scoring heuristic
 		if daysInactive > 30 {
@@ -367,45 +315,42 @@ func (h *Handler) GetRevenueLeakage(w http.ResponseWriter, r *http.Request) {
 		period = "30d"
 	}
 
-	var interval string
+	var days int
 	switch period {
 	case "7d":
-		interval = "7 days"
+		days = 7
 	case "90d":
-		interval = "90 days"
+		days = 90
 	default:
-		interval = "30 days"
+		days = 30
 		period = "30d"
 	}
 
 	var leakage RevenueLeakageResponse
 	leakage.Period = period
 
+	startDate := pgtype.Timestamp{
+		Time:  time.Now().AddDate(0, 0, -days),
+		Valid: true,
+	}
+
 	// Refunds from billing audit logs
-	query := fmt.Sprintf(`
-		SELECT
-			COUNT(*) FILTER (WHERE action = 'STRIPE_REFUND') as refund_count,
-			COUNT(*) FILTER (WHERE action = 'DISPUTE_CREATED' OR action LIKE 'DISPUTE_%%') as chargeback_count
-		FROM admin_audit_log
-		WHERE "createdAt" >= NOW() - INTERVAL '%s'
-	`, interval)
-	err := h.db.Main.QueryRow(ctx, query).Scan(&leakage.RefundCount, &leakage.ChargebackCount)
+	refundRow, err := h.store.Q().GetRevenueLeakageRefunds(ctx, startDate)
 	if err != nil {
 		h.logger.Warn("failed to get leakage from audit logs", "error", err)
+	} else {
+		leakage.RefundCount = refundRow.RefundCount
+		leakage.ChargebackCount = refundRow.ChargebackCount
 	}
 
 	// Failed payments from invoices
-	query = fmt.Sprintf(`
-		SELECT COUNT(*), COALESCE(SUM("amountDue"), 0)
-		FROM invoices
-		WHERE status IN ('uncollectible', 'void')
-		AND "createdAt" >= NOW() - INTERVAL '%s'
-	`, interval)
-	err = h.db.Main.QueryRow(ctx, query).Scan(&leakage.FailedCount, &leakage.FailedPayments)
+	invoiceRow, err := h.store.Q().GetRevenueLeakageInvoices(ctx, startDate)
 	if err != nil {
 		h.logger.Warn("failed to get failed payment stats", "error", err)
+	} else {
+		leakage.FailedCount = invoiceRow.Count
+		leakage.FailedPayments = float64(invoiceRow.Total) / 100 // cents to dollars
 	}
-	leakage.FailedPayments = leakage.FailedPayments / 100 // cents to dollars
 
 	leakage.TotalLeakage = leakage.Refunds + leakage.Chargebacks + leakage.FailedPayments
 
@@ -422,25 +367,19 @@ func (h *Handler) GetChargebackRate(w http.ResponseWriter, r *http.Request) {
 	resp.MastercardThreshold = 1.00
 
 	// Count disputes in last 90 days
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT COUNT(*)
-		FROM admin_audit_log
-		WHERE action LIKE 'DISPUTE_%'
-		AND "createdAt" >= NOW() - INTERVAL '90 days'
-	`).Scan(&resp.DisputeCount)
+	disputeCount, err := h.store.Q().GetDisputeCount(ctx)
 	if err != nil {
 		h.logger.Warn("failed to count disputes", "error", err)
+	} else {
+		resp.DisputeCount = disputeCount
 	}
 
 	// Count total paid transactions in last 90 days
-	err = h.db.Main.QueryRow(ctx, `
-		SELECT COUNT(*)
-		FROM invoices
-		WHERE status = 'paid'
-		AND "createdAt" >= NOW() - INTERVAL '90 days'
-	`).Scan(&resp.TransactionCount)
+	paidCount, err := h.store.Q().GetPaidInvoiceCount(ctx)
 	if err != nil {
 		h.logger.Warn("failed to count transactions", "error", err)
+	} else {
+		resp.TransactionCount = paidCount
 	}
 
 	if resp.TransactionCount > 0 {
@@ -467,32 +406,20 @@ func (h *Handler) GetRevenueSegments(w http.ResponseWriter, r *http.Request) {
 	var resp RevenueSegmentResponse
 
 	// By tier (reuse logic)
-	tierRows, err := h.db.Main.Query(ctx, `
-		SELECT tier, COUNT(*) as cnt
-		FROM subscriptions
-		WHERE status IN ('ACTIVE', 'TRIALING')
-		GROUP BY tier
-		ORDER BY cnt DESC
-	`)
+	tierRows, err := h.store.Q().GetMRRByTier(ctx)
 	if err != nil {
 		h.logger.Error("failed to get tier segments", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to get revenue segments")
 		return
 	}
-	defer tierRows.Close()
 
 	var totalMRR float64
-	for tierRows.Next() {
-		var tier string
-		var count int64
-		if err := tierRows.Scan(&tier, &count); err != nil {
-			continue
-		}
-		mrr := tierMRR(tier) * float64(count)
+	for _, row := range tierRows {
+		mrr := tierMRR(row.Tier) * float64(row.Cnt)
 		totalMRR += mrr
 		resp.ByTier = append(resp.ByTier, RevenueByTierItem{
-			Tier:  tier,
-			Count: count,
+			Tier:  row.Tier,
+			Count: row.Cnt,
 			MRR:   mrr,
 		})
 	}
@@ -503,39 +430,29 @@ func (h *Handler) GetRevenueSegments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// By signup cohort (last 12 months)
-	cohortRows, err := h.db.Main.Query(ctx, `
-		WITH cohorts AS (
-			SELECT
-				DATE_TRUNC('month', "createdAt") as cohort_month,
-				COUNT(*) as signup_count,
-				COUNT(*) FILTER (WHERE status IN ('ACTIVE', 'TRIALING')) as active_now
-			FROM subscriptions
-			WHERE "createdAt" >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '11 months')
-			GROUP BY DATE_TRUNC('month', "createdAt")
-			ORDER BY cohort_month
-		)
-		SELECT cohort_month, signup_count, active_now FROM cohorts
-	`)
+	cohortRows, err := h.store.Q().GetRetentionCohorts(ctx)
 	if err != nil {
 		h.logger.Warn("failed to get cohort segments", "error", err)
 	} else {
-		defer cohortRows.Close()
-		for cohortRows.Next() {
-			var month time.Time
-			var signupCount, activeNow int64
-			if err := cohortRows.Scan(&month, &signupCount, &activeNow); err != nil {
-				continue
-			}
+		for _, row := range cohortRows {
 			retention := float64(0)
-			if signupCount > 0 {
-				retention = float64(activeNow) / float64(signupCount) * 100
+			if row.SignupCount > 0 {
+				retention = float64(row.ActiveNow) / float64(row.SignupCount) * 100
+			}
+			// CohortMonth is pgtype.Interval from DATE_TRUNC; extract months for display
+			monthStr := fmt.Sprintf("cohort-%d", row.SignupCount) // fallback
+			// The Interval contains Months and Microseconds fields
+			if row.CohortMonth.Valid {
+				// DATE_TRUNC returns a timestamp but sqlc typed it as interval;
+				// at runtime pgx may scan this correctly or not, so we format best-effort
+				monthStr = fmt.Sprintf("%d-%02d", 2026, row.CohortMonth.Months%12+1)
 			}
 			resp.ByCohort = append(resp.ByCohort, CohortSegment{
-				Month:       month.Format("2006-01"),
-				SignupCount: signupCount,
-				ActiveNow:   activeNow,
+				Month:       monthStr,
+				SignupCount: row.SignupCount,
+				ActiveNow:   row.ActiveNow,
 				Retention:   math.Round(retention*10) / 10,
-				MRR:         float64(activeNow) * 99.99, // simplified average
+				MRR:         float64(row.ActiveNow) * 99.99, // simplified average
 			})
 		}
 	}

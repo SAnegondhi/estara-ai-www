@@ -28,35 +28,41 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN null;
 END $$;
 
-CREATE TABLE IF NOT EXISTS "VendorConfig" (
+CREATE TABLE IF NOT EXISTS vendor_configs (
     id TEXT PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
     "displayName" TEXT NOT NULL,
     category "VendorCategory" NOT NULL,
     "billingModel" "VendorBillingModel" NOT NULL,
+    "billingCycleDay" INTEGER,
+    "paymentDueDate" TIMESTAMP(3),
     "monthlyCost" NUMERIC(10, 2),
     "apiKeyEnvVar" TEXT,
+    "apiKeyExpiry" TIMESTAMP(3),
+    "adminKeyEnvVar" TEXT,
+    "costApiEndpoint" TEXT,
+    "usageApiEndpoint" TEXT,
+    "costApiBaseUrl" TEXT,
     "healthCheckUrl" TEXT,
-    "healthUrl" TEXT,
     "lastHealthCheck" TIMESTAMP(3),
     "healthStatus" "VendorHealthStatus" NOT NULL DEFAULT 'UNKNOWN',
-    "lastChecked" TIMESTAMP(3),
-    status TEXT,
+    "errorRateThreshold" DOUBLE PRECISION NOT NULL DEFAULT 0.05,
+    "errorRateCurrent" DOUBLE PRECISION NOT NULL DEFAULT 0,
+    "errorRateUpdatedAt" TIMESTAMP(3),
     "currentBalance" NUMERIC(10, 2),
     "balanceAlertThreshold" NUMERIC(10, 2),
+    "lastBalanceCheck" TIMESTAMP(3),
     "totalRequests" INTEGER NOT NULL DEFAULT 0,
     "totalCost" NUMERIC(10, 2) NOT NULL DEFAULT 0,
     "isActive" BOOLEAN NOT NULL DEFAULT true,
     "isPrimary" BOOLEAN NOT NULL DEFAULT false,
-    enabled BOOLEAN NOT NULL DEFAULT true,
     notes TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_vendor_config_category ON "VendorConfig"(category);
-CREATE INDEX IF NOT EXISTS idx_vendor_config_active ON "VendorConfig"("isActive");
-CREATE INDEX IF NOT EXISTS idx_vendor_config_enabled ON "VendorConfig"(enabled);
+CREATE INDEX IF NOT EXISTS idx_vendor_config_category ON vendor_configs(category);
+CREATE INDEX IF NOT EXISTS idx_vendor_config_active ON vendor_configs("isActive");
 
 -- =========================================================
 -- vendor_contracts — Contract metadata per vendor
@@ -64,7 +70,7 @@ CREATE INDEX IF NOT EXISTS idx_vendor_config_enabled ON "VendorConfig"(enabled);
 
 CREATE TABLE IF NOT EXISTS vendor_contracts (
     id TEXT PRIMARY KEY,
-    "vendorId" TEXT NOT NULL REFERENCES "VendorConfig"(id) ON DELETE CASCADE,
+    "vendorId" TEXT NOT NULL REFERENCES vendor_configs(id) ON DELETE CASCADE,
     "startDate" TIMESTAMP(3) NOT NULL,
     "endDate" TIMESTAMP(3),
     "autoRenew" BOOLEAN NOT NULL DEFAULT false,
@@ -121,26 +127,42 @@ CREATE INDEX IF NOT EXISTS idx_admin_credits_user ON admin_credits("userId");
 CREATE INDEX IF NOT EXISTS idx_admin_credits_expires ON admin_credits("expiresAt");
 
 -- =========================================================
+-- CronJobStatus enum
+-- =========================================================
+
+DO $$ BEGIN
+    CREATE TYPE "CronJobStatus" AS ENUM (
+        'SUCCESS', 'FAILED', 'TIMEOUT', 'RUNNING', 'SKIPPED'
+    );
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+-- =========================================================
 -- cron_job_configs — Cron job registry with state
 -- =========================================================
 
 CREATE TABLE IF NOT EXISTS cron_job_configs (
     id TEXT PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
-    description TEXT,
+    description TEXT NOT NULL,
     schedule TEXT NOT NULL,
     endpoint TEXT NOT NULL,
+    "isRequired" BOOLEAN NOT NULL DEFAULT true,
+    "isConfigured" BOOLEAN NOT NULL DEFAULT false,
     "isEnabled" BOOLEAN NOT NULL DEFAULT true,
-    "timeoutMs" INTEGER NOT NULL DEFAULT 300000,
-    "maxConsecutiveFailures" INTEGER NOT NULL DEFAULT 3,
+    "lastRun" TIMESTAMP(3),
+    "lastRunStatus" "CronJobStatus",
+    "lastRunDuration" INTEGER,
+    "lastRunError" TEXT,
     "consecutiveFailures" INTEGER NOT NULL DEFAULT 0,
+    "alertOnFailure" BOOLEAN NOT NULL DEFAULT true,
+    "maxFailures" INTEGER NOT NULL DEFAULT 3,
+    "timeoutMs" INTEGER NOT NULL DEFAULT 60000,
     "totalRuns" INTEGER NOT NULL DEFAULT 0,
     "successfulRuns" INTEGER NOT NULL DEFAULT 0,
-    "lastRunAt" TIMESTAMP(3),
-    "lastRunStatus" TEXT,
-    "lastRunDurationMs" INTEGER,
+    "failedRuns" INTEGER NOT NULL DEFAULT 0,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "updatedAt" TIMESTAMP(3)
 );
 
 -- =========================================================
@@ -149,15 +171,15 @@ CREATE TABLE IF NOT EXISTS cron_job_configs (
 
 CREATE TABLE IF NOT EXISTS cron_job_runs (
     id TEXT PRIMARY KEY,
-    "jobId" TEXT NOT NULL REFERENCES cron_job_configs(id) ON DELETE CASCADE,
-    status TEXT NOT NULL DEFAULT 'RUNNING',
-    "startedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "completedAt" TIMESTAMP(3),
-    "durationMs" INTEGER,
+    "cronJobId" TEXT NOT NULL REFERENCES cron_job_configs(id) ON DELETE CASCADE,
+    status "CronJobStatus" NOT NULL,
+    duration INTEGER,
     error TEXT,
     output JSONB,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "triggeredBy" TEXT,
+    "startedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "completedAt" TIMESTAMP(3)
 );
 
-CREATE INDEX IF NOT EXISTS idx_cron_job_runs_job ON cron_job_runs("jobId", "startedAt" DESC);
+CREATE INDEX IF NOT EXISTS idx_cron_job_runs_job ON cron_job_runs("cronJobId", "startedAt" DESC);
 CREATE INDEX IF NOT EXISTS idx_cron_job_runs_status ON cron_job_runs(status);

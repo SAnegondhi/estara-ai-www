@@ -71,13 +71,11 @@ func (h *Handler) GetMarketPulse(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Check that market database is available
-	if h.db.Market == nil {
+	if h.store.MQ() == nil {
 		h.logger.Warn("market database not available for market pulse")
 		httputil.Error(w, http.StatusServiceUnavailable, "market data unavailable")
 		return
 	}
-
-	mq := marketqueries.New(h.db.Market)
 
 	// Run all three queries concurrently — sparklines get a separate 3s timeout
 	// so a slow ZHVI scan never blocks the response.
@@ -92,17 +90,17 @@ func (h *Handler) GetMarketPulse(w http.ResponseWriter, r *http.Request) {
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		counts, countsErr = mq.GetMarketPulseCounts(ctx)
+		counts, countsErr = h.store.MQ().GetMarketPulseCounts(ctx)
 	}()
 	go func() {
 		defer wg.Done()
-		cities, citiesErr = mq.GetMarketPulseTickerCities(ctx)
+		cities, citiesErr = h.store.MQ().GetMarketPulseTickerCities(ctx)
 	}()
 	go func() {
 		defer wg.Done()
 		sparkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
-		allMetros, metrosErr = mq.GetSparklineMetros(sparkCtx)
+		allMetros, metrosErr = h.store.MQ().GetSparklineMetros(sparkCtx)
 	}()
 	wg.Wait()
 

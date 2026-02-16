@@ -146,7 +146,7 @@ func (h *Handler) ListDiscoverySessions(w http.ResponseWriter, r *http.Request) 
 		offset = 0
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 
 	sessions, err := q.ListUserDiscoverySessions(ctx, queries.ListUserDiscoverySessionsParams{
 		UserId: userID,
@@ -204,7 +204,7 @@ func (h *Handler) GetDiscoverySession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 
 	// Get session
 	s, err := q.GetDiscoverySessionByUser(ctx, queries.GetDiscoverySessionByUserParams{
@@ -296,7 +296,7 @@ func (h *Handler) CreateDiscoverySession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	sessionID := uuid.New().String()
 
 	s, err := q.CreateDiscoverySession(ctx, queries.CreateDiscoverySessionParams{
@@ -347,7 +347,7 @@ func (h *Handler) ArchiveDiscoverySession(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	s, err := q.ArchiveDiscoverySession(ctx, queries.ArchiveDiscoverySessionParams{
 		ID:     sessionID,
 		UserId: userID,
@@ -384,7 +384,7 @@ func (h *Handler) RestoreDiscoverySession(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	s, err := q.RestoreDiscoverySession(ctx, queries.RestoreDiscoverySessionParams{
 		ID:     sessionID,
 		UserId: userID,
@@ -437,7 +437,7 @@ func (h *Handler) LinkActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 
 	exists, err := q.SessionExistsByUser(ctx, queries.SessionExistsByUserParams{
 		ID:     sessionID,
@@ -498,7 +498,7 @@ func (h *Handler) SaveEvaluations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 
 	exists, err := q.SessionExistsByUser(ctx, queries.SessionExistsByUserParams{
 		ID:     sessionID,
@@ -558,7 +558,7 @@ func (h *Handler) CreateDiscoverySessionForSearch(ctx context.Context, userID st
 		return ""
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	sessionID := uuid.New().String()
 
 	_, err := q.CreateDiscoverySession(ctx, queries.CreateDiscoverySessionParams{

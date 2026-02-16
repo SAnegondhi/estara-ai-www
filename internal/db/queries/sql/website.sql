@@ -159,3 +159,7 @@ RETURNING *;
 -- name: DeleteExpiredGuestSessions :exec
 DELETE FROM guest_sessions
 WHERE "expiresAt" < NOW();
+
+-- name: DeleteExpiredGuestSessionsRows :execrows
+DELETE FROM guest_sessions
+WHERE "expiresAt" < NOW();

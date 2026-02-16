@@ -17,7 +17,7 @@ import (
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	dbstore "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/investment"
 	"github.com/estara-ai/www/internal/services/investment/expenses"
@@ -28,19 +28,18 @@ import (
 
 // Handler handles portfolio-related HTTP requests
 type Handler struct {
-	db              *postgres.DB
+	store           *dbstore.Store
 	cfg             *config.Config
 	validate        *validator.Validate
 	logger          *slog.Logger
 	propertyFinder  *finder.Orchestrator
-	queries         *queries.Queries
 	expenseCalc     *expenses.Calculator
 }
 
 // NewHandler creates a new portfolio handler
-func NewHandler(db *postgres.DB, cfg *config.Config) *Handler {
+func NewHandler(store *dbstore.Store, cfg *config.Config) *Handler {
 	return &Handler{
-		db:          db,
+		store:       store,
 		cfg:         cfg,
 		validate:    validator.New(),
 		logger:      slog.Default().With("component", "portfolio_handler"),
@@ -51,11 +50,6 @@ func NewHandler(db *postgres.DB, cfg *config.Config) *Handler {
 // SetPropertyFinder sets the property finder orchestrator for address lookup
 func (h *Handler) SetPropertyFinder(pf *finder.Orchestrator) {
 	h.propertyFinder = pf
-}
-
-// SetQueries sets the sqlc queries for snapshot operations
-func (h *Handler) SetQueries(q *queries.Queries) {
-	h.queries = q
 }
 
 // PropertyExpenses represents the breakdown of property expenses
@@ -470,47 +464,87 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 
 // Database operations
 
-func (h *Handler) getPropertiesByUserID(ctx context.Context, userID string) ([]PortfolioProperty, error) {
-	// Column names match Prisma @map directives in V2PortfolioProperty model
-	query := `
-		SELECT id, user_id, address, city, state, zip_code, property_type,
-		       property_status, bedrooms, bathrooms, sqft, year_built, purchase_price, purchase_date,
-		       current_value, monthly_rent, vacancy_rate, expenses, mortgage_balance, mortgage_rate,
-		       mortgage_payment, status, notes,
-		       created_at, updated_at
-		FROM v2_portfolio_properties
-		WHERE user_id = $1 AND status != 'deleted'
-		ORDER BY created_at DESC
-	`
+// mapDBPropertyToPortfolioProperty converts a sqlc-generated V2PortfolioProperty to the handler's PortfolioProperty type.
+func mapDBPropertyToPortfolioProperty(dp queries.V2PortfolioProperty) PortfolioProperty {
+	p := PortfolioProperty{
+		ID:             dp.ID,
+		UserID:         dp.UserID,
+		Address:        dp.Address,
+		City:           dp.City,
+		State:          dp.State,
+		PurchasePrice:  dp.PurchasePrice,
+		PropertyStatus: dp.PropertyStatus,
+		Status:         dp.Status,
+	}
+	if dp.ZipCode != "" {
+		z := dp.ZipCode
+		p.ZipCode = &z
+	}
+	if dp.PropertyType.Valid {
+		p.PropertyType = &dp.PropertyType.String
+	}
+	if dp.Bedrooms.Valid {
+		b := int(dp.Bedrooms.Int32)
+		p.Beds = &b
+	}
+	if dp.Bathrooms.Valid {
+		p.Baths = &dp.Bathrooms.Float64
+	}
+	if dp.Sqft.Valid {
+		s := int(dp.Sqft.Int32)
+		p.Sqft = &s
+	}
+	if dp.YearBuilt.Valid {
+		y := int(dp.YearBuilt.Int32)
+		p.YearBuilt = &y
+	}
+	if dp.PurchaseDate.Valid {
+		p.PurchaseDate = &dp.PurchaseDate.Time
+	}
+	if dp.CurrentValue.Valid {
+		p.CurrentValue = dp.CurrentValue.Float64
+	}
+	if dp.MonthlyRent.Valid {
+		p.MonthlyRent = dp.MonthlyRent.Float64
+	}
+	if dp.VacancyRate.Valid {
+		p.VacancyRate = &dp.VacancyRate.Float64
+	}
+	if dp.MortgageBalance.Valid {
+		p.MortgageBalance = dp.MortgageBalance.Float64
+	}
+	if dp.MortgageRate.Valid {
+		p.MortgageRate = dp.MortgageRate.Float64
+	}
+	if dp.MortgagePayment.Valid {
+		p.MortgagePayment = dp.MortgagePayment.Float64
+	}
+	if dp.Notes.Valid {
+		p.Notes = &dp.Notes.String
+	}
+	if dp.CreatedAt.Valid {
+		p.CreatedAt = dp.CreatedAt.Time
+	}
+	if dp.UpdatedAt.Valid {
+		p.UpdatedAt = dp.UpdatedAt.Time
+	}
+	return p
+}
 
-	rows, err := h.db.Main.Query(ctx, query, userID)
+func (h *Handler) getPropertiesByUserID(ctx context.Context, userID string) ([]PortfolioProperty, error) {
+	dbProps, err := h.store.Q().ListPortfolioProperties(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	properties := make([]PortfolioProperty, 0)
-	for rows.Next() {
-		var p PortfolioProperty
-		var vacancyRate *float64
-		var expensesJSON []byte
-		err := rows.Scan(
-			&p.ID, &p.UserID, &p.Address, &p.City, &p.State, &p.ZipCode,
-			&p.PropertyType, &p.PropertyStatus, &p.Beds, &p.Baths, &p.Sqft, &p.YearBuilt,
-			&p.PurchasePrice, &p.PurchaseDate, &p.CurrentValue, &p.MonthlyRent,
-			&vacancyRate, &expensesJSON, &p.MortgageBalance, &p.MortgageRate, &p.MortgagePayment,
-			&p.Status, &p.Notes,
-			&p.CreatedAt, &p.UpdatedAt,
-		)
-		if err != nil {
-			return nil, err
-		}
+	properties := make([]PortfolioProperty, 0, len(dbProps))
+	for _, dp := range dbProps {
+		p := mapDBPropertyToPortfolioProperty(dp)
 
-		// Parse vacancy rate and expenses
-		p.VacancyRate = vacancyRate
-		if len(expensesJSON) > 0 {
+		// Parse expenses
+		if len(dp.Expenses) > 0 {
 			var exp PropertyExpenses
-			if err := json.Unmarshal(expensesJSON, &exp); err == nil {
+			if err := json.Unmarshal(dp.Expenses, &exp); err == nil {
 				p.Expenses = &exp
 				p.MonthlyExpenses = exp.Maintenance + exp.Tax + exp.Insurance + exp.HOA + exp.Other
 			}
@@ -521,32 +555,14 @@ func (h *Handler) getPropertiesByUserID(ctx context.Context, userID string) ([]P
 		properties = append(properties, p)
 	}
 
-	return properties, rows.Err()
+	return properties, nil
 }
 
 func (h *Handler) getPropertyByID(ctx context.Context, propertyID, userID string) (*PortfolioProperty, error) {
-	// Column names match Prisma @map directives in V2PortfolioProperty model
-	query := `
-		SELECT id, user_id, address, city, state, zip_code, property_type,
-		       property_status, bedrooms, bathrooms, sqft, year_built, purchase_price, purchase_date,
-		       current_value, monthly_rent, vacancy_rate, expenses, mortgage_balance, mortgage_rate,
-		       mortgage_payment, status, notes,
-		       created_at, updated_at
-		FROM v2_portfolio_properties
-		WHERE id = $1 AND user_id = $2 AND status != 'deleted'
-	`
-
-	var p PortfolioProperty
-	var vacancyRate *float64
-	var expensesJSON []byte
-	err := h.db.Main.QueryRow(ctx, query, propertyID, userID).Scan(
-		&p.ID, &p.UserID, &p.Address, &p.City, &p.State, &p.ZipCode,
-		&p.PropertyType, &p.PropertyStatus, &p.Beds, &p.Baths, &p.Sqft, &p.YearBuilt,
-		&p.PurchasePrice, &p.PurchaseDate, &p.CurrentValue, &p.MonthlyRent,
-		&vacancyRate, &expensesJSON, &p.MortgageBalance, &p.MortgageRate, &p.MortgagePayment,
-		&p.Status, &p.Notes,
-		&p.CreatedAt, &p.UpdatedAt,
-	)
+	dp, err := h.store.Q().GetPortfolioProperty(ctx, queries.GetPortfolioPropertyParams{
+		ID:     propertyID,
+		UserID: userID,
+	})
 	if err != nil {
 		if err.Error() == "no rows in result set" {
 			return nil, fmt.Errorf("property not found")
@@ -554,11 +570,18 @@ func (h *Handler) getPropertyByID(ctx context.Context, propertyID, userID string
 		return nil, err
 	}
 
-	// Parse vacancy rate and expenses
-	p.VacancyRate = vacancyRate
-	if len(expensesJSON) > 0 {
+	// Note: GetPortfolioProperty doesn't filter by status != 'deleted',
+	// so check it here for parity with the old query behavior.
+	if dp.Status == "deleted" {
+		return nil, fmt.Errorf("property not found")
+	}
+
+	p := mapDBPropertyToPortfolioProperty(dp)
+
+	// Parse expenses
+	if len(dp.Expenses) > 0 {
 		var exp PropertyExpenses
-		if err := json.Unmarshal(expensesJSON, &exp); err == nil {
+		if err := json.Unmarshal(dp.Expenses, &exp); err == nil {
 			p.Expenses = &exp
 			p.MonthlyExpenses = exp.Maintenance + exp.Tax + exp.Insurance + exp.HOA + exp.Other
 		}
@@ -700,7 +723,7 @@ func (h *Handler) createProperty(ctx context.Context, userID string, req *Create
 	var p PortfolioProperty
 	var vacancyRateDB *float64
 	var expensesDB []byte
-	err := h.db.Main.QueryRow(ctx, query,
+	err := h.store.Pool().QueryRow(ctx, query,
 		id, userID, req.Address, req.City, req.State, req.ZipCode,
 		req.PropertyType, propertyStatus, req.Beds, req.Baths, req.Sqft, req.YearBuilt,
 		req.PurchasePrice, purchaseDate, currentValue, monthlyRent,
@@ -849,7 +872,7 @@ func (h *Handler) updateProperty(ctx context.Context, propertyID, userID string,
 	var p PortfolioProperty
 	var vacancyRate *float64
 	var expensesJSON []byte
-	err = h.db.Main.QueryRow(ctx, query, args...).Scan(
+	err = h.store.Pool().QueryRow(ctx, query, args...).Scan(
 		&p.ID, &p.UserID, &p.Address, &p.City, &p.State, &p.ZipCode,
 		&p.PropertyType, &p.PropertyStatus, &p.Beds, &p.Baths, &p.Sqft, &p.YearBuilt,
 		&p.PurchasePrice, &p.PurchaseDate, &p.CurrentValue, &p.MonthlyRent,
@@ -877,24 +900,11 @@ func (h *Handler) updateProperty(ctx context.Context, propertyID, userID string,
 }
 
 func (h *Handler) deleteProperty(ctx context.Context, propertyID, userID string) error {
-	// Soft delete by setting status to 'deleted'
-	// Column names match Prisma @map directives
-	query := `
-		UPDATE v2_portfolio_properties
-		SET status = 'deleted', updated_at = $1
-		WHERE id = $2 AND user_id = $3 AND status != 'deleted'
-	`
-
-	result, err := h.db.Main.Exec(ctx, query, time.Now(), propertyID, userID)
-	if err != nil {
-		return err
-	}
-
-	if result.RowsAffected() == 0 {
-		return fmt.Errorf("property not found")
-	}
-
-	return nil
+	// SoftDeletePortfolioProperty sets status = 'deleted' and updated_at = NOW()
+	return h.store.Q().SoftDeletePortfolioProperty(ctx, queries.SoftDeletePortfolioPropertyParams{
+		ID:     propertyID,
+		UserID: userID,
+	})
 }
 
 // Helper functions
@@ -1442,7 +1452,7 @@ func (h *Handler) GetSnapshots(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if queries are available
-	if h.queries == nil {
+	if h.store == nil {
 		httputil.Error(w, http.StatusServiceUnavailable, "Snapshot service not available")
 		return
 	}
@@ -1490,7 +1500,7 @@ func (h *Handler) GetSnapshots(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get snapshots from database
-	dbSnapshots, err := h.queries.GetPortfolioSnapshots(ctx, queries.GetPortfolioSnapshotsParams{
+	dbSnapshots, err := h.store.Q().GetPortfolioSnapshots(ctx, queries.GetPortfolioSnapshotsParams{
 		UserID:  user.UserID,
 		Column2: timeToPgTimestamp(startDate),
 		Column3: timeToPgTimestamp(endDate),
@@ -1525,7 +1535,7 @@ func (h *Handler) GetSnapshots(w http.ResponseWriter, r *http.Request) {
 
 	// Get latest snapshot
 	var latestSnapshot *PortfolioSnapshot
-	latestDB, err := h.queries.GetLatestPortfolioSnapshot(ctx, user.UserID)
+	latestDB, err := h.store.Q().GetLatestPortfolioSnapshot(ctx, user.UserID)
 	if err == nil {
 		latestSnapshot = &PortfolioSnapshot{
 			ID:               latestDB.ID,
@@ -1569,7 +1579,7 @@ func (h *Handler) GetSnapshots(w http.ResponseWriter, r *http.Request) {
 // 3. Interpolating debt from original loan (80% LTV) to current balance
 func (h *Handler) backfillSnapshots(ctx context.Context, userID string) error {
 	// Delete existing snapshots if regenerating
-	if err := h.queries.DeletePortfolioSnapshots(ctx, userID); err != nil {
+	if err := h.store.Q().DeletePortfolioSnapshots(ctx, userID); err != nil {
 		return fmt.Errorf("failed to delete existing snapshots: %w", err)
 	}
 
@@ -1618,7 +1628,7 @@ func (h *Handler) backfillSnapshots(ctx context.Context, userID string) error {
 				"backfilled":      true,
 			})
 
-			_, err := h.queries.CreatePortfolioSnapshot(ctx, queries.CreatePortfolioSnapshotParams{
+			_, err := h.store.Q().CreatePortfolioSnapshot(ctx, queries.CreatePortfolioSnapshotParams{
 				ID:               uuid.New().String(),
 				UserID:           userID,
 				SnapshotDate:     pgTimestamp(currentDate),
@@ -2712,13 +2722,13 @@ func (h *Handler) GetAdjustments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if queries are available
-	if h.queries == nil {
+	if h.store == nil {
 		httputil.Error(w, http.StatusServiceUnavailable, "Database service not available")
 		return
 	}
 
 	// Get adjustments
-	adjustments, err := h.queries.GetPropertyAdjustments(ctx, propertyID)
+	adjustments, err := h.store.Q().GetPropertyAdjustments(ctx, propertyID)
 	if err != nil {
 		h.logger.Error("failed to get adjustments", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to get adjustments")
@@ -2805,7 +2815,7 @@ func (h *Handler) CreateAdjustment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if queries are available
-	if h.queries == nil {
+	if h.store == nil {
 		httputil.Error(w, http.StatusServiceUnavailable, "Database service not available")
 		return
 	}
@@ -2841,7 +2851,7 @@ func (h *Handler) CreateAdjustment(w http.ResponseWriter, r *http.Request) {
 		noteText = pgtype.Text{String: *req.Note, Valid: true}
 	}
 
-	adjustment, err := h.queries.CreateOrUpdateAdjustment(ctx, queries.CreateOrUpdateAdjustmentParams{
+	adjustment, err := h.store.Q().CreateOrUpdateAdjustment(ctx, queries.CreateOrUpdateAdjustmentParams{
 		ID:         id,
 		PropertyID: propertyID,
 		Month:      pgtype.Timestamp{Time: monthDate, Valid: true},
@@ -2952,13 +2962,13 @@ func (h *Handler) GetBaselineChanges(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if queries are available
-	if h.queries == nil {
+	if h.store == nil {
 		httputil.Error(w, http.StatusServiceUnavailable, "Database service not available")
 		return
 	}
 
 	// Get baseline changes
-	changes, err := h.queries.GetPropertyBaselineChanges(ctx, propertyID)
+	changes, err := h.store.Q().GetPropertyBaselineChanges(ctx, propertyID)
 	if err != nil {
 		h.logger.Error("failed to get baseline changes", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to get baseline changes")
@@ -3064,7 +3074,7 @@ func (h *Handler) CreateBaselineChange(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if queries are available
-	if h.queries == nil {
+	if h.store == nil {
 		httputil.Error(w, http.StatusServiceUnavailable, "Database service not available")
 		return
 	}
@@ -3094,7 +3104,7 @@ func (h *Handler) CreateBaselineChange(w http.ResponseWriter, r *http.Request) {
 	var previousValue pgtype.Float8
 
 	// Try to get the most recent baseline change for this field before the effective date
-	latestChange, err := h.queries.GetLatestBaselineChange(ctx, queries.GetLatestBaselineChangeParams{
+	latestChange, err := h.store.Q().GetLatestBaselineChange(ctx, queries.GetLatestBaselineChangeParams{
 		PropertyID:    propertyID,
 		Field:         req.Field,
 		EffectiveDate: pgtype.Timestamp{Time: effectiveDate, Valid: true},
@@ -3122,7 +3132,7 @@ func (h *Handler) CreateBaselineChange(w http.ResponseWriter, r *http.Request) {
 		noteText = pgtype.Text{String: *req.Note, Valid: true}
 	}
 
-	change, err := h.queries.CreateOrUpdateBaselineChange(ctx, queries.CreateOrUpdateBaselineChangeParams{
+	change, err := h.store.Q().CreateOrUpdateBaselineChange(ctx, queries.CreateOrUpdateBaselineChangeParams{
 		ID:            id,
 		PropertyID:    propertyID,
 		Field:         req.Field,
@@ -3140,7 +3150,7 @@ func (h *Handler) CreateBaselineChange(w http.ResponseWriter, r *http.Request) {
 	// For mortgageBalance changes, update the property's current balance
 	if req.Field == "mortgageBalance" {
 		// Get the most recent mortgageBalance baseline change
-		latestBalance, err := h.queries.GetLatestBaselineChange(ctx, queries.GetLatestBaselineChangeParams{
+		latestBalance, err := h.store.Q().GetLatestBaselineChange(ctx, queries.GetLatestBaselineChangeParams{
 			PropertyID:    propertyID,
 			Field:         "mortgageBalance",
 			EffectiveDate: pgtype.Timestamp{Time: time.Now().AddDate(100, 0, 0), Valid: true}, // Far future to get latest

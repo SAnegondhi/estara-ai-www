@@ -11,6 +11,38 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const AdminUpdateUserProfile = `-- name: AdminUpdateUserProfile :exec
+UPDATE users SET
+    "firstName" = COALESCE($2::text, "firstName"),
+    "lastName" = COALESCE($3::text, "lastName"),
+    email = COALESCE($4::text, email),
+    role = COALESCE($5::text::"UserRole", role),
+    "subscriptionTier" = COALESCE($6::text, "subscriptionTier"),
+    "updatedAt" = NOW()
+WHERE id = $1
+`
+
+type AdminUpdateUserProfileParams struct {
+	ID               string      `json:"id"`
+	FirstName        pgtype.Text `json:"first_name"`
+	LastName         pgtype.Text `json:"last_name"`
+	Email            pgtype.Text `json:"email"`
+	Role             pgtype.Text `json:"role"`
+	SubscriptionTier pgtype.Text `json:"subscription_tier"`
+}
+
+func (q *Queries) AdminUpdateUserProfile(ctx context.Context, arg AdminUpdateUserProfileParams) error {
+	_, err := q.db.Exec(ctx, AdminUpdateUserProfile,
+		arg.ID,
+		arg.FirstName,
+		arg.LastName,
+		arg.Email,
+		arg.Role,
+		arg.SubscriptionTier,
+	)
+	return err
+}
+
 const CountUsers = `-- name: CountUsers :one
 SELECT COUNT(*) FROM users
 `

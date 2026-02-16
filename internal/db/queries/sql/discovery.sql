@@ -63,7 +63,19 @@ UPDATE discovery_sessions SET
 WHERE status = 'ACTIVE'
   AND "createdAt" < NOW() - INTERVAL '30 days';
 
+-- name: AutoArchiveOldSessionsRows :execrows
+UPDATE discovery_sessions SET
+    status = 'ARCHIVED',
+    "archivedAt" = NOW(),
+    "updatedAt" = NOW()
+WHERE status = 'ACTIVE'
+  AND "createdAt" < NOW() - INTERVAL '30 days';
+
 -- name: DeleteExpiredSessions :exec
+DELETE FROM discovery_sessions
+WHERE "expiresAt" < NOW();
+
+-- name: DeleteExpiredSessionsRows :execrows
 DELETE FROM discovery_sessions
 WHERE "expiresAt" < NOW();
 

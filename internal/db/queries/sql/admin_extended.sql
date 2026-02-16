@@ -128,7 +128,7 @@ RETURNING *;
 -- name: CreateCronJobConfig :one
 INSERT INTO cron_job_configs (
     id, name, description, schedule, endpoint,
-    "isEnabled", "timeoutMs", "maxConsecutiveFailures",
+    "isEnabled", "timeoutMs", "maxFailures",
     "createdAt", "updatedAt"
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW()
@@ -137,7 +137,7 @@ INSERT INTO cron_job_configs (
 -- name: UpsertCronJobConfig :one
 INSERT INTO cron_job_configs (
     id, name, description, schedule, endpoint,
-    "isEnabled", "timeoutMs", "maxConsecutiveFailures",
+    "isEnabled", "timeoutMs", "maxFailures",
     "createdAt", "updatedAt"
 ) VALUES (
     $1, $2, $3, $4, $5, true, $6, 3, NOW(), NOW()
@@ -172,9 +172,9 @@ RETURNING *;
 
 -- name: UpdateCronJobLastRun :exec
 UPDATE cron_job_configs SET
-    "lastRunAt" = $2,
+    "lastRun" = $2,
     "lastRunStatus" = $3,
-    "lastRunDurationMs" = $4,
+    "lastRunDuration" = $4,
     "totalRuns" = "totalRuns" + 1,
     "successfulRuns" = CASE WHEN $3 = 'SUCCESS' THEN "successfulRuns" + 1 ELSE "successfulRuns" END,
     "consecutiveFailures" = CASE WHEN $3 = 'SUCCESS' THEN 0 ELSE "consecutiveFailures" + 1 END,
@@ -193,16 +193,16 @@ WHERE id = $1;
 
 -- name: CreateCronJobRun :one
 INSERT INTO cron_job_runs (
-    id, "jobId", status, "startedAt", "createdAt"
+    id, "cronJobId", status, "startedAt"
 ) VALUES (
-    $1, $2, 'RUNNING', NOW(), NOW()
+    $1, $2, 'RUNNING', NOW()
 ) RETURNING *;
 
 -- name: CompleteCronJobRun :one
 UPDATE cron_job_runs SET
     status = $2,
     "completedAt" = NOW(),
-    "durationMs" = $3,
+    duration = $3,
     error = $4,
     output = $5
 WHERE id = $1
@@ -214,7 +214,7 @@ WHERE id = $1;
 
 -- name: ListCronJobRuns :many
 SELECT * FROM cron_job_runs
-WHERE "jobId" = $1
+WHERE "cronJobId" = $1
 ORDER BY "startedAt" DESC
 LIMIT $2 OFFSET $3;
 
@@ -230,7 +230,7 @@ SELECT
     COUNT(*) FILTER (WHERE status = 'TIMEOUT') as timeout_count,
     COUNT(*) FILTER (WHERE status = 'RUNNING') as running_count
 FROM cron_job_runs
-WHERE "jobId" = $1;
+WHERE "cronJobId" = $1;
 
 -- name: DeleteOldCronJobRuns :exec
 DELETE FROM cron_job_runs

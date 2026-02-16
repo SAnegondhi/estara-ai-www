@@ -1,13 +1,20 @@
 -- User Consents table for compliance/GDPR tracking
+-- Schema matches actual database (Prisma-created, camelCase columns)
+
+DO $$ BEGIN
+    CREATE TYPE "ConsentType" AS ENUM (
+        'MARKETING', 'ANALYTICS', 'COOKIES', 'DATA_SHARING', 'TERMS_OF_SERVICE', 'PRIVACY_POLICY'
+    );
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
 
 CREATE TABLE IF NOT EXISTS user_consents (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id),
-    consent_type TEXT NOT NULL,
+    id TEXT PRIMARY KEY,
+    "userId" TEXT NOT NULL REFERENCES users(id),
+    "consentType" "ConsentType" NOT NULL,
     version TEXT NOT NULL,
-    granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    revoked_at TIMESTAMPTZ,
-    ip_address TEXT,
-    user_agent TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    granted BOOLEAN NOT NULL,
+    "ipAddress" TEXT NOT NULL,
+    "userAgent" TEXT NOT NULL,
+    "timestamp" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

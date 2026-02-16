@@ -2,6 +2,7 @@
 -- Description: Adds admin extended tables for admin frontend (vendor contracts, terms acceptances, admin credits, cron job tracking)
 -- Author: Claude
 -- Date: 2026-02-13
+-- Updated: 2026-02-15 (fixed column names to match actual database schema)
 
 -- Vendor enums (if not already present from www_v1)
 DO $$ BEGIN
@@ -22,6 +23,14 @@ END $$;
 DO $$ BEGIN
     CREATE TYPE "VendorHealthStatus" AS ENUM (
         'OPERATIONAL', 'DEGRADED', 'DOWN', 'UNKNOWN', 'MAINTENANCE'
+    );
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+-- CronJobStatus enum
+DO $$ BEGIN
+    CREATE TYPE "CronJobStatus" AS ENUM (
+        'SUCCESS', 'FAILED', 'TIMEOUT', 'RUNNING', 'SKIPPED'
     );
 EXCEPTION WHEN duplicate_object THEN null;
 END $$;
@@ -79,38 +88,43 @@ CREATE TABLE IF NOT EXISTS admin_credits (
 CREATE INDEX IF NOT EXISTS idx_admin_credits_user ON admin_credits("userId");
 CREATE INDEX IF NOT EXISTS idx_admin_credits_expires ON admin_credits("expiresAt");
 
--- cron_job_configs
+-- cron_job_configs (table already created by Prisma, this is idempotent)
 CREATE TABLE IF NOT EXISTS cron_job_configs (
     id TEXT PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
-    description TEXT,
+    description TEXT NOT NULL,
     schedule TEXT NOT NULL,
     endpoint TEXT NOT NULL,
+    "isRequired" BOOLEAN NOT NULL DEFAULT true,
+    "isConfigured" BOOLEAN NOT NULL DEFAULT false,
     "isEnabled" BOOLEAN NOT NULL DEFAULT true,
-    "timeoutMs" INTEGER NOT NULL DEFAULT 300000,
-    "maxConsecutiveFailures" INTEGER NOT NULL DEFAULT 3,
+    "lastRun" TIMESTAMP(3),
+    "lastRunStatus" "CronJobStatus",
+    "lastRunDuration" INTEGER,
+    "lastRunError" TEXT,
     "consecutiveFailures" INTEGER NOT NULL DEFAULT 0,
+    "alertOnFailure" BOOLEAN NOT NULL DEFAULT true,
+    "maxFailures" INTEGER NOT NULL DEFAULT 3,
+    "timeoutMs" INTEGER NOT NULL DEFAULT 60000,
     "totalRuns" INTEGER NOT NULL DEFAULT 0,
     "successfulRuns" INTEGER NOT NULL DEFAULT 0,
-    "lastRunAt" TIMESTAMP(3),
-    "lastRunStatus" TEXT,
-    "lastRunDurationMs" INTEGER,
+    "failedRuns" INTEGER NOT NULL DEFAULT 0,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "updatedAt" TIMESTAMP(3)
 );
 
--- cron_job_runs
+-- cron_job_runs (table already created by Prisma, this is idempotent)
 CREATE TABLE IF NOT EXISTS cron_job_runs (
     id TEXT PRIMARY KEY,
-    "jobId" TEXT NOT NULL REFERENCES cron_job_configs(id) ON DELETE CASCADE,
-    status TEXT NOT NULL DEFAULT 'RUNNING',
-    "startedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "completedAt" TIMESTAMP(3),
-    "durationMs" INTEGER,
+    "cronJobId" TEXT NOT NULL REFERENCES cron_job_configs(id) ON DELETE CASCADE,
+    status "CronJobStatus" NOT NULL,
+    duration INTEGER,
     error TEXT,
     output JSONB,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "triggeredBy" TEXT,
+    "startedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "completedAt" TIMESTAMP(3)
 );
 
-CREATE INDEX IF NOT EXISTS idx_cron_job_runs_job ON cron_job_runs("jobId", "startedAt" DESC);
+CREATE INDEX IF NOT EXISTS idx_cron_job_runs_job ON cron_job_runs("cronJobId", "startedAt" DESC);
 CREATE INDEX IF NOT EXISTS idx_cron_job_runs_status ON cron_job_runs(status);

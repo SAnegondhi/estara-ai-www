@@ -5,14 +5,15 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/email"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -38,6 +39,40 @@ type WaitlistSummary struct {
 	Pending int64 `json:"pending"`
 	Invited int64 `json:"invited"`
 	Revoked int64 `json:"revoked"`
+}
+
+// mapWaitlistRow maps sqlc waitlist row fields to EarlyAccessEntry.
+// nameVal is interface{} because sqlc generates metadata->>'name' as interface{}.
+func mapWaitlistRow(id, emailAddr string, nameVal interface{}, source, notes pgtype.Text, status string, invited, contacted bool, requestedAt, createdAt, updatedAt pgtype.Timestamp) EarlyAccessEntry {
+	e := EarlyAccessEntry{
+		ID:        id,
+		Email:     emailAddr,
+		Status:    status,
+		Invited:   invited,
+		Contacted: contacted,
+	}
+	if nameStr, ok := nameVal.(*string); ok && nameStr != nil {
+		e.Name = nameStr
+	} else if nameStr, ok := nameVal.(string); ok && nameStr != "" {
+		e.Name = &nameStr
+	}
+	if source.Valid {
+		e.Source = &source.String
+	}
+	if notes.Valid {
+		e.Notes = &notes.String
+	}
+	if requestedAt.Valid {
+		t := requestedAt.Time
+		e.RequestedAt = &t
+	}
+	if createdAt.Valid {
+		e.CreatedAt = createdAt.Time
+	}
+	if updatedAt.Valid {
+		e.UpdatedAt = updatedAt.Time
+	}
+	return e
 }
 
 // ===============================
@@ -143,7 +178,7 @@ func (h *Handler) InviteWaitlistEntry(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusOK, resp)
 }
 
-// UpdateWaitlistEntryStatus changes the status of a waitlist entry (e.g. REVOKED → PENDING)
+// UpdateWaitlistEntryStatus changes the status of a waitlist entry (e.g. REVOKED -> PENDING)
 func (h *Handler) UpdateWaitlistEntryStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
@@ -167,14 +202,12 @@ func (h *Handler) UpdateWaitlistEntryStatus(w http.ResponseWriter, r *http.Reque
 	}
 
 	invited := newStatus == "INVITED"
-	var e EarlyAccessEntry
-	err := h.db.Main.QueryRow(ctx, `
-		UPDATE early_access SET status = $2, invited = $3, "updatedAt" = NOW()
-		WHERE id = $1
-		RETURNING id, email, metadata->>'name', source, status, invited, contacted, notes, "requestedAt", "createdAt", "updatedAt"
-	`, id, newStatus, invited).Scan(
-		&e.ID, &e.Email, &e.Name, &e.Source, &e.Status, &e.Invited, &e.Contacted, &e.Notes, &e.RequestedAt, &e.CreatedAt, &e.UpdatedAt,
-	)
+
+	row, err := h.store.Q().UpdateEarlyAccessStatus(ctx, queries.UpdateEarlyAccessStatusParams{
+		ID:      id,
+		Status:  newStatus,
+		Invited: invited,
+	})
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			httputil.Error(w, http.StatusNotFound, "entry not found")
@@ -184,6 +217,8 @@ func (h *Handler) UpdateWaitlistEntryStatus(w http.ResponseWriter, r *http.Reque
 		httputil.Error(w, http.StatusInternalServerError, "failed to update waitlist entry status")
 		return
 	}
+
+	e := mapWaitlistRow(row.ID, row.Email, row.Name, row.Source, row.Notes, row.Status, row.Invited, row.Contacted, row.RequestedAt, row.CreatedAt, row.UpdatedAt)
 
 	h.logAdminAudit(ctx, r, "WAITLIST_STATUS_UPDATE", "early_access", id, map[string]interface{}{
 		"status": newStatus,
@@ -200,14 +235,21 @@ func (h *Handler) DeleteWaitlistEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.db.Main.Exec(ctx, `DELETE FROM early_access WHERE id = $1`, id)
+	// Check existence first since DeleteEarlyAccess is :exec (no RowsAffected)
+	_, err := h.store.Q().GetWaitlistByID(ctx, id)
 	if err != nil {
-		h.logger.Error("failed to delete waitlist entry", "error", err)
+		if err == pgx.ErrNoRows {
+			httputil.Error(w, http.StatusNotFound, "entry not found")
+			return
+		}
+		h.logger.Error("failed to check waitlist entry", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to delete waitlist entry")
 		return
 	}
-	if result.RowsAffected() == 0 {
-		httputil.Error(w, http.StatusNotFound, "entry not found")
+
+	if err := h.store.Q().DeleteEarlyAccess(ctx, id); err != nil {
+		h.logger.Error("failed to delete waitlist entry", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, "failed to delete waitlist entry")
 		return
 	}
 
@@ -220,109 +262,88 @@ func (h *Handler) DeleteWaitlistEntry(w http.ResponseWriter, r *http.Request) {
 // ===============================
 
 func (h *Handler) listWaitlist(ctx context.Context, filter, search string, limit, offset int) ([]EarlyAccessEntry, int64, error) {
-	whereClause := "1=1"
-	args := make([]interface{}, 0)
-	argIndex := 1
-
+	// Map filter to status value for sqlc.narg
+	var statusFilter pgtype.Text
 	switch filter {
 	case "pending":
-		whereClause += ` AND status = 'PENDING'`
+		statusFilter = pgtype.Text{String: "PENDING", Valid: true}
 	case "invited":
-		whereClause += ` AND status = 'INVITED'`
+		statusFilter = pgtype.Text{String: "INVITED", Valid: true}
 	case "revoked":
-		whereClause += ` AND status = 'REVOKED'`
+		statusFilter = pgtype.Text{String: "REVOKED", Valid: true}
+	default:
+		// NULL means no filter
+		statusFilter = pgtype.Text{Valid: false}
 	}
 
+	var searchParam pgtype.Text
 	if search != "" {
-		pattern := "%" + strings.ToLower(search) + "%"
-		whereClause += fmt.Sprintf(` AND (LOWER(email) LIKE $%d OR LOWER(COALESCE(metadata->>'name', '')) LIKE $%d)`, argIndex, argIndex)
-		args = append(args, pattern)
-		argIndex++
+		searchParam = pgtype.Text{String: search, Valid: true}
 	}
 
-	var total int64
-	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM early_access WHERE %s`, whereClause)
-	err := h.db.Main.QueryRow(ctx, countQuery, args...).Scan(&total)
+	countParams := queries.CountWaitlistFilteredParams{
+		StatusFilter: statusFilter,
+		Search:       searchParam,
+	}
+	total, err := h.store.Q().CountWaitlistFiltered(ctx, countParams)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	args = append(args, limit, offset)
-	query := fmt.Sprintf(`
-		SELECT id, email, metadata->>'name', source, status, invited, contacted, notes, "requestedAt", "createdAt", "updatedAt"
-		FROM early_access
-		WHERE %s
-		ORDER BY "createdAt" DESC
-		LIMIT $%d OFFSET $%d
-	`, whereClause, argIndex, argIndex+1)
-
-	rows, err := h.db.Main.Query(ctx, query, args...)
+	listParams := queries.ListWaitlistFilteredParams{
+		StatusFilter: statusFilter,
+		Search:       searchParam,
+		Limit:        int32(limit),
+		Offset:       int32(offset),
+	}
+	rows, err := h.store.Q().ListWaitlistFiltered(ctx, listParams)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
 
 	entries := []EarlyAccessEntry{}
-	for rows.Next() {
-		var e EarlyAccessEntry
-		err := rows.Scan(&e.ID, &e.Email, &e.Name, &e.Source, &e.Status, &e.Invited, &e.Contacted, &e.Notes, &e.RequestedAt, &e.CreatedAt, &e.UpdatedAt)
-		if err != nil {
-			return nil, 0, err
-		}
-		entries = append(entries, e)
+	for _, r := range rows {
+		entries = append(entries, mapWaitlistRow(r.ID, r.Email, r.Name, r.Source, r.Notes, r.Status, r.Invited, r.Contacted, r.RequestedAt, r.CreatedAt, r.UpdatedAt))
 	}
 	return entries, total, nil
 }
 
 func (h *Handler) getWaitlistByID(ctx context.Context, id string) (*EarlyAccessEntry, error) {
-	var e EarlyAccessEntry
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT id, email, metadata->>'name', source, status, invited, contacted, notes, "requestedAt", "createdAt", "updatedAt"
-		FROM early_access WHERE id = $1
-	`, id).Scan(&e.ID, &e.Email, &e.Name, &e.Source, &e.Status, &e.Invited, &e.Contacted, &e.Notes, &e.RequestedAt, &e.CreatedAt, &e.UpdatedAt)
+	row, err := h.store.Q().GetWaitlistByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	e := mapWaitlistRow(row.ID, row.Email, row.Name, row.Source, row.Notes, row.Status, row.Invited, row.Contacted, row.RequestedAt, row.CreatedAt, row.UpdatedAt)
 	return &e, nil
 }
 
 func (h *Handler) inviteWaitlistEntry(ctx context.Context, id string) (*EarlyAccessEntry, error) {
-	var e EarlyAccessEntry
-	err := h.db.Main.QueryRow(ctx, `
-		UPDATE early_access SET invited = true, status = 'INVITED', "updatedAt" = NOW()
-		WHERE id = $1
-		RETURNING id, email, metadata->>'name', source, status, invited, contacted, notes, "requestedAt", "createdAt", "updatedAt"
-	`, id).Scan(&e.ID, &e.Email, &e.Name, &e.Source, &e.Status, &e.Invited, &e.Contacted, &e.Notes, &e.RequestedAt, &e.CreatedAt, &e.UpdatedAt)
+	row, err := h.store.Q().InviteWaitlistEntry(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	e := mapWaitlistRow(row.ID, row.Email, row.Name, row.Source, row.Notes, row.Status, row.Invited, row.Contacted, row.RequestedAt, row.CreatedAt, row.UpdatedAt)
 	return &e, nil
 }
 
 func (h *Handler) getWaitlistSummary(ctx context.Context) (*WaitlistSummary, error) {
-	var s WaitlistSummary
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT
-			COUNT(*) as total,
-			COUNT(*) FILTER (WHERE status = 'PENDING') as pending,
-			COUNT(*) FILTER (WHERE status = 'INVITED') as invited,
-			COUNT(*) FILTER (WHERE status = 'REVOKED') as revoked
-		FROM early_access
-	`).Scan(&s.Total, &s.Pending, &s.Invited, &s.Revoked)
+	row, err := h.store.Q().GetWaitlistSummary(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &s, nil
+	return &WaitlistSummary{
+		Total:   row.Total,
+		Pending: row.Pending,
+		Invited: row.Invited,
+		Revoked: row.Revoked,
+	}, nil
 }
 
 // revokeWaitlistByEmail sets the waitlist entry for an email to REVOKED status.
 // Called when a whitelist entry is deleted.
 func (h *Handler) revokeWaitlistByEmail(ctx context.Context, emailAddr string) {
 	emailAddr = strings.ToLower(strings.TrimSpace(emailAddr))
-	_, err := h.db.Main.Exec(ctx, `
-		UPDATE early_access SET status = 'REVOKED', invited = false, "updatedAt" = NOW()
-		WHERE LOWER(email) = $1
-	`, emailAddr)
+	err := h.store.Q().RevokeWaitlistByEmail(ctx, emailAddr)
 	if err != nil {
 		h.logger.Warn("failed to revoke waitlist entry for deleted whitelist email", "email", emailAddr, "error", err)
 		return

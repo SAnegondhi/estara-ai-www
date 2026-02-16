@@ -33,7 +33,7 @@ func (sc *statusCapture) WriteHeader(code int) {
 func (h *Handler) Tracked(jobName string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		q := queries.New(h.db.Main)
+		q := h.store.Q()
 
 		// Look up job config by name
 		jobCfg, err := q.GetCronJobConfigByName(ctx, jobName)
@@ -59,8 +59,8 @@ func (h *Handler) Tracked(jobName string, next http.HandlerFunc) http.HandlerFun
 
 		// Record run start
 		_, runErr := q.CreateCronJobRun(ctx, queries.CreateCronJobRunParams{
-			ID:    runID,
-			JobId: jobCfg.ID,
+			ID:        runID,
+			CronJobId: jobCfg.ID,
 		})
 		if runErr != nil {
 			h.logger.Warn("failed to record cron run start", "job", jobName, "error", runErr)
@@ -99,11 +99,11 @@ func (h *Handler) Tracked(jobName string, next http.HandlerFunc) http.HandlerFun
 		// Complete the run record
 		if runErr == nil {
 			_, completeErr := q.CompleteCronJobRun(ctx, queries.CompleteCronJobRunParams{
-				ID:         runID,
-				Status:     status,
-				DurationMs: pgtype.Int4{Int32: durationMs, Valid: true},
-				Error:      pgtype.Text{String: errMsg, Valid: errMsg != ""},
-				Output:     nil,
+				ID:       runID,
+				Status:   status,
+				Duration: pgtype.Int4{Int32: durationMs, Valid: true},
+				Error:    pgtype.Text{String: errMsg, Valid: errMsg != ""},
+				Output:   nil,
 			})
 			if completeErr != nil {
 				h.logger.Warn("failed to complete cron run record", "job", jobName, "error", completeErr)
@@ -112,10 +112,10 @@ func (h *Handler) Tracked(jobName string, next http.HandlerFunc) http.HandlerFun
 
 		// Update job config stats
 		updateErr := q.UpdateCronJobLastRun(ctx, queries.UpdateCronJobLastRunParams{
-			ID:               jobCfg.ID,
-			LastRunAt:        pgtype.Timestamp{Time: start, Valid: true},
-			LastRunStatus:    pgtype.Text{String: status, Valid: true},
-			LastRunDurationMs: pgtype.Int4{Int32: durationMs, Valid: true},
+			ID:              jobCfg.ID,
+			LastRun:         pgtype.Timestamp{Time: start, Valid: true},
+			LastRunStatus:   status,
+			LastRunDuration: pgtype.Int4{Int32: durationMs, Valid: true},
 		})
 		if updateErr != nil {
 			h.logger.Warn("failed to update cron job stats", "job", jobName, "error", updateErr)
@@ -137,7 +137,7 @@ func (h *Handler) checkConsecutiveFailures(ctx context.Context, q *queries.Queri
 		return
 	}
 
-	threshold := updated.MaxConsecutiveFailures
+	threshold := updated.MaxFailures
 	if threshold <= 0 {
 		threshold = 3
 	}
@@ -148,7 +148,7 @@ func (h *Handler) checkConsecutiveFailures(ctx context.Context, q *queries.Queri
 			"job_name":              jobName,
 			"endpoint":             updated.Endpoint,
 			"consecutive_failures": updated.ConsecutiveFailures,
-			"last_status":          updated.LastRunStatus.String,
+			"last_status":          fmt.Sprintf("%v", updated.LastRunStatus),
 		})
 
 		_, alertErr := q.UpsertSystemAlert(ctx, queries.UpsertSystemAlertParams{

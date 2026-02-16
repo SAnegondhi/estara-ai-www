@@ -15,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	db "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/billing"
 )
@@ -34,16 +34,16 @@ var (
 
 // Service handles website operations
 type Service struct {
-	db      *postgres.DB
+	store   *db.Store
 	stripe  *billing.StripeClient
 	cfg     *config.Config
 	logger  *slog.Logger
 }
 
 // NewService creates a new website service
-func NewService(db *postgres.DB, cfg *config.Config) *Service {
+func NewService(store *db.Store, cfg *config.Config) *Service {
 	return &Service{
-		db:     db,
+		store:  store,
 		stripe: billing.NewStripeClient(&cfg.Stripe),
 		cfg:    cfg,
 		logger: slog.Default().With("component", "website_service"),
@@ -52,7 +52,7 @@ func NewService(db *postgres.DB, cfg *config.Config) *Service {
 
 // GenerateReport initiates report generation
 func (s *Service) GenerateReport(ctx context.Context, req *GenerateReportRequest) (*GenerateReportResponse, error) {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	// Validate report type
 	switch req.ReportType {
@@ -141,7 +141,7 @@ func (s *Service) CreateCheckoutSession(ctx context.Context, req *CheckoutReques
 
 // CreateFreeSnapshot creates a free snapshot request
 func (s *Service) CreateFreeSnapshot(ctx context.Context, req *FreeSnapshotRequest) (*FreeSnapshotResponse, error) {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	// Check snapshot limit by email
 	count, err := q.CountSnapshotsByEmail(ctx, pgtype.Text{String: req.Email, Valid: true})
@@ -213,7 +213,7 @@ func (s *Service) CreateFreeSnapshot(ctx context.Context, req *FreeSnapshotReque
 
 // GetOrderStatus retrieves the status of an order (report or snapshot)
 func (s *Service) GetOrderStatus(ctx context.Context, orderID string) (*OrderStatusResponse, error) {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	// Try to find as investor report first
 	report, err := q.GetInvestorReportByID(ctx, orderID)
@@ -336,7 +336,7 @@ func (s *Service) GetPricingConfig() *PricingConfig {
 
 // GetInsightAccessStatus checks the status of a user's insight access
 func (s *Service) GetInsightAccessStatus(ctx context.Context, userID string) (*InsightAccessStatusResponse, error) {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	access, err := q.GetInsightAccessByUserID(ctx, userID)
 	if err != nil {

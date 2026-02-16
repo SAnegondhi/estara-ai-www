@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/pkg/httputil"
 )
 
@@ -36,25 +38,20 @@ type IAPWebhookEventResponse struct {
 func (h *Handler) GetIAPRenewalStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	var resp IAPRenewalStatusResponse
-
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT
-			COUNT(*) FILTER (WHERE "iapPlatform" IS NOT NULL) as total_iap,
-			COUNT(*) FILTER (WHERE "iapPlatform" IS NOT NULL AND "iapExpiresAt" > NOW()) as active_iap,
-			COUNT(*) FILTER (WHERE "iapPlatform" IS NOT NULL AND "iapExpiresAt" > NOW() AND "iapExpiresAt" < NOW() + INTERVAL '7 days') as expiring_soon,
-			COUNT(*) FILTER (WHERE "iapPlatform" IS NOT NULL AND "iapExpiresAt" <= NOW()) as expired,
-			COUNT(*) FILTER (WHERE "iapPlatform" = 'apple') as apple_count,
-			COUNT(*) FILTER (WHERE "iapPlatform" = 'google') as google_count
-		FROM users
-	`).Scan(
-		&resp.TotalIAP, &resp.ActiveIAP, &resp.ExpiringSoon,
-		&resp.Expired, &resp.AppleCount, &resp.GoogleCount,
-	)
+	stats, err := h.store.Q().GetIAPStats(ctx)
 	if err != nil {
 		h.logger.Error("failed to get IAP renewal status", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to get IAP renewal status")
 		return
+	}
+
+	resp := IAPRenewalStatusResponse{
+		TotalIAP:     stats.TotalIap,
+		ActiveIAP:    stats.ActiveIap,
+		ExpiringSoon: stats.ExpiringSoon,
+		Expired:      stats.Expired,
+		AppleCount:   stats.AppleCount,
+		GoogleCount:  stats.GoogleCount,
 	}
 
 	httputil.Success(w, resp)
@@ -70,14 +67,13 @@ func (h *Handler) GetIAPWebhookEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := (page - 1) * pageSize
 
+	q := h.store.Q()
+
 	// Query audit logs for IAP-related events
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT id, action, resource, details, "createdAt"
-		FROM admin_audit_log
-		WHERE action LIKE 'IAP_%' OR resource = 'iap'
-		ORDER BY "createdAt" DESC
-		LIMIT $1 OFFSET $2
-	`, pageSize, offset)
+	iapRows, err := q.ListIAPAuditLogs(ctx, queries.ListIAPAuditLogsParams{
+		Limit:  int32(pageSize),
+		Offset: int32(offset),
+	})
 	if err != nil {
 		h.logger.Warn("failed to get IAP webhook events", "error", err)
 		httputil.Success(w, map[string]interface{}{
@@ -86,30 +82,28 @@ func (h *Handler) GetIAPWebhookEvents(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer rows.Close()
 
-	var events []IAPWebhookEventResponse
-	for rows.Next() {
-		var e IAPWebhookEventResponse
-		var detailsJSON []byte
-		if err := rows.Scan(&e.ID, &e.Action, &e.Resource, &detailsJSON, &e.CreatedAt); err != nil {
-			continue
+	events := make([]IAPWebhookEventResponse, 0, len(iapRows))
+	for _, r := range iapRows {
+		e := IAPWebhookEventResponse{
+			ID: r.ID,
 		}
-		if detailsJSON != nil {
-			_ = json.Unmarshal(detailsJSON, &e.Details)
+		if r.Action.Valid {
+			e.Action = r.Action.String
+		}
+		if r.Resource.Valid {
+			e.Resource = r.Resource.String
+		}
+		if r.Metadata != nil {
+			_ = json.Unmarshal(r.Metadata, &e.Details)
+		}
+		if r.CreatedAt.Valid {
+			e.CreatedAt = r.CreatedAt.Time
 		}
 		events = append(events, e)
 	}
 
-	if events == nil {
-		events = []IAPWebhookEventResponse{}
-	}
-
-	var total int64
-	_ = h.db.Main.QueryRow(ctx, `
-		SELECT COUNT(*) FROM admin_audit_log
-		WHERE action LIKE 'IAP_%' OR resource = 'iap'
-	`).Scan(&total)
+	total, _ := q.CountIAPAuditLogs(ctx)
 
 	httputil.Success(w, map[string]interface{}{
 		"events": events,
@@ -131,29 +125,21 @@ func (h *Handler) DowngradeIAPSubscription(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	q := h.store.Q()
+
 	// Verify user has IAP subscription
-	var iapPlatform *string
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT "iapPlatform" FROM users WHERE id = $1
-	`, userID).Scan(&iapPlatform)
+	iapPlatformVal, err := q.GetUserIAPPlatform(ctx, userID)
 	if err != nil {
 		httputil.Error(w, http.StatusNotFound, "user not found")
 		return
 	}
-	if iapPlatform == nil {
+	if !iapPlatformVal.Valid {
 		httputil.BadRequest(w, "user does not have an IAP subscription")
 		return
 	}
 
 	// Downgrade to free tier
-	_, err = h.db.Main.Exec(ctx, `
-		UPDATE users SET
-			"subscriptionTier" = 'free',
-			"iapPlatform" = NULL,
-			"iapExpiresAt" = NULL,
-			"updatedAt" = NOW()
-		WHERE id = $1
-	`, userID)
+	err = q.DowngradeIAPUser(ctx, userID)
 	if err != nil {
 		h.logger.Error("failed to downgrade IAP subscription", "error", err, "user_id", userID)
 		httputil.Error(w, http.StatusInternalServerError, "failed to downgrade subscription")
@@ -161,16 +147,10 @@ func (h *Handler) DowngradeIAPSubscription(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Also update subscription record if exists
-	_, _ = h.db.Main.Exec(ctx, `
-		UPDATE subscriptions SET
-			status = 'CANCELED',
-			tier = 'FREE',
-			"updatedAt" = NOW()
-		WHERE "userId" = $1 AND status IN ('ACTIVE', 'TRIALING')
-	`, userID)
+	_ = q.CancelIAPSubscriptions(ctx, userID)
 
 	h.logAdminAudit(ctx, r, "IAP_DOWNGRADE", "iap", userID, map[string]interface{}{
-		"previousPlatform": *iapPlatform,
+		"previousPlatform": iapPlatformVal.String,
 	})
 
 	httputil.Success(w, map[string]interface{}{

@@ -32,16 +32,16 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN null;
 END $$;
 
--- audit_logs table (system audit)
+-- audit_logs table (system audit) — column names match actual Prisma-created DB schema
 CREATE TABLE IF NOT EXISTS audit_logs (
     id TEXT PRIMARY KEY,
-    timestamp TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "userId" TEXT REFERENCES users(id),
-    "eventType" "AuditEventType" NOT NULL,
+    event "AuditEventType" NOT NULL,
     description TEXT,
     "ipAddress" TEXT,
     "userAgent" TEXT,
-    details JSONB,
+    metadata JSONB,
     success BOOLEAN NOT NULL DEFAULT true,
     error TEXT,
     action TEXT,
@@ -55,8 +55,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     severity TEXT NOT NULL DEFAULT 'info'
 );
 
-CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(timestamp);
-CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_logs("eventType");
+CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs("createdAt");
+CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_logs(event);
 CREATE INDEX IF NOT EXISTS idx_audit_severity ON audit_logs(severity);
 CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs("userId");
 CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_logs("sessionId");

@@ -66,6 +66,23 @@ func (q *Queries) AutoArchiveOldSessions(ctx context.Context) error {
 	return err
 }
 
+const AutoArchiveOldSessionsRows = `-- name: AutoArchiveOldSessionsRows :execrows
+UPDATE discovery_sessions SET
+    status = 'ARCHIVED',
+    "archivedAt" = NOW(),
+    "updatedAt" = NOW()
+WHERE status = 'ACTIVE'
+  AND "createdAt" < NOW() - INTERVAL '30 days'
+`
+
+func (q *Queries) AutoArchiveOldSessionsRows(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, AutoArchiveOldSessionsRows)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const CountSessionActivitiesByType = `-- name: CountSessionActivitiesByType :one
 SELECT COUNT(*) FROM discovery_session_activities
 WHERE "discoverySessionId" = $1 AND "activityType" = $2
@@ -399,6 +416,19 @@ WHERE "expiresAt" < NOW()
 func (q *Queries) DeleteExpiredSessions(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, DeleteExpiredSessions)
 	return err
+}
+
+const DeleteExpiredSessionsRows = `-- name: DeleteExpiredSessionsRows :execrows
+DELETE FROM discovery_sessions
+WHERE "expiresAt" < NOW()
+`
+
+func (q *Queries) DeleteExpiredSessionsRows(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, DeleteExpiredSessionsRows)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const DeleteSessionEvaluations = `-- name: DeleteSessionEvaluations :exec

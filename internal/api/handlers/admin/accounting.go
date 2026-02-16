@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/estara-ai/www/pkg/httputil"
 )
 
@@ -47,18 +49,27 @@ type VendorExpenseItem struct {
 
 // ProfitabilityResponse represents profitability data
 type ProfitabilityResponse struct {
-	GrossRevenue  float64          `json:"grossRevenue"`
-	TotalCosts    float64          `json:"totalCosts"`
-	GrossProfit   float64          `json:"grossProfit"`
-	GrossMargin   float64          `json:"grossMargin"`
-	RevenueByMonth []MonthAmount   `json:"revenueByMonth"`
-	CostsByMonth   []MonthAmount   `json:"costsByMonth"`
+	GrossRevenue   float64       `json:"grossRevenue"`
+	TotalCosts     float64       `json:"totalCosts"`
+	GrossProfit    float64       `json:"grossProfit"`
+	GrossMargin    float64       `json:"grossMargin"`
+	RevenueByMonth []MonthAmount `json:"revenueByMonth"`
+	CostsByMonth   []MonthAmount `json:"costsByMonth"`
 }
 
 // MonthAmount represents a monthly amount
 type MonthAmount struct {
 	Month  string  `json:"month"`
 	Amount float64 `json:"amount"`
+}
+
+// numericToFloat64 converts a pgtype.Numeric to float64
+func numericToFloat64(n pgtype.Numeric) float64 {
+	if !n.Valid {
+		return 0
+	}
+	f, _ := n.Float64Value()
+	return f.Float64
 }
 
 // GetRevenueJournal returns monthly double-entry journal entries
@@ -69,34 +80,27 @@ func (h *Handler) GetRevenueJournal(w http.ResponseWriter, r *http.Request) {
 		months = 24
 	}
 
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT
-			DATE_TRUNC('month', "createdAt") as month,
-			COALESCE(SUM("amountPaid"), 0) as total_paid,
-			COALESCE(SUM("taxAmount"), 0) as total_tax
-		FROM invoices
-		WHERE status = 'paid'
-		AND "createdAt" >= DATE_TRUNC('month', CURRENT_DATE - ($1 || ' months')::interval)
-		GROUP BY DATE_TRUNC('month', "createdAt")
-		ORDER BY month DESC
-	`, months)
+	rows, err := h.store.Q().GetMonthlyRevenue(ctx, pgtype.Text{
+		String: fmt.Sprintf("%d", months),
+		Valid:  true,
+	})
 	if err != nil {
 		h.logger.Error("failed to get revenue journal", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to get revenue journal")
 		return
 	}
-	defer rows.Close()
 
 	var entries []JournalEntryResponse
-	for rows.Next() {
-		var month time.Time
-		var totalPaid, totalTax int64
-		if err := rows.Scan(&month, &totalPaid, &totalTax); err != nil {
-			continue
+	for _, row := range rows {
+		// Month is pgtype.Interval from DATE_TRUNC; extract microseconds as timestamp
+		monthStr := "unknown"
+		if row.Month.Valid {
+			// pgtype.Interval stores Microseconds - interpret as Unix microseconds for timestamp
+			month := time.UnixMicro(row.Month.Microseconds)
+			monthStr = month.Format("2006-01")
 		}
-		monthStr := month.Format("2006-01")
-		revenue := float64(totalPaid) / 100
-		tax := float64(totalTax) / 100
+		revenue := float64(row.TotalPaid) / 100
+		tax := float64(row.TotalTax) / 100
 
 		// Revenue recognition entry
 		entries = append(entries, JournalEntryResponse{
@@ -132,34 +136,29 @@ func (h *Handler) GetRevenueJournal(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetDeferredRevenue(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT
-			s.id, u.email, s.tier,
-			s."currentPeriodStart", s."currentPeriodEnd"
-		FROM subscriptions s
-		JOIN users u ON s."userId" = u.id
-		WHERE s.status = 'ACTIVE'
-		AND s."currentPeriodStart" IS NOT NULL
-		AND s."currentPeriodEnd" IS NOT NULL
-		ORDER BY s."currentPeriodEnd" DESC
-	`)
+	rows, err := h.store.Q().ListActiveSubscriptionsWithUsers(ctx)
 	if err != nil {
 		h.logger.Error("failed to get deferred revenue", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to get deferred revenue")
 		return
 	}
-	defer rows.Close()
 
 	var items []DeferredRevenueItem
 	var totalDeferred, totalRecognized float64
 	now := time.Now()
 
-	for rows.Next() {
-		var item DeferredRevenueItem
-		var startDate, endDate time.Time
-		if err := rows.Scan(&item.SubscriptionID, &item.Email, &item.Tier, &startDate, &endDate); err != nil {
+	for _, row := range rows {
+		if !row.CurrentPeriodStart.Valid || !row.CurrentPeriodEnd.Valid {
 			continue
 		}
+
+		startDate := row.CurrentPeriodStart.Time
+		endDate := row.CurrentPeriodEnd.Time
+
+		var item DeferredRevenueItem
+		item.SubscriptionID = row.ID
+		item.Email = row.Email
+		item.Tier = row.STier
 
 		// Calculate total months and recognized months
 		totalMonths := int(endDate.Sub(startDate).Hours() / (24 * 30))
@@ -205,28 +204,25 @@ func (h *Handler) GetDeferredRevenue(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetVendorExpenses(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT id, name, category, COALESCE("monthlyCost", 0) as monthly_cost
-		FROM "VendorConfig"
-		WHERE enabled = true
-		ORDER BY category, name
-	`)
+	rows, err := h.store.Q().ListActiveVendorConfigs(ctx)
 	if err != nil {
 		h.logger.Error("failed to get vendor expenses", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to get vendor expenses")
 		return
 	}
-	defer rows.Close()
 
 	var items []VendorExpenseItem
 	var totalMonthly float64
-	for rows.Next() {
-		var item VendorExpenseItem
-		if err := rows.Scan(&item.VendorID, &item.VendorName, &item.Category, &item.MonthlyCost); err != nil {
-			continue
+	for _, row := range rows {
+		monthlyCost := numericToFloat64(row.MonthlyCost)
+		item := VendorExpenseItem{
+			VendorID:    row.ID,
+			VendorName:  row.Name,
+			Category:    row.Category,
+			MonthlyCost: monthlyCost,
+			AnnualCost:  monthlyCost * 12,
 		}
-		item.AnnualCost = item.MonthlyCost * 12
-		totalMonthly += item.MonthlyCost
+		totalMonthly += monthlyCost
 		items = append(items, item)
 	}
 
@@ -234,21 +230,10 @@ func (h *Handler) GetVendorExpenses(w http.ResponseWriter, r *http.Request) {
 		items = []VendorExpenseItem{}
 	}
 
-	// Get contract costs
-	contractRows, err := h.db.Main.Query(ctx, `
-		SELECT vc.id, vc.name, vc.category, COALESCE(c.notes, '') as notes
-		FROM "VendorConfig" vc
-		JOIN vendor_contracts c ON vc.id = c.vendor_id
-		WHERE vc.enabled = true AND c.end_date > NOW()
-	`)
-	var activeContracts int64
-	if err == nil {
-		defer contractRows.Close()
-		for contractRows.Next() {
-			var id, name, category, notes string
-			_ = contractRows.Scan(&id, &name, &category, &notes)
-			activeContracts++
-		}
+	// Get active contract count
+	activeContracts, err := h.store.Q().GetActiveVendorContractCount(ctx)
+	if err != nil {
+		activeContracts = 0
 	}
 
 	httputil.Success(w, map[string]interface{}{
@@ -266,44 +251,43 @@ func (h *Handler) GetProfitability(w http.ResponseWriter, r *http.Request) {
 	var resp ProfitabilityResponse
 
 	// Get revenue by month (last 6 months)
-	revenueRows, err := h.db.Main.Query(ctx, `
-		SELECT
-			DATE_TRUNC('month', "createdAt") as month,
-			COALESCE(SUM("amountPaid"), 0) as total
-		FROM invoices
-		WHERE status = 'paid'
-		AND "createdAt" >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '5 months')
-		GROUP BY DATE_TRUNC('month', "createdAt")
-		ORDER BY month
-	`)
+	revenueRows, err := h.store.Q().GetQuarterlyExpenses(ctx)
 	if err != nil {
 		h.logger.Error("failed to get profitability", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to get profitability")
 		return
 	}
-	defer revenueRows.Close()
 
-	for revenueRows.Next() {
-		var month time.Time
-		var total int64
-		if err := revenueRows.Scan(&month, &total); err != nil {
-			continue
+	for _, row := range revenueRows {
+		monthStr := "unknown"
+		if row.Month.Valid {
+			month := time.UnixMicro(row.Month.Microseconds)
+			monthStr = month.Format("2006-01")
 		}
-		amount := float64(total) / 100
+		amount := float64(row.Total) / 100
 		resp.GrossRevenue += amount
 		resp.RevenueByMonth = append(resp.RevenueByMonth, MonthAmount{
-			Month:  month.Format("2006-01"),
+			Month:  monthStr,
 			Amount: amount,
 		})
 	}
 
 	// Get vendor costs (use monthly cost * months)
+	totalCostResult, err := h.store.Q().GetTotalActiveVendorCost(ctx)
 	var monthlyVendorCost float64
-	_ = h.db.Main.QueryRow(ctx, `
-		SELECT COALESCE(SUM("monthlyCost"), 0)
-		FROM "VendorConfig"
-		WHERE enabled = true
-	`).Scan(&monthlyVendorCost)
+	if err == nil && totalCostResult != nil {
+		// GetTotalActiveVendorCost returns interface{} — try numeric string conversion
+		switch v := totalCostResult.(type) {
+		case float64:
+			monthlyVendorCost = v
+		case int64:
+			monthlyVendorCost = float64(v)
+		case string:
+			fmt.Sscanf(v, "%f", &monthlyVendorCost)
+		case pgtype.Numeric:
+			monthlyVendorCost = numericToFloat64(v)
+		}
+	}
 
 	// Create cost entries for each month
 	for _, rev := range resp.RevenueByMonth {
@@ -348,29 +332,19 @@ func (h *Handler) ExportAccounting(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Section {
 	case "expenses":
-		rows, err := h.db.Main.Query(ctx, `
-			SELECT name, category, COALESCE("monthlyCost", 0)
-			FROM "VendorConfig"
-			WHERE enabled = true
-			ORDER BY category, name
-		`)
+		rows, err := h.store.Q().ListActiveVendorConfigs(ctx)
 		if err != nil {
 			httputil.Error(w, http.StatusInternalServerError, "failed to export")
 			return
 		}
-		defer rows.Close()
 
 		if req.Format == "csv" {
 			headers := []string{"Vendor", "Category", "Monthly Cost", "Annual Cost"}
 			var csvRows [][]string
-			for rows.Next() {
-				var name, category string
-				var monthlyCost float64
-				if err := rows.Scan(&name, &category, &monthlyCost); err != nil {
-					continue
-				}
+			for _, row := range rows {
+				monthlyCost := numericToFloat64(row.MonthlyCost)
 				csvRows = append(csvRows, []string{
-					name, category,
+					row.Name, row.Category,
 					fmt.Sprintf("%.2f", monthlyCost),
 					fmt.Sprintf("%.2f", monthlyCost*12),
 				})
@@ -384,13 +358,14 @@ func (h *Handler) ExportAccounting(w http.ResponseWriter, r *http.Request) {
 				AnnualCost  float64 `json:"annualCost"`
 			}
 			var expenses []expense
-			for rows.Next() {
-				var e expense
-				if err := rows.Scan(&e.Name, &e.Category, &e.MonthlyCost); err != nil {
-					continue
-				}
-				e.AnnualCost = e.MonthlyCost * 12
-				expenses = append(expenses, e)
+			for _, row := range rows {
+				monthlyCost := numericToFloat64(row.MonthlyCost)
+				expenses = append(expenses, expense{
+					Name:        row.Name,
+					Category:    row.Category,
+					MonthlyCost: monthlyCost,
+					AnnualCost:  monthlyCost * 12,
+				})
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Content-Disposition", "attachment; filename=vendor_expenses.json")

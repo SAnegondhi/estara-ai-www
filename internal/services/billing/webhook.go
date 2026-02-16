@@ -18,22 +18,22 @@ import (
 
 	"github.com/estara-ai/www/internal/config"
 	"github.com/estara-ai/www/internal/crypto"
-	"github.com/estara-ai/www/internal/db/postgres"
+	db "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/email"
 )
 
 // WebhookService handles Stripe webhook events
 type WebhookService struct {
-	db     *postgres.DB
+	store  *db.Store
 	cfg    *config.Config
 	logger *slog.Logger
 }
 
 // NewWebhookService creates a new webhook service
-func NewWebhookService(db *postgres.DB, cfg *config.Config) *WebhookService {
+func NewWebhookService(store *db.Store, cfg *config.Config) *WebhookService {
 	return &WebhookService{
-		db:     db,
+		store:  store,
 		cfg:    cfg,
 		logger: slog.Default().With("component", "webhook_service"),
 	}
@@ -167,7 +167,7 @@ func (s *WebhookService) handleGuestCheckoutCompleted(ctx context.Context, sessi
 		"tier", tier,
 	)
 
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	// Normalize email
 	userEmail := strings.ToLower(strings.TrimSpace(pendingEmail))
@@ -371,7 +371,7 @@ func (s *WebhookService) upsertV2EvaluationQuota(ctx context.Context, userID, su
 			updated_at = NOW()
 	`
 
-	_, err := s.db.Main.Exec(ctx, query,
+	_, err := s.store.Pool().Exec(ctx, query,
 		uuid.New().String(), // $1: id
 		userID,              // $2: user_id
 		v2Tier,              // $3: tier
@@ -479,7 +479,7 @@ func (s *WebhookService) handleSubscriptionUpdated(ctx context.Context, event *s
 		"cancel_at_period_end", subscription.CancelAtPeriodEnd,
 	)
 
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	// Find the subscription in our database
 	sub, err := q.GetSubscriptionByStripeID(ctx, pgtype.Text{
@@ -536,7 +536,7 @@ func (s *WebhookService) handleSubscriptionDeleted(ctx context.Context, event *s
 
 	s.logger.Info("subscription deleted", "subscription_id", subscription.ID)
 
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	// Find and cancel the subscription in our database
 	sub, err := q.GetSubscriptionByStripeID(ctx, pgtype.Text{
@@ -683,7 +683,7 @@ func (s *WebhookService) handleInvoiceFinalized(ctx context.Context, event *stri
 		"amount_due", invoice.AmountDue,
 	)
 
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	// Update invoice status to OPEN and set URLs
 	if err := q.UpdateInvoiceStatusByStripeID(ctx, queries.UpdateInvoiceStatusByStripeIDParams{
@@ -791,7 +791,7 @@ func (s *WebhookService) handleInvoiceUpcoming(ctx context.Context, event *strip
 		"period_end", time.Unix(invoice.PeriodEnd, 0),
 	)
 
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	// Send renewal reminder email and create record for chargeback protection
 	if user, err := s.findUserForStripe(ctx, customerID, subscriptionID); err == nil && user != nil {
@@ -901,7 +901,7 @@ func (s *WebhookService) handleInvoicePaymentSucceeded(ctx context.Context, even
 		"amount_paid", invoice.AmountPaid,
 	)
 
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	// Create/update invoice record
 	if err := s.createInvoiceRecord(ctx, &invoice); err != nil {
@@ -1050,7 +1050,7 @@ func (s *WebhookService) handleInvoicePaymentFailed(ctx context.Context, event *
 		"customer_id", customerID,
 	)
 
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	// Create system alert for payment failure
 	alertKey := fmt.Sprintf("stripe_payment_failed_%s", customerID)
@@ -1124,7 +1124,7 @@ func (s *WebhookService) handleDisputeCreated(ctx context.Context, event *stripe
 	)
 
 	// Create system alert for dispute — requires immediate admin attention
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 	alertKey := fmt.Sprintf("stripe_dispute_%s", dispute.ID)
 	chargeID := ""
 	if dispute.Charge != nil {
@@ -1207,7 +1207,7 @@ func (s *WebhookService) recordAuditLog(ctx context.Context, params queries.Crea
 		eventType = value
 	}
 
-	_, err := s.db.Main.Exec(ctx, `
+	_, err := s.store.Pool().Exec(ctx, `
 		INSERT INTO billing_audit_logs (
 			id, "userId", "stripeCustomerId", "stripeSubscriptionId",
 			"stripePaymentIntentId", "stripeInvoiceId",
@@ -1225,7 +1225,7 @@ func (s *WebhookService) recordAuditLog(ctx context.Context, params queries.Crea
 }
 
 func (s *WebhookService) createOrUpdateSubscription(ctx context.Context, userID, stripeSubID, stripeCustomerID string) error {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	sub, err := q.GetSubscriptionByUserID(ctx, userID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -1292,7 +1292,7 @@ func (s *WebhookService) createOrUpdateSubscription(ctx context.Context, userID,
 }
 
 func (s *WebhookService) createInvoiceRecord(ctx context.Context, inv *stripe.Invoice) error {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	customerID := ""
 	if inv.Customer != nil {
@@ -1384,7 +1384,7 @@ func (s *WebhookService) createInvoiceRecord(ctx context.Context, inv *stripe.In
 }
 
 func (s *WebhookService) findUserForStripe(ctx context.Context, customerID, subscriptionID string) (*queries.User, error) {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	if subscriptionID != "" {
 		sub, err := q.GetSubscriptionByStripeID(ctx, pgtype.Text{

@@ -7,9 +7,6 @@ package queries
 
 import (
 	"context"
-
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const CountUserConsents = `-- name: CountUserConsents :one
@@ -24,11 +21,11 @@ func (q *Queries) CountUserConsents(ctx context.Context) (int64, error) {
 }
 
 const CountUserConsentsByType = `-- name: CountUserConsentsByType :one
-SELECT COUNT(*) FROM user_consents WHERE consent_type = $1
+SELECT COUNT(*) FROM user_consents WHERE "consentType"::text = $1
 `
 
-func (q *Queries) CountUserConsentsByType(ctx context.Context, consentType string) (int64, error) {
-	row := q.db.QueryRow(ctx, CountUserConsentsByType, consentType)
+func (q *Queries) CountUserConsentsByType(ctx context.Context, consenttype interface{}) (int64, error) {
+	row := q.db.QueryRow(ctx, CountUserConsentsByType, consenttype)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -36,52 +33,55 @@ func (q *Queries) CountUserConsentsByType(ctx context.Context, consentType strin
 
 const CreateUserConsent = `-- name: CreateUserConsent :one
 INSERT INTO user_consents (
-    user_id, consent_type, version, ip_address, user_agent
+    id, "userId", "consentType", version, granted, "ipAddress", "userAgent"
 ) VALUES (
-    $1, $2, $3, $4, $5
-) RETURNING id, user_id, consent_type, version, granted_at, revoked_at, ip_address, user_agent, created_at
+    $1, $2, $3, $4, $5, $6, $7
+) RETURNING id, "userId", "consentType", version, granted, "ipAddress", "userAgent", timestamp
 `
 
 type CreateUserConsentParams struct {
-	UserID      uuid.UUID   `json:"user_id"`
-	ConsentType string      `json:"consent_type"`
+	ID          string      `json:"id"`
+	UserId      string      `json:"userId"`
+	ConsentType interface{} `json:"consentType"`
 	Version     string      `json:"version"`
-	IpAddress   pgtype.Text `json:"ip_address"`
-	UserAgent   pgtype.Text `json:"user_agent"`
+	Granted     bool        `json:"granted"`
+	IpAddress   string      `json:"ipAddress"`
+	UserAgent   string      `json:"userAgent"`
 }
 
 func (q *Queries) CreateUserConsent(ctx context.Context, arg CreateUserConsentParams) (UserConsent, error) {
 	row := q.db.QueryRow(ctx, CreateUserConsent,
-		arg.UserID,
+		arg.ID,
+		arg.UserId,
 		arg.ConsentType,
 		arg.Version,
+		arg.Granted,
 		arg.IpAddress,
 		arg.UserAgent,
 	)
 	var i UserConsent
 	err := row.Scan(
 		&i.ID,
-		&i.UserID,
+		&i.UserId,
 		&i.ConsentType,
 		&i.Version,
-		&i.GrantedAt,
-		&i.RevokedAt,
+		&i.Granted,
 		&i.IpAddress,
 		&i.UserAgent,
-		&i.CreatedAt,
+		&i.Timestamp,
 	)
 	return i, err
 }
 
 const GetConsentSummary = `-- name: GetConsentSummary :many
 SELECT
-    consent_type,
-    COUNT(*) FILTER (WHERE revoked_at IS NULL) as active_count,
-    COUNT(*) FILTER (WHERE revoked_at IS NOT NULL) as revoked_count,
+    "consentType"::text as consent_type,
+    COUNT(*) FILTER (WHERE granted = true) as active_count,
+    COUNT(*) FILTER (WHERE granted = false) as revoked_count,
     COUNT(*) as total_count
 FROM user_consents
-GROUP BY consent_type
-ORDER BY consent_type
+GROUP BY "consentType"
+ORDER BY "consentType"
 `
 
 type GetConsentSummaryRow struct {
@@ -117,36 +117,35 @@ func (q *Queries) GetConsentSummary(ctx context.Context) ([]GetConsentSummaryRow
 }
 
 const GetUserConsent = `-- name: GetUserConsent :one
-SELECT id, user_id, consent_type, version, granted_at, revoked_at, ip_address, user_agent, created_at FROM user_consents
-WHERE user_id = $1 AND consent_type = $2 AND revoked_at IS NULL
+SELECT id, "userId", "consentType", version, granted, "ipAddress", "userAgent", timestamp FROM user_consents
+WHERE "userId" = $1 AND "consentType"::text = $2 AND granted = true
 `
 
 type GetUserConsentParams struct {
-	UserID      uuid.UUID `json:"user_id"`
-	ConsentType string    `json:"consent_type"`
+	UserId      string      `json:"userId"`
+	ConsentType interface{} `json:"consentType"`
 }
 
 func (q *Queries) GetUserConsent(ctx context.Context, arg GetUserConsentParams) (UserConsent, error) {
-	row := q.db.QueryRow(ctx, GetUserConsent, arg.UserID, arg.ConsentType)
+	row := q.db.QueryRow(ctx, GetUserConsent, arg.UserId, arg.ConsentType)
 	var i UserConsent
 	err := row.Scan(
 		&i.ID,
-		&i.UserID,
+		&i.UserId,
 		&i.ConsentType,
 		&i.Version,
-		&i.GrantedAt,
-		&i.RevokedAt,
+		&i.Granted,
 		&i.IpAddress,
 		&i.UserAgent,
-		&i.CreatedAt,
+		&i.Timestamp,
 	)
 	return i, err
 }
 
 const ListUserConsents = `-- name: ListUserConsents :many
 
-SELECT id, user_id, consent_type, version, granted_at, revoked_at, ip_address, user_agent, created_at FROM user_consents
-ORDER BY created_at DESC
+SELECT id, "userId", "consentType", version, granted, "ipAddress", "userAgent", timestamp FROM user_consents
+ORDER BY "timestamp" DESC
 LIMIT $1 OFFSET $2
 `
 
@@ -156,6 +155,7 @@ type ListUserConsentsParams struct {
 }
 
 // Compliance Queries
+// Column names match actual database (camelCase from Prisma)
 func (q *Queries) ListUserConsents(ctx context.Context, arg ListUserConsentsParams) ([]UserConsent, error) {
 	rows, err := q.db.Query(ctx, ListUserConsents, arg.Limit, arg.Offset)
 	if err != nil {
@@ -167,14 +167,13 @@ func (q *Queries) ListUserConsents(ctx context.Context, arg ListUserConsentsPara
 		var i UserConsent
 		if err := rows.Scan(
 			&i.ID,
-			&i.UserID,
+			&i.UserId,
 			&i.ConsentType,
 			&i.Version,
-			&i.GrantedAt,
-			&i.RevokedAt,
+			&i.Granted,
 			&i.IpAddress,
 			&i.UserAgent,
-			&i.CreatedAt,
+			&i.Timestamp,
 		); err != nil {
 			return nil, err
 		}
@@ -187,16 +186,16 @@ func (q *Queries) ListUserConsents(ctx context.Context, arg ListUserConsentsPara
 }
 
 const ListUserConsentsByType = `-- name: ListUserConsentsByType :many
-SELECT id, user_id, consent_type, version, granted_at, revoked_at, ip_address, user_agent, created_at FROM user_consents
-WHERE consent_type = $1
-ORDER BY created_at DESC
+SELECT id, "userId", "consentType", version, granted, "ipAddress", "userAgent", timestamp FROM user_consents
+WHERE "consentType"::text = $1
+ORDER BY "timestamp" DESC
 LIMIT $2 OFFSET $3
 `
 
 type ListUserConsentsByTypeParams struct {
-	ConsentType string `json:"consent_type"`
-	Limit       int32  `json:"limit"`
-	Offset      int32  `json:"offset"`
+	ConsentType interface{} `json:"consentType"`
+	Limit       int32       `json:"limit"`
+	Offset      int32       `json:"offset"`
 }
 
 func (q *Queries) ListUserConsentsByType(ctx context.Context, arg ListUserConsentsByTypeParams) ([]UserConsent, error) {
@@ -210,14 +209,13 @@ func (q *Queries) ListUserConsentsByType(ctx context.Context, arg ListUserConsen
 		var i UserConsent
 		if err := rows.Scan(
 			&i.ID,
-			&i.UserID,
+			&i.UserId,
 			&i.ConsentType,
 			&i.Version,
-			&i.GrantedAt,
-			&i.RevokedAt,
+			&i.Granted,
 			&i.IpAddress,
 			&i.UserAgent,
-			&i.CreatedAt,
+			&i.Timestamp,
 		); err != nil {
 			return nil, err
 		}
@@ -230,16 +228,16 @@ func (q *Queries) ListUserConsentsByType(ctx context.Context, arg ListUserConsen
 }
 
 const RevokeUserConsent = `-- name: RevokeUserConsent :exec
-UPDATE user_consents SET revoked_at = NOW()
-WHERE user_id = $1 AND consent_type = $2 AND revoked_at IS NULL
+UPDATE user_consents SET granted = false
+WHERE "userId" = $1 AND "consentType"::text = $2 AND granted = true
 `
 
 type RevokeUserConsentParams struct {
-	UserID      uuid.UUID `json:"user_id"`
-	ConsentType string    `json:"consent_type"`
+	UserId      string      `json:"userId"`
+	ConsentType interface{} `json:"consentType"`
 }
 
 func (q *Queries) RevokeUserConsent(ctx context.Context, arg RevokeUserConsentParams) error {
-	_, err := q.db.Exec(ctx, RevokeUserConsent, arg.UserID, arg.ConsentType)
+	_, err := q.db.Exec(ctx, RevokeUserConsent, arg.UserId, arg.ConsentType)
 	return err
 }

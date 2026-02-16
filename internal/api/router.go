@@ -28,8 +28,8 @@ import (
 	"github.com/estara-ai/www/internal/services/market/importer"
 	"github.com/estara-ai/www/internal/services/pdf"
 	"github.com/estara-ai/www/internal/services/whitelist"
+	dbpkg "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/postgres"
-	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 )
 
@@ -87,29 +87,32 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	r.Use(middleware.NewCORSMiddleware(cfg))
 	r.Use(middleware.SecurityHeaders(cfg))
 
+	// Create shared Store — single auditable database interface (ADR-083)
+	store := dbpkg.NewStore(db)
+
 	// Create handlers
 	handlers := &Handlers{
-		Auth:          auth.NewHandler(authMiddleware, db, redis, cfg),
-		App:           app.NewHandler(db, cfg),
-		Discover:      discover.NewHandler(db, redis, cfg, svc.PropertyFinder, svc.MarketData),
-		AI:            ai.NewHandler(db, redis, cfg, svc.ChatAgent, svc.JobQueue, svc.EconomicsAggregator),
-		Portfolio:     portfolio.NewHandler(db, cfg),
-		Admin:         admin.NewHandler(db, redis, cfg, authMiddleware),
-		Cron:          cron.NewHandler(db, redis, cfg),
-		Location:      location.NewHandler(db, redis, cfg),
-		Market:        market.NewHandler(cfg),
-		Report:        report.NewHandlerWithEconomics(db, cfg, svc.EconomicsAggregator),
-		Billing:       billing.NewHandler(db, cfg),
-		IAP:           iap.NewHandler(ctx, db, cfg),
-		Website:       website.NewHandler(db, cfg),
-		Public:        public.NewHandler(db, cfg),
-		StripeWebhook: webhooks.NewStripeHandler(db, cfg),
-		AppleWebhook:  webhooks.NewAppleHandler(db, cfg),
+		Auth:          auth.NewHandler(authMiddleware, store, redis, cfg),
+		App:           app.NewHandler(store, cfg),
+		Discover:      discover.NewHandler(store, redis, cfg, svc.PropertyFinder, svc.MarketData),
+		AI:            ai.NewHandler(store, redis, cfg, svc.ChatAgent, svc.JobQueue, svc.EconomicsAggregator),
+		Portfolio:     portfolio.NewHandler(store, cfg),
+		Admin:         admin.NewHandler(store, redis, cfg, authMiddleware),
+		Cron:          cron.NewHandler(store, redis, cfg),
+		Location:      location.NewHandler(store, redis, cfg),
+		Market:        market.NewHandler(store, cfg),
+		Report:        report.NewHandlerWithEconomics(store, cfg, svc.EconomicsAggregator),
+		Billing:       billing.NewHandler(store, cfg),
+		IAP:           iap.NewHandler(ctx, store, cfg),
+		Website:       website.NewHandler(store, cfg),
+		Public:        public.NewHandler(store, cfg),
+		StripeWebhook: webhooks.NewStripeHandler(store, cfg),
+		AppleWebhook:  webhooks.NewAppleHandler(store, cfg),
 	}
 
 	// Wire whitelist service for beta access control
-	if db.Main != nil {
-		wlService := whitelist.NewService(db.Main)
+	if store.Pool() != nil {
+		wlService := whitelist.NewService(store.Pool())
 		handlers.Auth.SetWhitelist(wlService)
 		handlers.Admin.SetWhitelist(wlService)
 	}
@@ -136,14 +139,9 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	if svc.HybridCache != nil {
 		handlers.Market.SetHybridCache(svc.HybridCache)
 	}
-	if db.Main != nil {
-		handlers.Market.SetMainDB(db.Main)
-	}
-	if db.Market != nil {
-		handlers.Market.SetMarketDB(db.Market)
-
-		// ADR-075: Wire market data importer into cron and admin handlers
-		imp := importer.NewService(db.Market)
+	// ADR-075: Wire market data importer into cron and admin handlers
+	if mp := store.MarketPool(); mp != nil {
+		imp := importer.NewService(mp)
 		handlers.Cron.SetImporter(imp)
 		handlers.Admin.SetImporter(imp)
 	}
@@ -152,7 +150,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	if svc.PropertyFinder != nil {
 		handlers.Portfolio.SetPropertyFinder(svc.PropertyFinder)
 	}
-	handlers.Portfolio.SetQueries(queries.New(db.Main))
+	// Portfolio queries are now provided by the store (ADR-083)
 
 	// Wire Stripe billing client into admin handler for subscription management
 	if cfg.Stripe.SecretKey != "" {
@@ -197,6 +195,9 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		// Email verification (no auth required)
 		r.Post("/send-verification-code", handlers.Auth.SendVerificationCode)
 		r.Post("/verify-code", handlers.Auth.VerifyCode)
+
+		// ADR-082: Social login (no auth required)
+		r.Post("/oauth-login", handlers.Auth.OAuthLogin)
 
 		// ADR-081: Passkey login endpoints (no auth required)
 		r.Post("/passkey/login/begin", handlers.Auth.BeginPasskeyLogin)

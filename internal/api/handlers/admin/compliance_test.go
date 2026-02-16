@@ -11,20 +11,15 @@ import (
 func TestConsentResponse_JSON(t *testing.T) {
 	t.Parallel()
 
-	email := "test@example.com"
-	revokedAt := "2026-02-10T00:00:00Z"
-	ipAddr := "192.168.1.1"
-
 	resp := ConsentResponse{
 		ID:          "consent-123",
 		UserID:      "user-456",
-		Email:       &email,
-		ConsentType: "terms_of_service",
+		ConsentType: "TERMS_OF_SERVICE",
 		Version:     "1.0",
-		GrantedAt:   "2026-01-01T00:00:00Z",
-		RevokedAt:   &revokedAt,
-		IPAddress:   &ipAddr,
-		CreatedAt:   "2026-01-01T00:00:00Z",
+		Granted:     true,
+		IPAddress:   "192.168.1.1",
+		UserAgent:   "Mozilla/5.0",
+		Timestamp:   "2026-01-01T00:00:00Z",
 	}
 
 	data, err := json.Marshal(resp)
@@ -34,37 +29,38 @@ func TestConsentResponse_JSON(t *testing.T) {
 	err = json.Unmarshal(data, &decoded)
 	require.NoError(t, err)
 
-	assert.Equal(t, "terms_of_service", decoded.ConsentType)
-	assert.NotNil(t, decoded.RevokedAt)
-	assert.NotNil(t, decoded.IPAddress)
-	assert.Equal(t, "192.168.1.1", *decoded.IPAddress)
+	assert.Equal(t, "TERMS_OF_SERVICE", decoded.ConsentType)
+	assert.Equal(t, true, decoded.Granted)
+	assert.Equal(t, "192.168.1.1", decoded.IPAddress)
 }
 
-func TestConsentResponse_JSON_OmitsNilFields(t *testing.T) {
+func TestConsentResponse_JSON_AllFields(t *testing.T) {
 	t.Parallel()
 
 	resp := ConsentResponse{
 		ID:          "consent-789",
 		UserID:      "user-abc",
-		ConsentType: "privacy_policy",
+		ConsentType: "PRIVACY_POLICY",
 		Version:     "2.0",
-		GrantedAt:   "2026-02-01T00:00:00Z",
-		CreatedAt:   "2026-02-01T00:00:00Z",
+		Granted:     false,
+		IPAddress:   "10.0.0.1",
+		UserAgent:   "Chrome/120",
+		Timestamp:   "2026-02-01T00:00:00Z",
 	}
 
 	data, err := json.Marshal(resp)
 	require.NoError(t, err)
 
-	assert.NotContains(t, string(data), `"revokedAt"`)
-	assert.NotContains(t, string(data), `"email"`)
-	assert.NotContains(t, string(data), `"ipAddress"`)
+	assert.Contains(t, string(data), `"granted":false`)
+	assert.Contains(t, string(data), `"ipAddress"`)
+	assert.Contains(t, string(data), `"userAgent"`)
 }
 
 func TestConsentSummaryResponse_JSON(t *testing.T) {
 	t.Parallel()
 
 	summary := ConsentSummaryResponse{
-		ConsentType:  "terms_of_service",
+		ConsentType:  "TERMS_OF_SERVICE",
 		ActiveCount:  450,
 		RevokedCount: 12,
 		TotalCount:   462,
@@ -135,10 +131,10 @@ func TestConsentType_Validation(t *testing.T) {
 	t.Parallel()
 
 	validTypes := []string{
-		"terms_of_service",
-		"privacy_policy",
-		"marketing_emails",
-		"analytics_tracking",
+		"TERMS_OF_SERVICE",
+		"PRIVACY_POLICY",
+		"MARKETING",
+		"ANALYTICS",
 	}
 
 	for _, ct := range validTypes {

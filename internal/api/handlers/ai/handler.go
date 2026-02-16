@@ -21,7 +21,7 @@ import (
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	dbstore "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 	"github.com/estara-ai/www/internal/services/ai/agents"
@@ -36,7 +36,7 @@ import (
 
 // Handler handles AI-related HTTP requests
 type Handler struct {
-	db        *postgres.DB
+	store     *dbstore.Store
 	redis     *redisClient.Client
 	cfg       *config.Config
 	validate  *validator.Validate
@@ -50,7 +50,7 @@ type Handler struct {
 
 // NewHandler creates a new AI handler
 func NewHandler(
-	db *postgres.DB,
+	store *dbstore.Store,
 	redis *redisClient.Client,
 	cfg *config.Config,
 	chatAgent *agents.EvaluationChatAgent,
@@ -58,7 +58,7 @@ func NewHandler(
 	econ *economics.Aggregator,
 ) *Handler {
 	h := &Handler{
-		db:        db,
+		store:     store,
 		redis:     redis,
 		cfg:       cfg,
 		validate:  validator.New(),
@@ -681,33 +681,20 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get total count
-	var total int
-	err := h.db.Main.QueryRow(ctx,
-		`SELECT COUNT(*) FROM evaluation_chat_sessions WHERE user_id = $1`,
-		user.UserID,
-	).Scan(&total)
+	q := h.store.Q()
+	totalCount, err := q.CountEvaluationChatSessionsByUser(ctx, user.UserID)
 	if err != nil {
 		h.logger.Error("failed to count sessions", "error", err)
-		total = 0
+		totalCount = 0
 	}
+	total := int(totalCount)
 
-	// Table names use plural form (Prisma @@map): evaluation_chat_sessions, evaluation_chat_messages
-	query := `
-		SELECT
-			s.id, s.user_id, s.property_ids, s.cached_property_ids, s.investor_profile, s.portfolio_snapshot,
-			s.created_at, s.updated_at,
-			(SELECT COUNT(*) FROM evaluation_chat_messages WHERE session_id = s.id) as message_count,
-			(SELECT content FROM evaluation_chat_messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) as last_message_content,
-			(SELECT role FROM evaluation_chat_messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) as last_message_role,
-			(SELECT created_at FROM evaluation_chat_messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) as last_message_at,
-			(SELECT content FROM evaluation_chat_messages WHERE session_id = s.id AND role = 'user' ORDER BY created_at ASC LIMIT 1) as first_user_question
-		FROM evaluation_chat_sessions s
-		WHERE s.user_id = $1
-		ORDER BY s.updated_at DESC
-		LIMIT $2 OFFSET $3
-	`
-
-	rows, err := h.db.Main.Query(ctx, query, user.UserID, limit, offset)
+	// List sessions with extended info via sqlc
+	sessionRows, err := q.ListEvaluationChatSessionsExtended(ctx, queries.ListEvaluationChatSessionsExtendedParams{
+		UserID: user.UserID,
+		Offset: int32(offset),
+		Limit:  int32(limit),
+	})
 	if err != nil {
 		h.logger.Error("failed to list sessions", "error", err)
 		// Return empty array on error (graceful degradation)
@@ -722,7 +709,6 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer rows.Close()
 
 	type sessionData struct {
 		index           int
@@ -732,57 +718,38 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 	sessions := make([]map[string]interface{}, 0)
 	sessionLookups := make([]sessionData, 0)
 
-	for rows.Next() {
-		var id, userID string
-		var propertyIDs, cachedPropertyIDs []string
-		var investorProfile, portfolioSnapshot *string
-		var createdAt, updatedAt time.Time
-		var messageCount int
-		var lastMsgContent, lastMsgRole *string
-		var lastMsgAt *time.Time
-		var firstUserQuestion *string
-
-		err := rows.Scan(
-			&id, &userID, &propertyIDs, &cachedPropertyIDs, &investorProfile, &portfolioSnapshot,
-			&createdAt, &updatedAt, &messageCount, &lastMsgContent, &lastMsgRole, &lastMsgAt,
-			&firstUserQuestion,
-		)
-		if err != nil {
-			h.logger.Error("failed to scan session", "error", err)
-			continue
-		}
-
+	for _, row := range sessionRows {
 		session := map[string]interface{}{
-			"id":                id,
-			"propertyCount":     len(propertyIDs),
-			"propertyIds":       propertyIDs,
-			"cachedPropertyIds": cachedPropertyIDs,
-			"createdAt":         createdAt.Format(time.RFC3339),
-			"updatedAt":         updatedAt.Format(time.RFC3339),
-			"messageCount":      messageCount,
+			"id":                row.ID,
+			"propertyCount":     len(row.PropertyIds),
+			"propertyIds":       row.PropertyIds,
+			"cachedPropertyIds": row.CachedPropertyIds,
+			"createdAt":         row.CreatedAt.Time.Format(time.RFC3339),
+			"updatedAt":         row.UpdatedAt.Time.Format(time.RFC3339),
+			"messageCount":      row.MessageCount,
 		}
 
 		// Add last message if exists
-		if lastMsgContent != nil && lastMsgRole != nil && lastMsgAt != nil {
+		if row.LastMessageContent != "" && row.LastMessageRole != "" && row.LastMessageAt.Valid {
 			session["lastMessage"] = map[string]interface{}{
-				"role":      *lastMsgRole,
-				"content":   *lastMsgContent,
-				"createdAt": lastMsgAt.Format(time.RFC3339),
+				"role":      row.LastMessageRole,
+				"content":   row.LastMessageContent,
+				"createdAt": row.LastMessageAt.Time.Format(time.RFC3339),
 			}
 		}
 
 		// Add first user question if exists
-		if firstUserQuestion != nil {
-			session["firstUserQuestion"] = *firstUserQuestion
+		if row.FirstUserQuestion != "" {
+			session["firstUserQuestion"] = row.FirstUserQuestion
 		}
 
 		sessions = append(sessions, session)
 
 		// Track cached property IDs for location enrichment
-		if len(cachedPropertyIDs) > 0 {
+		if len(row.CachedPropertyIds) > 0 {
 			sessionLookups = append(sessionLookups, sessionData{
 				index:           len(sessions) - 1,
-				cachedPropertyIDs: cachedPropertyIDs,
+				cachedPropertyIDs: row.CachedPropertyIds,
 			})
 		}
 	}
@@ -808,7 +775,7 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		propMap := make(map[string]propInfo)
 
-		propRows, propErr := h.db.Main.Query(ctx,
+		propRows, propErr := h.store.Pool().Query(ctx,
 			`SELECT id, city, state, address FROM cached_properties WHERE id = ANY($1)`,
 			allIDs,
 		)
@@ -891,7 +858,7 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 	var propertyIDs []string
 	var investorProfile, portfolioSnapshot *string
 
-	err := h.db.Main.QueryRow(ctx, query, sessionID, user.UserID).Scan(
+	err := h.store.Pool().QueryRow(ctx, query, sessionID, user.UserID).Scan(
 		&session.ID, &session.UserID, &propertyIDs, &investorProfile, &portfolioSnapshot,
 		&session.CreatedAt, &session.UpdatedAt,
 	)
@@ -913,7 +880,7 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 		ORDER BY created_at ASC
 	`
 
-	rows, err := h.db.Main.Query(ctx, messagesQuery, sessionID)
+	rows, err := h.store.Pool().Query(ctx, messagesQuery, sessionID)
 	if err != nil {
 		h.logger.Error("failed to get messages", "error", err)
 		httputil.InternalError(w, fmt.Errorf("failed to get messages"))
@@ -956,7 +923,7 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 			WHERE id = ANY($1)
 		`
 
-		propRows, err := h.db.Main.Query(ctx, propQuery, propertyIDs)
+		propRows, err := h.store.Pool().Query(ctx, propQuery, propertyIDs)
 		if err == nil {
 			defer propRows.Close()
 			for propRows.Next() {
@@ -1004,7 +971,7 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 	// Delete session and messages (cascade)
 	query := `DELETE FROM evaluation_chat_sessions WHERE id = $1 AND user_id = $2`
 
-	result, err := h.db.Main.Exec(ctx, query, sessionID, user.UserID)
+	result, err := h.store.Pool().Exec(ctx, query, sessionID, user.UserID)
 	if err != nil {
 		h.logger.Error("failed to delete session", "error", err)
 		httputil.InternalError(w, fmt.Errorf("failed to delete session"))
@@ -1174,7 +1141,7 @@ func (h *Handler) QueueInvestmentPlan(w http.ResponseWriter, r *http.Request) {
 	// Check cache first (unless forceRefresh)
 	// Investment plans don't expire like ephemeral cached data
 	if !req.ForceRefresh {
-		cacheRecord, err := queries.New(h.db.Main).GetCacheByUserAndKeyNoExpiry(ctx, queries.GetCacheByUserAndKeyNoExpiryParams{
+		cacheRecord, err := h.store.Q().GetCacheByUserAndKeyNoExpiry(ctx, queries.GetCacheByUserAndKeyNoExpiryParams{
 			UserId: user.UserID,
 			Key:    req.CacheKey,
 		})
@@ -1523,7 +1490,7 @@ func (h *Handler) deleteInvestmentPlanCache(ctx context.Context, userID, jobID s
 		}
 	}
 
-	_, err = h.db.Main.Exec(ctx, `DELETE FROM analysis_cache WHERE id = $1 AND "userId" = $2`, record.ID, userID)
+	_, err = h.store.Pool().Exec(ctx, `DELETE FROM analysis_cache WHERE id = $1 AND "userId" = $2`, record.ID, userID)
 	if err != nil {
 		return "", "", err
 	}
@@ -1535,7 +1502,7 @@ func (h *Handler) findInvestmentPlanCacheRecord(ctx context.Context, userID, job
 	record := &investmentPlanCacheRecord{}
 
 	if strings.HasPrefix(jobID, "investment_plan") {
-		err := h.db.Main.QueryRow(ctx,
+		err := h.store.Pool().QueryRow(ctx,
 			`SELECT id, key FROM analysis_cache WHERE key = $1 AND "userId" = $2`,
 			jobID, userID,
 		).Scan(&record.ID, &record.Key)
@@ -1547,7 +1514,7 @@ func (h *Handler) findInvestmentPlanCacheRecord(ctx context.Context, userID, job
 		}
 	}
 
-	err := h.db.Main.QueryRow(ctx,
+	err := h.store.Pool().QueryRow(ctx,
 		`SELECT id, key FROM analysis_cache WHERE id = $1 AND "userId" = $2 AND key LIKE 'investment_plan_%'`,
 		jobID, userID,
 	).Scan(&record.ID, &record.Key)
@@ -1594,7 +1561,7 @@ func (h *Handler) GetInvestmentPlan(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Investment plans don't expire like ephemeral cached data
-		cacheRecord, err := queries.New(h.db.Main).GetCacheByUserAndKeyNoExpiry(ctx, queries.GetCacheByUserAndKeyNoExpiryParams{
+		cacheRecord, err := h.store.Q().GetCacheByUserAndKeyNoExpiry(ctx, queries.GetCacheByUserAndKeyNoExpiryParams{
 			UserId: user.UserID,
 			Key:    record.Key,
 		})
@@ -2057,7 +2024,7 @@ func (h *Handler) GetInvestmentPlanHistory(w http.ResponseWriter, r *http.Reques
 		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := h.db.Main.Query(ctx, query, user.UserID, limit, offset, search)
+	rows, err := h.store.Pool().Query(ctx, query, user.UserID, limit, offset, search)
 	if err != nil {
 		h.logger.Error("failed to get investment plan history", "error", err)
 		// Return empty on error
@@ -2185,7 +2152,7 @@ func (h *Handler) GetInvestmentPlanHistory(w http.ResponseWriter, r *http.Reques
 
 	// Get total count
 	var total int
-	_ = h.db.Main.QueryRow(ctx, `
+	_ = h.store.Pool().QueryRow(ctx, `
 		SELECT COUNT(*)
 		FROM analysis_cache
 		WHERE "userId" = $1
@@ -2854,7 +2821,7 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := h.db.Main.Query(ctx, query, user.UserID, limit, offset, search)
+	rows, err := h.store.Pool().Query(ctx, query, user.UserID, limit, offset, search)
 	if err != nil {
 		h.logger.Error("failed to get analysis history", "error", err)
 		httputil.JSON(w, http.StatusOK, map[string]interface{}{
@@ -2921,7 +2888,7 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 
 	// Get total count
 	var total int
-	_ = h.db.Main.QueryRow(ctx, `
+	_ = h.store.Pool().QueryRow(ctx, `
 		SELECT COUNT(*)
 		FROM analysis_cache
 		WHERE "userId" = $1
@@ -2975,7 +2942,7 @@ func (h *Handler) DismissAnalysisJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// L2 + L1: Look up analysis_cache row by ID to get the cache key, then purge
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	cacheRow, err := q.GetCacheByID(ctx, jobID)
 	if err == nil {
 		// Verify ownership
@@ -3029,7 +2996,7 @@ func (h *Handler) GetAnalysisContext(w http.ResponseWriter, r *http.Request) {
 	// Check if we have a cached analysis for this location
 	var cachedContent, cachedMetrics, cachedNarrative *string
 	var cachedAt time.Time
-	err := h.db.Main.QueryRow(ctx, `
+	err := h.store.Pool().QueryRow(ctx, `
 		SELECT content, "metricsData", "narrativeData", "lastAccessedAt"
 		FROM analysis_cache
 		WHERE "userId" = $1
@@ -3156,7 +3123,7 @@ func (h *Handler) GetAnalysisReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	cache, err := q.GetCacheByUserAndKey(ctx, queries.GetCacheByUserAndKeyParams{
 		UserId: user.UserID,
 		Key:    cacheKey,
@@ -3248,7 +3215,7 @@ func (h *Handler) InvalidateCache(w http.ResponseWriter, r *http.Request) {
 		redisDeleted = result
 
 		// Delete from database
-		dbResult, _ := h.db.Main.Exec(ctx,
+		dbResult, _ := h.store.Pool().Exec(ctx,
 			`DELETE FROM "AiResponseCache" WHERE user_id = $1 AND cache_key = $2`,
 			user.UserID, *req.CacheKey,
 		)
@@ -3268,7 +3235,7 @@ func (h *Handler) InvalidateCache(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Delete from database
-		dbResult, _ := h.db.Main.Exec(ctx,
+		dbResult, _ := h.store.Pool().Exec(ctx,
 			`DELETE FROM "AiResponseCache" WHERE user_id = $1 AND cache_type = $2`,
 			user.UserID, *req.Type,
 		)
@@ -3309,7 +3276,7 @@ func (h *Handler) createChatSession(ctx context.Context, userID string, properti
 		// Upsert property to cache - generate UUID for new records
 		propertyUUID := uuid.New().String()
 		var cachedID string
-		err := h.db.Main.QueryRow(ctx, `
+		err := h.store.Pool().QueryRow(ctx, `
 			INSERT INTO cached_properties (id, listing_id, provider, address, city, state, zip_code, price, beds, baths, sqft, estimated_rent, cap_rate, listing_url, image_url)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 			ON CONFLICT (listing_id) DO UPDATE SET last_used_at = NOW()
@@ -3338,7 +3305,7 @@ func (h *Handler) createChatSession(ctx context.Context, userID string, properti
 	}
 
 	sessionID := uuid.New().String()
-	_, err := h.db.Main.Exec(ctx, `
+	_, err := h.store.Pool().Exec(ctx, `
 		INSERT INTO evaluation_chat_sessions (id, user_id, property_ids, cached_property_ids, investor_profile, portfolio_snapshot, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
 	`, sessionID, userID, listingIDs, cachedPropertyIDs, investorProfileJSON, portfolioSnapshotJSON)
@@ -3361,7 +3328,7 @@ func nilIfEmpty(s string) *string {
 // validateSessionOwnership checks if a session belongs to a user
 func (h *Handler) validateSessionOwnership(ctx context.Context, sessionID, userID string) (bool, error) {
 	var exists bool
-	err := h.db.Main.QueryRow(ctx,
+	err := h.store.Pool().QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM evaluation_chat_sessions WHERE id = $1 AND user_id = $2)`,
 		sessionID, userID,
 	).Scan(&exists)
@@ -3384,7 +3351,7 @@ func (h *Handler) saveChatMessage(ctx context.Context, sessionID, role, content 
 	}
 
 	messageID := uuid.New().String()
-	_, err := h.db.Main.Exec(ctx, `
+	_, err := h.store.Pool().Exec(ctx, `
 		INSERT INTO evaluation_chat_messages (id, session_id, role, content, parsed_blocks, token_usage, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, NOW())
 	`, messageID, sessionID, role, content, blocksJSON, tokenUsageJSON)
@@ -3394,7 +3361,7 @@ func (h *Handler) saveChatMessage(ctx context.Context, sessionID, role, content 
 	}
 
 	// Update session timestamp
-	h.db.Main.Exec(ctx, `UPDATE evaluation_chat_sessions SET updated_at = NOW() WHERE id = $1`, sessionID)
+	h.store.Pool().Exec(ctx, `UPDATE evaluation_chat_sessions SET updated_at = NOW() WHERE id = $1`, sessionID)
 
 	return messageID, nil
 }
@@ -3408,7 +3375,7 @@ func (h *Handler) getSessionHistory(ctx context.Context, sessionID string) ([]Ch
 		ORDER BY created_at ASC
 	`
 
-	rows, err := h.db.Main.Query(ctx, query, sessionID)
+	rows, err := h.store.Pool().Query(ctx, query, sessionID)
 	if err != nil {
 		return nil, err
 	}

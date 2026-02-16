@@ -91,6 +91,16 @@ SELECT
     COUNT(*) FILTER (WHERE "subscriptionTier" = 'pro') as pro_count
 FROM users;
 
+-- name: AdminUpdateUserProfile :exec
+UPDATE users SET
+    "firstName" = COALESCE(sqlc.narg('first_name')::text, "firstName"),
+    "lastName" = COALESCE(sqlc.narg('last_name')::text, "lastName"),
+    email = COALESCE(sqlc.narg('email')::text, email),
+    role = COALESCE(sqlc.narg('role')::text::"UserRole", role),
+    "subscriptionTier" = COALESCE(sqlc.narg('subscription_tier')::text, "subscriptionTier"),
+    "updatedAt" = NOW()
+WHERE id = $1;
+
 -- name: SuspendUser :exec
 UPDATE users SET
     "suspendedAt" = NOW(),
@@ -106,3 +116,4 @@ UPDATE users SET
     "suspendReason" = NULL,
     "updatedAt" = NOW()
 WHERE id = $1;
+

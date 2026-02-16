@@ -9,20 +9,20 @@ import (
 	"time"
 
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	db "github.com/estara-ai/www/internal/db"
 )
 
 // Service handles entitlement calculations and checks
 type Service struct {
-	db     *postgres.DB
+	store  *db.Store
 	cfg    *config.Config
 	logger *slog.Logger
 }
 
 // NewService creates a new entitlements service
-func NewService(db *postgres.DB, cfg *config.Config) *Service {
+func NewService(store *db.Store, cfg *config.Config) *Service {
 	return &Service{
-		db:     db,
+		store:  store,
 		cfg:    cfg,
 		logger: slog.Default().With("component", "entitlements_service"),
 	}
@@ -176,7 +176,7 @@ func (s *Service) getUserData(ctx context.Context, userID string) (*UserData, er
 	`
 
 	var user UserData
-	err := s.db.Main.QueryRow(ctx, query, userID).Scan(
+	err := s.store.Pool().QueryRow(ctx, query, userID).Scan(
 		&user.ID,
 		&user.Email,
 		&user.Tier,
@@ -204,7 +204,7 @@ func (s *Service) getUsageData(ctx context.Context, userID string) (*UsageData, 
 		FROM investment_plan_usage
 		WHERE "userId" = $1 AND month = $2 AND year = $3
 	`
-	err := s.db.Main.QueryRow(ctx, investmentQuery, userID, month, year).Scan(&usage.InvestmentPicksUsed)
+	err := s.store.Pool().QueryRow(ctx, investmentQuery, userID, month, year).Scan(&usage.InvestmentPicksUsed)
 	if err != nil {
 		// No usage record is fine
 		usage.InvestmentPicksUsed = 0
@@ -216,7 +216,7 @@ func (s *Service) getUsageData(ctx context.Context, userID string) (*UsageData, 
 		FROM area_comparison_usage
 		WHERE "userId" = $1 AND month = $2 AND year = $3
 	`
-	err = s.db.Main.QueryRow(ctx, comparisonQuery, userID, month, year).Scan(&usage.AreaComparisonsUsed)
+	err = s.store.Pool().QueryRow(ctx, comparisonQuery, userID, month, year).Scan(&usage.AreaComparisonsUsed)
 	if err != nil {
 		// No usage record is fine
 		usage.AreaComparisonsUsed = 0

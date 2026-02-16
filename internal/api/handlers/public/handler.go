@@ -10,22 +10,22 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	db "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/pkg/httputil"
 )
 
 // Handler handles public (no-auth) HTTP requests
 type Handler struct {
-	db     *postgres.DB
+	store  *db.Store
 	cfg    *config.Config
 	logger *slog.Logger
 }
 
 // NewHandler creates a new public handler
-func NewHandler(db *postgres.DB, cfg *config.Config) *Handler {
+func NewHandler(store *db.Store, cfg *config.Config) *Handler {
 	return &Handler{
-		db:     db,
+		store:  store,
 		cfg:    cfg,
 		logger: slog.Default().With("component", "public_handler"),
 	}
@@ -80,11 +80,9 @@ func (h *Handler) SubmitContact(w http.ResponseWriter, r *http.Request) {
 	req.IPAddress = r.RemoteAddr
 	req.UserAgent = r.UserAgent()
 
-	q := queries.New(h.db.Main)
-
 	// Create contact submission
 	submissionID := uuid.New().String()
-	_, err := q.CreateContactSubmission(ctx, queries.CreateContactSubmissionParams{
+	_, err := h.store.Q().CreateContactSubmission(ctx, queries.CreateContactSubmissionParams{
 		ID:        submissionID,
 		Name:      req.Name,
 		Email:     req.Email,
@@ -153,10 +151,8 @@ func (h *Handler) SignupEarlyAccess(w http.ResponseWriter, r *http.Request) {
 	req.IPAddress = r.RemoteAddr
 	req.UserAgent = r.UserAgent()
 
-	q := queries.New(h.db.Main)
-
 	// Check if email already exists in early_access
-	existing, err := q.GetEarlyAccessByEmail(ctx, req.Email)
+	existing, err := h.store.Q().GetEarlyAccessByEmail(ctx, req.Email)
 	if err == nil && existing.ID != "" {
 		// Already signed up
 		httputil.JSON(w, http.StatusOK, EarlyAccessResponse{
@@ -167,7 +163,7 @@ func (h *Handler) SignupEarlyAccess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get current position (count of existing entries + 1)
-	count, err := q.CountEarlyAccess(ctx)
+	count, err := h.store.Q().CountEarlyAccess(ctx)
 	if err != nil {
 		h.logger.Error("failed to count early access entries", "error", err)
 		count = 0
@@ -179,7 +175,7 @@ func (h *Handler) SignupEarlyAccess(w http.ResponseWriter, r *http.Request) {
 	if req.Name != "" {
 		metadata, _ = json.Marshal(map[string]string{"name": req.Name})
 	}
-	_, err = q.CreateEarlyAccess(ctx, queries.CreateEarlyAccessParams{
+	_, err = h.store.Q().CreateEarlyAccess(ctx, queries.CreateEarlyAccessParams{
 		ID:       entryID,
 		Email:    req.Email,
 		Source:   pgtype.Text{String: req.Source, Valid: req.Source != ""},
@@ -215,9 +211,7 @@ func (h *Handler) GetEarlyAccessStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
-
-	entry, err := q.GetEarlyAccessByEmail(ctx, email)
+	entry, err := h.store.Q().GetEarlyAccessByEmail(ctx, email)
 	if err != nil {
 		httputil.JSON(w, http.StatusOK, map[string]interface{}{
 			"registered": false,

@@ -106,3 +106,24 @@ DELETE FROM email_verification_codes WHERE "expiresAt" < NOW();
 
 -- name: DeleteEmailVerificationCodesByEmail :exec
 DELETE FROM email_verification_codes WHERE email = $1;
+
+-- name: DeleteEmailVerificationCodeByID :exec
+DELETE FROM email_verification_codes WHERE id = $1;
+
+-- name: CountRecentEmailVerificationCodes :one
+SELECT COUNT(*) FROM email_verification_codes WHERE email = $1 AND "createdAt" >= $2;
+
+-- name: DeletePasswordResetTokenByToken :exec
+DELETE FROM password_reset_tokens WHERE token = $1;
+
+-- name: DeleteUnverifiedEmailCodesByEmail :exec
+DELETE FROM email_verification_codes WHERE email = $1 AND verified = false;
+
+-- name: GetPasswordResetTokenRaw :one
+-- Gets token without checking expiry/used (handler validates manually)
+SELECT "userId", email, used, "expiresAt" FROM password_reset_tokens
+WHERE token = $1;
+
+-- name: MarkPasswordResetTokenUsedByToken :exec
+UPDATE password_reset_tokens SET used = true, "updatedAt" = NOW()
+WHERE token = $1;

@@ -15,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/estara-ai/www/internal/api/middleware"
-	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/pdf"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -68,7 +67,7 @@ func (h *Handler) ExportBatchEvaluations(w http.ResponseWriter, r *http.Request)
 	}
 
 	userName := pdf.PDFUser{}
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	if dbUser, err := q.GetUserByID(ctx, user.UserID); err == nil {
 		if dbUser.FirstName.Valid {
 			userName.FirstName = dbUser.FirstName.String
@@ -251,7 +250,7 @@ func (h *Handler) DownloadDecisionRecord(w http.ResponseWriter, r *http.Request)
 	}
 
 	userName := pdf.PDFUser{}
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	if dbUser, err := q.GetUserByID(ctx, user.UserID); err == nil {
 		if dbUser.FirstName.Valid {
 			userName.FirstName = dbUser.FirstName.String
@@ -309,7 +308,7 @@ func (h *Handler) getEvaluationQuota(ctx context.Context, userID string) (evalua
 	`
 
 	var quota evaluationQuota
-	err := h.db.Main.QueryRow(ctx, query, userID).Scan(&quota.Tier, &quota.AnnualLimit, &quota.UsedThisPeriod, &quota.PeriodEnd)
+	err := h.store.Pool().QueryRow(ctx, query, userID).Scan(&quota.Tier, &quota.AnnualLimit, &quota.UsedThisPeriod, &quota.PeriodEnd)
 	if err != nil {
 		return evaluationQuota{}, err
 	}
@@ -344,7 +343,7 @@ func (h *Handler) fetchEvaluations(ctx context.Context, userID string, evaluatio
 		WHERE e.user_id = $1 AND e.id = ANY($2::text[])
 	`
 
-	rows, err := h.db.Main.Query(ctx, query, userID, evaluationIDs)
+	rows, err := h.store.Pool().Query(ctx, query, userID, evaluationIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -414,7 +413,7 @@ func (h *Handler) fetchDecisionRecord(ctx context.Context, recordID string) (dec
 
 	var record decisionRecord
 	var eval evaluationRow
-	if err := h.db.Main.QueryRow(ctx, query, recordID).Scan(
+	if err := h.store.Pool().QueryRow(ctx, query, recordID).Scan(
 		&record.ID,
 		&record.UserID,
 		&record.ExportedAt,
@@ -445,7 +444,7 @@ func (h *Handler) fetchDecisionRecord(ctx context.Context, recordID string) (dec
 }
 
 func (h *Handler) createDecisionRecords(ctx context.Context, userID, reportID string, evaluationIDs []string, now time.Time) (evaluationQuota, error) {
-	tx, err := h.db.Main.Begin(ctx)
+	tx, err := h.store.Pool().Begin(ctx)
 	if err != nil {
 		return evaluationQuota{}, err
 	}

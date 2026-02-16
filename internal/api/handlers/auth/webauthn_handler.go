@@ -35,7 +35,7 @@ func (h *Handler) BeginPasskeyRegistration(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Load existing credentials for exclusion
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	creds, err := q.GetWebAuthnCredentialsByUserID(ctx, user.ID)
 	if err != nil {
 		h.logger.Error("failed to load credentials", "error", err)
@@ -89,7 +89,7 @@ func (h *Handler) FinishPasskeyRegistration(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Load existing credentials
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	creds, err := q.GetWebAuthnCredentialsByUserID(ctx, user.ID)
 	if err != nil {
 		h.logger.Error("failed to load credentials", "error", err)
@@ -208,7 +208,7 @@ func (h *Handler) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// DiscoverableUserHandler: look up user by credential
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
 		userID := string(userHandle)
 		user, err := h.getUserByID(ctx, userID)
@@ -261,7 +261,7 @@ func (h *Handler) completeLogin(w http.ResponseWriter, r *http.Request, user *Us
 
 	// Check whitelist (beta access control)
 	if h.whitelist != nil && !h.whitelist.IsAllowed(ctx, email) {
-		h.logAuthAudit(ctx, r, user.ID, "USER_LOGIN", "Login blocked: email not whitelisted", false, "not whitelisted")
+		h.logAuthAudit(ctx, r, user.ID, "USER_SIGNIN", "Login blocked: email not whitelisted", false, "not whitelisted")
 		httputil.JSON(w, http.StatusForbidden, map[string]interface{}{
 			"error":   "access_denied",
 			"code":    "NOT_WHITELISTED",
@@ -351,7 +351,7 @@ func (h *Handler) ListPasskeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	creds, err := q.GetWebAuthnCredentialsByUserID(ctx, claims.UserID)
 	if err != nil {
 		h.logger.Error("failed to load credentials", "error", err)
@@ -409,7 +409,7 @@ func (h *Handler) RenamePasskey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	err := q.UpdateWebAuthnCredentialName(ctx, queries.UpdateWebAuthnCredentialNameParams{
 		ID:           passkeyID,
 		FriendlyName: req.Name,
@@ -439,7 +439,7 @@ func (h *Handler) DeletePasskey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	err := q.DeleteWebAuthnCredential(ctx, queries.DeleteWebAuthnCredentialParams{
 		ID:     passkeyID,
 		UserId: claims.UserID,

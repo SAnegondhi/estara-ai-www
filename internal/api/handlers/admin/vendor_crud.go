@@ -123,16 +123,21 @@ func (h *Handler) CreateVendor(w http.ResponseWriter, r *http.Request) {
 	_, _ = rand.Read(idBytes)
 	id := hex.EncodeToString(idBytes)
 
-	_, err := h.db.Main.Exec(ctx, `
-		INSERT INTO "VendorConfig" (
-			id, name, "displayName", category, "billingModel",
-			"monthlyCost", "apiKeyEnvVar", "healthUrl", "isPrimary", notes,
-			enabled, "isActive", "createdAt", "updatedAt"
-		) VALUES ($1, $2, $3, $4::text::"VendorCategory", $5::text::"VendorBillingModel",
-			$6, $7, $8, $9, $10,
-			true, true, NOW(), NOW())
-	`, id, req.Name, req.DisplayName, req.Category, req.BillingModel,
-		req.MonthlyCost, nilIfEmpty(req.ApiKeyEnvVar), nilIfEmpty(req.HealthUrl), req.IsPrimary, nilIfEmpty(req.Notes))
+	var monthlyCost pgtype.Numeric
+	_ = monthlyCost.Scan(fmt.Sprintf("%.2f", req.MonthlyCost))
+
+	_, err := h.store.Q().CreateVendorConfig(ctx, queries.CreateVendorConfigParams{
+		ID:             id,
+		Name:           req.Name,
+		DisplayName:    req.DisplayName,
+		Column4:        req.Category,
+		Column5:        req.BillingModel,
+		MonthlyCost:    monthlyCost,
+		ApiKeyEnvVar:   pgtypeText(req.ApiKeyEnvVar),
+		HealthCheckUrl: pgtypeText(req.HealthUrl),
+		IsPrimary:      req.IsPrimary,
+		Notes:          pgtypeText(req.Notes),
+	})
 	if err != nil {
 		h.logger.Error("failed to create vendor", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to create vendor")
@@ -170,61 +175,39 @@ func (h *Handler) UpdateVendor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build dynamic update
-	setClauses := []string{`"updatedAt" = NOW()`}
-	args := []any{vendorID}
-	argIdx := 2
-
+	// Build update params using sqlc COALESCE pattern
+	params := queries.UpdateVendorConfigParams{
+		ID: vendorID,
+	}
 	if req.DisplayName != nil {
-		setClauses = append(setClauses, fmt.Sprintf(`"displayName" = $%d`, argIdx))
-		args = append(args, *req.DisplayName)
-		argIdx++
-	}
-	if req.Category != nil {
-		setClauses = append(setClauses, fmt.Sprintf(`category = $%d::text::"VendorCategory"`, argIdx))
-		args = append(args, *req.Category)
-		argIdx++
-	}
-	if req.BillingModel != nil {
-		setClauses = append(setClauses, fmt.Sprintf(`"billingModel" = $%d::text::"VendorBillingModel"`, argIdx))
-		args = append(args, *req.BillingModel)
-		argIdx++
+		params.DisplayName = pgtype.Text{String: *req.DisplayName, Valid: true}
 	}
 	if req.MonthlyCost != nil {
-		setClauses = append(setClauses, fmt.Sprintf(`"monthlyCost" = $%d`, argIdx))
-		args = append(args, *req.MonthlyCost)
-		argIdx++
+		var n pgtype.Numeric
+		_ = n.Scan(fmt.Sprintf("%.2f", *req.MonthlyCost))
+		params.MonthlyCost = n
 	}
 	if req.ApiKeyEnvVar != nil {
-		setClauses = append(setClauses, fmt.Sprintf(`"apiKeyEnvVar" = $%d`, argIdx))
-		args = append(args, *req.ApiKeyEnvVar)
-		argIdx++
+		params.ApiKeyEnvVar = pgtype.Text{String: *req.ApiKeyEnvVar, Valid: true}
 	}
 	if req.HealthUrl != nil {
-		setClauses = append(setClauses, fmt.Sprintf(`"healthUrl" = $%d`, argIdx))
-		args = append(args, *req.HealthUrl)
-		argIdx++
+		params.HealthCheckUrl = pgtype.Text{String: *req.HealthUrl, Valid: true}
 	}
 	if req.IsPrimary != nil {
-		setClauses = append(setClauses, fmt.Sprintf(`"isPrimary" = $%d`, argIdx))
-		args = append(args, *req.IsPrimary)
-		argIdx++
+		params.IsPrimary = pgtype.Bool{Bool: *req.IsPrimary, Valid: true}
 	}
 	if req.Notes != nil {
-		setClauses = append(setClauses, fmt.Sprintf(`notes = $%d`, argIdx))
-		args = append(args, *req.Notes)
-		argIdx++
+		params.Notes = pgtype.Text{String: *req.Notes, Valid: true}
 	}
 
-	query := fmt.Sprintf(`UPDATE "VendorConfig" SET %s WHERE id = $1`, joinStrings(setClauses, ", "))
-	result, err := h.db.Main.Exec(ctx, query, args...)
+	_, err := h.store.Q().UpdateVendorConfig(ctx, params)
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			httputil.Error(w, http.StatusNotFound, "vendor not found")
+			return
+		}
 		h.logger.Error("failed to update vendor", "error", err, "vendor_id", vendorID)
 		httputil.Error(w, http.StatusInternalServerError, "failed to update vendor")
-		return
-	}
-	if result.RowsAffected() == 0 {
-		httputil.Error(w, http.StatusNotFound, "vendor not found")
 		return
 	}
 
@@ -247,17 +230,17 @@ func (h *Handler) DeleteVendor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.db.Main.Exec(ctx, `
-		UPDATE "VendorConfig"
-		SET enabled = false, "isActive" = false, "updatedAt" = NOW()
-		WHERE id = $1
-	`, vendorID)
+	// Use ToggleVendorActiveRows to get rows affected count
+	rowsAffected, err := h.store.Q().ToggleVendorActiveRows(ctx, queries.ToggleVendorActiveRowsParams{
+		ID:       vendorID,
+		IsActive: false,
+	})
 	if err != nil {
 		h.logger.Error("failed to delete vendor", "error", err, "vendor_id", vendorID)
 		httputil.Error(w, http.StatusInternalServerError, "failed to delete vendor")
 		return
 	}
-	if result.RowsAffected() == 0 {
+	if rowsAffected == 0 {
 		httputil.Error(w, http.StatusNotFound, "vendor not found")
 		return
 	}
@@ -279,7 +262,7 @@ func (h *Handler) GetVendorContract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	contract, err := q.GetVendorContract(ctx, vendorID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -342,7 +325,7 @@ func (h *Handler) CreateOrUpdateContract(w http.ResponseWriter, r *http.Request)
 		slaTerms, _ = json.Marshal(req.SlaTerms)
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 
 	// Check if contract exists
 	existing, existErr := q.GetVendorContract(ctx, vendorID)
@@ -411,36 +394,40 @@ func (h *Handler) CreateOrUpdateContract(w http.ResponseWriter, r *http.Request)
 func (h *Handler) GetVendorAlerts(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT id, type, severity, title, description, "alertKey", metadata,
-			"firstSeen", "lastSeen", "occurrenceCount", dismissed, "actionRequired",
-			"expiresAt", "createdAt"
-		FROM system_alerts
-		WHERE type LIKE 'vendor_%' AND dismissed = false
-		ORDER BY "createdAt" DESC
-		LIMIT 50
-	`)
+	alertRows, err := h.store.Q().ListVendorSystemAlerts(ctx)
 	if err != nil {
 		h.logger.Warn("failed to get vendor alerts", "error", err)
 		httputil.Success(w, map[string]any{"alerts": []SystemAlert{}})
 		return
 	}
-	defer rows.Close()
 
-	var alerts []SystemAlert
-	for rows.Next() {
-		var a SystemAlert
-		if err := rows.Scan(&a.ID, &a.Type, &a.Severity, &a.Title, &a.Description,
-			&a.AlertKey, &a.Metadata, &a.FirstSeen, &a.LastSeen,
-			&a.OccurrenceCount, &a.Dismissed, &a.ActionRequired,
-			&a.ExpiresAt, &a.CreatedAt); err != nil {
-			h.logger.Warn("failed to scan vendor alert", "error", err)
-			continue
+	alerts := make([]SystemAlert, 0, len(alertRows))
+	for _, r := range alertRows {
+		a := SystemAlert{
+			ID:              r.ID,
+			Type:            r.Type,
+			Severity:        r.Severity,
+			Title:           r.Title,
+			Description:     r.Description,
+			AlertKey:        r.AlertKey,
+			Metadata:        r.Metadata,
+			OccurrenceCount: int(r.OccurrenceCount),
+			Dismissed:       r.Dismissed,
+			ActionRequired:  r.ActionRequired,
+		}
+		if r.FirstSeen.Valid {
+			a.FirstSeen = r.FirstSeen.Time
+		}
+		if r.LastSeen.Valid {
+			a.LastSeen = r.LastSeen.Time
+		}
+		if r.ExpiresAt.Valid {
+			a.ExpiresAt = &r.ExpiresAt.Time
+		}
+		if r.CreatedAt.Valid {
+			a.CreatedAt = r.CreatedAt.Time
 		}
 		alerts = append(alerts, a)
-	}
-	if alerts == nil {
-		alerts = []SystemAlert{}
 	}
 
 	httputil.Success(w, map[string]any{
@@ -511,13 +498,6 @@ func contractToResponse(c queries.VendorContract) VendorContractResponse {
 	return resp
 }
 
-func nilIfEmpty(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
-}
-
 func pgtypeText(s string) pgtype.Text {
 	if s == "" {
 		return pgtype.Text{}
@@ -532,13 +512,3 @@ func pgtypeInt4(v *int32) pgtype.Int4 {
 	return pgtype.Int4{Int32: *v, Valid: true}
 }
 
-func joinStrings(ss []string, sep string) string {
-	result := ""
-	for i, s := range ss {
-		if i > 0 {
-			result += sep
-		}
-		result += s
-	}
-	return result
-}

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
 	billingService "github.com/estara-ai/www/internal/services/billing"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -343,13 +345,9 @@ func (h *Handler) GetDisputeMetrics(w http.ResponseWriter, r *http.Request) {
 
 	// Get total charges in last 90 days to calculate chargeback rate
 	ctx := r.Context()
-	var totalCharges int64
-	err = h.db.Main.QueryRow(ctx, `
-		SELECT COUNT(*) FROM invoices
-		WHERE "createdAt" >= $1 AND status = 'paid'
-	`, ninetyDaysAgo).Scan(&totalCharges)
-	if err != nil {
-		h.logger.Warn("failed to count charges for chargeback rate", "error", err)
+	totalCharges, countErr := h.store.Q().CountPaidInvoicesAfterDate(ctx, pgtype.Timestamp{Time: ninetyDaysAgo, Valid: true})
+	if countErr != nil {
+		h.logger.Warn("failed to count charges for chargeback rate", "error", countErr)
 	}
 	if totalCharges > 0 {
 		metrics.ChargebackRate = float64(metrics.TotalDisputes) / float64(totalCharges) * 100

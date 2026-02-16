@@ -15,8 +15,8 @@ import (
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
+	dbstore "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/marketqueries"
-	"github.com/estara-ai/www/internal/db/postgres"
 	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/cache"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
@@ -31,8 +31,7 @@ import (
 // Handler handles market data HTTP requests
 type Handler struct {
 	cfg                  *config.Config
-	mainDB               *postgres.Pool         // Main database for analysis_cache queries
-	marketDB             *postgres.Pool         // Market database for sqlc queries (ADR-073)
+	store                *dbstore.Store
 	aggregator           *aggregator.Aggregator
 	trendsService        *trends.Service
 	hybridCache          *cache.HybridCache     // Hybrid cache for trend results
@@ -44,8 +43,9 @@ type Handler struct {
 }
 
 // NewHandler creates a new market data handler
-func NewHandler(cfg *config.Config) *Handler {
+func NewHandler(store *dbstore.Store, cfg *config.Config) *Handler {
 	return &Handler{
+		store:  store,
 		cfg:    cfg,
 		logger: slog.Default().With("component", "market_handler"),
 	}
@@ -81,15 +81,11 @@ func (h *Handler) SetEconomicsAggregator(agg *economics.Aggregator) {
 	h.economicsAggregator = agg
 }
 
-// SetMainDB sets the main database pool for analysis_cache queries
-func (h *Handler) SetMainDB(pool *postgres.Pool) {
-	h.mainDB = pool
-}
+// SetMainDB is deprecated — use store.Pool() instead (ADR-083)
+func (h *Handler) SetMainDB(_ interface{}) {}
 
-// SetMarketDB sets the market database pool for sqlc queries (ADR-073)
-func (h *Handler) SetMarketDB(pool *postgres.Pool) {
-	h.marketDB = pool
-}
+// SetMarketDB is deprecated — use store.MarketPool() instead (ADR-083)
+func (h *Handler) SetMarketDB(_ interface{}) {}
 
 // SetHybridCache sets the hybrid cache for trend result caching
 func (h *Handler) SetHybridCache(c *cache.HybridCache) {
@@ -321,7 +317,7 @@ func (h *Handler) SearchMetros(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if h.marketDB == nil {
+	if h.store.MarketPool() == nil {
 		httputil.JSON(w, http.StatusOK, map[string]interface{}{
 			"metros": []TrendsSearchResult{},
 			"total":  0,
@@ -329,7 +325,7 @@ func (h *Handler) SearchMetros(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mq := marketqueries.New(h.marketDB)
+	mq := h.store.MQ()
 	rows, err := mq.SearchMetros(ctx, marketqueries.SearchMetrosParams{
 		MetroName: "%" + query + "%",
 		Limit:     int32(limit),
@@ -522,14 +518,14 @@ func (h *Handler) SearchLocations(w http.ResponseWriter, r *http.Request) {
 		searchCities = false
 	}
 
-	if h.marketDB == nil {
+	if h.store.MarketPool() == nil {
 		httputil.JSON(w, http.StatusOK, map[string]interface{}{
 			"suggestions": []AutocompleteResult{},
 		})
 		return
 	}
 
-	mq := marketqueries.New(h.marketDB)
+	mq := h.store.MQ()
 	results := make([]AutocompleteResult, 0)
 
 	// Search metros
@@ -1005,7 +1001,7 @@ func (h *Handler) GenerateFullTrends(w http.ResponseWriter, r *http.Request) {
 	cacheKey := "trends_" + normalizeLocation(req.Location)
 
 	// Check cache first (unless force refresh)
-	if !req.ForceRefresh && h.mainDB != nil {
+	if !req.ForceRefresh && h.store.Pool() != nil {
 		cached, err := h.loadCachedTrend(ctx, user.UserID, cacheKey)
 		if err == nil && cached != nil {
 			h.logger.Info("returning cached trend", "location", req.Location, "cache_key", cacheKey)
@@ -1034,7 +1030,7 @@ func (h *Handler) GenerateFullTrends(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Store in analysis_cache for history
-	if h.mainDB != nil {
+	if h.store.Pool() != nil {
 		if storeErr := h.storeTrendInCache(ctx, user.UserID, req.Location, cacheKey, result); storeErr != nil {
 			h.logger.Warn("failed to store trend in cache", "error", storeErr)
 		}
@@ -1069,7 +1065,7 @@ func (h *Handler) GetTrendsHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.mainDB == nil {
+	if h.store.Pool() == nil {
 		httputil.JSON(w, http.StatusOK, map[string]interface{}{
 			"success": true,
 			"trends":  []TrendHistoryItem{},
@@ -1103,7 +1099,7 @@ func (h *Handler) GetTrendsHistory(w http.ResponseWriter, r *http.Request) {
 		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := h.mainDB.Query(ctx, query, user.UserID, limit, offset)
+	rows, err := h.store.Pool().Query(ctx, query, user.UserID, limit, offset)
 	if err != nil {
 		h.logger.Error("failed to get trends history", "error", err)
 		httputil.JSON(w, http.StatusOK, map[string]interface{}{
@@ -1146,7 +1142,7 @@ func (h *Handler) GetTrendsHistory(w http.ResponseWriter, r *http.Request) {
 
 	// Get total count
 	var total int
-	_ = h.mainDB.QueryRow(ctx, `
+	_ = h.store.Pool().QueryRow(ctx, `
 		SELECT COUNT(*)
 		FROM analysis_cache
 		WHERE "userId" = $1
@@ -1178,7 +1174,7 @@ func (h *Handler) DismissTrend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.mainDB == nil {
+	if h.store.Pool() == nil {
 		httputil.JSON(w, http.StatusOK, map[string]interface{}{
 			"success": true,
 		})
@@ -1186,7 +1182,7 @@ func (h *Handler) DismissTrend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Look up the cache entry to verify ownership
-	q := queries.New(h.mainDB)
+	q := h.store.Q()
 	cacheRow, err := q.GetCacheByID(ctx, id)
 	if err != nil {
 		h.logger.Info("trend not found in cache", "id", id)
@@ -1231,7 +1227,7 @@ func (h *Handler) loadCachedTrend(ctx context.Context, userID, cacheKey string) 
 			AND "supersededBy" IS NULL
 	`
 	var content string
-	err := h.mainDB.QueryRow(ctx, query, userID, cacheKey).Scan(&content)
+	err := h.store.Pool().QueryRow(ctx, query, userID, cacheKey).Scan(&content)
 	if err != nil {
 		return nil, err
 	}
@@ -1242,7 +1238,7 @@ func (h *Handler) loadCachedTrend(ctx context.Context, userID, cacheKey string) 
 	}
 
 	// Update access count
-	_, _ = h.mainDB.Exec(ctx,
+	_, _ = h.store.Pool().Exec(ctx,
 		`UPDATE analysis_cache SET "lastAccessedAt" = NOW(), "accessCount" = "accessCount" + 1 WHERE "userId" = $1 AND key = $2`,
 		userID, cacheKey,
 	)
@@ -1273,7 +1269,7 @@ func (h *Handler) storeTrendInCache(ctx context.Context, userID, location, cache
 
 	expiresAt := time.Now().Add(7 * 24 * time.Hour) // 7-day TTL
 
-	_, err = h.mainDB.Exec(ctx, `
+	_, err = h.store.Pool().Exec(ctx, `
 		INSERT INTO analysis_cache (
 			id, key, "userId", location, feature, content, "fullReport",
 			"expiresAt", "createdAt", "lastAccessedAt", metadata

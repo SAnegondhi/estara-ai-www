@@ -228,12 +228,12 @@ func (h *Handler) GetMemoHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.db == nil || h.db.Main == nil {
+	if h.store == nil {
 		httputil.JSON(w, http.StatusOK, map[string]interface{}{"entries": []MemoHistoryEntry{}})
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	rows, err := q.ListCacheByUserAndFeature(r.Context(), queries.ListCacheByUserAndFeatureParams{
 		UserId:  user.UserID,
 		Feature: "decision_memo",
@@ -289,12 +289,12 @@ func (h *Handler) GetCachedMemo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.db == nil || h.db.Main == nil {
+	if h.store == nil {
 		httputil.Error(w, http.StatusNotFound, "memo not found")
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	row, err := q.GetCacheByUserAndKey(r.Context(), queries.GetCacheByUserAndKeyParams{
 		UserId: user.UserID,
 		Key:    key,
@@ -332,12 +332,12 @@ func (h *Handler) DeleteCachedMemo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.db == nil || h.db.Main == nil {
+	if h.store == nil {
 		httputil.Error(w, http.StatusNotFound, "memo not found")
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	err := q.DeleteCacheByUserAndKey(r.Context(), queries.DeleteCacheByUserAndKeyParams{
 		UserId: user.UserID,
 		Key:    key,

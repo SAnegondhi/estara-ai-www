@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -73,6 +72,50 @@ type AiScoringCache struct {
 	ExpiresAt        pgtype.Timestamp `json:"expires_at"`
 }
 
+type AiUsage struct {
+	ID                  string           `json:"id"`
+	UserId              string           `json:"userId"`
+	SessionId           string           `json:"sessionId"`
+	Model               string           `json:"model"`
+	InputTokens         int32            `json:"inputTokens"`
+	OutputTokens        int32            `json:"outputTokens"`
+	CacheCreationTokens int32            `json:"cacheCreationTokens"`
+	CacheReadTokens     int32            `json:"cacheReadTokens"`
+	TotalTokens         int32            `json:"totalTokens"`
+	BaseInputCost       pgtype.Numeric   `json:"baseInputCost"`
+	CacheCreationCost   pgtype.Numeric   `json:"cacheCreationCost"`
+	CacheReadCost       pgtype.Numeric   `json:"cacheReadCost"`
+	OutputCost          pgtype.Numeric   `json:"outputCost"`
+	TotalCost           pgtype.Numeric   `json:"totalCost"`
+	RequestType         string           `json:"requestType"`
+	Feature             string           `json:"feature"`
+	Location            pgtype.Text      `json:"location"`
+	RequestId           string           `json:"requestId"`
+	UserAgent           pgtype.Text      `json:"userAgent"`
+	IpAddress           pgtype.Text      `json:"ipAddress"`
+	CreatedAt           pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt           pgtype.Timestamp `json:"updatedAt"`
+	ActualResponseTime  pgtype.Int4      `json:"actualResponseTime"`
+	AgentType           pgtype.Text      `json:"agentType"`
+	AgentVersion        pgtype.Text      `json:"agentVersion"`
+	ApiLatency          pgtype.Int4      `json:"apiLatency"`
+	CacheHit            bool             `json:"cacheHit"`
+	ContentFiltered     bool             `json:"contentFiltered"`
+	ErrorCode           pgtype.Text      `json:"errorCode"`
+	ErrorMessage        pgtype.Text      `json:"errorMessage"`
+	ErrorType           pgtype.Text      `json:"errorType"`
+	FallbackModel       pgtype.Text      `json:"fallbackModel"`
+	FallbackUsed        bool             `json:"fallbackUsed"`
+	ProcessingTime      pgtype.Int4      `json:"processingTime"`
+	QueueTime           pgtype.Int4      `json:"queueTime"`
+	ResponseComplexity  pgtype.Text      `json:"responseComplexity"`
+	ResponseLength      pgtype.Int4      `json:"responseLength"`
+	RetryCount          int32            `json:"retryCount"`
+	SecurityProcessed   bool             `json:"securityProcessed"`
+	UserRating          pgtype.Int4      `json:"userRating"`
+	ValidationScore     pgtype.Numeric   `json:"validationScore"`
+}
+
 type AnalysisCache struct {
 	ID               string           `json:"id"`
 	Key              string           `json:"key"`
@@ -100,15 +143,47 @@ type AnalysisCache struct {
 	SavingsGenerated pgtype.Numeric   `json:"savingsGenerated"`
 }
 
+type AnalysisJob struct {
+	ID             string           `json:"id"`
+	UserId         string           `json:"userId"`
+	JobType        interface{}      `json:"jobType"`
+	Status         interface{}      `json:"status"`
+	Progress       int32            `json:"progress"`
+	Location       string           `json:"location"`
+	Criteria       []byte           `json:"criteria"`
+	MetricsData    []byte           `json:"metricsData"`
+	MetricsError   pgtype.Text      `json:"metricsError"`
+	NarrativeData  []byte           `json:"narrativeData"`
+	NarrativeError pgtype.Text      `json:"narrativeError"`
+	ReportId       pgtype.Text      `json:"reportId"`
+	QueuedAt       pgtype.Timestamp `json:"queuedAt"`
+	StartedAt      pgtype.Timestamp `json:"startedAt"`
+	CompletedAt    pgtype.Timestamp `json:"completedAt"`
+	DismissedAt    pgtype.Timestamp `json:"dismissedAt"`
+	Error          pgtype.Text      `json:"error"`
+	RetryCount     int32            `json:"retryCount"`
+}
+
+type AreaComparisonUsage struct {
+	ID               string           `json:"id"`
+	UserId           string           `json:"userId"`
+	Month            int32            `json:"month"`
+	Year             int32            `json:"year"`
+	ComparisonsUsed  int32            `json:"comparisonsUsed"`
+	LastComparisonAt pgtype.Timestamp `json:"lastComparisonAt"`
+	CreatedAt        pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt        pgtype.Timestamp `json:"updatedAt"`
+}
+
 type AuditLog struct {
 	ID                 string           `json:"id"`
-	Timestamp          pgtype.Timestamp `json:"timestamp"`
+	CreatedAt          pgtype.Timestamp `json:"createdAt"`
 	UserId             pgtype.Text      `json:"userId"`
-	EventType          interface{}      `json:"eventType"`
+	Event              interface{}      `json:"event"`
 	Description        pgtype.Text      `json:"description"`
 	IpAddress          pgtype.Text      `json:"ipAddress"`
 	UserAgent          pgtype.Text      `json:"userAgent"`
-	Details            []byte           `json:"details"`
+	Metadata           []byte           `json:"metadata"`
 	Success            bool             `json:"success"`
 	Error              pgtype.Text      `json:"error"`
 	Action             pgtype.Text      `json:"action"`
@@ -151,6 +226,26 @@ type BillingCycle struct {
 	Processed      bool             `json:"processed"`
 	ProcessedAt    pgtype.Timestamp `json:"processedAt"`
 	CreatedAt      pgtype.Timestamp `json:"createdAt"`
+}
+
+type CachedProperty struct {
+	ID            string           `json:"id"`
+	ListingID     string           `json:"listing_id"`
+	Provider      string           `json:"provider"`
+	Address       string           `json:"address"`
+	City          string           `json:"city"`
+	State         string           `json:"state"`
+	ZipCode       pgtype.Text      `json:"zip_code"`
+	Price         int32            `json:"price"`
+	Beds          pgtype.Int4      `json:"beds"`
+	Baths         pgtype.Float8    `json:"baths"`
+	Sqft          pgtype.Int4      `json:"sqft"`
+	EstimatedRent pgtype.Int4      `json:"estimated_rent"`
+	CapRate       pgtype.Float8    `json:"cap_rate"`
+	ListingUrl    pgtype.Text      `json:"listing_url"`
+	ImageUrl      pgtype.Text      `json:"image_url"`
+	CreatedAt     pgtype.Timestamp `json:"created_at"`
+	LastUsedAt    pgtype.Timestamp `json:"last_used_at"`
 }
 
 type CheckoutEvidence struct {
@@ -205,34 +300,39 @@ type ContactSubmission struct {
 }
 
 type CronJobConfig struct {
-	ID                     string           `json:"id"`
-	Name                   string           `json:"name"`
-	Description            pgtype.Text      `json:"description"`
-	Schedule               string           `json:"schedule"`
-	Endpoint               string           `json:"endpoint"`
-	IsEnabled              bool             `json:"isEnabled"`
-	TimeoutMs              int32            `json:"timeoutMs"`
-	MaxConsecutiveFailures int32            `json:"maxConsecutiveFailures"`
-	ConsecutiveFailures    int32            `json:"consecutiveFailures"`
-	TotalRuns              int32            `json:"totalRuns"`
-	SuccessfulRuns         int32            `json:"successfulRuns"`
-	LastRunAt              pgtype.Timestamp `json:"lastRunAt"`
-	LastRunStatus          pgtype.Text      `json:"lastRunStatus"`
-	LastRunDurationMs      pgtype.Int4      `json:"lastRunDurationMs"`
-	CreatedAt              pgtype.Timestamp `json:"createdAt"`
-	UpdatedAt              pgtype.Timestamp `json:"updatedAt"`
+	ID                  string           `json:"id"`
+	Name                string           `json:"name"`
+	Description         string           `json:"description"`
+	Schedule            string           `json:"schedule"`
+	Endpoint            string           `json:"endpoint"`
+	IsRequired          bool             `json:"isRequired"`
+	IsConfigured        bool             `json:"isConfigured"`
+	IsEnabled           bool             `json:"isEnabled"`
+	LastRun             pgtype.Timestamp `json:"lastRun"`
+	LastRunStatus       interface{}      `json:"lastRunStatus"`
+	LastRunDuration     pgtype.Int4      `json:"lastRunDuration"`
+	LastRunError        pgtype.Text      `json:"lastRunError"`
+	ConsecutiveFailures int32            `json:"consecutiveFailures"`
+	AlertOnFailure      bool             `json:"alertOnFailure"`
+	MaxFailures         int32            `json:"maxFailures"`
+	TimeoutMs           int32            `json:"timeoutMs"`
+	TotalRuns           int32            `json:"totalRuns"`
+	SuccessfulRuns      int32            `json:"successfulRuns"`
+	FailedRuns          int32            `json:"failedRuns"`
+	CreatedAt           pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt           pgtype.Timestamp `json:"updatedAt"`
 }
 
 type CronJobRun struct {
 	ID          string           `json:"id"`
-	JobId       string           `json:"jobId"`
-	Status      string           `json:"status"`
-	StartedAt   pgtype.Timestamp `json:"startedAt"`
-	CompletedAt pgtype.Timestamp `json:"completedAt"`
-	DurationMs  pgtype.Int4      `json:"durationMs"`
+	CronJobId   string           `json:"cronJobId"`
+	Status      interface{}      `json:"status"`
+	Duration    pgtype.Int4      `json:"duration"`
 	Error       pgtype.Text      `json:"error"`
 	Output      []byte           `json:"output"`
-	CreatedAt   pgtype.Timestamp `json:"createdAt"`
+	TriggeredBy pgtype.Text      `json:"triggeredBy"`
+	StartedAt   pgtype.Timestamp `json:"startedAt"`
+	CompletedAt pgtype.Timestamp `json:"completedAt"`
 }
 
 type DiscoverySession struct {
@@ -330,6 +430,27 @@ type EmailVerificationCode struct {
 	CreatedAt pgtype.Timestamp `json:"createdAt"`
 }
 
+type EvaluationChatMessage struct {
+	ID           string           `json:"id"`
+	SessionID    string           `json:"session_id"`
+	Role         string           `json:"role"`
+	Content      string           `json:"content"`
+	ParsedBlocks []byte           `json:"parsed_blocks"`
+	TokenUsage   []byte           `json:"token_usage"`
+	CreatedAt    pgtype.Timestamp `json:"created_at"`
+}
+
+type EvaluationChatSession struct {
+	ID                string           `json:"id"`
+	UserID            string           `json:"user_id"`
+	PropertyIds       []string         `json:"property_ids"`
+	CachedPropertyIds []string         `json:"cached_property_ids"`
+	InvestorProfile   []byte           `json:"investor_profile"`
+	PortfolioSnapshot []byte           `json:"portfolio_snapshot"`
+	CreatedAt         pgtype.Timestamp `json:"created_at"`
+	UpdatedAt         pgtype.Timestamp `json:"updated_at"`
+}
+
 type GuestSession struct {
 	ID                string           `json:"id"`
 	Token             string           `json:"token"`
@@ -363,6 +484,17 @@ type InsightAccess struct {
 	ConsumptionHistory    []byte           `json:"consumptionHistory"`
 	CreatedAt             pgtype.Timestamp `json:"createdAt"`
 	UpdatedAt             pgtype.Timestamp `json:"updatedAt"`
+}
+
+type InvestmentPlanUsage struct {
+	ID         string           `json:"id"`
+	UserId     string           `json:"userId"`
+	Month      int32            `json:"month"`
+	Year       int32            `json:"year"`
+	PicksUsed  int32            `json:"picksUsed"`
+	LastPickAt pgtype.Timestamp `json:"lastPickAt"`
+	CreatedAt  pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt  pgtype.Timestamp `json:"updatedAt"`
 }
 
 type InvestorReport struct {
@@ -647,15 +779,14 @@ type UserAnalysisPreference struct {
 }
 
 type UserConsent struct {
-	ID          uuid.UUID          `json:"id"`
-	UserID      uuid.UUID          `json:"user_id"`
-	ConsentType string             `json:"consent_type"`
-	Version     string             `json:"version"`
-	GrantedAt   time.Time          `json:"granted_at"`
-	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
-	IpAddress   pgtype.Text        `json:"ip_address"`
-	UserAgent   pgtype.Text        `json:"user_agent"`
-	CreatedAt   time.Time          `json:"created_at"`
+	ID          string           `json:"id"`
+	UserId      string           `json:"userId"`
+	ConsentType interface{}      `json:"consentType"`
+	Version     string           `json:"version"`
+	Granted     bool             `json:"granted"`
+	IpAddress   string           `json:"ipAddress"`
+	UserAgent   string           `json:"userAgent"`
+	Timestamp   pgtype.Timestamp `json:"timestamp"`
 }
 
 type V2BaselineChange struct {
@@ -670,6 +801,55 @@ type V2BaselineChange struct {
 	UpdatedAt     pgtype.Timestamp `json:"updated_at"`
 }
 
+type V2DecisionRecord struct {
+	ID           string           `json:"id"`
+	EvaluationID string           `json:"evaluation_id"`
+	UserID       string           `json:"user_id"`
+	MemoContent  json.RawMessage  `json:"memo_content"`
+	PdfUrl       pgtype.Text      `json:"pdf_url"`
+	ExportedAt   pgtype.Timestamp `json:"exported_at"`
+	CreatedAt    pgtype.Timestamp `json:"created_at"`
+}
+
+type V2Evaluation struct {
+	ID               string           `json:"id"`
+	UserID           string           `json:"user_id"`
+	PropertyID       string           `json:"property_id"`
+	PropertyAddress  string           `json:"property_address"`
+	PropertyCity     string           `json:"property_city"`
+	PropertyState    string           `json:"property_state"`
+	PropertyZip      pgtype.Text      `json:"property_zip"`
+	PropertyDetails  []byte           `json:"property_details"`
+	PurchasePrice    float64          `json:"purchase_price"`
+	DownPaymentPct   float64          `json:"down_payment_pct"`
+	InterestRate     float64          `json:"interest_rate"`
+	LoanTermYears    int32            `json:"loan_term_years"`
+	MonthlyRent      float64          `json:"monthly_rent"`
+	VacancyRatePct   float64          `json:"vacancy_rate_pct"`
+	MaintenanceCost  float64          `json:"maintenance_cost"`
+	PropertyTax      float64          `json:"property_tax"`
+	Insurance        float64          `json:"insurance"`
+	HoaFees          pgtype.Float8    `json:"hoa_fees"`
+	AppreciationRate float64          `json:"appreciation_rate"`
+	Scenarios        []byte           `json:"scenarios"`
+	SensitivityData  []byte           `json:"sensitivity_data"`
+	Status           interface{}      `json:"status"`
+	CreatedAt        pgtype.Timestamp `json:"created_at"`
+	UpdatedAt        pgtype.Timestamp `json:"updated_at"`
+}
+
+type V2EvaluationQuota struct {
+	ID              string           `json:"id"`
+	UserID          string           `json:"user_id"`
+	Tier            interface{}      `json:"tier"`
+	AnnualLimit     int32            `json:"annual_limit"`
+	UsedThisPeriod  int32            `json:"used_this_period"`
+	PeriodStartDate pgtype.Timestamp `json:"period_start_date"`
+	PeriodEndDate   pgtype.Timestamp `json:"period_end_date"`
+	CreatedAt       pgtype.Timestamp `json:"created_at"`
+	UpdatedAt       pgtype.Timestamp `json:"updated_at"`
+}
+
 type V2PortfolioAdjustment struct {
 	ID         string           `json:"id"`
 	PropertyID string           `json:"property_id"`
@@ -682,31 +862,41 @@ type V2PortfolioAdjustment struct {
 }
 
 type V2PortfolioProperty struct {
-	ID              string           `json:"id"`
-	UserID          string           `json:"user_id"`
-	Address         string           `json:"address"`
-	City            string           `json:"city"`
-	State           string           `json:"state"`
-	ZipCode         pgtype.Text      `json:"zip_code"`
-	PropertyType    pgtype.Text      `json:"property_type"`
-	Bedrooms        pgtype.Int4      `json:"bedrooms"`
-	Bathrooms       pgtype.Float8    `json:"bathrooms"`
-	Sqft            pgtype.Int4      `json:"sqft"`
-	YearBuilt       pgtype.Int4      `json:"year_built"`
-	PurchasePrice   float64          `json:"purchase_price"`
-	PurchaseDate    pgtype.Timestamp `json:"purchase_date"`
-	CurrentValue    float64          `json:"current_value"`
-	MonthlyRent     float64          `json:"monthly_rent"`
-	VacancyRate     pgtype.Float8    `json:"vacancy_rate"`
-	Expenses        []byte           `json:"expenses"`
-	MortgageBalance float64          `json:"mortgage_balance"`
-	MortgageRate    float64          `json:"mortgage_rate"`
-	MortgagePayment float64          `json:"mortgage_payment"`
-	Status          string           `json:"status"`
-	PropertyStatus  string           `json:"property_status"`
-	Notes           pgtype.Text      `json:"notes"`
-	CreatedAt       pgtype.Timestamp `json:"created_at"`
-	UpdatedAt       pgtype.Timestamp `json:"updated_at"`
+	ID               string           `json:"id"`
+	UserID           string           `json:"user_id"`
+	Address          string           `json:"address"`
+	City             string           `json:"city"`
+	State            string           `json:"state"`
+	ZipCode          string           `json:"zip_code"`
+	PropertyType     pgtype.Text      `json:"property_type"`
+	Bedrooms         pgtype.Int4      `json:"bedrooms"`
+	Bathrooms        pgtype.Float8    `json:"bathrooms"`
+	Sqft             pgtype.Int4      `json:"sqft"`
+	YearBuilt        pgtype.Int4      `json:"year_built"`
+	PurchasePrice    float64          `json:"purchase_price"`
+	PurchaseDate     pgtype.Timestamp `json:"purchase_date"`
+	CurrentValue     pgtype.Float8    `json:"current_value"`
+	LastValuedAt     pgtype.Timestamp `json:"last_valued_at"`
+	MonthlyRent      pgtype.Float8    `json:"monthly_rent"`
+	VacancyRate      pgtype.Float8    `json:"vacancy_rate"`
+	Expenses         []byte           `json:"expenses"`
+	MortgageBalance  pgtype.Float8    `json:"mortgage_balance"`
+	MortgageRate     pgtype.Float8    `json:"mortgage_rate"`
+	MortgagePayment  pgtype.Float8    `json:"mortgage_payment"`
+	LoanTermYears    pgtype.Int4      `json:"loan_term_years"`
+	Lat              pgtype.Float8    `json:"lat"`
+	Lng              pgtype.Float8    `json:"lng"`
+	AcquisitionType  string           `json:"acquisition_type"`
+	ExpenseFrequency string           `json:"expense_frequency"`
+	RevenueFrequency string           `json:"revenue_frequency"`
+	SaleDate         pgtype.Timestamp `json:"sale_date"`
+	SalePrice        pgtype.Float8    `json:"sale_price"`
+	Status           string           `json:"status"`
+	PropertyStatus   string           `json:"property_status"`
+	LastConfirmedAt  pgtype.Timestamp `json:"last_confirmed_at"`
+	Notes            pgtype.Text      `json:"notes"`
+	CreatedAt        pgtype.Timestamp `json:"created_at"`
+	UpdatedAt        pgtype.Timestamp `json:"updated_at"`
 }
 
 type V2PortfolioSnapshot struct {
@@ -729,21 +919,28 @@ type VendorConfig struct {
 	DisplayName           string           `json:"displayName"`
 	Category              interface{}      `json:"category"`
 	BillingModel          interface{}      `json:"billingModel"`
+	BillingCycleDay       pgtype.Int4      `json:"billingCycleDay"`
+	PaymentDueDate        pgtype.Timestamp `json:"paymentDueDate"`
 	MonthlyCost           pgtype.Numeric   `json:"monthlyCost"`
 	ApiKeyEnvVar          pgtype.Text      `json:"apiKeyEnvVar"`
+	ApiKeyExpiry          pgtype.Timestamp `json:"apiKeyExpiry"`
+	AdminKeyEnvVar        pgtype.Text      `json:"adminKeyEnvVar"`
+	CostApiEndpoint       pgtype.Text      `json:"costApiEndpoint"`
+	UsageApiEndpoint      pgtype.Text      `json:"usageApiEndpoint"`
+	CostApiBaseUrl        pgtype.Text      `json:"costApiBaseUrl"`
 	HealthCheckUrl        pgtype.Text      `json:"healthCheckUrl"`
-	HealthUrl             pgtype.Text      `json:"healthUrl"`
 	LastHealthCheck       pgtype.Timestamp `json:"lastHealthCheck"`
 	HealthStatus          interface{}      `json:"healthStatus"`
-	LastChecked           pgtype.Timestamp `json:"lastChecked"`
-	Status                pgtype.Text      `json:"status"`
+	ErrorRateThreshold    float64          `json:"errorRateThreshold"`
+	ErrorRateCurrent      float64          `json:"errorRateCurrent"`
+	ErrorRateUpdatedAt    pgtype.Timestamp `json:"errorRateUpdatedAt"`
 	CurrentBalance        pgtype.Numeric   `json:"currentBalance"`
 	BalanceAlertThreshold pgtype.Numeric   `json:"balanceAlertThreshold"`
+	LastBalanceCheck      pgtype.Timestamp `json:"lastBalanceCheck"`
 	TotalRequests         int32            `json:"totalRequests"`
 	TotalCost             pgtype.Numeric   `json:"totalCost"`
 	IsActive              bool             `json:"isActive"`
 	IsPrimary             bool             `json:"isPrimary"`
-	Enabled               bool             `json:"enabled"`
 	Notes                 pgtype.Text      `json:"notes"`
 	CreatedAt             pgtype.Timestamp `json:"createdAt"`
 	UpdatedAt             pgtype.Timestamp `json:"updatedAt"`
@@ -766,6 +963,21 @@ type VendorContract struct {
 	Notes                 pgtype.Text      `json:"notes"`
 	CreatedAt             pgtype.Timestamp `json:"createdAt"`
 	UpdatedAt             pgtype.Timestamp `json:"updatedAt"`
+}
+
+type VendorUsageSummary struct {
+	ID            string           `json:"id"`
+	UserId        string           `json:"userId"`
+	VendorName    string           `json:"vendorName"`
+	Month         int32            `json:"month"`
+	Year          int32            `json:"year"`
+	TotalRequests int32            `json:"totalRequests"`
+	TotalCost     pgtype.Numeric   `json:"totalCost"`
+	MonthlyLimit  pgtype.Int4      `json:"monthlyLimit"`
+	LimitExceeded bool             `json:"limitExceeded"`
+	Breakdown     []byte           `json:"breakdown"`
+	CreatedAt     pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt     pgtype.Timestamp `json:"updatedAt"`
 }
 
 type WebauthnCredential struct {

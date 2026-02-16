@@ -8,7 +8,7 @@ import (
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	db "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/services/website"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -20,9 +20,9 @@ type Handler struct {
 }
 
 // NewHandler creates a new website handler
-func NewHandler(db *postgres.DB, cfg *config.Config) *Handler {
+func NewHandler(store *db.Store, cfg *config.Config) *Handler {
 	return &Handler{
-		service: website.NewService(db, cfg),
+		service: website.NewService(store, cfg),
 		logger:  slog.Default().With("component", "website_handler"),
 	}
 }

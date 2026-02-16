@@ -102,7 +102,7 @@ func (h *Handler) AdminLogin(w http.ResponseWriter, r *http.Request) {
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 
 	// Look up user by email
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	user, err := q.GetUserByEmail(ctx, email)
 	if err != nil {
 		h.logger.Warn("admin login: user not found", "email", email, "error", err.Error())
@@ -219,7 +219,7 @@ func (h *Handler) Setup2FA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 
 	// Check if 2FA already enabled
 	existing, existErr := q.GetAdminTwoFactorByUserID(ctx, user.UserID)
@@ -288,7 +288,7 @@ func (h *Handler) Verify2FA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 
 	// Get the pending 2FA record
 	twoFactor, err := q.GetAdminTwoFactorByUserID(ctx, user.UserID)
@@ -341,7 +341,7 @@ func (h *Handler) Disable2FA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 
 	// Get the 2FA record
 	twoFactor, err := q.GetAdminTwoFactorByUserID(ctx, user.UserID)
@@ -383,7 +383,7 @@ func (h *Handler) Get2FAStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 
 	twoFactor, err := q.GetAdminTwoFactorByUserID(ctx, user.UserID)
 	if err != nil {
@@ -414,7 +414,7 @@ func (h *Handler) ListSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 
 	sessions, err := q.ListAdminSessionsByUser(ctx, user.UserID)
 	if err != nil {
@@ -474,7 +474,7 @@ func (h *Handler) RevokeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 
 	// Verify the session belongs to this user
 	session, err := q.GetAdminSessionByID(ctx, sessionID)

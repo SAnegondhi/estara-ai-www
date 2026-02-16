@@ -11,6 +11,22 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const CountRecentEmailVerificationCodes = `-- name: CountRecentEmailVerificationCodes :one
+SELECT COUNT(*) FROM email_verification_codes WHERE email = $1 AND "createdAt" >= $2
+`
+
+type CountRecentEmailVerificationCodesParams struct {
+	Email     string           `json:"email"`
+	CreatedAt pgtype.Timestamp `json:"createdAt"`
+}
+
+func (q *Queries) CountRecentEmailVerificationCodes(ctx context.Context, arg CountRecentEmailVerificationCodesParams) (int64, error) {
+	row := q.db.QueryRow(ctx, CountRecentEmailVerificationCodes, arg.Email, arg.CreatedAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const CreateEmailVerificationCode = `-- name: CreateEmailVerificationCode :one
 INSERT INTO email_verification_codes (
     id, email, code, "expiresAt", verified, attempts, "createdAt"
@@ -144,6 +160,15 @@ func (q *Queries) DeactivateUserSilentLoginSessions(ctx context.Context, userid 
 	return err
 }
 
+const DeleteEmailVerificationCodeByID = `-- name: DeleteEmailVerificationCodeByID :exec
+DELETE FROM email_verification_codes WHERE id = $1
+`
+
+func (q *Queries) DeleteEmailVerificationCodeByID(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, DeleteEmailVerificationCodeByID, id)
+	return err
+}
+
 const DeleteEmailVerificationCodesByEmail = `-- name: DeleteEmailVerificationCodesByEmail :exec
 DELETE FROM email_verification_codes WHERE email = $1
 `
@@ -177,6 +202,24 @@ DELETE FROM silent_login_sessions WHERE "expiresAt" < NOW()
 
 func (q *Queries) DeleteExpiredSilentLoginSessions(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, DeleteExpiredSilentLoginSessions)
+	return err
+}
+
+const DeletePasswordResetTokenByToken = `-- name: DeletePasswordResetTokenByToken :exec
+DELETE FROM password_reset_tokens WHERE token = $1
+`
+
+func (q *Queries) DeletePasswordResetTokenByToken(ctx context.Context, token string) error {
+	_, err := q.db.Exec(ctx, DeletePasswordResetTokenByToken, token)
+	return err
+}
+
+const DeleteUnverifiedEmailCodesByEmail = `-- name: DeleteUnverifiedEmailCodesByEmail :exec
+DELETE FROM email_verification_codes WHERE email = $1 AND verified = false
+`
+
+func (q *Queries) DeleteUnverifiedEmailCodesByEmail(ctx context.Context, email string) error {
+	_, err := q.db.Exec(ctx, DeleteUnverifiedEmailCodesByEmail, email)
 	return err
 }
 
@@ -326,6 +369,31 @@ func (q *Queries) GetPasswordResetTokenByToken(ctx context.Context, token string
 	return i, err
 }
 
+const GetPasswordResetTokenRaw = `-- name: GetPasswordResetTokenRaw :one
+SELECT "userId", email, used, "expiresAt" FROM password_reset_tokens
+WHERE token = $1
+`
+
+type GetPasswordResetTokenRawRow struct {
+	UserId    string           `json:"userId"`
+	Email     string           `json:"email"`
+	Used      bool             `json:"used"`
+	ExpiresAt pgtype.Timestamp `json:"expiresAt"`
+}
+
+// Gets token without checking expiry/used (handler validates manually)
+func (q *Queries) GetPasswordResetTokenRaw(ctx context.Context, token string) (GetPasswordResetTokenRawRow, error) {
+	row := q.db.QueryRow(ctx, GetPasswordResetTokenRaw, token)
+	var i GetPasswordResetTokenRawRow
+	err := row.Scan(
+		&i.UserId,
+		&i.Email,
+		&i.Used,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
 const GetPasswordResetTokensByUser = `-- name: GetPasswordResetTokensByUser :many
 SELECT id, token, "userId", email, "expiresAt", used, "createdAt", "updatedAt" FROM password_reset_tokens
 WHERE "userId" = $1
@@ -431,6 +499,16 @@ WHERE id = $1
 
 func (q *Queries) MarkPasswordResetTokenUsed(ctx context.Context, id string) error {
 	_, err := q.db.Exec(ctx, MarkPasswordResetTokenUsed, id)
+	return err
+}
+
+const MarkPasswordResetTokenUsedByToken = `-- name: MarkPasswordResetTokenUsedByToken :exec
+UPDATE password_reset_tokens SET used = true, "updatedAt" = NOW()
+WHERE token = $1
+`
+
+func (q *Queries) MarkPasswordResetTokenUsedByToken(ctx context.Context, token string) error {
+	_, err := q.db.Exec(ctx, MarkPasswordResetTokenUsedByToken, token)
 	return err
 }
 

@@ -18,6 +18,100 @@ import (
 	"github.com/estara-ai/www/pkg/httputil"
 )
 
+// mapSubscriptionRows converts sqlc ListSubscriptionsFilteredRow to AdminSubscriptionResponse.
+func mapSubscriptionRows(rows []queries.ListSubscriptionsFilteredRow) []AdminSubscriptionResponse {
+	subs := make([]AdminSubscriptionResponse, 0, len(rows))
+	for _, r := range rows {
+		s := AdminSubscriptionResponse{
+			ID:                r.ID,
+			UserID:            r.UserId,
+			Email:             r.Email,
+			Tier:              r.STier,
+			Status:            r.SStatus,
+			CancelAtPeriodEnd: r.CancelAtPeriodEnd,
+		}
+		if r.FirstName.Valid {
+			s.FirstName = &r.FirstName.String
+		}
+		if r.LastName.Valid {
+			s.LastName = &r.LastName.String
+		}
+		if r.StripeSubscriptionId.Valid {
+			s.StripeSubscriptionID = &r.StripeSubscriptionId.String
+		}
+		if r.StripeCustomerId.Valid {
+			s.StripeCustomerID = &r.StripeCustomerId.String
+		}
+		if r.CurrentPeriodStart.Valid {
+			v := r.CurrentPeriodStart.Time.Format(time.RFC3339)
+			s.CurrentPeriodStart = &v
+		}
+		if r.CurrentPeriodEnd.Valid {
+			v := r.CurrentPeriodEnd.Time.Format(time.RFC3339)
+			s.CurrentPeriodEnd = &v
+		}
+		if r.TrialEnd.Valid {
+			v := r.TrialEnd.Time.Format(time.RFC3339)
+			s.TrialEnd = &v
+		}
+		if r.CreatedAt.Valid {
+			v := r.CreatedAt.Time.Format(time.RFC3339)
+			s.CreatedAt = &v
+		}
+		if r.UpdatedAt.Valid {
+			v := r.UpdatedAt.Time.Format(time.RFC3339)
+			s.UpdatedAt = &v
+		}
+		subs = append(subs, s)
+	}
+	return subs
+}
+
+// mapSubscriptionDetailRow converts sqlc GetSubscriptionDetailAdminRow to AdminSubscriptionResponse.
+func mapSubscriptionDetailRow(r queries.GetSubscriptionDetailAdminRow) *AdminSubscriptionResponse {
+	s := &AdminSubscriptionResponse{
+		ID:                r.ID,
+		UserID:            r.UserId,
+		Email:             r.Email,
+		Tier:              r.STier,
+		Status:            r.SStatus,
+		CancelAtPeriodEnd: r.CancelAtPeriodEnd,
+	}
+	if r.FirstName.Valid {
+		s.FirstName = &r.FirstName.String
+	}
+	if r.LastName.Valid {
+		s.LastName = &r.LastName.String
+	}
+	if r.StripeSubscriptionId.Valid {
+		s.StripeSubscriptionID = &r.StripeSubscriptionId.String
+	}
+	if r.StripeCustomerId.Valid {
+		s.StripeCustomerID = &r.StripeCustomerId.String
+	}
+	if r.CurrentPeriodStart.Valid {
+		v := r.CurrentPeriodStart.Time.Format(time.RFC3339)
+		s.CurrentPeriodStart = &v
+	}
+	if r.CurrentPeriodEnd.Valid {
+		v := r.CurrentPeriodEnd.Time.Format(time.RFC3339)
+		s.CurrentPeriodEnd = &v
+	}
+	if r.TrialEnd.Valid {
+		v := r.TrialEnd.Time.Format(time.RFC3339)
+		s.TrialEnd = &v
+	}
+	if r.CreatedAt.Valid {
+		v := r.CreatedAt.Time.Format(time.RFC3339)
+		s.CreatedAt = &v
+	}
+	if r.UpdatedAt.Valid {
+		v := r.UpdatedAt.Time.Format(time.RFC3339)
+		s.UpdatedAt = &v
+	}
+	return s
+}
+
 // ===============================
 // Subscription Admin Types
 // ===============================
@@ -83,31 +177,17 @@ func (h *Handler) ListSubscriptions(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := (page - 1) * pageSize
 
-	// Build dynamic query
-	whereClause := "1=1"
-	args := make([]any, 0)
-	argIndex := 1
+	q := h.store.Q()
 
-	if tier != "" {
-		whereClause += fmt.Sprintf(` AND s.tier::text = $%d`, argIndex)
-		args = append(args, tier)
-		argIndex++
-	}
-	if status != "" {
-		whereClause += fmt.Sprintf(` AND s.status::text = $%d`, argIndex)
-		args = append(args, status)
-		argIndex++
-	}
-	if search != "" {
-		whereClause += fmt.Sprintf(` AND LOWER(u.email) LIKE $%d`, argIndex)
-		args = append(args, "%"+search+"%")
-		argIndex++
+	// Build filter params
+	filterParams := queries.CountSubscriptionsFilteredParams{
+		TierFilter:   pgtype.Text{String: tier, Valid: tier != ""},
+		StatusFilter: pgtype.Text{String: status, Valid: status != ""},
+		EmailSearch:  pgtype.Text{String: search, Valid: search != ""},
 	}
 
 	// Count
-	var total int64
-	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM subscriptions s JOIN "User" u ON s."userId" = u.id WHERE %s`, whereClause)
-	err := h.db.Main.QueryRow(ctx, countQuery, args...).Scan(&total)
+	total, err := q.CountSubscriptionsFiltered(ctx, filterParams)
 	if err != nil {
 		h.logger.Error("failed to count subscriptions", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to list subscriptions")
@@ -115,39 +195,27 @@ func (h *Handler) ListSubscriptions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Query
-	args = append(args, pageSize, offset)
-	query := fmt.Sprintf(`
-		SELECT s.id, s."userId", u.email, u."firstName", u."lastName",
-			s.tier::text, s.status::text, s."stripeSubscriptionId", s."stripeCustomerId",
-			s."currentPeriodStart", s."currentPeriodEnd", s."trialEnd",
-			s."cancelAtPeriodEnd", s."createdAt", s."updatedAt"
-		FROM subscriptions s
-		JOIN "User" u ON s."userId" = u.id
-		WHERE %s
-		ORDER BY s."createdAt" DESC
-		LIMIT $%d OFFSET $%d
-	`, whereClause, argIndex, argIndex+1)
-
-	rows, err := h.db.Main.Query(ctx, query, args...)
+	subRows, err := q.ListSubscriptionsFiltered(ctx, queries.ListSubscriptionsFilteredParams{
+		TierFilter:   filterParams.TierFilter,
+		StatusFilter: filterParams.StatusFilter,
+		EmailSearch:  filterParams.EmailSearch,
+		Offset:       int32(offset),
+		Limit:        int32(pageSize),
+	})
 	if err != nil {
 		h.logger.Error("failed to list subscriptions", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to list subscriptions")
 		return
 	}
-	defer rows.Close()
 
-	subs := scanSubscriptionRows(rows, h.logger)
+	subs := mapSubscriptionRows(subRows)
 
 	// Get summary counts
-	var activeCnt, trialingCnt, pastDueCnt, freeCnt int64
-	_ = h.db.Main.QueryRow(ctx, `
-		SELECT
-			COUNT(*) FILTER (WHERE status::text = 'ACTIVE') AS active_count,
-			COUNT(*) FILTER (WHERE status::text = 'TRIALING') AS trialing_count,
-			COUNT(*) FILTER (WHERE status::text = 'PAST_DUE') AS past_due_count,
-			COUNT(*) FILTER (WHERE status::text = 'FREE') AS free_count
-		FROM subscriptions
-	`).Scan(&activeCnt, &trialingCnt, &pastDueCnt, &freeCnt)
+	stats, _ := q.GetSubscriptionStatusStats(ctx)
+	activeCnt := stats.ActiveCount
+	trialingCnt := stats.TrialingCount
+	pastDueCnt := stats.PastDueCount
+	freeCnt := stats.FreeCount
 
 	httputil.Success(w, map[string]any{
 		"subscriptions": subs,
@@ -176,17 +244,7 @@ func (h *Handler) GetSubscriptionDetail(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Get subscription with user info
-	row := h.db.Main.QueryRow(ctx, `
-		SELECT s.id, s."userId", u.email, u."firstName", u."lastName",
-			s.tier::text, s.status::text, s."stripeSubscriptionId", s."stripeCustomerId",
-			s."currentPeriodStart", s."currentPeriodEnd", s."trialEnd",
-			s."cancelAtPeriodEnd", s."createdAt", s."updatedAt"
-		FROM subscriptions s
-		JOIN "User" u ON s."userId" = u.id
-		WHERE s.id = $1
-	`, subID)
-
-	s, err := scanSubscriptionRow(row)
+	detail, err := h.store.Q().GetSubscriptionDetailAdmin(ctx, subID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			httputil.Error(w, http.StatusNotFound, "subscription not found")
@@ -197,8 +255,10 @@ func (h *Handler) GetSubscriptionDetail(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	s := mapSubscriptionDetailRow(detail)
+
 	// Get recent invoices for user
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	invoices, _ := q.ListUserInvoices(ctx, queries.ListUserInvoicesParams{
 		UserId: s.UserID,
 		Limit:  20,
@@ -285,11 +345,7 @@ func (h *Handler) ChangePlan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get subscription
-	var stripeSubID pgtype.Text
-	var oldTier string
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT "stripeSubscriptionId", tier::text FROM subscriptions WHERE id = $1
-	`, subID).Scan(&stripeSubID, &oldTier)
+	subInfo, err := h.store.Q().GetSubscriptionStripeID(ctx, subID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			httputil.Error(w, http.StatusNotFound, "subscription not found")
@@ -299,6 +355,8 @@ func (h *Handler) ChangePlan(w http.ResponseWriter, r *http.Request) {
 		httputil.Error(w, http.StatusInternalServerError, "failed to get subscription")
 		return
 	}
+	stripeSubID := subInfo.StripeSubscriptionId
+	oldTier := subInfo.Tier
 
 	// Get new price ID
 	newPriceID := h.billing.GetPriceIDForTier(billingTier(req.NewTier))
@@ -318,7 +376,7 @@ func (h *Handler) ChangePlan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update in database
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	err = q.UpdateSubscriptionTier(ctx, queries.UpdateSubscriptionTierParams{
 		ID:            subID,
 		Tier:          req.NewTier,
@@ -362,8 +420,7 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get subscription to find userId
-	var userID string
-	err := h.db.Main.QueryRow(ctx, `SELECT "userId" FROM subscriptions WHERE id = $1`, subID).Scan(&userID)
+	userID, err := h.store.Q().GetSubscriptionUserID(ctx, subID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			httputil.Error(w, http.StatusNotFound, "subscription not found")
@@ -382,7 +439,7 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 	// Extract admin email from JWT
 	grantedBy := "admin"
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	credit, err := q.CreateAdminCredit(ctx, queries.CreateAdminCreditParams{
 		ID:        creditID,
 		UserId:    userID,
@@ -429,11 +486,7 @@ func (h *Handler) AdminCancelSubscription(w http.ResponseWriter, r *http.Request
 	}
 
 	// Get subscription
-	var stripeSubID pgtype.Text
-	var oldStatus string
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT "stripeSubscriptionId", status::text FROM subscriptions WHERE id = $1
-	`, subID).Scan(&stripeSubID, &oldStatus)
+	subData, err := h.store.Q().GetSubscriptionStripeAndStatus(ctx, subID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			httputil.Error(w, http.StatusNotFound, "subscription not found")
@@ -443,6 +496,8 @@ func (h *Handler) AdminCancelSubscription(w http.ResponseWriter, r *http.Request
 		httputil.Error(w, http.StatusInternalServerError, "failed to get subscription")
 		return
 	}
+	stripeSubID := subData.StripeSubscriptionId
+	oldStatus := subData.Status
 
 	// Cancel in Stripe if subscription has a Stripe ID
 	if h.billing != nil && stripeSubID.Valid && stripeSubID.String != "" {
@@ -456,7 +511,7 @@ func (h *Handler) AdminCancelSubscription(w http.ResponseWriter, r *http.Request
 	}
 
 	// Update database
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	if !req.Immediate {
 		// Mark as canceling at period end
 		err = q.UpdateSubscriptionCancelAtPeriodEnd(ctx, queries.UpdateSubscriptionCancelAtPeriodEndParams{
@@ -514,94 +569,3 @@ func numericFromFloat(f float64) pgtype.Numeric {
 	return n
 }
 
-func scanSubscriptionRow(row pgx.Row) (*AdminSubscriptionResponse, error) {
-	var s AdminSubscriptionResponse
-	var periodStart, periodEnd, trialEnd, createdAt, updatedAt pgtype.Timestamp
-	var stripeSub, stripeCust pgtype.Text
-	err := row.Scan(
-		&s.ID, &s.UserID, &s.Email, &s.FirstName, &s.LastName,
-		&s.Tier, &s.Status, &stripeSub, &stripeCust,
-		&periodStart, &periodEnd, &trialEnd,
-		&s.CancelAtPeriodEnd, &createdAt, &updatedAt,
-	)
-	if err != nil {
-		return nil, err
-	}
-	if stripeSub.Valid {
-		s.StripeSubscriptionID = &stripeSub.String
-	}
-	if stripeCust.Valid {
-		s.StripeCustomerID = &stripeCust.String
-	}
-	if periodStart.Valid {
-		v := periodStart.Time.Format(time.RFC3339)
-		s.CurrentPeriodStart = &v
-	}
-	if periodEnd.Valid {
-		v := periodEnd.Time.Format(time.RFC3339)
-		s.CurrentPeriodEnd = &v
-	}
-	if trialEnd.Valid {
-		v := trialEnd.Time.Format(time.RFC3339)
-		s.TrialEnd = &v
-	}
-	if createdAt.Valid {
-		v := createdAt.Time.Format(time.RFC3339)
-		s.CreatedAt = &v
-	}
-	if updatedAt.Valid {
-		v := updatedAt.Time.Format(time.RFC3339)
-		s.UpdatedAt = &v
-	}
-	return &s, nil
-}
-
-func scanSubscriptionRows(rows pgx.Rows, logger interface{ Warn(string, ...any) }) []AdminSubscriptionResponse {
-	var subs []AdminSubscriptionResponse
-	for rows.Next() {
-		var s AdminSubscriptionResponse
-		var periodStart, periodEnd, trialEnd, createdAt, updatedAt pgtype.Timestamp
-		var stripeSub, stripeCust pgtype.Text
-		err := rows.Scan(
-			&s.ID, &s.UserID, &s.Email, &s.FirstName, &s.LastName,
-			&s.Tier, &s.Status, &stripeSub, &stripeCust,
-			&periodStart, &periodEnd, &trialEnd,
-			&s.CancelAtPeriodEnd, &createdAt, &updatedAt,
-		)
-		if err != nil {
-			logger.Warn("failed to scan subscription", "error", err)
-			continue
-		}
-		if stripeSub.Valid {
-			s.StripeSubscriptionID = &stripeSub.String
-		}
-		if stripeCust.Valid {
-			s.StripeCustomerID = &stripeCust.String
-		}
-		if periodStart.Valid {
-			v := periodStart.Time.Format(time.RFC3339)
-			s.CurrentPeriodStart = &v
-		}
-		if periodEnd.Valid {
-			v := periodEnd.Time.Format(time.RFC3339)
-			s.CurrentPeriodEnd = &v
-		}
-		if trialEnd.Valid {
-			v := trialEnd.Time.Format(time.RFC3339)
-			s.TrialEnd = &v
-		}
-		if createdAt.Valid {
-			v := createdAt.Time.Format(time.RFC3339)
-			s.CreatedAt = &v
-		}
-		if updatedAt.Valid {
-			v := updatedAt.Time.Format(time.RFC3339)
-			s.UpdatedAt = &v
-		}
-		subs = append(subs, s)
-	}
-	if subs == nil {
-		subs = []AdminSubscriptionResponse{}
-	}
-	return subs
-}

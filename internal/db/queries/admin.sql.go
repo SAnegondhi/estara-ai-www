@@ -45,25 +45,25 @@ func (q *Queries) CountActiveAlertsBySeverity(ctx context.Context) ([]CountActiv
 }
 
 const CountAuditLogsByEventType = `-- name: CountAuditLogsByEventType :many
-SELECT "eventType", COUNT(*) as count
+SELECT event::text, COUNT(*) as count
 FROM audit_logs
-WHERE timestamp >= $1 AND timestamp <= $2
-GROUP BY "eventType"
+WHERE "createdAt" >= $1 AND "createdAt" <= $2
+GROUP BY event::text
 ORDER BY count DESC
 `
 
 type CountAuditLogsByEventTypeParams struct {
-	Timestamp   pgtype.Timestamp `json:"timestamp"`
-	Timestamp_2 pgtype.Timestamp `json:"timestamp_2"`
+	CreatedAt   pgtype.Timestamp `json:"createdAt"`
+	CreatedAt_2 pgtype.Timestamp `json:"createdAt_2"`
 }
 
 type CountAuditLogsByEventTypeRow struct {
-	EventType interface{} `json:"eventType"`
-	Count     int64       `json:"count"`
+	Event string `json:"event"`
+	Count int64  `json:"count"`
 }
 
 func (q *Queries) CountAuditLogsByEventType(ctx context.Context, arg CountAuditLogsByEventTypeParams) ([]CountAuditLogsByEventTypeRow, error) {
-	rows, err := q.db.Query(ctx, CountAuditLogsByEventType, arg.Timestamp, arg.Timestamp_2)
+	rows, err := q.db.Query(ctx, CountAuditLogsByEventType, arg.CreatedAt, arg.CreatedAt_2)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,7 @@ func (q *Queries) CountAuditLogsByEventType(ctx context.Context, arg CountAuditL
 	items := []CountAuditLogsByEventTypeRow{}
 	for rows.Next() {
 		var i CountAuditLogsByEventTypeRow
-		if err := rows.Scan(&i.EventType, &i.Count); err != nil {
+		if err := rows.Scan(&i.Event, &i.Count); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -82,14 +82,14 @@ func (q *Queries) CountAuditLogsByEventType(ctx context.Context, arg CountAuditL
 	return items, nil
 }
 
-const CreateAdminAuditLog = `-- name: CreateAdminAuditLog :one
+const CreateAdminAuditLog = `-- name: CreateAdminAuditLog :exec
 
 INSERT INTO admin_audit_log (
     id, "adminId", "adminEmail", action, resource, "resourceId",
     details, "ipAddress", "userAgent", "createdAt"
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()
-) RETURNING id, "adminId", "adminEmail", action, resource, "resourceId", details, "ipAddress", "userAgent", "createdAt"
+)
 `
 
 type CreateAdminAuditLogParams struct {
@@ -105,8 +105,8 @@ type CreateAdminAuditLogParams struct {
 }
 
 // Admin Audit Log Queries
-func (q *Queries) CreateAdminAuditLog(ctx context.Context, arg CreateAdminAuditLogParams) (AdminAuditLog, error) {
-	row := q.db.QueryRow(ctx, CreateAdminAuditLog,
+func (q *Queries) CreateAdminAuditLog(ctx context.Context, arg CreateAdminAuditLogParams) error {
+	_, err := q.db.Exec(ctx, CreateAdminAuditLog,
 		arg.ID,
 		arg.AdminId,
 		arg.AdminEmail,
@@ -117,20 +117,7 @@ func (q *Queries) CreateAdminAuditLog(ctx context.Context, arg CreateAdminAuditL
 		arg.IpAddress,
 		arg.UserAgent,
 	)
-	var i AdminAuditLog
-	err := row.Scan(
-		&i.ID,
-		&i.AdminId,
-		&i.AdminEmail,
-		&i.Action,
-		&i.Resource,
-		&i.ResourceId,
-		&i.Details,
-		&i.IpAddress,
-		&i.UserAgent,
-		&i.CreatedAt,
-	)
-	return i, err
+	return err
 }
 
 const CreateAdminSession = `-- name: CreateAdminSession :one
@@ -218,26 +205,26 @@ func (q *Queries) CreateAdminTwoFactor(ctx context.Context, arg CreateAdminTwoFa
 	return i, err
 }
 
-const CreateAuditLog = `-- name: CreateAuditLog :one
+const CreateAuditLog = `-- name: CreateAuditLog :exec
 
 
 INSERT INTO audit_logs (
-    id, timestamp, "userId", "eventType", description, "ipAddress", "userAgent",
-    details, success, error, action, "complianceFlags", endpoint,
+    id, "createdAt", "userId", event, description, "ipAddress", "userAgent",
+    metadata, success, error, action, "complianceFlags", endpoint,
     "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity
 ) VALUES (
     $1, NOW(), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
-) RETURNING id, timestamp, "userId", "eventType", description, "ipAddress", "userAgent", details, success, error, action, "complianceFlags", endpoint, "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity
+)
 `
 
 type CreateAuditLogParams struct {
 	ID                 string      `json:"id"`
 	UserId             pgtype.Text `json:"userId"`
-	EventType          interface{} `json:"eventType"`
+	Event              interface{} `json:"event"`
 	Description        pgtype.Text `json:"description"`
 	IpAddress          pgtype.Text `json:"ipAddress"`
 	UserAgent          pgtype.Text `json:"userAgent"`
-	Details            []byte      `json:"details"`
+	Metadata           []byte      `json:"metadata"`
 	Success            bool        `json:"success"`
 	Error              pgtype.Text `json:"error"`
 	Action             pgtype.Text `json:"action"`
@@ -253,15 +240,15 @@ type CreateAuditLogParams struct {
 
 // Admin and Audit Queries
 // Audit Log Queries
-func (q *Queries) CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) (AuditLog, error) {
-	row := q.db.QueryRow(ctx, CreateAuditLog,
+func (q *Queries) CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) error {
+	_, err := q.db.Exec(ctx, CreateAuditLog,
 		arg.ID,
 		arg.UserId,
-		arg.EventType,
+		arg.Event,
 		arg.Description,
 		arg.IpAddress,
 		arg.UserAgent,
-		arg.Details,
+		arg.Metadata,
 		arg.Success,
 		arg.Error,
 		arg.Action,
@@ -274,29 +261,7 @@ func (q *Queries) CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) 
 		arg.SessionId,
 		arg.Severity,
 	)
-	var i AuditLog
-	err := row.Scan(
-		&i.ID,
-		&i.Timestamp,
-		&i.UserId,
-		&i.EventType,
-		&i.Description,
-		&i.IpAddress,
-		&i.UserAgent,
-		&i.Details,
-		&i.Success,
-		&i.Error,
-		&i.Action,
-		&i.ComplianceFlags,
-		&i.Endpoint,
-		&i.PerformanceMetrics,
-		&i.RequestId,
-		&i.Resource,
-		&i.SecurityContext,
-		&i.SessionId,
-		&i.Severity,
-	)
-	return i, err
+	return err
 }
 
 const CreateSystemAlert = `-- name: CreateSystemAlert :one
@@ -366,11 +331,11 @@ func (q *Queries) DeleteAdminTwoFactor(ctx context.Context, userid string) error
 }
 
 const DeleteAuditLogsOlderThan = `-- name: DeleteAuditLogsOlderThan :exec
-DELETE FROM audit_logs WHERE timestamp < $1
+DELETE FROM audit_logs WHERE "createdAt" < $1
 `
 
-func (q *Queries) DeleteAuditLogsOlderThan(ctx context.Context, timestamp pgtype.Timestamp) error {
-	_, err := q.db.Exec(ctx, DeleteAuditLogsOlderThan, timestamp)
+func (q *Queries) DeleteAuditLogsOlderThan(ctx context.Context, createdat pgtype.Timestamp) error {
+	_, err := q.db.Exec(ctx, DeleteAuditLogsOlderThan, createdat)
 	return err
 }
 
@@ -441,12 +406,27 @@ func (q *Queries) EnableAdminTwoFactor(ctx context.Context, userid string) error
 }
 
 const GetAdminAuditLogByID = `-- name: GetAdminAuditLogByID :one
-SELECT id, "adminId", "adminEmail", action, resource, "resourceId", details, "ipAddress", "userAgent", "createdAt" FROM admin_audit_log WHERE id = $1
+SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+    details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log WHERE id = $1
 `
 
-func (q *Queries) GetAdminAuditLogByID(ctx context.Context, id string) (AdminAuditLog, error) {
+type GetAdminAuditLogByIDRow struct {
+	ID         string           `json:"id"`
+	AdminId    string           `json:"adminId"`
+	AdminEmail string           `json:"adminEmail"`
+	Action     string           `json:"action"`
+	Resource   string           `json:"resource"`
+	ResourceId pgtype.Text      `json:"resourceId"`
+	Details    json.RawMessage  `json:"details"`
+	IpAddress  string           `json:"ipAddress"`
+	UserAgent  string           `json:"userAgent"`
+	CreatedAt  pgtype.Timestamp `json:"createdAt"`
+}
+
+func (q *Queries) GetAdminAuditLogByID(ctx context.Context, id string) (GetAdminAuditLogByIDRow, error) {
 	row := q.db.QueryRow(ctx, GetAdminAuditLogByID, id)
-	var i AdminAuditLog
+	var i GetAdminAuditLogByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.AdminId,
@@ -532,21 +512,46 @@ func (q *Queries) GetAdminTwoFactorByUserID(ctx context.Context, userid string) 
 }
 
 const GetAuditLogByID = `-- name: GetAuditLogByID :one
-SELECT id, timestamp, "userId", "eventType", description, "ipAddress", "userAgent", details, success, error, action, "complianceFlags", endpoint, "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity FROM audit_logs WHERE id = $1
+SELECT id, "createdAt", "userId", event::text, description, "ipAddress", "userAgent",
+    metadata, success, error, action, "complianceFlags", endpoint,
+    "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity
+FROM audit_logs WHERE id = $1
 `
 
-func (q *Queries) GetAuditLogByID(ctx context.Context, id string) (AuditLog, error) {
+type GetAuditLogByIDRow struct {
+	ID                 string           `json:"id"`
+	CreatedAt          pgtype.Timestamp `json:"createdAt"`
+	UserId             pgtype.Text      `json:"userId"`
+	Event              string           `json:"event"`
+	Description        pgtype.Text      `json:"description"`
+	IpAddress          pgtype.Text      `json:"ipAddress"`
+	UserAgent          pgtype.Text      `json:"userAgent"`
+	Metadata           []byte           `json:"metadata"`
+	Success            bool             `json:"success"`
+	Error              pgtype.Text      `json:"error"`
+	Action             pgtype.Text      `json:"action"`
+	ComplianceFlags    []byte           `json:"complianceFlags"`
+	Endpoint           pgtype.Text      `json:"endpoint"`
+	PerformanceMetrics []byte           `json:"performanceMetrics"`
+	RequestId          pgtype.Text      `json:"requestId"`
+	Resource           pgtype.Text      `json:"resource"`
+	SecurityContext    []byte           `json:"securityContext"`
+	SessionId          pgtype.Text      `json:"sessionId"`
+	Severity           string           `json:"severity"`
+}
+
+func (q *Queries) GetAuditLogByID(ctx context.Context, id string) (GetAuditLogByIDRow, error) {
 	row := q.db.QueryRow(ctx, GetAuditLogByID, id)
-	var i AuditLog
+	var i GetAuditLogByIDRow
 	err := row.Scan(
 		&i.ID,
-		&i.Timestamp,
+		&i.CreatedAt,
 		&i.UserId,
-		&i.EventType,
+		&i.Event,
 		&i.Description,
 		&i.IpAddress,
 		&i.UserAgent,
-		&i.Details,
+		&i.Metadata,
 		&i.Success,
 		&i.Error,
 		&i.Action,
@@ -712,7 +717,9 @@ func (q *Queries) ListActiveSystemAlerts(ctx context.Context, arg ListActiveSyst
 }
 
 const ListAdminAuditLogs = `-- name: ListAdminAuditLogs :many
-SELECT id, "adminId", "adminEmail", action, resource, "resourceId", details, "ipAddress", "userAgent", "createdAt" FROM admin_audit_log
+SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+    details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log
 ORDER BY "createdAt" DESC
 LIMIT $1 OFFSET $2
 `
@@ -722,15 +729,28 @@ type ListAdminAuditLogsParams struct {
 	Offset int32 `json:"offset"`
 }
 
-func (q *Queries) ListAdminAuditLogs(ctx context.Context, arg ListAdminAuditLogsParams) ([]AdminAuditLog, error) {
+type ListAdminAuditLogsRow struct {
+	ID         string           `json:"id"`
+	AdminId    string           `json:"adminId"`
+	AdminEmail string           `json:"adminEmail"`
+	Action     string           `json:"action"`
+	Resource   string           `json:"resource"`
+	ResourceId pgtype.Text      `json:"resourceId"`
+	Details    json.RawMessage  `json:"details"`
+	IpAddress  string           `json:"ipAddress"`
+	UserAgent  string           `json:"userAgent"`
+	CreatedAt  pgtype.Timestamp `json:"createdAt"`
+}
+
+func (q *Queries) ListAdminAuditLogs(ctx context.Context, arg ListAdminAuditLogsParams) ([]ListAdminAuditLogsRow, error) {
 	rows, err := q.db.Query(ctx, ListAdminAuditLogs, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AdminAuditLog{}
+	items := []ListAdminAuditLogsRow{}
 	for rows.Next() {
-		var i AdminAuditLog
+		var i ListAdminAuditLogsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.AdminId,
@@ -754,8 +774,10 @@ func (q *Queries) ListAdminAuditLogs(ctx context.Context, arg ListAdminAuditLogs
 }
 
 const ListAdminAuditLogsByAction = `-- name: ListAdminAuditLogsByAction :many
-SELECT id, "adminId", "adminEmail", action, resource, "resourceId", details, "ipAddress", "userAgent", "createdAt" FROM admin_audit_log
-WHERE action = $1
+SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+    details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log
+WHERE action::text = $1
 ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3
 `
@@ -766,15 +788,28 @@ type ListAdminAuditLogsByActionParams struct {
 	Offset int32       `json:"offset"`
 }
 
-func (q *Queries) ListAdminAuditLogsByAction(ctx context.Context, arg ListAdminAuditLogsByActionParams) ([]AdminAuditLog, error) {
+type ListAdminAuditLogsByActionRow struct {
+	ID         string           `json:"id"`
+	AdminId    string           `json:"adminId"`
+	AdminEmail string           `json:"adminEmail"`
+	Action     string           `json:"action"`
+	Resource   string           `json:"resource"`
+	ResourceId pgtype.Text      `json:"resourceId"`
+	Details    json.RawMessage  `json:"details"`
+	IpAddress  string           `json:"ipAddress"`
+	UserAgent  string           `json:"userAgent"`
+	CreatedAt  pgtype.Timestamp `json:"createdAt"`
+}
+
+func (q *Queries) ListAdminAuditLogsByAction(ctx context.Context, arg ListAdminAuditLogsByActionParams) ([]ListAdminAuditLogsByActionRow, error) {
 	rows, err := q.db.Query(ctx, ListAdminAuditLogsByAction, arg.Action, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AdminAuditLog{}
+	items := []ListAdminAuditLogsByActionRow{}
 	for rows.Next() {
-		var i AdminAuditLog
+		var i ListAdminAuditLogsByActionRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.AdminId,
@@ -798,7 +833,9 @@ func (q *Queries) ListAdminAuditLogsByAction(ctx context.Context, arg ListAdminA
 }
 
 const ListAdminAuditLogsByAdmin = `-- name: ListAdminAuditLogsByAdmin :many
-SELECT id, "adminId", "adminEmail", action, resource, "resourceId", details, "ipAddress", "userAgent", "createdAt" FROM admin_audit_log
+SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+    details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log
 WHERE "adminId" = $1
 ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3
@@ -810,15 +847,28 @@ type ListAdminAuditLogsByAdminParams struct {
 	Offset  int32  `json:"offset"`
 }
 
-func (q *Queries) ListAdminAuditLogsByAdmin(ctx context.Context, arg ListAdminAuditLogsByAdminParams) ([]AdminAuditLog, error) {
+type ListAdminAuditLogsByAdminRow struct {
+	ID         string           `json:"id"`
+	AdminId    string           `json:"adminId"`
+	AdminEmail string           `json:"adminEmail"`
+	Action     string           `json:"action"`
+	Resource   string           `json:"resource"`
+	ResourceId pgtype.Text      `json:"resourceId"`
+	Details    json.RawMessage  `json:"details"`
+	IpAddress  string           `json:"ipAddress"`
+	UserAgent  string           `json:"userAgent"`
+	CreatedAt  pgtype.Timestamp `json:"createdAt"`
+}
+
+func (q *Queries) ListAdminAuditLogsByAdmin(ctx context.Context, arg ListAdminAuditLogsByAdminParams) ([]ListAdminAuditLogsByAdminRow, error) {
 	rows, err := q.db.Query(ctx, ListAdminAuditLogsByAdmin, arg.AdminId, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AdminAuditLog{}
+	items := []ListAdminAuditLogsByAdminRow{}
 	for rows.Next() {
-		var i AdminAuditLog
+		var i ListAdminAuditLogsByAdminRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.AdminId,
@@ -842,7 +892,9 @@ func (q *Queries) ListAdminAuditLogsByAdmin(ctx context.Context, arg ListAdminAu
 }
 
 const ListAdminAuditLogsByDateRange = `-- name: ListAdminAuditLogsByDateRange :many
-SELECT id, "adminId", "adminEmail", action, resource, "resourceId", details, "ipAddress", "userAgent", "createdAt" FROM admin_audit_log
+SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+    details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log
 WHERE "createdAt" >= $1 AND "createdAt" <= $2
 ORDER BY "createdAt" DESC
 LIMIT $3 OFFSET $4
@@ -855,7 +907,20 @@ type ListAdminAuditLogsByDateRangeParams struct {
 	Offset      int32            `json:"offset"`
 }
 
-func (q *Queries) ListAdminAuditLogsByDateRange(ctx context.Context, arg ListAdminAuditLogsByDateRangeParams) ([]AdminAuditLog, error) {
+type ListAdminAuditLogsByDateRangeRow struct {
+	ID         string           `json:"id"`
+	AdminId    string           `json:"adminId"`
+	AdminEmail string           `json:"adminEmail"`
+	Action     string           `json:"action"`
+	Resource   string           `json:"resource"`
+	ResourceId pgtype.Text      `json:"resourceId"`
+	Details    json.RawMessage  `json:"details"`
+	IpAddress  string           `json:"ipAddress"`
+	UserAgent  string           `json:"userAgent"`
+	CreatedAt  pgtype.Timestamp `json:"createdAt"`
+}
+
+func (q *Queries) ListAdminAuditLogsByDateRange(ctx context.Context, arg ListAdminAuditLogsByDateRangeParams) ([]ListAdminAuditLogsByDateRangeRow, error) {
 	rows, err := q.db.Query(ctx, ListAdminAuditLogsByDateRange,
 		arg.CreatedAt,
 		arg.CreatedAt_2,
@@ -866,9 +931,9 @@ func (q *Queries) ListAdminAuditLogsByDateRange(ctx context.Context, arg ListAdm
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AdminAuditLog{}
+	items := []ListAdminAuditLogsByDateRangeRow{}
 	for rows.Next() {
-		var i AdminAuditLog
+		var i ListAdminAuditLogsByDateRangeRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.AdminId,
@@ -892,7 +957,9 @@ func (q *Queries) ListAdminAuditLogsByDateRange(ctx context.Context, arg ListAdm
 }
 
 const ListAdminAuditLogsByResource = `-- name: ListAdminAuditLogsByResource :many
-SELECT id, "adminId", "adminEmail", action, resource, "resourceId", details, "ipAddress", "userAgent", "createdAt" FROM admin_audit_log
+SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+    details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log
 WHERE resource = $1 AND ("resourceId" = $2 OR $2 IS NULL)
 ORDER BY "createdAt" DESC
 LIMIT $3 OFFSET $4
@@ -905,7 +972,20 @@ type ListAdminAuditLogsByResourceParams struct {
 	Offset     int32       `json:"offset"`
 }
 
-func (q *Queries) ListAdminAuditLogsByResource(ctx context.Context, arg ListAdminAuditLogsByResourceParams) ([]AdminAuditLog, error) {
+type ListAdminAuditLogsByResourceRow struct {
+	ID         string           `json:"id"`
+	AdminId    string           `json:"adminId"`
+	AdminEmail string           `json:"adminEmail"`
+	Action     string           `json:"action"`
+	Resource   string           `json:"resource"`
+	ResourceId pgtype.Text      `json:"resourceId"`
+	Details    json.RawMessage  `json:"details"`
+	IpAddress  string           `json:"ipAddress"`
+	UserAgent  string           `json:"userAgent"`
+	CreatedAt  pgtype.Timestamp `json:"createdAt"`
+}
+
+func (q *Queries) ListAdminAuditLogsByResource(ctx context.Context, arg ListAdminAuditLogsByResourceParams) ([]ListAdminAuditLogsByResourceRow, error) {
 	rows, err := q.db.Query(ctx, ListAdminAuditLogsByResource,
 		arg.Resource,
 		arg.ResourceId,
@@ -916,9 +996,9 @@ func (q *Queries) ListAdminAuditLogsByResource(ctx context.Context, arg ListAdmi
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AdminAuditLog{}
+	items := []ListAdminAuditLogsByResourceRow{}
 	for rows.Next() {
-		var i AdminAuditLog
+		var i ListAdminAuditLogsByResourceRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.AdminId,
@@ -980,8 +1060,11 @@ func (q *Queries) ListAdminSessionsByUser(ctx context.Context, userid string) ([
 }
 
 const ListAuditLogs = `-- name: ListAuditLogs :many
-SELECT id, timestamp, "userId", "eventType", description, "ipAddress", "userAgent", details, success, error, action, "complianceFlags", endpoint, "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity FROM audit_logs
-ORDER BY timestamp DESC
+SELECT id, "createdAt", "userId", event::text, description, "ipAddress", "userAgent",
+    metadata, success, error, action, "complianceFlags", endpoint,
+    "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity
+FROM audit_logs
+ORDER BY "createdAt" DESC
 LIMIT $1 OFFSET $2
 `
 
@@ -990,24 +1073,46 @@ type ListAuditLogsParams struct {
 	Offset int32 `json:"offset"`
 }
 
-func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error) {
+type ListAuditLogsRow struct {
+	ID                 string           `json:"id"`
+	CreatedAt          pgtype.Timestamp `json:"createdAt"`
+	UserId             pgtype.Text      `json:"userId"`
+	Event              string           `json:"event"`
+	Description        pgtype.Text      `json:"description"`
+	IpAddress          pgtype.Text      `json:"ipAddress"`
+	UserAgent          pgtype.Text      `json:"userAgent"`
+	Metadata           []byte           `json:"metadata"`
+	Success            bool             `json:"success"`
+	Error              pgtype.Text      `json:"error"`
+	Action             pgtype.Text      `json:"action"`
+	ComplianceFlags    []byte           `json:"complianceFlags"`
+	Endpoint           pgtype.Text      `json:"endpoint"`
+	PerformanceMetrics []byte           `json:"performanceMetrics"`
+	RequestId          pgtype.Text      `json:"requestId"`
+	Resource           pgtype.Text      `json:"resource"`
+	SecurityContext    []byte           `json:"securityContext"`
+	SessionId          pgtype.Text      `json:"sessionId"`
+	Severity           string           `json:"severity"`
+}
+
+func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]ListAuditLogsRow, error) {
 	rows, err := q.db.Query(ctx, ListAuditLogs, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AuditLog{}
+	items := []ListAuditLogsRow{}
 	for rows.Next() {
-		var i AuditLog
+		var i ListAuditLogsRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.Timestamp,
+			&i.CreatedAt,
 			&i.UserId,
-			&i.EventType,
+			&i.Event,
 			&i.Description,
 			&i.IpAddress,
 			&i.UserAgent,
-			&i.Details,
+			&i.Metadata,
 			&i.Success,
 			&i.Error,
 			&i.Action,
@@ -1031,23 +1136,48 @@ func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([
 }
 
 const ListAuditLogsByDateRange = `-- name: ListAuditLogsByDateRange :many
-SELECT id, timestamp, "userId", "eventType", description, "ipAddress", "userAgent", details, success, error, action, "complianceFlags", endpoint, "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity FROM audit_logs
-WHERE timestamp >= $1 AND timestamp <= $2
-ORDER BY timestamp DESC
+SELECT id, "createdAt", "userId", event::text, description, "ipAddress", "userAgent",
+    metadata, success, error, action, "complianceFlags", endpoint,
+    "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity
+FROM audit_logs
+WHERE "createdAt" >= $1 AND "createdAt" <= $2
+ORDER BY "createdAt" DESC
 LIMIT $3 OFFSET $4
 `
 
 type ListAuditLogsByDateRangeParams struct {
-	Timestamp   pgtype.Timestamp `json:"timestamp"`
-	Timestamp_2 pgtype.Timestamp `json:"timestamp_2"`
+	CreatedAt   pgtype.Timestamp `json:"createdAt"`
+	CreatedAt_2 pgtype.Timestamp `json:"createdAt_2"`
 	Limit       int32            `json:"limit"`
 	Offset      int32            `json:"offset"`
 }
 
-func (q *Queries) ListAuditLogsByDateRange(ctx context.Context, arg ListAuditLogsByDateRangeParams) ([]AuditLog, error) {
+type ListAuditLogsByDateRangeRow struct {
+	ID                 string           `json:"id"`
+	CreatedAt          pgtype.Timestamp `json:"createdAt"`
+	UserId             pgtype.Text      `json:"userId"`
+	Event              string           `json:"event"`
+	Description        pgtype.Text      `json:"description"`
+	IpAddress          pgtype.Text      `json:"ipAddress"`
+	UserAgent          pgtype.Text      `json:"userAgent"`
+	Metadata           []byte           `json:"metadata"`
+	Success            bool             `json:"success"`
+	Error              pgtype.Text      `json:"error"`
+	Action             pgtype.Text      `json:"action"`
+	ComplianceFlags    []byte           `json:"complianceFlags"`
+	Endpoint           pgtype.Text      `json:"endpoint"`
+	PerformanceMetrics []byte           `json:"performanceMetrics"`
+	RequestId          pgtype.Text      `json:"requestId"`
+	Resource           pgtype.Text      `json:"resource"`
+	SecurityContext    []byte           `json:"securityContext"`
+	SessionId          pgtype.Text      `json:"sessionId"`
+	Severity           string           `json:"severity"`
+}
+
+func (q *Queries) ListAuditLogsByDateRange(ctx context.Context, arg ListAuditLogsByDateRangeParams) ([]ListAuditLogsByDateRangeRow, error) {
 	rows, err := q.db.Query(ctx, ListAuditLogsByDateRange,
-		arg.Timestamp,
-		arg.Timestamp_2,
+		arg.CreatedAt,
+		arg.CreatedAt_2,
 		arg.Limit,
 		arg.Offset,
 	)
@@ -1055,18 +1185,18 @@ func (q *Queries) ListAuditLogsByDateRange(ctx context.Context, arg ListAuditLog
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AuditLog{}
+	items := []ListAuditLogsByDateRangeRow{}
 	for rows.Next() {
-		var i AuditLog
+		var i ListAuditLogsByDateRangeRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.Timestamp,
+			&i.CreatedAt,
 			&i.UserId,
-			&i.EventType,
+			&i.Event,
 			&i.Description,
 			&i.IpAddress,
 			&i.UserAgent,
-			&i.Details,
+			&i.Metadata,
 			&i.Success,
 			&i.Error,
 			&i.Action,
@@ -1090,36 +1220,61 @@ func (q *Queries) ListAuditLogsByDateRange(ctx context.Context, arg ListAuditLog
 }
 
 const ListAuditLogsByEventType = `-- name: ListAuditLogsByEventType :many
-SELECT id, timestamp, "userId", "eventType", description, "ipAddress", "userAgent", details, success, error, action, "complianceFlags", endpoint, "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity FROM audit_logs
-WHERE "eventType" = $1
-ORDER BY timestamp DESC
+SELECT id, "createdAt", "userId", event::text, description, "ipAddress", "userAgent",
+    metadata, success, error, action, "complianceFlags", endpoint,
+    "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity
+FROM audit_logs
+WHERE event::text = $1
+ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3
 `
 
 type ListAuditLogsByEventTypeParams struct {
-	EventType interface{} `json:"eventType"`
-	Limit     int32       `json:"limit"`
-	Offset    int32       `json:"offset"`
+	Event  interface{} `json:"event"`
+	Limit  int32       `json:"limit"`
+	Offset int32       `json:"offset"`
 }
 
-func (q *Queries) ListAuditLogsByEventType(ctx context.Context, arg ListAuditLogsByEventTypeParams) ([]AuditLog, error) {
-	rows, err := q.db.Query(ctx, ListAuditLogsByEventType, arg.EventType, arg.Limit, arg.Offset)
+type ListAuditLogsByEventTypeRow struct {
+	ID                 string           `json:"id"`
+	CreatedAt          pgtype.Timestamp `json:"createdAt"`
+	UserId             pgtype.Text      `json:"userId"`
+	Event              string           `json:"event"`
+	Description        pgtype.Text      `json:"description"`
+	IpAddress          pgtype.Text      `json:"ipAddress"`
+	UserAgent          pgtype.Text      `json:"userAgent"`
+	Metadata           []byte           `json:"metadata"`
+	Success            bool             `json:"success"`
+	Error              pgtype.Text      `json:"error"`
+	Action             pgtype.Text      `json:"action"`
+	ComplianceFlags    []byte           `json:"complianceFlags"`
+	Endpoint           pgtype.Text      `json:"endpoint"`
+	PerformanceMetrics []byte           `json:"performanceMetrics"`
+	RequestId          pgtype.Text      `json:"requestId"`
+	Resource           pgtype.Text      `json:"resource"`
+	SecurityContext    []byte           `json:"securityContext"`
+	SessionId          pgtype.Text      `json:"sessionId"`
+	Severity           string           `json:"severity"`
+}
+
+func (q *Queries) ListAuditLogsByEventType(ctx context.Context, arg ListAuditLogsByEventTypeParams) ([]ListAuditLogsByEventTypeRow, error) {
+	rows, err := q.db.Query(ctx, ListAuditLogsByEventType, arg.Event, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AuditLog{}
+	items := []ListAuditLogsByEventTypeRow{}
 	for rows.Next() {
-		var i AuditLog
+		var i ListAuditLogsByEventTypeRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.Timestamp,
+			&i.CreatedAt,
 			&i.UserId,
-			&i.EventType,
+			&i.Event,
 			&i.Description,
 			&i.IpAddress,
 			&i.UserAgent,
-			&i.Details,
+			&i.Metadata,
 			&i.Success,
 			&i.Error,
 			&i.Action,
@@ -1143,9 +1298,12 @@ func (q *Queries) ListAuditLogsByEventType(ctx context.Context, arg ListAuditLog
 }
 
 const ListAuditLogsBySeverity = `-- name: ListAuditLogsBySeverity :many
-SELECT id, timestamp, "userId", "eventType", description, "ipAddress", "userAgent", details, success, error, action, "complianceFlags", endpoint, "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity FROM audit_logs
+SELECT id, "createdAt", "userId", event::text, description, "ipAddress", "userAgent",
+    metadata, success, error, action, "complianceFlags", endpoint,
+    "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity
+FROM audit_logs
 WHERE severity = $1
-ORDER BY timestamp DESC
+ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3
 `
 
@@ -1155,24 +1313,46 @@ type ListAuditLogsBySeverityParams struct {
 	Offset   int32  `json:"offset"`
 }
 
-func (q *Queries) ListAuditLogsBySeverity(ctx context.Context, arg ListAuditLogsBySeverityParams) ([]AuditLog, error) {
+type ListAuditLogsBySeverityRow struct {
+	ID                 string           `json:"id"`
+	CreatedAt          pgtype.Timestamp `json:"createdAt"`
+	UserId             pgtype.Text      `json:"userId"`
+	Event              string           `json:"event"`
+	Description        pgtype.Text      `json:"description"`
+	IpAddress          pgtype.Text      `json:"ipAddress"`
+	UserAgent          pgtype.Text      `json:"userAgent"`
+	Metadata           []byte           `json:"metadata"`
+	Success            bool             `json:"success"`
+	Error              pgtype.Text      `json:"error"`
+	Action             pgtype.Text      `json:"action"`
+	ComplianceFlags    []byte           `json:"complianceFlags"`
+	Endpoint           pgtype.Text      `json:"endpoint"`
+	PerformanceMetrics []byte           `json:"performanceMetrics"`
+	RequestId          pgtype.Text      `json:"requestId"`
+	Resource           pgtype.Text      `json:"resource"`
+	SecurityContext    []byte           `json:"securityContext"`
+	SessionId          pgtype.Text      `json:"sessionId"`
+	Severity           string           `json:"severity"`
+}
+
+func (q *Queries) ListAuditLogsBySeverity(ctx context.Context, arg ListAuditLogsBySeverityParams) ([]ListAuditLogsBySeverityRow, error) {
 	rows, err := q.db.Query(ctx, ListAuditLogsBySeverity, arg.Severity, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AuditLog{}
+	items := []ListAuditLogsBySeverityRow{}
 	for rows.Next() {
-		var i AuditLog
+		var i ListAuditLogsBySeverityRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.Timestamp,
+			&i.CreatedAt,
 			&i.UserId,
-			&i.EventType,
+			&i.Event,
 			&i.Description,
 			&i.IpAddress,
 			&i.UserAgent,
-			&i.Details,
+			&i.Metadata,
 			&i.Success,
 			&i.Error,
 			&i.Action,
@@ -1196,9 +1376,12 @@ func (q *Queries) ListAuditLogsBySeverity(ctx context.Context, arg ListAuditLogs
 }
 
 const ListAuditLogsByUser = `-- name: ListAuditLogsByUser :many
-SELECT id, timestamp, "userId", "eventType", description, "ipAddress", "userAgent", details, success, error, action, "complianceFlags", endpoint, "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity FROM audit_logs
+SELECT id, "createdAt", "userId", event::text, description, "ipAddress", "userAgent",
+    metadata, success, error, action, "complianceFlags", endpoint,
+    "performanceMetrics", "requestId", resource, "securityContext", "sessionId", severity
+FROM audit_logs
 WHERE "userId" = $1
-ORDER BY timestamp DESC
+ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3
 `
 
@@ -1208,24 +1391,46 @@ type ListAuditLogsByUserParams struct {
 	Offset int32       `json:"offset"`
 }
 
-func (q *Queries) ListAuditLogsByUser(ctx context.Context, arg ListAuditLogsByUserParams) ([]AuditLog, error) {
+type ListAuditLogsByUserRow struct {
+	ID                 string           `json:"id"`
+	CreatedAt          pgtype.Timestamp `json:"createdAt"`
+	UserId             pgtype.Text      `json:"userId"`
+	Event              string           `json:"event"`
+	Description        pgtype.Text      `json:"description"`
+	IpAddress          pgtype.Text      `json:"ipAddress"`
+	UserAgent          pgtype.Text      `json:"userAgent"`
+	Metadata           []byte           `json:"metadata"`
+	Success            bool             `json:"success"`
+	Error              pgtype.Text      `json:"error"`
+	Action             pgtype.Text      `json:"action"`
+	ComplianceFlags    []byte           `json:"complianceFlags"`
+	Endpoint           pgtype.Text      `json:"endpoint"`
+	PerformanceMetrics []byte           `json:"performanceMetrics"`
+	RequestId          pgtype.Text      `json:"requestId"`
+	Resource           pgtype.Text      `json:"resource"`
+	SecurityContext    []byte           `json:"securityContext"`
+	SessionId          pgtype.Text      `json:"sessionId"`
+	Severity           string           `json:"severity"`
+}
+
+func (q *Queries) ListAuditLogsByUser(ctx context.Context, arg ListAuditLogsByUserParams) ([]ListAuditLogsByUserRow, error) {
 	rows, err := q.db.Query(ctx, ListAuditLogsByUser, arg.UserId, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AuditLog{}
+	items := []ListAuditLogsByUserRow{}
 	for rows.Next() {
-		var i AuditLog
+		var i ListAuditLogsByUserRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.Timestamp,
+			&i.CreatedAt,
 			&i.UserId,
-			&i.EventType,
+			&i.Event,
 			&i.Description,
 			&i.IpAddress,
 			&i.UserAgent,
-			&i.Details,
+			&i.Metadata,
 			&i.Success,
 			&i.Error,
 			&i.Action,

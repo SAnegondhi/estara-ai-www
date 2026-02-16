@@ -15,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	dbstore "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/market/economics"
 )
@@ -59,7 +59,7 @@ const (
 
 // InvestorReportService handles investor report operations
 type InvestorReportService struct {
-	db              *postgres.DB
+	store           *dbstore.Store
 	cfg             *config.Config
 	logger          *slog.Logger
 	// ADR-069: Economic backdrop service for reports
@@ -67,17 +67,17 @@ type InvestorReportService struct {
 }
 
 // NewInvestorReportService creates a new investor report service
-func NewInvestorReportService(db *postgres.DB, cfg *config.Config) *InvestorReportService {
+func NewInvestorReportService(store *dbstore.Store, cfg *config.Config) *InvestorReportService {
 	return &InvestorReportService{
-		db:     db,
+		store:  store,
 		cfg:    cfg,
 		logger: slog.Default().With("component", "investor_report_service"),
 	}
 }
 
 // NewInvestorReportServiceWithEconomics creates a service with economic data integration (ADR-069)
-func NewInvestorReportServiceWithEconomics(db *postgres.DB, cfg *config.Config, econ economics.Provider) *InvestorReportService {
-	s := NewInvestorReportService(db, cfg)
+func NewInvestorReportServiceWithEconomics(store *dbstore.Store, cfg *config.Config, econ economics.Provider) *InvestorReportService {
+	s := NewInvestorReportService(store, cfg)
 	if econ != nil {
 		s.economicBackdrop = NewEconomicBackdropService(econ)
 	}
@@ -123,16 +123,14 @@ type GenerateReportInput struct {
 
 // List returns all investor reports for a user
 func (s *InvestorReportService) List(ctx context.Context, userID string, limit, offset int32) ([]InvestorReport, int64, error) {
-	q := queries.New(s.db.Main)
-
 	// Get total count
-	total, err := q.CountUserInvestorReports(ctx, pgtype.Text{String: userID, Valid: true})
+	total, err := s.store.Q().CountUserInvestorReports(ctx, pgtype.Text{String: userID, Valid: true})
 	if err != nil {
 		return nil, 0, err
 	}
 
 	// Get reports with pagination
-	dbReports, err := q.ListUserInvestorReports(ctx, queries.ListUserInvestorReportsParams{
+	dbReports, err := s.store.Q().ListUserInvestorReports(ctx, queries.ListUserInvestorReportsParams{
 		UserId: pgtype.Text{String: userID, Valid: true},
 		Limit:  limit,
 		Offset: offset,
@@ -151,9 +149,7 @@ func (s *InvestorReportService) List(ctx context.Context, userID string, limit, 
 
 // Get returns a specific investor report by ID
 func (s *InvestorReportService) Get(ctx context.Context, userID, reportID string) (*InvestorReport, error) {
-	q := queries.New(s.db.Main)
-
-	dbReport, err := q.GetInvestorReportByIDAndUser(ctx, queries.GetInvestorReportByIDAndUserParams{
+	dbReport, err := s.store.Q().GetInvestorReportByIDAndUser(ctx, queries.GetInvestorReportByIDAndUserParams{
 		ID:     reportID,
 		UserId: pgtype.Text{String: userID, Valid: true},
 	})
@@ -176,8 +172,6 @@ func (s *InvestorReportService) GetStatus(ctx context.Context, userID, reportID 
 
 // Generate creates a new investor report request
 func (s *InvestorReportService) Generate(ctx context.Context, userID string, email string, input GenerateReportInput) (*InvestorReport, error) {
-	q := queries.New(s.db.Main)
-
 	// Check if user has quota (from InsightAccess or ReportPack)
 	sourceType, sourceID, err := s.checkAndConsumeQuota(ctx, userID)
 	if err != nil {
@@ -193,7 +187,7 @@ func (s *InvestorReportService) Generate(ctx context.Context, userID string, ema
 	criteriaHash := s.generateCriteriaHash(input)
 
 	// Check for cached report with same criteria
-	if cachedReport, err := q.GetInvestorReportByCriteriaHash(ctx, pgtype.Text{String: criteriaHash, Valid: true}); err == nil {
+	if cachedReport, err := s.store.Q().GetInvestorReportByCriteriaHash(ctx, pgtype.Text{String: criteriaHash, Valid: true}); err == nil {
 		// Return cached report instead of generating new one
 		report := s.toInvestorReport(cachedReport)
 		return &report, nil
@@ -215,7 +209,7 @@ func (s *InvestorReportService) Generate(ctx context.Context, userID string, ema
 		cacheKey = pgtype.Text{String: *input.CacheKey, Valid: true}
 	}
 
-	dbReport, err := q.CreateInvestorReport(ctx, queries.CreateInvestorReportParams{
+	dbReport, err := s.store.Q().CreateInvestorReport(ctx, queries.CreateInvestorReportParams{
 		ID:                 id,
 		UserId:             pgtype.Text{String: userID, Valid: true},
 		Email:              pgtype.Text{String: email, Valid: true},
@@ -261,16 +255,14 @@ func (s *InvestorReportService) GetDownloadURL(ctx context.Context, userID, repo
 
 // checkAndConsumeQuota checks if user has report quota and consumes one
 func (s *InvestorReportService) checkAndConsumeQuota(ctx context.Context, userID string) (SourceType, string, error) {
-	q := queries.New(s.db.Main)
-
 	// First check InsightAccess (annual subscription)
-	insightAccess, err := q.GetInsightAccessByUserID(ctx, userID)
+	insightAccess, err := s.store.Q().GetInsightAccessByUserID(ctx, userID)
 	if err == nil {
 		// Has active InsightAccess - check if reports remain
 		remaining := int(insightAccess.ReportsPerPeriod - insightAccess.ReportsUsed + insightAccess.RolloverReports)
 		if remaining > 0 {
 			// Consume from InsightAccess
-			_, err := q.IncrementInsightAccessUsage(ctx, insightAccess.ID)
+			_, err := s.store.Q().IncrementInsightAccessUsage(ctx, insightAccess.ID)
 			if err != nil {
 				return "", "", err
 			}
@@ -279,11 +271,11 @@ func (s *InvestorReportService) checkAndConsumeQuota(ctx context.Context, userID
 	}
 
 	// Check ReportPacks (FIFO order)
-	reportPacks, err := q.GetReportPacksByUserID(ctx, userID)
+	reportPacks, err := s.store.Q().GetReportPacksByUserID(ctx, userID)
 	if err == nil && len(reportPacks) > 0 {
 		// Use oldest pack with remaining reports
 		pack := reportPacks[0]
-		_, err := q.IncrementReportPackUsage(ctx, pack.ID)
+		_, err := s.store.Q().IncrementReportPackUsage(ctx, pack.ID)
 		if err != nil {
 			return "", "", err
 		}

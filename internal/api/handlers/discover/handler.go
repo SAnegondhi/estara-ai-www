@@ -15,7 +15,7 @@ import (
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	dbstore "github.com/estara-ai/www/internal/db"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 	"github.com/estara-ai/www/internal/services/investment/expenses"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
@@ -26,7 +26,7 @@ import (
 
 // Handler handles discovery-related HTTP requests
 type Handler struct {
-	db           *postgres.DB
+	store        *dbstore.Store
 	redis        *redisClient.Client
 	cfg          *config.Config
 	validate     *validator.Validate
@@ -37,7 +37,7 @@ type Handler struct {
 
 // NewHandler creates a new discovery handler
 func NewHandler(
-	db *postgres.DB,
+	store *dbstore.Store,
 	redis *redisClient.Client,
 	cfg *config.Config,
 	orchestrator *finder.Orchestrator,
@@ -49,7 +49,7 @@ func NewHandler(
 	}
 
 	return &Handler{
-		db:           db,
+		store:        store,
 		redis:        redis,
 		cfg:          cfg,
 		validate:     validator.New(),
@@ -1128,7 +1128,7 @@ func (h *Handler) GetQuota(w http.ResponseWriter, r *http.Request) {
 	var annualLimit, usedThisPeriod int
 	var periodStart, periodEnd time.Time
 
-	err := h.db.Main.QueryRow(ctx, query, uid).Scan(&tier, &annualLimit, &usedThisPeriod, &periodStart, &periodEnd)
+	err := h.store.Pool().QueryRow(ctx, query, uid).Scan(&tier, &annualLimit, &usedThisPeriod, &periodStart, &periodEnd)
 	if err != nil {
 		h.logger.Error("failed to get user quota", "error", err, "user_id", uid)
 		// Return default free tier on error
@@ -1306,7 +1306,7 @@ func (h *Handler) GetRecords(w http.ResponseWriter, r *http.Request) {
 		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := h.db.Main.Query(ctx, query, uid, limit, offset)
+	rows, err := h.store.Pool().Query(ctx, query, uid, limit, offset)
 	if err != nil {
 		h.logger.Error("failed to get decision records", "error", err)
 		// Return empty records on error
@@ -1351,7 +1351,7 @@ func (h *Handler) GetRecords(w http.ResponseWriter, r *http.Request) {
 
 	// Get total count
 	var total int
-	h.db.Main.QueryRow(ctx, `SELECT COUNT(*) FROM v2_decision_records WHERE user_id = $1`, uid).Scan(&total)
+	h.store.Pool().QueryRow(ctx, `SELECT COUNT(*) FROM v2_decision_records WHERE user_id = $1`, uid).Scan(&total)
 
 	response := RecordsResponse{
 		Success: true,

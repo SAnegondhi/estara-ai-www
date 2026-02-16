@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	db "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/queries"
 )
 
@@ -28,16 +28,16 @@ var (
 
 // Service handles billing operations
 type Service struct {
-	db     *postgres.DB
+	store  *db.Store
 	stripe *StripeClient
 	cfg    *config.Config
 	logger *slog.Logger
 }
 
 // NewService creates a new billing service
-func NewService(db *postgres.DB, cfg *config.Config) *Service {
+func NewService(store *db.Store, cfg *config.Config) *Service {
 	return &Service{
-		db:     db,
+		store:  store,
 		stripe: NewStripeClient(&cfg.Stripe),
 		cfg:    cfg,
 		logger: slog.Default().With("component", "billing_service"),
@@ -94,7 +94,7 @@ func (s *Service) GetCheckoutSessionStatus(ctx context.Context, sessionID string
 
 // GetSubscription retrieves the subscription for a user
 func (s *Service) GetSubscription(ctx context.Context, userID string) (*SubscriptionResponse, error) {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 	sub, err := q.GetSubscriptionByUserID(ctx, userID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -108,7 +108,7 @@ func (s *Service) GetSubscription(ctx context.Context, userID string) (*Subscrip
 
 // CancelSubscription cancels a user's subscription
 func (s *Service) CancelSubscription(ctx context.Context, userID string, cancelAtPeriodEnd bool) error {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	// Get the subscription
 	sub, err := q.GetSubscriptionByUserID(ctx, userID)
@@ -153,7 +153,7 @@ func (s *Service) CancelSubscription(ctx context.Context, userID string, cancelA
 
 // ReactivateSubscription reactivates a canceled subscription
 func (s *Service) ReactivateSubscription(ctx context.Context, userID string) error {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	// Get the subscription
 	sub, err := q.GetSubscriptionByUserID(ctx, userID)
@@ -191,7 +191,7 @@ func (s *Service) ReactivateSubscription(ctx context.Context, userID string) err
 
 // CreateFreeSubscription creates a free tier subscription
 func (s *Service) CreateFreeSubscription(ctx context.Context, userID string) (*SubscriptionResponse, error) {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	// Check if subscription already exists
 	existing, err := q.GetSubscriptionByUserID(ctx, userID)
@@ -237,7 +237,7 @@ func (s *Service) CreateFreeSubscription(ctx context.Context, userID string) (*S
 
 // CreateBillingPortalSession creates a billing portal session for a user
 func (s *Service) CreateBillingPortalSession(ctx context.Context, userID, returnURL string) (*PortalSessionResponse, error) {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	// Get the subscription to find the customer ID
 	sub, err := q.GetSubscriptionByUserID(ctx, userID)
@@ -257,7 +257,7 @@ func (s *Service) CreateBillingPortalSession(ctx context.Context, userID, return
 
 // UpgradeSubscription upgrades a subscription to a new tier
 func (s *Service) UpgradeSubscription(ctx context.Context, userID string, newTier SubscriptionTier) error {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	// Get current subscription
 	sub, err := q.GetSubscriptionByUserID(ctx, userID)
@@ -306,7 +306,7 @@ func (s *Service) UpgradeSubscription(ctx context.Context, userID string, newTie
 
 // GetUserInvoices retrieves invoices for a user
 func (s *Service) GetUserInvoices(ctx context.Context, userID string, limit, offset int32) ([]InvoiceResponse, error) {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	invoices, err := q.ListUserInvoices(ctx, queries.ListUserInvoicesParams{
 		UserId: userID,
@@ -327,7 +327,7 @@ func (s *Service) GetUserInvoices(ctx context.Context, userID string, limit, off
 
 // GetUserReceipts retrieves receipts for a user
 func (s *Service) GetUserReceipts(ctx context.Context, userID string, limit, offset int32) ([]ReceiptResponse, error) {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	receipts, err := q.ListUserReceipts(ctx, queries.ListUserReceiptsParams{
 		UserId: userID,
@@ -348,7 +348,7 @@ func (s *Service) GetUserReceipts(ctx context.Context, userID string, limit, off
 
 // RecordBillingAuditLog records a billing event for audit purposes
 func (s *Service) RecordBillingAuditLog(ctx context.Context, params queries.CreateBillingAuditLogParams) error {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	_, err := q.CreateBillingAuditLog(ctx, params)
 	if err != nil {
@@ -363,7 +363,7 @@ func (s *Service) RecordBillingAuditLog(ctx context.Context, params queries.Crea
 
 // RecordCheckoutEvidence records evidence for chargeback protection
 func (s *Service) RecordCheckoutEvidence(ctx context.Context, params queries.CreateCheckoutEvidenceParams) error {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	_, err := q.CreateCheckoutEvidence(ctx, params)
 	if err != nil {
@@ -378,7 +378,7 @@ func (s *Service) RecordCheckoutEvidence(ctx context.Context, params queries.Cre
 
 // GetCheckoutEvidence retrieves checkout evidence for a payment intent
 func (s *Service) GetCheckoutEvidence(ctx context.Context, paymentIntentID string) (*ChargebackEvidence, error) {
-	q := queries.New(s.db.Main)
+	q := s.store.Q()
 
 	evidence, err := q.GetCheckoutEvidenceByPaymentIntent(ctx, pgtype.Text{
 		String: paymentIntentID,

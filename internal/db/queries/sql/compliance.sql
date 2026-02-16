@@ -1,43 +1,44 @@
 -- Compliance Queries
+-- Column names match actual database (camelCase from Prisma)
 
 -- name: ListUserConsents :many
 SELECT * FROM user_consents
-ORDER BY created_at DESC
+ORDER BY "timestamp" DESC
 LIMIT $1 OFFSET $2;
 
 -- name: ListUserConsentsByType :many
 SELECT * FROM user_consents
-WHERE consent_type = $1
-ORDER BY created_at DESC
+WHERE "consentType"::text = $1
+ORDER BY "timestamp" DESC
 LIMIT $2 OFFSET $3;
 
 -- name: GetUserConsent :one
 SELECT * FROM user_consents
-WHERE user_id = $1 AND consent_type = $2 AND revoked_at IS NULL;
+WHERE "userId" = $1 AND "consentType"::text = $2 AND granted = true;
 
 -- name: CreateUserConsent :one
 INSERT INTO user_consents (
-    user_id, consent_type, version, ip_address, user_agent
+    id, "userId", "consentType", version, granted, "ipAddress", "userAgent"
 ) VALUES (
-    $1, $2, $3, $4, $5
+    $1, $2, $3, $4, $5, $6, $7
 ) RETURNING *;
 
 -- name: RevokeUserConsent :exec
-UPDATE user_consents SET revoked_at = NOW()
-WHERE user_id = $1 AND consent_type = $2 AND revoked_at IS NULL;
+UPDATE user_consents SET granted = false
+WHERE "userId" = $1 AND "consentType"::text = $2 AND granted = true;
 
 -- name: GetConsentSummary :many
 SELECT
-    consent_type,
-    COUNT(*) FILTER (WHERE revoked_at IS NULL) as active_count,
-    COUNT(*) FILTER (WHERE revoked_at IS NOT NULL) as revoked_count,
+    "consentType"::text as consent_type,
+    COUNT(*) FILTER (WHERE granted = true) as active_count,
+    COUNT(*) FILTER (WHERE granted = false) as revoked_count,
     COUNT(*) as total_count
 FROM user_consents
-GROUP BY consent_type
-ORDER BY consent_type;
+GROUP BY "consentType"
+ORDER BY "consentType";
 
 -- name: CountUserConsents :one
 SELECT COUNT(*) FROM user_consents;
 
 -- name: CountUserConsentsByType :one
-SELECT COUNT(*) FROM user_consents WHERE consent_type = $1;
+SELECT COUNT(*) FROM user_consents WHERE "consentType"::text = $1;

@@ -15,15 +15,14 @@ import (
 
 // ConsentResponse represents a user consent record
 type ConsentResponse struct {
-	ID          string  `json:"id"`
-	UserID      string  `json:"userId"`
-	Email       *string `json:"email,omitempty"`
-	ConsentType string  `json:"consentType"`
-	Version     string  `json:"version"`
-	GrantedAt   string  `json:"grantedAt"`
-	RevokedAt   *string `json:"revokedAt,omitempty"`
-	IPAddress   *string `json:"ipAddress,omitempty"`
-	CreatedAt   string  `json:"createdAt"`
+	ID          string `json:"id"`
+	UserID      string `json:"userId"`
+	ConsentType string `json:"consentType"`
+	Version     string `json:"version"`
+	Granted     bool   `json:"granted"`
+	IPAddress   string `json:"ipAddress"`
+	UserAgent   string `json:"userAgent"`
+	Timestamp   string `json:"timestamp"`
 }
 
 // ConsentSummaryResponse represents consent adoption summary
@@ -64,7 +63,7 @@ func (h *Handler) GetConsents(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := (page - 1) * pageSize
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 
 	// Get consent records
 	var consentRows []queries.UserConsent
@@ -91,19 +90,18 @@ func (h *Handler) GetConsents(w http.ResponseWriter, r *http.Request) {
 	var results []ConsentResponse
 	for _, c := range consentRows {
 		resp := ConsentResponse{
-			ID:          c.ID.String(),
-			UserID:      c.UserID.String(),
-			ConsentType: c.ConsentType,
-			Version:     c.Version,
-			GrantedAt:   c.GrantedAt.Format(time.RFC3339),
-			CreatedAt:   c.CreatedAt.Format(time.RFC3339),
+			ID:        c.ID,
+			UserID:    c.UserId,
+			Version:   c.Version,
+			Granted:   c.Granted,
+			IPAddress: c.IpAddress,
+			UserAgent: c.UserAgent,
 		}
-		if c.RevokedAt.Valid {
-			ra := c.RevokedAt.Time.Format(time.RFC3339)
-			resp.RevokedAt = &ra
+		if c.ConsentType != nil {
+			resp.ConsentType = fmt.Sprintf("%v", c.ConsentType)
 		}
-		if c.IpAddress.Valid {
-			resp.IPAddress = &c.IpAddress.String
+		if c.Timestamp.Valid {
+			resp.Timestamp = c.Timestamp.Time.Format(time.RFC3339)
 		}
 		results = append(results, resp)
 	}
@@ -123,8 +121,7 @@ func (h *Handler) GetConsents(w http.ResponseWriter, r *http.Request) {
 	// Get consent summary
 	summaryRows, _ := q.GetConsentSummary(ctx)
 	var summaries []ConsentSummaryResponse
-	var totalUsers int64
-	_ = h.db.Main.QueryRow(ctx, "SELECT COUNT(*) FROM users").Scan(&totalUsers)
+	totalUsers, _ := q.CountUsers(ctx)
 
 	for _, s := range summaryRows {
 		adoptionRate := float64(0)
@@ -166,13 +163,12 @@ func (h *Handler) GetTermsLog(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := (page - 1) * pageSize
 
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT t.id, t."userId", u.email, t.version, t."acceptedAt", t."ipAddress"
-		FROM terms_acceptances t
-		LEFT JOIN users u ON t."userId" = u.id
-		ORDER BY t."acceptedAt" DESC
-		LIMIT $1 OFFSET $2
-	`, pageSize, offset)
+	q := h.store.Q()
+
+	termsRows, err := q.GetTermsLogWithUsers(ctx, queries.GetTermsLogWithUsersParams{
+		Limit:  int32(pageSize),
+		Offset: int32(offset),
+	})
 	if err != nil {
 		h.logger.Warn("failed to get terms log", "error", err)
 		httputil.Success(w, map[string]interface{}{
@@ -181,51 +177,37 @@ func (h *Handler) GetTermsLog(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer rows.Close()
 
-	var entries []TermsLogEntry
-	for rows.Next() {
-		var e TermsLogEntry
-		var acceptedAt time.Time
-		if err := rows.Scan(&e.ID, &e.UserID, &e.Email, &e.Version, &acceptedAt, &e.IPAddress); err != nil {
-			continue
+	entries := make([]TermsLogEntry, 0, len(termsRows))
+	for _, r := range termsRows {
+		e := TermsLogEntry{
+			ID:     r.ID,
+			UserID: r.UserId,
 		}
-		e.AcceptedAt = acceptedAt.Format(time.RFC3339)
+		if r.Email.Valid {
+			e.Email = &r.Email.String
+		}
+		e.Version = r.Version
+		if r.AcceptedAt.Valid {
+			e.AcceptedAt = r.AcceptedAt.Time.Format(time.RFC3339)
+		}
+		if r.IpAddress.Valid {
+			e.IPAddress = &r.IpAddress.String
+		}
 		entries = append(entries, e)
 	}
 
-	if entries == nil {
-		entries = []TermsLogEntry{}
-	}
-
 	// Get total count
-	var total int64
-	_ = h.db.Main.QueryRow(ctx, "SELECT COUNT(*) FROM terms_acceptances").Scan(&total)
+	total, _ := q.CountTermsAcceptances(ctx)
 
 	// Get version adoption rates
-	versionRows, err := h.db.Main.Query(ctx, `
-		SELECT version, COUNT(*) as cnt
-		FROM terms_acceptances
-		GROUP BY version
-		ORDER BY version DESC
-	`)
-	var versionAdoption []map[string]interface{}
-	if err == nil {
-		defer versionRows.Close()
-		for versionRows.Next() {
-			var version string
-			var count int64
-			if err := versionRows.Scan(&version, &count); err != nil {
-				continue
-			}
-			versionAdoption = append(versionAdoption, map[string]interface{}{
-				"version": version,
-				"count":   count,
-			})
-		}
-	}
-	if versionAdoption == nil {
-		versionAdoption = []map[string]interface{}{}
+	versionData, _ := q.GetTermsAcceptancesByVersion(ctx)
+	versionAdoption := make([]map[string]interface{}, 0, len(versionData))
+	for _, v := range versionData {
+		versionAdoption = append(versionAdoption, map[string]interface{}{
+			"version": v.Version,
+			"count":   v.Cnt,
+		})
 	}
 
 	httputil.Success(w, map[string]interface{}{
@@ -246,18 +228,7 @@ func (h *Handler) GetTaxSummary(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Aggregate tax from invoices joined with user state data
-	rows, err := h.db.Main.Query(ctx, `
-		SELECT
-			COALESCE(u."state", 'Unknown') as state,
-			COALESCE(SUM(i."taxAmount"), 0) as total_tax,
-			COUNT(*) as invoice_count,
-			COALESCE(SUM(i.total), 0) as total_revenue
-		FROM invoices i
-		LEFT JOIN users u ON i."userId" = u.id
-		WHERE i.status = 'paid'
-		GROUP BY u."state"
-		ORDER BY total_tax DESC
-	`)
+	taxRows, err := h.store.Q().GetTaxSummary(ctx)
 	if err != nil {
 		h.logger.Warn("failed to get tax summary", "error", err)
 		httputil.Success(w, map[string]interface{}{
@@ -267,25 +238,19 @@ func (h *Handler) GetTaxSummary(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer rows.Close()
 
-	var items []TaxSummaryItem
+	items := make([]TaxSummaryItem, 0, len(taxRows))
 	var totalTax, totalRevenue float64
-	for rows.Next() {
-		var item TaxSummaryItem
-		var tax, revenue int64
-		if err := rows.Scan(&item.State, &tax, &item.InvoiceCount, &revenue); err != nil {
-			continue
+	for _, r := range taxRows {
+		item := TaxSummaryItem{
+			State:        r.State,
+			TotalTax:     float64(r.TotalTax) / 100,
+			InvoiceCount: r.InvoiceCount,
+			TotalRevenue: float64(r.TotalRevenue) / 100,
 		}
-		item.TotalTax = float64(tax) / 100
-		item.TotalRevenue = float64(revenue) / 100
 		totalTax += item.TotalTax
 		totalRevenue += item.TotalRevenue
 		items = append(items, item)
-	}
-
-	if items == nil {
-		items = []TaxSummaryItem{}
 	}
 
 	httputil.Success(w, map[string]interface{}{

@@ -9,23 +9,23 @@ import (
 	"time"
 
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	db "github.com/estara-ai/www/internal/db"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 	"github.com/estara-ai/www/pkg/httputil"
 )
 
 // Handler handles location-related HTTP requests
 type Handler struct {
-	db     *postgres.DB
+	store  *db.Store
 	redis  *redisClient.Client
 	cfg    *config.Config
 	logger *slog.Logger
 }
 
 // NewHandler creates a new location handler
-func NewHandler(db *postgres.DB, redis *redisClient.Client, cfg *config.Config) *Handler {
+func NewHandler(store *db.Store, redis *redisClient.Client, cfg *config.Config) *Handler {
 	return &Handler{
-		db:     db,
+		store:  store,
 		redis:  redis,
 		cfg:    cfg,
 		logger: slog.Default().With("component", "location_handler"),
@@ -178,7 +178,7 @@ func (h *Handler) searchLocations(ctx context.Context, query string, limit int) 
 	}
 
 	// Check if market database is available
-	if h.db.Market == nil {
+	if h.store.MarketPool() == nil {
 		h.logger.Warn("market database not configured, falling back to state-only suggestions")
 		return h.searchStatesOnly(queryLower)
 	}
@@ -219,7 +219,7 @@ func (h *Handler) searchLocations(ctx context.Context, query string, limit int) 
 		args = []interface{}{cityPart, limit}
 	}
 
-	rows, err := h.db.Market.Query(ctx, sqlQuery, args...)
+	rows, err := h.store.MarketPool().Query(ctx, sqlQuery, args...)
 	if err != nil {
 		h.logger.Error("city_states query failed", "error", err, "query", query)
 		// Fall back to state-only suggestions on error
@@ -349,7 +349,7 @@ func (h *Handler) Validate(w http.ResponseWriter, r *http.Request) {
 
 	// Check if we have data for this city
 	var count int
-	err := h.db.Main.QueryRow(ctx,
+	err := h.store.Pool().QueryRow(ctx,
 		`SELECT COUNT(*) FROM cached_properties WHERE LOWER(city) = LOWER($1) AND UPPER(state) = $2`,
 		city, stateCode,
 	).Scan(&count)

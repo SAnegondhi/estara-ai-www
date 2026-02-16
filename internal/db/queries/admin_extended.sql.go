@@ -40,40 +40,40 @@ const CompleteCronJobRun = `-- name: CompleteCronJobRun :one
 UPDATE cron_job_runs SET
     status = $2,
     "completedAt" = NOW(),
-    "durationMs" = $3,
+    duration = $3,
     error = $4,
     output = $5
 WHERE id = $1
-RETURNING id, "jobId", status, "startedAt", "completedAt", "durationMs", error, output, "createdAt"
+RETURNING id, "cronJobId", status, duration, error, output, "triggeredBy", "startedAt", "completedAt"
 `
 
 type CompleteCronJobRunParams struct {
-	ID         string      `json:"id"`
-	Status     string      `json:"status"`
-	DurationMs pgtype.Int4 `json:"durationMs"`
-	Error      pgtype.Text `json:"error"`
-	Output     []byte      `json:"output"`
+	ID       string      `json:"id"`
+	Status   interface{} `json:"status"`
+	Duration pgtype.Int4 `json:"duration"`
+	Error    pgtype.Text `json:"error"`
+	Output   []byte      `json:"output"`
 }
 
 func (q *Queries) CompleteCronJobRun(ctx context.Context, arg CompleteCronJobRunParams) (CronJobRun, error) {
 	row := q.db.QueryRow(ctx, CompleteCronJobRun,
 		arg.ID,
 		arg.Status,
-		arg.DurationMs,
+		arg.Duration,
 		arg.Error,
 		arg.Output,
 	)
 	var i CronJobRun
 	err := row.Scan(
 		&i.ID,
-		&i.JobId,
+		&i.CronJobId,
 		&i.Status,
-		&i.StartedAt,
-		&i.CompletedAt,
-		&i.DurationMs,
+		&i.Duration,
 		&i.Error,
 		&i.Output,
-		&i.CreatedAt,
+		&i.TriggeredBy,
+		&i.StartedAt,
+		&i.CompletedAt,
 	)
 	return i, err
 }
@@ -85,7 +85,7 @@ SELECT
     COUNT(*) FILTER (WHERE status = 'TIMEOUT') as timeout_count,
     COUNT(*) FILTER (WHERE status = 'RUNNING') as running_count
 FROM cron_job_runs
-WHERE "jobId" = $1
+WHERE "cronJobId" = $1
 `
 
 type CountCronJobRunsByStatusRow struct {
@@ -95,8 +95,8 @@ type CountCronJobRunsByStatusRow struct {
 	RunningCount int64 `json:"running_count"`
 }
 
-func (q *Queries) CountCronJobRunsByStatus(ctx context.Context, jobid string) (CountCronJobRunsByStatusRow, error) {
-	row := q.db.QueryRow(ctx, CountCronJobRunsByStatus, jobid)
+func (q *Queries) CountCronJobRunsByStatus(ctx context.Context, cronjobid string) (CountCronJobRunsByStatusRow, error) {
+	row := q.db.QueryRow(ctx, CountCronJobRunsByStatus, cronjobid)
 	var i CountCronJobRunsByStatusRow
 	err := row.Scan(
 		&i.SuccessCount,
@@ -168,22 +168,22 @@ const CreateCronJobConfig = `-- name: CreateCronJobConfig :one
 
 INSERT INTO cron_job_configs (
     id, name, description, schedule, endpoint,
-    "isEnabled", "timeoutMs", "maxConsecutiveFailures",
+    "isEnabled", "timeoutMs", "maxFailures",
     "createdAt", "updatedAt"
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW()
-) RETURNING id, name, description, schedule, endpoint, "isEnabled", "timeoutMs", "maxConsecutiveFailures", "consecutiveFailures", "totalRuns", "successfulRuns", "lastRunAt", "lastRunStatus", "lastRunDurationMs", "createdAt", "updatedAt"
+) RETURNING id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", "createdAt", "updatedAt"
 `
 
 type CreateCronJobConfigParams struct {
-	ID                     string      `json:"id"`
-	Name                   string      `json:"name"`
-	Description            pgtype.Text `json:"description"`
-	Schedule               string      `json:"schedule"`
-	Endpoint               string      `json:"endpoint"`
-	IsEnabled              bool        `json:"isEnabled"`
-	TimeoutMs              int32       `json:"timeoutMs"`
-	MaxConsecutiveFailures int32       `json:"maxConsecutiveFailures"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Schedule    string `json:"schedule"`
+	Endpoint    string `json:"endpoint"`
+	IsEnabled   bool   `json:"isEnabled"`
+	TimeoutMs   int32  `json:"timeoutMs"`
+	MaxFailures int32  `json:"maxFailures"`
 }
 
 // =========================================================
@@ -198,7 +198,7 @@ func (q *Queries) CreateCronJobConfig(ctx context.Context, arg CreateCronJobConf
 		arg.Endpoint,
 		arg.IsEnabled,
 		arg.TimeoutMs,
-		arg.MaxConsecutiveFailures,
+		arg.MaxFailures,
 	)
 	var i CronJobConfig
 	err := row.Scan(
@@ -207,15 +207,20 @@ func (q *Queries) CreateCronJobConfig(ctx context.Context, arg CreateCronJobConf
 		&i.Description,
 		&i.Schedule,
 		&i.Endpoint,
+		&i.IsRequired,
+		&i.IsConfigured,
 		&i.IsEnabled,
-		&i.TimeoutMs,
-		&i.MaxConsecutiveFailures,
+		&i.LastRun,
+		&i.LastRunStatus,
+		&i.LastRunDuration,
+		&i.LastRunError,
 		&i.ConsecutiveFailures,
+		&i.AlertOnFailure,
+		&i.MaxFailures,
+		&i.TimeoutMs,
 		&i.TotalRuns,
 		&i.SuccessfulRuns,
-		&i.LastRunAt,
-		&i.LastRunStatus,
-		&i.LastRunDurationMs,
+		&i.FailedRuns,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -225,33 +230,33 @@ func (q *Queries) CreateCronJobConfig(ctx context.Context, arg CreateCronJobConf
 const CreateCronJobRun = `-- name: CreateCronJobRun :one
 
 INSERT INTO cron_job_runs (
-    id, "jobId", status, "startedAt", "createdAt"
+    id, "cronJobId", status, "startedAt"
 ) VALUES (
-    $1, $2, 'RUNNING', NOW(), NOW()
-) RETURNING id, "jobId", status, "startedAt", "completedAt", "durationMs", error, output, "createdAt"
+    $1, $2, 'RUNNING', NOW()
+) RETURNING id, "cronJobId", status, duration, error, output, "triggeredBy", "startedAt", "completedAt"
 `
 
 type CreateCronJobRunParams struct {
-	ID    string `json:"id"`
-	JobId string `json:"jobId"`
+	ID        string `json:"id"`
+	CronJobId string `json:"cronJobId"`
 }
 
 // =========================================================
 // Cron Job Runs
 // =========================================================
 func (q *Queries) CreateCronJobRun(ctx context.Context, arg CreateCronJobRunParams) (CronJobRun, error) {
-	row := q.db.QueryRow(ctx, CreateCronJobRun, arg.ID, arg.JobId)
+	row := q.db.QueryRow(ctx, CreateCronJobRun, arg.ID, arg.CronJobId)
 	var i CronJobRun
 	err := row.Scan(
 		&i.ID,
-		&i.JobId,
+		&i.CronJobId,
 		&i.Status,
-		&i.StartedAt,
-		&i.CompletedAt,
-		&i.DurationMs,
+		&i.Duration,
 		&i.Error,
 		&i.Output,
-		&i.CreatedAt,
+		&i.TriggeredBy,
+		&i.StartedAt,
+		&i.CompletedAt,
 	)
 	return i, err
 }
@@ -425,7 +430,7 @@ func (q *Queries) GetAdminCreditsByUser(ctx context.Context, userid string) ([]A
 }
 
 const GetCronJobConfigByID = `-- name: GetCronJobConfigByID :one
-SELECT id, name, description, schedule, endpoint, "isEnabled", "timeoutMs", "maxConsecutiveFailures", "consecutiveFailures", "totalRuns", "successfulRuns", "lastRunAt", "lastRunStatus", "lastRunDurationMs", "createdAt", "updatedAt" FROM cron_job_configs
+SELECT id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", "createdAt", "updatedAt" FROM cron_job_configs
 WHERE id = $1
 `
 
@@ -438,15 +443,20 @@ func (q *Queries) GetCronJobConfigByID(ctx context.Context, id string) (CronJobC
 		&i.Description,
 		&i.Schedule,
 		&i.Endpoint,
+		&i.IsRequired,
+		&i.IsConfigured,
 		&i.IsEnabled,
-		&i.TimeoutMs,
-		&i.MaxConsecutiveFailures,
+		&i.LastRun,
+		&i.LastRunStatus,
+		&i.LastRunDuration,
+		&i.LastRunError,
 		&i.ConsecutiveFailures,
+		&i.AlertOnFailure,
+		&i.MaxFailures,
+		&i.TimeoutMs,
 		&i.TotalRuns,
 		&i.SuccessfulRuns,
-		&i.LastRunAt,
-		&i.LastRunStatus,
-		&i.LastRunDurationMs,
+		&i.FailedRuns,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -454,7 +464,7 @@ func (q *Queries) GetCronJobConfigByID(ctx context.Context, id string) (CronJobC
 }
 
 const GetCronJobConfigByName = `-- name: GetCronJobConfigByName :one
-SELECT id, name, description, schedule, endpoint, "isEnabled", "timeoutMs", "maxConsecutiveFailures", "consecutiveFailures", "totalRuns", "successfulRuns", "lastRunAt", "lastRunStatus", "lastRunDurationMs", "createdAt", "updatedAt" FROM cron_job_configs
+SELECT id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", "createdAt", "updatedAt" FROM cron_job_configs
 WHERE name = $1
 `
 
@@ -467,15 +477,20 @@ func (q *Queries) GetCronJobConfigByName(ctx context.Context, name string) (Cron
 		&i.Description,
 		&i.Schedule,
 		&i.Endpoint,
+		&i.IsRequired,
+		&i.IsConfigured,
 		&i.IsEnabled,
-		&i.TimeoutMs,
-		&i.MaxConsecutiveFailures,
+		&i.LastRun,
+		&i.LastRunStatus,
+		&i.LastRunDuration,
+		&i.LastRunError,
 		&i.ConsecutiveFailures,
+		&i.AlertOnFailure,
+		&i.MaxFailures,
+		&i.TimeoutMs,
 		&i.TotalRuns,
 		&i.SuccessfulRuns,
-		&i.LastRunAt,
-		&i.LastRunStatus,
-		&i.LastRunDurationMs,
+		&i.FailedRuns,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -483,7 +498,7 @@ func (q *Queries) GetCronJobConfigByName(ctx context.Context, name string) (Cron
 }
 
 const GetCronJobRun = `-- name: GetCronJobRun :one
-SELECT id, "jobId", status, "startedAt", "completedAt", "durationMs", error, output, "createdAt" FROM cron_job_runs
+SELECT id, "cronJobId", status, duration, error, output, "triggeredBy", "startedAt", "completedAt" FROM cron_job_runs
 WHERE id = $1
 `
 
@@ -492,14 +507,14 @@ func (q *Queries) GetCronJobRun(ctx context.Context, id string) (CronJobRun, err
 	var i CronJobRun
 	err := row.Scan(
 		&i.ID,
-		&i.JobId,
+		&i.CronJobId,
 		&i.Status,
-		&i.StartedAt,
-		&i.CompletedAt,
-		&i.DurationMs,
+		&i.Duration,
 		&i.Error,
 		&i.Output,
-		&i.CreatedAt,
+		&i.TriggeredBy,
+		&i.StartedAt,
+		&i.CompletedAt,
 	)
 	return i, err
 }
@@ -660,7 +675,7 @@ func (q *Queries) ListAdminCredits(ctx context.Context, arg ListAdminCreditsPara
 }
 
 const ListCronJobConfigs = `-- name: ListCronJobConfigs :many
-SELECT id, name, description, schedule, endpoint, "isEnabled", "timeoutMs", "maxConsecutiveFailures", "consecutiveFailures", "totalRuns", "successfulRuns", "lastRunAt", "lastRunStatus", "lastRunDurationMs", "createdAt", "updatedAt" FROM cron_job_configs
+SELECT id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", "createdAt", "updatedAt" FROM cron_job_configs
 ORDER BY name
 `
 
@@ -679,15 +694,20 @@ func (q *Queries) ListCronJobConfigs(ctx context.Context) ([]CronJobConfig, erro
 			&i.Description,
 			&i.Schedule,
 			&i.Endpoint,
+			&i.IsRequired,
+			&i.IsConfigured,
 			&i.IsEnabled,
-			&i.TimeoutMs,
-			&i.MaxConsecutiveFailures,
+			&i.LastRun,
+			&i.LastRunStatus,
+			&i.LastRunDuration,
+			&i.LastRunError,
 			&i.ConsecutiveFailures,
+			&i.AlertOnFailure,
+			&i.MaxFailures,
+			&i.TimeoutMs,
 			&i.TotalRuns,
 			&i.SuccessfulRuns,
-			&i.LastRunAt,
-			&i.LastRunStatus,
-			&i.LastRunDurationMs,
+			&i.FailedRuns,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -702,20 +722,20 @@ func (q *Queries) ListCronJobConfigs(ctx context.Context) ([]CronJobConfig, erro
 }
 
 const ListCronJobRuns = `-- name: ListCronJobRuns :many
-SELECT id, "jobId", status, "startedAt", "completedAt", "durationMs", error, output, "createdAt" FROM cron_job_runs
-WHERE "jobId" = $1
+SELECT id, "cronJobId", status, duration, error, output, "triggeredBy", "startedAt", "completedAt" FROM cron_job_runs
+WHERE "cronJobId" = $1
 ORDER BY "startedAt" DESC
 LIMIT $2 OFFSET $3
 `
 
 type ListCronJobRunsParams struct {
-	JobId  string `json:"jobId"`
-	Limit  int32  `json:"limit"`
-	Offset int32  `json:"offset"`
+	CronJobId string `json:"cronJobId"`
+	Limit     int32  `json:"limit"`
+	Offset    int32  `json:"offset"`
 }
 
 func (q *Queries) ListCronJobRuns(ctx context.Context, arg ListCronJobRunsParams) ([]CronJobRun, error) {
-	rows, err := q.db.Query(ctx, ListCronJobRuns, arg.JobId, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, ListCronJobRuns, arg.CronJobId, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -725,14 +745,14 @@ func (q *Queries) ListCronJobRuns(ctx context.Context, arg ListCronJobRunsParams
 		var i CronJobRun
 		if err := rows.Scan(
 			&i.ID,
-			&i.JobId,
+			&i.CronJobId,
 			&i.Status,
-			&i.StartedAt,
-			&i.CompletedAt,
-			&i.DurationMs,
+			&i.Duration,
 			&i.Error,
 			&i.Output,
-			&i.CreatedAt,
+			&i.TriggeredBy,
+			&i.StartedAt,
+			&i.CompletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -790,7 +810,7 @@ func (q *Queries) ListExpiringVendorContracts(ctx context.Context, dollar_1 pgty
 }
 
 const ListRecentCronJobRuns = `-- name: ListRecentCronJobRuns :many
-SELECT id, "jobId", status, "startedAt", "completedAt", "durationMs", error, output, "createdAt" FROM cron_job_runs
+SELECT id, "cronJobId", status, duration, error, output, "triggeredBy", "startedAt", "completedAt" FROM cron_job_runs
 ORDER BY "startedAt" DESC
 LIMIT $1
 `
@@ -806,14 +826,14 @@ func (q *Queries) ListRecentCronJobRuns(ctx context.Context, limit int32) ([]Cro
 		var i CronJobRun
 		if err := rows.Scan(
 			&i.ID,
-			&i.JobId,
+			&i.CronJobId,
 			&i.Status,
-			&i.StartedAt,
-			&i.CompletedAt,
-			&i.DurationMs,
+			&i.Duration,
 			&i.Error,
 			&i.Output,
-			&i.CreatedAt,
+			&i.TriggeredBy,
+			&i.StartedAt,
+			&i.CompletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -959,7 +979,7 @@ UPDATE cron_job_configs SET
     "isEnabled" = $2,
     "updatedAt" = NOW()
 WHERE id = $1
-RETURNING id, name, description, schedule, endpoint, "isEnabled", "timeoutMs", "maxConsecutiveFailures", "consecutiveFailures", "totalRuns", "successfulRuns", "lastRunAt", "lastRunStatus", "lastRunDurationMs", "createdAt", "updatedAt"
+RETURNING id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", "createdAt", "updatedAt"
 `
 
 type ToggleCronJobConfigParams struct {
@@ -976,15 +996,20 @@ func (q *Queries) ToggleCronJobConfig(ctx context.Context, arg ToggleCronJobConf
 		&i.Description,
 		&i.Schedule,
 		&i.Endpoint,
+		&i.IsRequired,
+		&i.IsConfigured,
 		&i.IsEnabled,
-		&i.TimeoutMs,
-		&i.MaxConsecutiveFailures,
+		&i.LastRun,
+		&i.LastRunStatus,
+		&i.LastRunDuration,
+		&i.LastRunError,
 		&i.ConsecutiveFailures,
+		&i.AlertOnFailure,
+		&i.MaxFailures,
+		&i.TimeoutMs,
 		&i.TotalRuns,
 		&i.SuccessfulRuns,
-		&i.LastRunAt,
-		&i.LastRunStatus,
-		&i.LastRunDurationMs,
+		&i.FailedRuns,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -993,9 +1018,9 @@ func (q *Queries) ToggleCronJobConfig(ctx context.Context, arg ToggleCronJobConf
 
 const UpdateCronJobLastRun = `-- name: UpdateCronJobLastRun :exec
 UPDATE cron_job_configs SET
-    "lastRunAt" = $2,
+    "lastRun" = $2,
     "lastRunStatus" = $3,
-    "lastRunDurationMs" = $4,
+    "lastRunDuration" = $4,
     "totalRuns" = "totalRuns" + 1,
     "successfulRuns" = CASE WHEN $3 = 'SUCCESS' THEN "successfulRuns" + 1 ELSE "successfulRuns" END,
     "consecutiveFailures" = CASE WHEN $3 = 'SUCCESS' THEN 0 ELSE "consecutiveFailures" + 1 END,
@@ -1004,18 +1029,18 @@ WHERE id = $1
 `
 
 type UpdateCronJobLastRunParams struct {
-	ID                string           `json:"id"`
-	LastRunAt         pgtype.Timestamp `json:"lastRunAt"`
-	LastRunStatus     pgtype.Text      `json:"lastRunStatus"`
-	LastRunDurationMs pgtype.Int4      `json:"lastRunDurationMs"`
+	ID              string           `json:"id"`
+	LastRun         pgtype.Timestamp `json:"lastRun"`
+	LastRunStatus   interface{}      `json:"lastRunStatus"`
+	LastRunDuration pgtype.Int4      `json:"lastRunDuration"`
 }
 
 func (q *Queries) UpdateCronJobLastRun(ctx context.Context, arg UpdateCronJobLastRunParams) error {
 	_, err := q.db.Exec(ctx, UpdateCronJobLastRun,
 		arg.ID,
-		arg.LastRunAt,
+		arg.LastRun,
 		arg.LastRunStatus,
-		arg.LastRunDurationMs,
+		arg.LastRunDuration,
 	)
 	return err
 }
@@ -1096,7 +1121,7 @@ func (q *Queries) UpdateVendorContract(ctx context.Context, arg UpdateVendorCont
 const UpsertCronJobConfig = `-- name: UpsertCronJobConfig :one
 INSERT INTO cron_job_configs (
     id, name, description, schedule, endpoint,
-    "isEnabled", "timeoutMs", "maxConsecutiveFailures",
+    "isEnabled", "timeoutMs", "maxFailures",
     "createdAt", "updatedAt"
 ) VALUES (
     $1, $2, $3, $4, $5, true, $6, 3, NOW(), NOW()
@@ -1108,16 +1133,16 @@ DO UPDATE SET
     endpoint = EXCLUDED.endpoint,
     "timeoutMs" = EXCLUDED."timeoutMs",
     "updatedAt" = NOW()
-RETURNING id, name, description, schedule, endpoint, "isEnabled", "timeoutMs", "maxConsecutiveFailures", "consecutiveFailures", "totalRuns", "successfulRuns", "lastRunAt", "lastRunStatus", "lastRunDurationMs", "createdAt", "updatedAt"
+RETURNING id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", "createdAt", "updatedAt"
 `
 
 type UpsertCronJobConfigParams struct {
-	ID          string      `json:"id"`
-	Name        string      `json:"name"`
-	Description pgtype.Text `json:"description"`
-	Schedule    string      `json:"schedule"`
-	Endpoint    string      `json:"endpoint"`
-	TimeoutMs   int32       `json:"timeoutMs"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Schedule    string `json:"schedule"`
+	Endpoint    string `json:"endpoint"`
+	TimeoutMs   int32  `json:"timeoutMs"`
 }
 
 func (q *Queries) UpsertCronJobConfig(ctx context.Context, arg UpsertCronJobConfigParams) (CronJobConfig, error) {
@@ -1136,15 +1161,20 @@ func (q *Queries) UpsertCronJobConfig(ctx context.Context, arg UpsertCronJobConf
 		&i.Description,
 		&i.Schedule,
 		&i.Endpoint,
+		&i.IsRequired,
+		&i.IsConfigured,
 		&i.IsEnabled,
-		&i.TimeoutMs,
-		&i.MaxConsecutiveFailures,
+		&i.LastRun,
+		&i.LastRunStatus,
+		&i.LastRunDuration,
+		&i.LastRunError,
 		&i.ConsecutiveFailures,
+		&i.AlertOnFailure,
+		&i.MaxFailures,
+		&i.TimeoutMs,
 		&i.TotalRuns,
 		&i.SuccessfulRuns,
-		&i.LastRunAt,
-		&i.LastRunStatus,
-		&i.LastRunDurationMs,
+		&i.FailedRuns,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

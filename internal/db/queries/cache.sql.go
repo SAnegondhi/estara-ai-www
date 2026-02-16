@@ -34,6 +34,24 @@ func (q *Queries) CountCacheByUser(ctx context.Context, userid string) (int64, e
 	return count, err
 }
 
+const CountCacheByUserFeatureActive = `-- name: CountCacheByUserFeatureActive :one
+SELECT COUNT(*) FROM analysis_cache
+WHERE "userId" = $1 AND feature = $2
+    AND "supersededBy" IS NULL AND "expiresAt" > NOW()
+`
+
+type CountCacheByUserFeatureActiveParams struct {
+	UserId  string `json:"userId"`
+	Feature string `json:"feature"`
+}
+
+func (q *Queries) CountCacheByUserFeatureActive(ctx context.Context, arg CountCacheByUserFeatureActiveParams) (int64, error) {
+	row := q.db.QueryRow(ctx, CountCacheByUserFeatureActive, arg.UserId, arg.Feature)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const CountExpiredCache = `-- name: CountExpiredCache :one
 SELECT COUNT(*) FROM analysis_cache WHERE "expiresAt" < NOW()
 `
@@ -43,6 +61,88 @@ func (q *Queries) CountExpiredCache(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const CountInvestmentPlanHistory = `-- name: CountInvestmentPlanHistory :one
+SELECT COUNT(*)
+FROM analysis_cache
+WHERE "userId" = $1
+    AND feature = 'investment_planning'
+    AND "supersededBy" IS NULL
+    AND ($2::text IS NULL OR $2 = '' OR location ILIKE '%' || $2 || '%')
+`
+
+type CountInvestmentPlanHistoryParams struct {
+	UserId string      `json:"userId"`
+	Search pgtype.Text `json:"search"`
+}
+
+func (q *Queries) CountInvestmentPlanHistory(ctx context.Context, arg CountInvestmentPlanHistoryParams) (int64, error) {
+	row := q.db.QueryRow(ctx, CountInvestmentPlanHistory, arg.UserId, arg.Search)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const CountMarketAnalysisHistory = `-- name: CountMarketAnalysisHistory :one
+SELECT COUNT(*)
+FROM analysis_cache
+WHERE "userId" = $1
+    AND feature IN ('dual_agent_market_analysis', 'market_analysis_v2')
+    AND "supersededBy" IS NULL
+    AND ($2::text IS NULL OR $2 = '' OR location ILIKE '%' || $2 || '%')
+`
+
+type CountMarketAnalysisHistoryParams struct {
+	UserId string      `json:"userId"`
+	Search pgtype.Text `json:"search"`
+}
+
+func (q *Queries) CountMarketAnalysisHistory(ctx context.Context, arg CountMarketAnalysisHistoryParams) (int64, error) {
+	row := q.db.QueryRow(ctx, CountMarketAnalysisHistory, arg.UserId, arg.Search)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const DeleteAiResponseCacheByUserAndFeature = `-- name: DeleteAiResponseCacheByUserAndFeature :exec
+DELETE FROM analysis_cache WHERE "userId" = $1 AND feature = $2
+`
+
+type DeleteAiResponseCacheByUserAndFeatureParams struct {
+	UserId  string `json:"userId"`
+	Feature string `json:"feature"`
+}
+
+func (q *Queries) DeleteAiResponseCacheByUserAndFeature(ctx context.Context, arg DeleteAiResponseCacheByUserAndFeatureParams) error {
+	_, err := q.db.Exec(ctx, DeleteAiResponseCacheByUserAndFeature, arg.UserId, arg.Feature)
+	return err
+}
+
+const DeleteAiResponseCacheByUserAndKey = `-- name: DeleteAiResponseCacheByUserAndKey :exec
+DELETE FROM analysis_cache WHERE "userId" = $1 AND key = $2
+`
+
+type DeleteAiResponseCacheByUserAndKeyParams struct {
+	UserId string `json:"userId"`
+	Key    string `json:"key"`
+}
+
+func (q *Queries) DeleteAiResponseCacheByUserAndKey(ctx context.Context, arg DeleteAiResponseCacheByUserAndKeyParams) error {
+	_, err := q.db.Exec(ctx, DeleteAiResponseCacheByUserAndKey, arg.UserId, arg.Key)
+	return err
+}
+
+const DeleteAllCacheRows = `-- name: DeleteAllCacheRows :execrows
+DELETE FROM analysis_cache
+`
+
+func (q *Queries) DeleteAllCacheRows(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, DeleteAllCacheRows)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const DeleteAllExpiredCache = `-- name: DeleteAllExpiredCache :execrows
@@ -69,6 +169,20 @@ func (q *Queries) DeleteCacheByFeature(ctx context.Context, feature string) (int
 	return result.RowsAffected(), nil
 }
 
+const DeleteCacheByIDAndUserID = `-- name: DeleteCacheByIDAndUserID :exec
+DELETE FROM analysis_cache WHERE id = $1 AND "userId" = $2
+`
+
+type DeleteCacheByIDAndUserIDParams struct {
+	ID     string `json:"id"`
+	UserId string `json:"userId"`
+}
+
+func (q *Queries) DeleteCacheByIDAndUserID(ctx context.Context, arg DeleteCacheByIDAndUserIDParams) error {
+	_, err := q.db.Exec(ctx, DeleteCacheByIDAndUserID, arg.ID, arg.UserId)
+	return err
+}
+
 const DeleteCacheByKey = `-- name: DeleteCacheByKey :exec
 DELETE FROM analysis_cache WHERE key = $1
 `
@@ -76,6 +190,18 @@ DELETE FROM analysis_cache WHERE key = $1
 func (q *Queries) DeleteCacheByKey(ctx context.Context, key string) error {
 	_, err := q.db.Exec(ctx, DeleteCacheByKey, key)
 	return err
+}
+
+const DeleteCacheByKeyRows = `-- name: DeleteCacheByKeyRows :execrows
+DELETE FROM analysis_cache WHERE key = $1
+`
+
+func (q *Queries) DeleteCacheByKeyRows(ctx context.Context, key string) (int64, error) {
+	result, err := q.db.Exec(ctx, DeleteCacheByKeyRows, key)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const DeleteCacheByUserAndKey = `-- name: DeleteCacheByUserAndKey :exec
@@ -93,6 +219,23 @@ func (q *Queries) DeleteCacheByUserAndKey(ctx context.Context, arg DeleteCacheBy
 	return err
 }
 
+const DeleteCacheByUserAndKeyRows = `-- name: DeleteCacheByUserAndKeyRows :execrows
+DELETE FROM analysis_cache WHERE "userId" = $1 AND key = $2
+`
+
+type DeleteCacheByUserAndKeyRowsParams struct {
+	UserId string `json:"userId"`
+	Key    string `json:"key"`
+}
+
+func (q *Queries) DeleteCacheByUserAndKeyRows(ctx context.Context, arg DeleteCacheByUserAndKeyRowsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, DeleteCacheByUserAndKeyRows, arg.UserId, arg.Key)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const DeleteCacheByUserID = `-- name: DeleteCacheByUserID :exec
 DELETE FROM analysis_cache WHERE "userId" = $1
 `
@@ -100,6 +243,18 @@ DELETE FROM analysis_cache WHERE "userId" = $1
 func (q *Queries) DeleteCacheByUserID(ctx context.Context, userid string) error {
 	_, err := q.db.Exec(ctx, DeleteCacheByUserID, userid)
 	return err
+}
+
+const DeleteCacheByUserIDRows = `-- name: DeleteCacheByUserIDRows :execrows
+DELETE FROM analysis_cache WHERE "userId" = $1
+`
+
+func (q *Queries) DeleteCacheByUserIDRows(ctx context.Context, userid string) (int64, error) {
+	result, err := q.db.Exec(ctx, DeleteCacheByUserIDRows, userid)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const DeleteCacheOlderThan = `-- name: DeleteCacheOlderThan :execrows
@@ -124,6 +279,26 @@ func (q *Queries) DeleteExpiredCache(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const GetActiveTrendCacheContent = `-- name: GetActiveTrendCacheContent :one
+SELECT content FROM analysis_cache
+WHERE "userId" = $1 AND key = $2
+    AND feature = 'market_trends'
+    AND "supersededBy" IS NULL
+    AND "expiresAt" > NOW()
+`
+
+type GetActiveTrendCacheContentParams struct {
+	UserId string `json:"userId"`
+	Key    string `json:"key"`
+}
+
+func (q *Queries) GetActiveTrendCacheContent(ctx context.Context, arg GetActiveTrendCacheContentParams) (string, error) {
+	row := q.db.QueryRow(ctx, GetActiveTrendCacheContent, arg.UserId, arg.Key)
+	var content string
+	err := row.Scan(&content)
+	return content, err
 }
 
 const GetCacheByID = `-- name: GetCacheByID :one
@@ -284,6 +459,49 @@ func (q *Queries) GetCacheByUserAndKeyNoExpiry(ctx context.Context, arg GetCache
 	return i, err
 }
 
+const GetCacheIDAndKeyByIDUserKeyLike = `-- name: GetCacheIDAndKeyByIDUserKeyLike :one
+SELECT id, key FROM analysis_cache WHERE id = $1 AND "userId" = $2 AND key LIKE $3
+`
+
+type GetCacheIDAndKeyByIDUserKeyLikeParams struct {
+	ID     string `json:"id"`
+	UserId string `json:"userId"`
+	Key    string `json:"key"`
+}
+
+type GetCacheIDAndKeyByIDUserKeyLikeRow struct {
+	ID  string `json:"id"`
+	Key string `json:"key"`
+}
+
+func (q *Queries) GetCacheIDAndKeyByIDUserKeyLike(ctx context.Context, arg GetCacheIDAndKeyByIDUserKeyLikeParams) (GetCacheIDAndKeyByIDUserKeyLikeRow, error) {
+	row := q.db.QueryRow(ctx, GetCacheIDAndKeyByIDUserKeyLike, arg.ID, arg.UserId, arg.Key)
+	var i GetCacheIDAndKeyByIDUserKeyLikeRow
+	err := row.Scan(&i.ID, &i.Key)
+	return i, err
+}
+
+const GetCacheIDAndKeyByUserAndKey = `-- name: GetCacheIDAndKeyByUserAndKey :one
+SELECT id, key FROM analysis_cache WHERE key = $1 AND "userId" = $2
+`
+
+type GetCacheIDAndKeyByUserAndKeyParams struct {
+	Key    string `json:"key"`
+	UserId string `json:"userId"`
+}
+
+type GetCacheIDAndKeyByUserAndKeyRow struct {
+	ID  string `json:"id"`
+	Key string `json:"key"`
+}
+
+func (q *Queries) GetCacheIDAndKeyByUserAndKey(ctx context.Context, arg GetCacheIDAndKeyByUserAndKeyParams) (GetCacheIDAndKeyByUserAndKeyRow, error) {
+	row := q.db.QueryRow(ctx, GetCacheIDAndKeyByUserAndKey, arg.Key, arg.UserId)
+	var i GetCacheIDAndKeyByUserAndKeyRow
+	err := row.Scan(&i.ID, &i.Key)
+	return i, err
+}
+
 const GetCacheStats = `-- name: GetCacheStats :one
 SELECT
     COUNT(*) as total_entries,
@@ -308,6 +526,41 @@ func (q *Queries) GetCacheStats(ctx context.Context) (GetCacheStatsRow, error) {
 		&i.ExpiredEntries,
 		&i.UniqueUsers,
 		&i.FeatureCount,
+	)
+	return i, err
+}
+
+const GetLatestMarketAnalysisByLocation = `-- name: GetLatestMarketAnalysisByLocation :one
+SELECT content, "metricsData", "narrativeData", "lastAccessedAt"
+FROM analysis_cache
+WHERE "userId" = $1
+    AND feature = 'dual_agent_market_analysis'
+    AND location ILIKE $2
+    AND "supersededBy" IS NULL
+ORDER BY "lastAccessedAt" DESC
+LIMIT 1
+`
+
+type GetLatestMarketAnalysisByLocationParams struct {
+	UserId   string `json:"userId"`
+	Location string `json:"location"`
+}
+
+type GetLatestMarketAnalysisByLocationRow struct {
+	Content        string           `json:"content"`
+	MetricsData    []byte           `json:"metricsData"`
+	NarrativeData  []byte           `json:"narrativeData"`
+	LastAccessedAt pgtype.Timestamp `json:"lastAccessedAt"`
+}
+
+func (q *Queries) GetLatestMarketAnalysisByLocation(ctx context.Context, arg GetLatestMarketAnalysisByLocationParams) (GetLatestMarketAnalysisByLocationRow, error) {
+	row := q.db.QueryRow(ctx, GetLatestMarketAnalysisByLocation, arg.UserId, arg.Location)
+	var i GetLatestMarketAnalysisByLocationRow
+	err := row.Scan(
+		&i.Content,
+		&i.MetricsData,
+		&i.NarrativeData,
+		&i.LastAccessedAt,
 	)
 	return i, err
 }
@@ -550,6 +803,189 @@ func (q *Queries) ListCacheByUserAndFeature(ctx context.Context, arg ListCacheBy
 	return items, nil
 }
 
+const ListCacheByUserFeatureActive = `-- name: ListCacheByUserFeatureActive :many
+SELECT id, key, location, content, "lastAccessedAt"
+FROM analysis_cache
+WHERE "userId" = $1 AND feature = $2
+    AND "supersededBy" IS NULL AND "expiresAt" > NOW()
+ORDER BY "lastAccessedAt" DESC
+LIMIT $3 OFFSET $4
+`
+
+type ListCacheByUserFeatureActiveParams struct {
+	UserId  string `json:"userId"`
+	Feature string `json:"feature"`
+	Limit   int32  `json:"limit"`
+	Offset  int32  `json:"offset"`
+}
+
+type ListCacheByUserFeatureActiveRow struct {
+	ID             string           `json:"id"`
+	Key            string           `json:"key"`
+	Location       string           `json:"location"`
+	Content        string           `json:"content"`
+	LastAccessedAt pgtype.Timestamp `json:"lastAccessedAt"`
+}
+
+func (q *Queries) ListCacheByUserFeatureActive(ctx context.Context, arg ListCacheByUserFeatureActiveParams) ([]ListCacheByUserFeatureActiveRow, error) {
+	rows, err := q.db.Query(ctx, ListCacheByUserFeatureActive,
+		arg.UserId,
+		arg.Feature,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCacheByUserFeatureActiveRow{}
+	for rows.Next() {
+		var i ListCacheByUserFeatureActiveRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Key,
+			&i.Location,
+			&i.Content,
+			&i.LastAccessedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListInvestmentPlanHistory = `-- name: ListInvestmentPlanHistory :many
+SELECT
+    id, key, "userId", location, metadata, "metricsData", "investorProfile", "lastAccessedAt"
+FROM analysis_cache
+WHERE "userId" = $1
+    AND feature = 'investment_planning'
+    AND "supersededBy" IS NULL
+    AND ($2::text IS NULL OR $2 = '' OR location ILIKE '%' || $2 || '%')
+ORDER BY "lastAccessedAt" DESC
+LIMIT $4 OFFSET $3
+`
+
+type ListInvestmentPlanHistoryParams struct {
+	UserId string      `json:"userId"`
+	Search pgtype.Text `json:"search"`
+	Off    int32       `json:"off"`
+	Lim    int32       `json:"lim"`
+}
+
+type ListInvestmentPlanHistoryRow struct {
+	ID              string           `json:"id"`
+	Key             string           `json:"key"`
+	UserId          string           `json:"userId"`
+	Location        string           `json:"location"`
+	Metadata        json.RawMessage  `json:"metadata"`
+	MetricsData     []byte           `json:"metricsData"`
+	InvestorProfile []byte           `json:"investorProfile"`
+	LastAccessedAt  pgtype.Timestamp `json:"lastAccessedAt"`
+}
+
+func (q *Queries) ListInvestmentPlanHistory(ctx context.Context, arg ListInvestmentPlanHistoryParams) ([]ListInvestmentPlanHistoryRow, error) {
+	rows, err := q.db.Query(ctx, ListInvestmentPlanHistory,
+		arg.UserId,
+		arg.Search,
+		arg.Off,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInvestmentPlanHistoryRow{}
+	for rows.Next() {
+		var i ListInvestmentPlanHistoryRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Key,
+			&i.UserId,
+			&i.Location,
+			&i.Metadata,
+			&i.MetricsData,
+			&i.InvestorProfile,
+			&i.LastAccessedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListMarketAnalysisHistory = `-- name: ListMarketAnalysisHistory :many
+SELECT
+    id, key, location, content, "metricsData", "narrativeData", "lastAccessedAt", "fullReport"
+FROM analysis_cache
+WHERE "userId" = $1
+    AND feature IN ('dual_agent_market_analysis', 'market_analysis_v2')
+    AND "supersededBy" IS NULL
+    AND ($2::text IS NULL OR $2 = '' OR location ILIKE '%' || $2 || '%')
+ORDER BY "lastAccessedAt" DESC
+LIMIT $4 OFFSET $3
+`
+
+type ListMarketAnalysisHistoryParams struct {
+	UserId string      `json:"userId"`
+	Search pgtype.Text `json:"search"`
+	Off    int32       `json:"off"`
+	Lim    int32       `json:"lim"`
+}
+
+type ListMarketAnalysisHistoryRow struct {
+	ID             string           `json:"id"`
+	Key            string           `json:"key"`
+	Location       string           `json:"location"`
+	Content        string           `json:"content"`
+	MetricsData    []byte           `json:"metricsData"`
+	NarrativeData  []byte           `json:"narrativeData"`
+	LastAccessedAt pgtype.Timestamp `json:"lastAccessedAt"`
+	FullReport     pgtype.Text      `json:"fullReport"`
+}
+
+func (q *Queries) ListMarketAnalysisHistory(ctx context.Context, arg ListMarketAnalysisHistoryParams) ([]ListMarketAnalysisHistoryRow, error) {
+	rows, err := q.db.Query(ctx, ListMarketAnalysisHistory,
+		arg.UserId,
+		arg.Search,
+		arg.Off,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMarketAnalysisHistoryRow{}
+	for rows.Next() {
+		var i ListMarketAnalysisHistoryRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Key,
+			&i.Location,
+			&i.Content,
+			&i.MetricsData,
+			&i.NarrativeData,
+			&i.LastAccessedAt,
+			&i.FullReport,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const UpdateCacheAccess = `-- name: UpdateCacheAccess :exec
 UPDATE analysis_cache
 SET "lastAccessedAt" = NOW(), "accessCount" = "accessCount" + 1
@@ -558,6 +994,22 @@ WHERE key = $1
 
 func (q *Queries) UpdateCacheAccess(ctx context.Context, key string) error {
 	_, err := q.db.Exec(ctx, UpdateCacheAccess, key)
+	return err
+}
+
+const UpdateCacheAccessByUserAndKey = `-- name: UpdateCacheAccessByUserAndKey :exec
+UPDATE analysis_cache
+SET "lastAccessedAt" = NOW(), "accessCount" = "accessCount" + 1
+WHERE "userId" = $1 AND key = $2
+`
+
+type UpdateCacheAccessByUserAndKeyParams struct {
+	UserId string `json:"userId"`
+	Key    string `json:"key"`
+}
+
+func (q *Queries) UpdateCacheAccessByUserAndKey(ctx context.Context, arg UpdateCacheAccessByUserAndKeyParams) error {
+	_, err := q.db.Exec(ctx, UpdateCacheAccessByUserAndKey, arg.UserId, arg.Key)
 	return err
 }
 

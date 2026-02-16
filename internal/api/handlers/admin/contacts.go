@@ -3,14 +3,14 @@ package admin
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/pkg/httputil"
 )
 
@@ -163,14 +163,21 @@ func (h *Handler) DeleteContact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.db.Main.Exec(ctx, `DELETE FROM contact_submissions WHERE id = $1`, id)
+	// Check existence first since DeleteContactSubmission is :exec (no RowsAffected)
+	_, err := h.store.Q().GetContactByID(ctx, id)
 	if err != nil {
-		h.logger.Error("failed to delete contact", "error", err)
+		if err == pgx.ErrNoRows {
+			httputil.Error(w, http.StatusNotFound, "contact not found")
+			return
+		}
+		h.logger.Error("failed to check contact", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "failed to delete contact")
 		return
 	}
-	if result.RowsAffected() == 0 {
-		httputil.Error(w, http.StatusNotFound, "contact not found")
+
+	if err := h.store.Q().DeleteContactSubmission(ctx, id); err != nil {
+		h.logger.Error("failed to delete contact", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, "failed to delete contact")
 		return
 	}
 
@@ -183,123 +190,227 @@ func (h *Handler) DeleteContact(w http.ResponseWriter, r *http.Request) {
 // ===============================
 
 func (h *Handler) listContacts(ctx context.Context, status, search string, limit, offset int) ([]ContactSubmission, int64, error) {
-	whereClause := "1=1"
-	args := make([]interface{}, 0)
-	argIndex := 1
-
-	if status != "" {
-		whereClause += fmt.Sprintf(` AND status::text = $%d`, argIndex)
-		args = append(args, status)
-		argIndex++
-	}
-	if search != "" {
-		pattern := "%" + strings.ToLower(search) + "%"
-		whereClause += fmt.Sprintf(` AND (LOWER(email) LIKE $%d OR LOWER(name) LIKE $%d OR LOWER(COALESCE(subject, '')) LIKE $%d)`, argIndex, argIndex, argIndex)
-		args = append(args, pattern)
-		argIndex++
+	q := h.store.Q()
+	filterParams := queries.CountContactsFilteredParams{
+		StatusFilter: pgtype.Text{String: status, Valid: status != ""},
+		Search:       pgtype.Text{String: search, Valid: search != ""},
 	}
 
-	var total int64
-	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM contact_submissions WHERE %s`, whereClause)
-	err := h.db.Main.QueryRow(ctx, countQuery, args...).Scan(&total)
+	total, err := q.CountContactsFiltered(ctx, filterParams)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	args = append(args, limit, offset)
-	query := fmt.Sprintf(`
-		SELECT id, name, email, company, phone, subject, message, category::text,
-		       source, "ipAddress", "userAgent", status::text, "assignedTo", notes,
-		       "firstResponseAt", "resolvedAt", "responseCount", "createdAt", "updatedAt"
-		FROM contact_submissions
-		WHERE %s
-		ORDER BY "createdAt" DESC
-		LIMIT $%d OFFSET $%d
-	`, whereClause, argIndex, argIndex+1)
-
-	rows, err := h.db.Main.Query(ctx, query, args...)
+	rows, err := q.ListContactsFiltered(ctx, queries.ListContactsFilteredParams{
+		StatusFilter: filterParams.StatusFilter,
+		Search:       filterParams.Search,
+		Offset:       int32(offset),
+		Limit:        int32(limit),
+	})
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
 
-	contacts := []ContactSubmission{}
-	for rows.Next() {
-		var c ContactSubmission
-		err := rows.Scan(
-			&c.ID, &c.Name, &c.Email, &c.Company, &c.Phone, &c.Subject, &c.Message,
-			&c.Category, &c.Source, &c.IPAddress, &c.UserAgent, &c.Status, &c.AssignedTo,
-			&c.Notes, &c.FirstResponseAt, &c.ResolvedAt, &c.ResponseCount,
-			&c.CreatedAt, &c.UpdatedAt,
-		)
-		if err != nil {
-			return nil, 0, err
-		}
-		contacts = append(contacts, c)
+	contacts := make([]ContactSubmission, 0, len(rows))
+	for _, r := range rows {
+		contacts = append(contacts, mapContactRow(r))
 	}
 	return contacts, total, nil
 }
 
 func (h *Handler) getContactByID(ctx context.Context, id string) (*ContactSubmission, error) {
-	var c ContactSubmission
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT id, name, email, company, phone, subject, message, category::text,
-		       source, "ipAddress", "userAgent", status::text, "assignedTo", notes,
-		       "firstResponseAt", "resolvedAt", "responseCount", "createdAt", "updatedAt"
-		FROM contact_submissions WHERE id = $1
-	`, id).Scan(
-		&c.ID, &c.Name, &c.Email, &c.Company, &c.Phone, &c.Subject, &c.Message,
-		&c.Category, &c.Source, &c.IPAddress, &c.UserAgent, &c.Status, &c.AssignedTo,
-		&c.Notes, &c.FirstResponseAt, &c.ResolvedAt, &c.ResponseCount,
-		&c.CreatedAt, &c.UpdatedAt,
-	)
+	r, err := h.store.Q().GetContactByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	c := mapContactByIDRow(r)
 	return &c, nil
 }
 
 func (h *Handler) updateContact(ctx context.Context, id string, status, notes *string, assignedTo string) (*ContactSubmission, error) {
-	var c ContactSubmission
-	err := h.db.Main.QueryRow(ctx, `
-		UPDATE contact_submissions SET
-			status = COALESCE($2::"ContactStatus", status),
-			notes = COALESCE($3, notes),
-			"assignedTo" = CASE WHEN $2 IS NOT NULL AND $2 IN ('ASSIGNED', 'IN_PROGRESS') THEN $4 ELSE "assignedTo" END,
-			"firstResponseAt" = CASE WHEN $2 = 'ASSIGNED' AND "firstResponseAt" IS NULL THEN NOW() ELSE "firstResponseAt" END,
-			"resolvedAt" = CASE WHEN $2 = 'RESOLVED' THEN NOW() ELSE "resolvedAt" END,
-			"updatedAt" = NOW()
-		WHERE id = $1
-		RETURNING id, name, email, company, phone, subject, message, category::text,
-		          source, "ipAddress", "userAgent", status::text, "assignedTo", notes,
-		          "firstResponseAt", "resolvedAt", "responseCount", "createdAt", "updatedAt"
-	`, id, status, notes, assignedTo).Scan(
-		&c.ID, &c.Name, &c.Email, &c.Company, &c.Phone, &c.Subject, &c.Message,
-		&c.Category, &c.Source, &c.IPAddress, &c.UserAgent, &c.Status, &c.AssignedTo,
-		&c.Notes, &c.FirstResponseAt, &c.ResolvedAt, &c.ResponseCount,
-		&c.CreatedAt, &c.UpdatedAt,
-	)
+	var statusParam, notesParam pgtype.Text
+	if status != nil {
+		statusParam = pgtype.Text{String: *status, Valid: true}
+	}
+	if notes != nil {
+		notesParam = pgtype.Text{String: *notes, Valid: true}
+	}
+
+	r, err := h.store.Q().UpdateContactAdmin(ctx, queries.UpdateContactAdminParams{
+		ID:         id,
+		Status:     statusParam,
+		Notes:      notesParam,
+		AssignedTo: pgtype.Text{String: assignedTo, Valid: assignedTo != ""},
+	})
 	if err != nil {
 		return nil, err
 	}
+	c := mapUpdateContactRow(r)
 	return &c, nil
 }
 
 func (h *Handler) getContactSummary(ctx context.Context) (*ContactSummary, error) {
-	var s ContactSummary
-	err := h.db.Main.QueryRow(ctx, `
-		SELECT
-			COUNT(*) as total,
-			COUNT(*) FILTER (WHERE status::text = 'NEW') as new,
-			COUNT(*) FILTER (WHERE status::text = 'ASSIGNED') as assigned,
-			COUNT(*) FILTER (WHERE status::text = 'IN_PROGRESS') as in_progress,
-			COUNT(*) FILTER (WHERE status::text = 'AWAITING_RESPONSE') as awaiting_response,
-			COUNT(*) FILTER (WHERE status::text = 'RESOLVED') as resolved,
-			COUNT(*) FILTER (WHERE status::text = 'CLOSED') as closed
-		FROM contact_submissions
-	`).Scan(&s.Total, &s.New, &s.Assigned, &s.InProgress, &s.AwaitingResponse, &s.Resolved, &s.Closed)
+	r, err := h.store.Q().GetContactSummary(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &s, nil
+	return &ContactSummary{
+		Total:            r.Total,
+		New:              r.NewCount,
+		Assigned:         r.AssignedCount,
+		InProgress:       r.InProgressCount,
+		AwaitingResponse: r.AwaitingResponseCount,
+		Resolved:         r.ResolvedCount,
+		Closed:           r.ClosedCount,
+	}, nil
+}
+
+// mapContactRow converts a sqlc ListContactsFilteredRow to ContactSubmission.
+func mapContactRow(r queries.ListContactsFilteredRow) ContactSubmission {
+	c := ContactSubmission{
+		ID:            r.ID,
+		Name:          r.Name,
+		Email:         r.Email,
+		Message:       r.Message,
+		Category:      r.Category,
+		Status:        r.Status,
+		ResponseCount: int(r.ResponseCount),
+	}
+	if r.Company.Valid {
+		c.Company = &r.Company.String
+	}
+	if r.Phone.Valid {
+		c.Phone = &r.Phone.String
+	}
+	if r.Subject.Valid {
+		c.Subject = &r.Subject.String
+	}
+	if r.Source.Valid {
+		c.Source = &r.Source.String
+	}
+	if r.IpAddress.Valid {
+		c.IPAddress = &r.IpAddress.String
+	}
+	if r.UserAgent.Valid {
+		c.UserAgent = &r.UserAgent.String
+	}
+	if r.AssignedTo.Valid {
+		c.AssignedTo = &r.AssignedTo.String
+	}
+	if r.Notes.Valid {
+		c.Notes = &r.Notes.String
+	}
+	if r.FirstResponseAt.Valid {
+		c.FirstResponseAt = &r.FirstResponseAt.Time
+	}
+	if r.ResolvedAt.Valid {
+		c.ResolvedAt = &r.ResolvedAt.Time
+	}
+	if r.CreatedAt.Valid {
+		c.CreatedAt = r.CreatedAt.Time
+	}
+	if r.UpdatedAt.Valid {
+		c.UpdatedAt = r.UpdatedAt.Time
+	}
+	return c
+}
+
+// mapContactByIDRow converts a sqlc GetContactByIDRow to ContactSubmission.
+func mapContactByIDRow(r queries.GetContactByIDRow) ContactSubmission {
+	c := ContactSubmission{
+		ID:            r.ID,
+		Name:          r.Name,
+		Email:         r.Email,
+		Message:       r.Message,
+		Category:      r.Category,
+		Status:        r.Status,
+		ResponseCount: int(r.ResponseCount),
+	}
+	if r.Company.Valid {
+		c.Company = &r.Company.String
+	}
+	if r.Phone.Valid {
+		c.Phone = &r.Phone.String
+	}
+	if r.Subject.Valid {
+		c.Subject = &r.Subject.String
+	}
+	if r.Source.Valid {
+		c.Source = &r.Source.String
+	}
+	if r.IpAddress.Valid {
+		c.IPAddress = &r.IpAddress.String
+	}
+	if r.UserAgent.Valid {
+		c.UserAgent = &r.UserAgent.String
+	}
+	if r.AssignedTo.Valid {
+		c.AssignedTo = &r.AssignedTo.String
+	}
+	if r.Notes.Valid {
+		c.Notes = &r.Notes.String
+	}
+	if r.FirstResponseAt.Valid {
+		c.FirstResponseAt = &r.FirstResponseAt.Time
+	}
+	if r.ResolvedAt.Valid {
+		c.ResolvedAt = &r.ResolvedAt.Time
+	}
+	if r.CreatedAt.Valid {
+		c.CreatedAt = r.CreatedAt.Time
+	}
+	if r.UpdatedAt.Valid {
+		c.UpdatedAt = r.UpdatedAt.Time
+	}
+	return c
+}
+
+// mapUpdateContactRow converts a sqlc UpdateContactAdminRow to ContactSubmission.
+func mapUpdateContactRow(r queries.UpdateContactAdminRow) ContactSubmission {
+	c := ContactSubmission{
+		ID:            r.ID,
+		Name:          r.Name,
+		Email:         r.Email,
+		Message:       r.Message,
+		Category:      r.Category,
+		Status:        r.Status,
+		ResponseCount: int(r.ResponseCount),
+	}
+	if r.Company.Valid {
+		c.Company = &r.Company.String
+	}
+	if r.Phone.Valid {
+		c.Phone = &r.Phone.String
+	}
+	if r.Subject.Valid {
+		c.Subject = &r.Subject.String
+	}
+	if r.Source.Valid {
+		c.Source = &r.Source.String
+	}
+	if r.IpAddress.Valid {
+		c.IPAddress = &r.IpAddress.String
+	}
+	if r.UserAgent.Valid {
+		c.UserAgent = &r.UserAgent.String
+	}
+	if r.AssignedTo.Valid {
+		c.AssignedTo = &r.AssignedTo.String
+	}
+	if r.Notes.Valid {
+		c.Notes = &r.Notes.String
+	}
+	if r.FirstResponseAt.Valid {
+		c.FirstResponseAt = &r.FirstResponseAt.Time
+	}
+	if r.ResolvedAt.Valid {
+		c.ResolvedAt = &r.ResolvedAt.Time
+	}
+	if r.CreatedAt.Valid {
+		c.CreatedAt = r.CreatedAt.Time
+	}
+	if r.UpdatedAt.Valid {
+		c.UpdatedAt = r.UpdatedAt.Time
+	}
+	return c
 }

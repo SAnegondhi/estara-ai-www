@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/estara-ai/www/internal/config"
-	"github.com/estara-ai/www/internal/db/postgres"
+	db "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/iap"
 )
@@ -118,15 +118,15 @@ type AppleRenewalInfo struct {
 
 // AppleHandler handles Apple App Store webhooks
 type AppleHandler struct {
-	db     *postgres.DB
+	store  *db.Store
 	cfg    *config.Config
 	logger *slog.Logger
 }
 
 // NewAppleHandler creates a new Apple webhook handler
-func NewAppleHandler(db *postgres.DB, cfg *config.Config) *AppleHandler {
+func NewAppleHandler(store *db.Store, cfg *config.Config) *AppleHandler {
 	return &AppleHandler{
-		db:     db,
+		store:  store,
 		cfg:    cfg,
 		logger: slog.Default().With("component", "apple_webhook"),
 	}
@@ -164,7 +164,7 @@ func (h *AppleHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Record audit log for all notifications
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	eventData, _ := json.Marshal(payload)
 	_, _ = q.CreateBillingAuditLog(ctx, queries.CreateBillingAuditLogParams{
 		ID: uuid.New().String(),
@@ -314,7 +314,7 @@ func (h *AppleHandler) handleSubscribed(ctx context.Context, payload *AppleNotif
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 
 	// Try to find existing subscription linked to this Apple transaction
 	sub, err := h.findSubscription(ctx, q, txn.OriginalTransactionID)
@@ -366,7 +366,7 @@ func (h *AppleHandler) handleDidRenew(ctx context.Context, payload *AppleNotific
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	sub, err := h.findSubscription(ctx, q, txn.OriginalTransactionID)
 	if err != nil {
 		h.logger.Warn("no subscription found for DID_RENEW", "original_transaction_id", txn.OriginalTransactionID)
@@ -411,7 +411,7 @@ func (h *AppleHandler) handleDidFailToRenew(ctx context.Context, payload *AppleN
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	sub, err := h.findSubscription(ctx, q, txn.OriginalTransactionID)
 	if err != nil {
 		h.logger.Warn("no subscription found for DID_FAIL_TO_RENEW", "original_transaction_id", txn.OriginalTransactionID)
@@ -449,7 +449,7 @@ func (h *AppleHandler) handleExpired(ctx context.Context, payload *AppleNotifica
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	sub, err := h.findSubscription(ctx, q, txn.OriginalTransactionID)
 	if err != nil {
 		h.logger.Warn("no subscription found for EXPIRED", "original_transaction_id", txn.OriginalTransactionID)
@@ -483,7 +483,7 @@ func (h *AppleHandler) handleDidChangeRenewalStatus(ctx context.Context, payload
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	sub, err := h.findSubscription(ctx, q, renewal.OriginalTransactionID)
 	if err != nil {
 		h.logger.Warn("no subscription found for DID_CHANGE_RENEWAL_STATUS", "original_transaction_id", renewal.OriginalTransactionID)
@@ -524,7 +524,7 @@ func (h *AppleHandler) handleRefund(ctx context.Context, payload *AppleNotificat
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	sub, err := h.findSubscription(ctx, q, txn.OriginalTransactionID)
 	if err != nil {
 		h.logger.Warn("no subscription found for REFUND", "original_transaction_id", txn.OriginalTransactionID)
@@ -570,7 +570,7 @@ func (h *AppleHandler) handleRevoke(ctx context.Context, payload *AppleNotificat
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	sub, err := h.findSubscription(ctx, q, txn.OriginalTransactionID)
 	if err != nil {
 		h.logger.Warn("no subscription found for REVOKE", "original_transaction_id", txn.OriginalTransactionID)
@@ -603,7 +603,7 @@ func (h *AppleHandler) handleGracePeriodExpired(ctx context.Context, payload *Ap
 		return
 	}
 
-	q := queries.New(h.db.Main)
+	q := h.store.Q()
 	sub, err := h.findSubscription(ctx, q, txn.OriginalTransactionID)
 	if err != nil {
 		h.logger.Warn("no subscription found for GRACE_PERIOD_EXPIRED", "original_transaction_id", txn.OriginalTransactionID)

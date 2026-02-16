@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/email"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -117,10 +119,7 @@ func (h *Handler) SendVerificationCode(w http.ResponseWriter, r *http.Request) {
 	expiresAt := time.Now().Add(time.Duration(codeExpiryMinutes) * time.Minute)
 
 	// Delete any existing unverified codes for this email
-	_, err = h.db.Main.Exec(ctx,
-		`DELETE FROM email_verification_codes WHERE email = $1 AND verified = false`,
-		normalizedEmail,
-	)
+	err = h.store.Q().DeleteUnverifiedEmailCodesByEmail(ctx, normalizedEmail)
 	if err != nil {
 		h.logger.Warn("failed to delete existing codes", "error", err)
 	}
@@ -231,7 +230,7 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 	// Check if code has expired
 	if time.Now().After(codeRecord.ExpiresAt) {
 		// Clean up expired code
-		_, _ = h.db.Main.Exec(ctx, `DELETE FROM email_verification_codes WHERE id = $1`, codeRecord.ID)
+		_ = h.store.Q().DeleteEmailVerificationCodeByID(ctx, codeRecord.ID)
 
 		httputil.JSON(w, http.StatusBadRequest, VerifyCodeResponse{
 			Success: false,
@@ -244,7 +243,7 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 	// Check if max attempts exceeded
 	if codeRecord.Attempts >= maxAttempts {
 		// Clean up code after max attempts
-		_, _ = h.db.Main.Exec(ctx, `DELETE FROM email_verification_codes WHERE id = $1`, codeRecord.ID)
+		_ = h.store.Q().DeleteEmailVerificationCodeByID(ctx, codeRecord.ID)
 
 		httputil.JSON(w, http.StatusBadRequest, VerifyCodeResponse{
 			Success: false,
@@ -257,10 +256,7 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 	// Check if code matches
 	if codeRecord.Code != normalizedCode {
 		// Increment attempts
-		_, err = h.db.Main.Exec(ctx,
-			`UPDATE email_verification_codes SET attempts = attempts + 1 WHERE id = $1`,
-			codeRecord.ID,
-		)
+		err = h.store.Q().IncrementEmailVerificationAttempts(ctx, codeRecord.ID)
 		if err != nil {
 			h.logger.Warn("failed to increment attempts", "error", err)
 		}
@@ -281,10 +277,7 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Code is valid - mark as verified
-	_, err = h.db.Main.Exec(ctx,
-		`UPDATE email_verification_codes SET verified = true WHERE id = $1`,
-		codeRecord.ID,
-	)
+	err = h.store.Q().MarkEmailVerificationCodeVerified(ctx, codeRecord.ID)
 	if err != nil {
 		h.logger.Error("failed to mark code as verified", "error", err)
 	}
@@ -309,15 +302,13 @@ type VerificationCodeRecord struct {
 
 // countRecentVerificationCodes counts codes sent in the last hour
 func (h *Handler) countRecentVerificationCodes(ctx context.Context, email string) (int, error) {
-	query := `
-		SELECT COUNT(*) FROM email_verification_codes
-		WHERE email = $1 AND "createdAt" >= $2
-	`
 	oneHourAgo := time.Now().Add(-1 * time.Hour)
 
-	var count int
-	err := h.db.Main.QueryRow(ctx, query, email, oneHourAgo).Scan(&count)
-	return count, err
+	count, err := h.store.Q().CountRecentEmailVerificationCodes(ctx, queries.CountRecentEmailVerificationCodesParams{
+		Email:     email,
+		CreatedAt: pgtype.Timestamp{Time: oneHourAgo, Valid: true},
+	})
+	return int(count), err
 }
 
 // createEmailVerificationCode creates a new verification code record
@@ -327,38 +318,34 @@ func (h *Handler) createEmailVerificationCode(ctx context.Context, email, code s
 	_, _ = rand.Read(idBytes)
 	id := fmt.Sprintf("%x", idBytes)
 
-	query := `
-		INSERT INTO email_verification_codes (id, email, code, "expiresAt", verified, attempts, "createdAt")
-		VALUES ($1, $2, $3, $4, false, 0, NOW())
-	`
-	_, err := h.db.Main.Exec(ctx, query, id, email, code, expiresAt)
+	_, err := h.store.Q().CreateEmailVerificationCode(ctx, queries.CreateEmailVerificationCodeParams{
+		ID:        id,
+		Email:     email,
+		Code:      code,
+		ExpiresAt: pgtype.Timestamp{Time: expiresAt, Valid: true},
+	})
 	return err
 }
 
 // getLatestVerificationCode gets the most recent unverified code for an email
 func (h *Handler) getLatestVerificationCode(ctx context.Context, email string) (*VerificationCodeRecord, error) {
-	query := `
-		SELECT id, email, code, "expiresAt", verified, attempts
-		FROM email_verification_codes
-		WHERE email = $1 AND verified = false
-		ORDER BY "createdAt" DESC
-		LIMIT 1
-	`
-
-	var record VerificationCodeRecord
-	err := h.db.Main.QueryRow(ctx, query, email).Scan(
-		&record.ID,
-		&record.Email,
-		&record.Code,
-		&record.ExpiresAt,
-		&record.Verified,
-		&record.Attempts,
-	)
+	row, err := h.store.Q().GetLatestEmailVerificationCode(ctx, email)
 	if err != nil {
 		return nil, err
 	}
 
-	return &record, nil
+	record := &VerificationCodeRecord{
+		ID:       row.ID,
+		Email:    row.Email,
+		Code:     row.Code,
+		Verified: row.Verified,
+		Attempts: int(row.Attempts),
+	}
+	if row.ExpiresAt.Valid {
+		record.ExpiresAt = row.ExpiresAt.Time
+	}
+
+	return record, nil
 }
 
 // generateVerificationCode generates a cryptographically secure 6-digit code
