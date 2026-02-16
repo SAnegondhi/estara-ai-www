@@ -10,6 +10,7 @@ import (
 
 	"github.com/estara-ai/www/internal/config"
 	db "github.com/estara-ai/www/internal/db"
+	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 	"github.com/estara-ai/www/pkg/httputil"
 )
@@ -348,14 +349,14 @@ func (h *Handler) Validate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if we have data for this city
-	var count int
-	err := h.store.Pool().QueryRow(ctx,
-		`SELECT COUNT(*) FROM cached_properties WHERE LOWER(city) = LOWER($1) AND UPPER(state) = $2`,
-		city, stateCode,
-	).Scan(&count)
+	count, err := h.store.Q().CountCachedPropertiesByCity(ctx, queries.CountCachedPropertiesByCityParams{
+		Lower: strings.ToLower(city),
+		State: stateCode,
+	})
 
 	if err != nil {
 		h.logger.Warn("validation query failed", "error", err)
+		count = 0
 	}
 
 	// We consider it valid even if we don't have cached properties

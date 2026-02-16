@@ -242,14 +242,22 @@ WHERE "userId" = $1
 
 -- name: UpsertTrendCache :exec
 INSERT INTO analysis_cache (
-    id, key, "userId", location, feature, content, "createdAt", "expiresAt", "lastAccessedAt"
+    id, key, "userId", location, feature, content, "fullReport",
+    "expiresAt", "createdAt", "lastAccessedAt", metadata
 )
-VALUES ($1, $2, $3, $4, 'market_trends', $5, $6, $7, $6)
+VALUES ($1, $2, $3, $4, 'market_trends', $5, $6, $7, NOW(), NOW(), '{}')
 ON CONFLICT (key) DO UPDATE
 SET content = EXCLUDED.content,
+    "fullReport" = EXCLUDED."fullReport",
+    "expiresAt" = EXCLUDED."expiresAt",
     "lastAccessedAt" = NOW();
 
 -- name: UpdateTrendLastAccessed :exec
 UPDATE analysis_cache
 SET "lastAccessedAt" = NOW()
 WHERE key = $1 AND feature = 'market_trends';
+
+-- name: UpdateTrendAccessTracking :exec
+UPDATE analysis_cache
+SET "lastAccessedAt" = NOW(), "accessCount" = "accessCount" + 1
+WHERE "userId" = $1 AND key = $2;

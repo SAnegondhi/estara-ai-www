@@ -635,6 +635,7 @@ type Querier interface {
 	UpdateSubscriptionPeriod(ctx context.Context, arg UpdateSubscriptionPeriodParams) error
 	UpdateSubscriptionStatus(ctx context.Context, arg UpdateSubscriptionStatusParams) error
 	UpdateSubscriptionTier(ctx context.Context, arg UpdateSubscriptionTierParams) error
+	UpdateTrendAccessTracking(ctx context.Context, arg UpdateTrendAccessTrackingParams) error
 	UpdateTrendLastAccessed(ctx context.Context, key string) error
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error

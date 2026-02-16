@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
@@ -1088,18 +1089,11 @@ func (h *Handler) GetTrendsHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := (page - 1) * limit
 
-	query := `
-		SELECT id, key, location, content, "lastAccessedAt"
-		FROM analysis_cache
-		WHERE "userId" = $1
-			AND feature = 'market_trends'
-			AND "supersededBy" IS NULL
-			AND "expiresAt" > NOW()
-		ORDER BY "lastAccessedAt" DESC
-		LIMIT $2 OFFSET $3
-	`
-
-	rows, err := h.store.Pool().Query(ctx, query, user.UserID, limit, offset)
+	dbTrends, err := h.store.Q().ListTrendsHistory(ctx, queries.ListTrendsHistoryParams{
+		UserId: user.UserID,
+		Limit:  int32(limit),
+		Offset: int32(offset),
+	})
 	if err != nil {
 		h.logger.Error("failed to get trends history", "error", err)
 		httputil.JSON(w, http.StatusOK, map[string]interface{}{
@@ -1109,23 +1103,19 @@ func (h *Handler) GetTrendsHistory(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer rows.Close()
 
-	items := make([]TrendHistoryItem, 0)
-	for rows.Next() {
-		var item TrendHistoryItem
-		var content string
-		var lastAccessedAt time.Time
-
-		if err := rows.Scan(&item.ID, &item.CacheKey, &item.Location, &content, &lastAccessedAt); err != nil {
-			h.logger.Warn("failed to scan trend history item", "error", err)
-			continue
+	items := make([]TrendHistoryItem, 0, len(dbTrends))
+	for _, dbTrend := range dbTrends {
+		item := TrendHistoryItem{
+			ID:        dbTrend.ID,
+			CacheKey:  dbTrend.Key,
+			Location:  dbTrend.Location,
+			CreatedAt: dbTrend.LastAccessedAt.Time.Format(time.RFC3339),
 		}
-		item.CreatedAt = lastAccessedAt.Format(time.RFC3339)
 
 		// Parse stored TrendsResult to extract preview data
 		var result trends.TrendsResult
-		if json.Unmarshal([]byte(content), &result) == nil {
+		if json.Unmarshal([]byte(dbTrend.Content), &result) == nil {
 			item.CurrentMetrics = result.CurrentMetrics
 			item.CalculatedMetrics = result.CalculatedMetrics
 			item.Synthesis = result.Synthesis
@@ -1141,15 +1131,8 @@ func (h *Handler) GetTrendsHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get total count
-	var total int
-	_ = h.store.Pool().QueryRow(ctx, `
-		SELECT COUNT(*)
-		FROM analysis_cache
-		WHERE "userId" = $1
-			AND feature = 'market_trends'
-			AND "supersededBy" IS NULL
-			AND "expiresAt" > NOW()
-	`, user.UserID).Scan(&total)
+	totalCount, _ := h.store.Q().CountTrendsHistory(ctx, user.UserID)
+	total := int(totalCount)
 
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
@@ -1218,16 +1201,10 @@ func (h *Handler) DismissTrend(w http.ResponseWriter, r *http.Request) {
 
 // loadCachedTrend checks analysis_cache for an existing trend result
 func (h *Handler) loadCachedTrend(ctx context.Context, userID, cacheKey string) (*trends.TrendsResult, error) {
-	query := `
-		SELECT content
-		FROM analysis_cache
-		WHERE "userId" = $1 AND key = $2
-			AND feature = 'market_trends'
-			AND "expiresAt" > NOW()
-			AND "supersededBy" IS NULL
-	`
-	var content string
-	err := h.store.Pool().QueryRow(ctx, query, userID, cacheKey).Scan(&content)
+	content, err := h.store.Q().GetActiveTrendCacheContent(ctx, queries.GetActiveTrendCacheContentParams{
+		UserId: userID,
+		Key:    cacheKey,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1238,10 +1215,10 @@ func (h *Handler) loadCachedTrend(ctx context.Context, userID, cacheKey string) 
 	}
 
 	// Update access count
-	_, _ = h.store.Pool().Exec(ctx,
-		`UPDATE analysis_cache SET "lastAccessedAt" = NOW(), "accessCount" = "accessCount" + 1 WHERE "userId" = $1 AND key = $2`,
-		userID, cacheKey,
-	)
+	_ = h.store.Q().UpdateTrendAccessTracking(ctx, queries.UpdateTrendAccessTrackingParams{
+		UserId: userID,
+		Key:    cacheKey,
+	})
 
 	now := time.Now()
 	result.CachedAt = &now
@@ -1269,25 +1246,15 @@ func (h *Handler) storeTrendInCache(ctx context.Context, userID, location, cache
 
 	expiresAt := time.Now().Add(7 * 24 * time.Hour) // 7-day TTL
 
-	_, err = h.store.Pool().Exec(ctx, `
-		INSERT INTO analysis_cache (
-			id, key, "userId", location, feature, content, "fullReport",
-			"expiresAt", "createdAt", "lastAccessedAt", metadata
-		) VALUES ($1, $2, $3, $4, 'market_trends', $5, $6, $7, NOW(), NOW(), '{}')
-		ON CONFLICT (key) DO UPDATE SET
-			content = EXCLUDED.content,
-			"fullReport" = EXCLUDED."fullReport",
-			"expiresAt" = EXCLUDED."expiresAt",
-			"lastAccessedAt" = NOW()
-	`,
-		fmt.Sprintf("trends_%s_%d", normalizeLocation(location), time.Now().Unix()),
-		cacheKey,
-		userID,
-		location,
-		string(data),
-		fullReport,
-		expiresAt,
-	)
+	err = h.store.Q().UpsertTrendCache(ctx, queries.UpsertTrendCacheParams{
+		ID:         fmt.Sprintf("trends_%s_%d", normalizeLocation(location), time.Now().Unix()),
+		Key:        cacheKey,
+		UserId:     userID,
+		Location:   location,
+		Content:    string(data),
+		FullReport: pgtype.Text{String: fullReport, Valid: fullReport != ""},
+		ExpiresAt:  pgtype.Timestamp{Time: expiresAt, Valid: true},
+	})
 
 	return err
 }

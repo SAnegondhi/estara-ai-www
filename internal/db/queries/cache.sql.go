@@ -1082,6 +1082,22 @@ func (q *Queries) UpdateCacheAccessByUserAndKey(ctx context.Context, arg UpdateC
 	return err
 }
 
+const UpdateTrendAccessTracking = `-- name: UpdateTrendAccessTracking :exec
+UPDATE analysis_cache
+SET "lastAccessedAt" = NOW(), "accessCount" = "accessCount" + 1
+WHERE "userId" = $1 AND key = $2
+`
+
+type UpdateTrendAccessTrackingParams struct {
+	UserId string `json:"userId"`
+	Key    string `json:"key"`
+}
+
+func (q *Queries) UpdateTrendAccessTracking(ctx context.Context, arg UpdateTrendAccessTrackingParams) error {
+	_, err := q.db.Exec(ctx, UpdateTrendAccessTracking, arg.UserId, arg.Key)
+	return err
+}
+
 const UpdateTrendLastAccessed = `-- name: UpdateTrendLastAccessed :exec
 UPDATE analysis_cache
 SET "lastAccessedAt" = NOW()
@@ -1249,22 +1265,25 @@ func (q *Queries) UpsertCache(ctx context.Context, arg UpsertCacheParams) (Analy
 
 const UpsertTrendCache = `-- name: UpsertTrendCache :exec
 INSERT INTO analysis_cache (
-    id, key, "userId", location, feature, content, "createdAt", "expiresAt", "lastAccessedAt"
+    id, key, "userId", location, feature, content, "fullReport",
+    "expiresAt", "createdAt", "lastAccessedAt", metadata
 )
-VALUES ($1, $2, $3, $4, 'market_trends', $5, $6, $7, $6)
+VALUES ($1, $2, $3, $4, 'market_trends', $5, $6, $7, NOW(), NOW(), '{}')
 ON CONFLICT (key) DO UPDATE
 SET content = EXCLUDED.content,
+    "fullReport" = EXCLUDED."fullReport",
+    "expiresAt" = EXCLUDED."expiresAt",
     "lastAccessedAt" = NOW()
 `
 
 type UpsertTrendCacheParams struct {
-	ID        string           `json:"id"`
-	Key       string           `json:"key"`
-	UserId    string           `json:"userId"`
-	Location  string           `json:"location"`
-	Content   string           `json:"content"`
-	CreatedAt pgtype.Timestamp `json:"createdAt"`
-	ExpiresAt pgtype.Timestamp `json:"expiresAt"`
+	ID         string           `json:"id"`
+	Key        string           `json:"key"`
+	UserId     string           `json:"userId"`
+	Location   string           `json:"location"`
+	Content    string           `json:"content"`
+	FullReport pgtype.Text      `json:"fullReport"`
+	ExpiresAt  pgtype.Timestamp `json:"expiresAt"`
 }
 
 func (q *Queries) UpsertTrendCache(ctx context.Context, arg UpsertTrendCacheParams) error {
@@ -1274,7 +1293,7 @@ func (q *Queries) UpsertTrendCache(ctx context.Context, arg UpsertTrendCachePara
 		arg.UserId,
 		arg.Location,
 		arg.Content,
-		arg.CreatedAt,
+		arg.FullReport,
 		arg.ExpiresAt,
 	)
 	return err
