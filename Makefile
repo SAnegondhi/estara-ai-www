@@ -23,19 +23,22 @@ verify:
 	@echo "OK: No sqlc drift."
 
 # Ensure no raw SQL bypasses sqlc in handler/service code
+# ADR-083: All database queries must use sqlc-generated code via Q() or MQ()
 lint-no-raw-sql:
 	@echo "Checking for raw SQL pool access..."
-	@FOUND=$$(grep -rn '\.Main\.\(Query\|QueryRow\|Exec\)\|\.Market\.\(Query\|QueryRow\|Exec\)' \
+	@FOUND=$$(grep -rn 'Pool()\.\(Query\|QueryRow\|Exec\)\|MarketPool()\.\(Query\|QueryRow\|Exec\)' \
 		internal/api/handlers/ internal/services/ \
 		--include="*.go" | grep -v '_test.go' | grep -v 'store.go' || true); \
 	if [ -n "$$FOUND" ]; then \
-		echo "ERROR: Raw SQL found in handlers/services!"; \
+		echo "ERROR: Raw SQL database queries found!"; \
 		echo "$$FOUND"; \
 		echo ""; \
-		echo "All DB access must use Store.Q() or Store.MQ() (sqlc-generated queries)."; \
+		echo "All DB queries must use Store.Q() or Store.MQ() (sqlc-generated)."; \
+		echo "Pool() may only be used for monitoring: Ping(), Stat()"; \
 		exit 1; \
 	fi
-	@echo "OK: No raw SQL in handlers/services."
+	@echo "OK: No raw SQL database queries found."
+	@echo "Note: Pool().Ping() and Pool().Stat() are allowed for monitoring."
 
 # Full CI pipeline
 ci: verify lint-no-raw-sql build
