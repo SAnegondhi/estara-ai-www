@@ -170,6 +170,7 @@ type Querier interface {
 	DeleteAllCache(ctx context.Context) error
 	DeleteAllCacheRows(ctx context.Context) (int64, error)
 	DeleteAllExpiredCache(ctx context.Context) (int64, error)
+	DeleteAnalysisCacheByUserAndKey(ctx context.Context, arg DeleteAnalysisCacheByUserAndKeyParams) error
 	DeleteAuditLogsOlderThan(ctx context.Context, createdat pgtype.Timestamp) error
 	// Delete a baseline change by ID
 	DeleteBaselineChange(ctx context.Context, id string) error
@@ -264,6 +265,10 @@ type Querier interface {
 	GetAdminTwoFactorByUserID(ctx context.Context, userid string) (AdminTwoFactor, error)
 	GetAdminUserStats(ctx context.Context) (GetAdminUserStatsRow, error)
 	GetAllReportPacksByUserID(ctx context.Context, userid string) ([]ReportPack, error)
+	// Analysis Cache Queries
+	// Table: analysis_cache (schema 002_cache.sql)
+	// These queries supplement existing queries in cache.sql
+	GetAnalysisContext(ctx context.Context, arg GetAnalysisContextParams) (GetAnalysisContextRow, error)
 	GetAnalysisJobByID(ctx context.Context, id string) (GetAnalysisJobByIDRow, error)
 	GetAnalysisJobByIDAndUser(ctx context.Context, arg GetAnalysisJobByIDAndUserParams) (GetAnalysisJobByIDAndUserRow, error)
 	GetAreaComparisonUsage(ctx context.Context, arg GetAreaComparisonUsageParams) (AreaComparisonUsage, error)
@@ -319,6 +324,7 @@ type Querier interface {
 	GetInsightAccessByID(ctx context.Context, id string) (InsightAccess, error)
 	GetInsightAccessByStripeSubID(ctx context.Context, stripesubid pgtype.Text) (InsightAccess, error)
 	GetInsightAccessByUserID(ctx context.Context, userid string) (InsightAccess, error)
+	GetInvestmentPlanCacheByID(ctx context.Context, arg GetInvestmentPlanCacheByIDParams) (GetInvestmentPlanCacheByIDRow, error)
 	// Usage Tracking Queries (Investment Plan + Area Comparison)
 	GetInvestmentPlanUsage(ctx context.Context, arg GetInvestmentPlanUsageParams) (InvestmentPlanUsage, error)
 	GetInvestorReportByCacheKey(ctx context.Context, cachekey pgtype.Text) (InvestorReport, error)
