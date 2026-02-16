@@ -10,6 +10,7 @@ import (
 
 	"github.com/estara-ai/www/internal/config"
 	db "github.com/estara-ai/www/internal/db"
+	"github.com/estara-ai/www/internal/db/queries"
 )
 
 // Service handles entitlement calculations and checks
@@ -168,58 +169,60 @@ func (s *Service) GetEntitlements(ctx context.Context, userID string) (*Entitlem
 
 // getUserData retrieves user data from database
 func (s *Service) getUserData(ctx context.Context, userID string) (*UserData, error) {
-	query := `
-		SELECT u.id, u.email, s.tier, s.status, s."trialEnd"
-		FROM users u
-		LEFT JOIN subscriptions s ON u.id = s."userId"
-		WHERE u.id = $1
-	`
-
-	var user UserData
-	err := s.store.Pool().QueryRow(ctx, query, userID).Scan(
-		&user.ID,
-		&user.Email,
-		&user.Tier,
-		&user.Status,
-		&user.TrialEnd,
-	)
+	dbUser, err := s.store.Q().GetUserWithSubscription(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
 
-	return &user, nil
+	user := &UserData{
+		ID:    dbUser.ID,
+		Email: dbUser.Email,
+	}
+
+	// Convert non-pointer strings to pointers (if not empty)
+	if dbUser.SubTier != "" {
+		user.Tier = &dbUser.SubTier
+	}
+	if dbUser.SubStatus != "" {
+		user.Status = &dbUser.SubStatus
+	}
+	// TrialEnd is not returned by GetUserWithSubscription, remains nil
+
+	return user, nil
 }
 
-// getUsageData retrieves usage data for current month
+// getUsageData retrieves usage data for current month using sqlc-generated queries
 func (s *Service) getUsageData(ctx context.Context, userID string) (*UsageData, error) {
 	now := time.Now().UTC()
-	month := int(now.Month())
-	year := now.Year()
+	month := int32(now.Month())
+	year := int32(now.Year())
 
 	var usage UsageData
 
 	// Get investment plan usage
-	investmentQuery := `
-		SELECT COALESCE("picksUsed", 0)
-		FROM investment_plan_usage
-		WHERE "userId" = $1 AND month = $2 AND year = $3
-	`
-	err := s.store.Pool().QueryRow(ctx, investmentQuery, userID, month, year).Scan(&usage.InvestmentPicksUsed)
+	investmentUsage, err := s.store.Q().GetInvestmentPlanUsage(ctx, queries.GetInvestmentPlanUsageParams{
+		UserId: userID,
+		Month:  month,
+		Year:   year,
+	})
 	if err != nil {
-		// No usage record is fine
+		// No usage record is fine, default to 0
 		usage.InvestmentPicksUsed = 0
+	} else {
+		usage.InvestmentPicksUsed = int(investmentUsage.PicksUsed)
 	}
 
 	// Get area comparison usage
-	comparisonQuery := `
-		SELECT COALESCE("comparisonsUsed", 0)
-		FROM area_comparison_usage
-		WHERE "userId" = $1 AND month = $2 AND year = $3
-	`
-	err = s.store.Pool().QueryRow(ctx, comparisonQuery, userID, month, year).Scan(&usage.AreaComparisonsUsed)
+	comparisonUsage, err := s.store.Q().GetAreaComparisonUsage(ctx, queries.GetAreaComparisonUsageParams{
+		UserId: userID,
+		Month:  month,
+		Year:   year,
+	})
 	if err != nil {
-		// No usage record is fine
+		// No usage record is fine, default to 0
 		usage.AreaComparisonsUsed = 0
+	} else {
+		usage.AreaComparisonsUsed = int(comparisonUsage.ComparisonsUsed)
 	}
 
 	return &usage, nil
