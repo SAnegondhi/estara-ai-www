@@ -71,6 +71,7 @@ type Querier interface {
 	CountSystemAlertsFiltered(ctx context.Context, dismissedFilter pgtype.Bool) (int64, error)
 	CountTermsAcceptances(ctx context.Context) (int64, error)
 	CountTermsAcceptancesByVersion(ctx context.Context, version string) (int64, error)
+	CountTrendsHistory(ctx context.Context, userid string) (int64, error)
 	CountUserConsents(ctx context.Context) (int64, error)
 	CountUserConsentsByType(ctx context.Context, consenttype interface{}) (int64, error)
 	CountUserDiscoverySessions(ctx context.Context, arg CountUserDiscoverySessionsParams) (int64, error)
@@ -532,6 +533,8 @@ type Querier interface {
 	ListSystemAlertsFiltered(ctx context.Context, arg ListSystemAlertsFilteredParams) ([]ListSystemAlertsFilteredRow, error)
 	ListSystemAlertsRequiringAction(ctx context.Context) ([]SystemAlert, error)
 	ListTermsAcceptances(ctx context.Context, arg ListTermsAcceptancesParams) ([]TermsAcceptance, error)
+	// Market Trends queries (ADR-083 Phase R2)
+	ListTrendsHistory(ctx context.Context, arg ListTrendsHistoryParams) ([]ListTrendsHistoryRow, error)
 	ListUnprocessedBillingCycles(ctx context.Context, limit int32) ([]BillingCycle, error)
 	ListUnusedAdminCredits(ctx context.Context) ([]AdminCredit, error)
 	ListUserActivityAuditLogs(ctx context.Context, arg ListUserActivityAuditLogsParams) ([]ListUserActivityAuditLogsRow, error)
@@ -632,6 +635,7 @@ type Querier interface {
 	UpdateSubscriptionPeriod(ctx context.Context, arg UpdateSubscriptionPeriodParams) error
 	UpdateSubscriptionStatus(ctx context.Context, arg UpdateSubscriptionStatusParams) error
 	UpdateSubscriptionTier(ctx context.Context, arg UpdateSubscriptionTierParams) error
+	UpdateTrendLastAccessed(ctx context.Context, key string) error
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
 	UpdateUserProfileAdmin(ctx context.Context, arg UpdateUserProfileAdminParams) error
@@ -660,6 +664,7 @@ type Querier interface {
 	UpsertPropertyCache(ctx context.Context, arg UpsertPropertyCacheParams) error
 	UpsertSystemAlert(ctx context.Context, arg UpsertSystemAlertParams) (SystemAlert, error)
 	UpsertSystemCache(ctx context.Context, arg UpsertSystemCacheParams) (SystemCache, error)
+	UpsertTrendCache(ctx context.Context, arg UpsertTrendCacheParams) error
 	UpsertUserAnalysisPreference(ctx context.Context, arg UpsertUserAnalysisPreferenceParams) (UserAnalysisPreference, error)
 	UpsertV2EvaluationQuota(ctx context.Context, arg UpsertV2EvaluationQuotaParams) (UpsertV2EvaluationQuotaRow, error)
 	UpsertV2EvaluationQuotaWithPeriodReset(ctx context.Context, arg UpsertV2EvaluationQuotaWithPeriodResetParams) error

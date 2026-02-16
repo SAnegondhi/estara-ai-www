@@ -105,6 +105,22 @@ func (q *Queries) CountMarketAnalysisHistory(ctx context.Context, arg CountMarke
 	return count, err
 }
 
+const CountTrendsHistory = `-- name: CountTrendsHistory :one
+SELECT COUNT(*)
+FROM analysis_cache
+WHERE "userId" = $1
+    AND feature = 'market_trends'
+    AND "supersededBy" IS NULL
+    AND "expiresAt" > NOW()
+`
+
+func (q *Queries) CountTrendsHistory(ctx context.Context, userid string) (int64, error) {
+	row := q.db.QueryRow(ctx, CountTrendsHistory, userid)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const DeleteAiResponseCacheByUserAndFeature = `-- name: DeleteAiResponseCacheByUserAndFeature :exec
 DELETE FROM analysis_cache WHERE "userId" = $1 AND feature = $2
 `
@@ -986,6 +1002,59 @@ func (q *Queries) ListMarketAnalysisHistory(ctx context.Context, arg ListMarketA
 	return items, nil
 }
 
+const ListTrendsHistory = `-- name: ListTrendsHistory :many
+
+SELECT id, key, location, content, "lastAccessedAt"
+FROM analysis_cache
+WHERE "userId" = $1
+    AND feature = 'market_trends'
+    AND "supersededBy" IS NULL
+    AND "expiresAt" > NOW()
+ORDER BY "lastAccessedAt" DESC
+LIMIT $2 OFFSET $3
+`
+
+type ListTrendsHistoryParams struct {
+	UserId string `json:"userId"`
+	Limit  int32  `json:"limit"`
+	Offset int32  `json:"offset"`
+}
+
+type ListTrendsHistoryRow struct {
+	ID             string           `json:"id"`
+	Key            string           `json:"key"`
+	Location       string           `json:"location"`
+	Content        string           `json:"content"`
+	LastAccessedAt pgtype.Timestamp `json:"lastAccessedAt"`
+}
+
+// Market Trends queries (ADR-083 Phase R2)
+func (q *Queries) ListTrendsHistory(ctx context.Context, arg ListTrendsHistoryParams) ([]ListTrendsHistoryRow, error) {
+	rows, err := q.db.Query(ctx, ListTrendsHistory, arg.UserId, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTrendsHistoryRow{}
+	for rows.Next() {
+		var i ListTrendsHistoryRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Key,
+			&i.Location,
+			&i.Content,
+			&i.LastAccessedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const UpdateCacheAccess = `-- name: UpdateCacheAccess :exec
 UPDATE analysis_cache
 SET "lastAccessedAt" = NOW(), "accessCount" = "accessCount" + 1
@@ -1010,6 +1079,17 @@ type UpdateCacheAccessByUserAndKeyParams struct {
 
 func (q *Queries) UpdateCacheAccessByUserAndKey(ctx context.Context, arg UpdateCacheAccessByUserAndKeyParams) error {
 	_, err := q.db.Exec(ctx, UpdateCacheAccessByUserAndKey, arg.UserId, arg.Key)
+	return err
+}
+
+const UpdateTrendLastAccessed = `-- name: UpdateTrendLastAccessed :exec
+UPDATE analysis_cache
+SET "lastAccessedAt" = NOW()
+WHERE key = $1 AND feature = 'market_trends'
+`
+
+func (q *Queries) UpdateTrendLastAccessed(ctx context.Context, key string) error {
+	_, err := q.db.Exec(ctx, UpdateTrendLastAccessed, key)
 	return err
 }
 
@@ -1165,4 +1245,37 @@ func (q *Queries) UpsertCache(ctx context.Context, arg UpsertCacheParams) (Analy
 		&i.SavingsGenerated,
 	)
 	return i, err
+}
+
+const UpsertTrendCache = `-- name: UpsertTrendCache :exec
+INSERT INTO analysis_cache (
+    id, key, "userId", location, feature, content, "createdAt", "expiresAt", "lastAccessedAt"
+)
+VALUES ($1, $2, $3, $4, 'market_trends', $5, $6, $7, $6)
+ON CONFLICT (key) DO UPDATE
+SET content = EXCLUDED.content,
+    "lastAccessedAt" = NOW()
+`
+
+type UpsertTrendCacheParams struct {
+	ID        string           `json:"id"`
+	Key       string           `json:"key"`
+	UserId    string           `json:"userId"`
+	Location  string           `json:"location"`
+	Content   string           `json:"content"`
+	CreatedAt pgtype.Timestamp `json:"createdAt"`
+	ExpiresAt pgtype.Timestamp `json:"expiresAt"`
+}
+
+func (q *Queries) UpsertTrendCache(ctx context.Context, arg UpsertTrendCacheParams) error {
+	_, err := q.db.Exec(ctx, UpsertTrendCache,
+		arg.ID,
+		arg.Key,
+		arg.UserId,
+		arg.Location,
+		arg.Content,
+		arg.CreatedAt,
+		arg.ExpiresAt,
+	)
+	return err
 }

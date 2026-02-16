@@ -219,3 +219,37 @@ DELETE FROM analysis_cache WHERE "userId" = $1 AND key = $2;
 
 -- name: DeleteAiResponseCacheByUserAndFeature :exec
 DELETE FROM analysis_cache WHERE "userId" = $1 AND feature = $2;
+
+-- Market Trends queries (ADR-083 Phase R2)
+
+-- name: ListTrendsHistory :many
+SELECT id, key, location, content, "lastAccessedAt"
+FROM analysis_cache
+WHERE "userId" = $1
+    AND feature = 'market_trends'
+    AND "supersededBy" IS NULL
+    AND "expiresAt" > NOW()
+ORDER BY "lastAccessedAt" DESC
+LIMIT $2 OFFSET $3;
+
+-- name: CountTrendsHistory :one
+SELECT COUNT(*)
+FROM analysis_cache
+WHERE "userId" = $1
+    AND feature = 'market_trends'
+    AND "supersededBy" IS NULL
+    AND "expiresAt" > NOW();
+
+-- name: UpsertTrendCache :exec
+INSERT INTO analysis_cache (
+    id, key, "userId", location, feature, content, "createdAt", "expiresAt", "lastAccessedAt"
+)
+VALUES ($1, $2, $3, $4, 'market_trends', $5, $6, $7, $6)
+ON CONFLICT (key) DO UPDATE
+SET content = EXCLUDED.content,
+    "lastAccessedAt" = NOW();
+
+-- name: UpdateTrendLastAccessed :exec
+UPDATE analysis_cache
+SET "lastAccessedAt" = NOW()
+WHERE key = $1 AND feature = 'market_trends';
