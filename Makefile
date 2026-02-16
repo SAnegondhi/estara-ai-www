@@ -1,4 +1,4 @@
-.PHONY: sqlc build verify lint-no-raw-sql ci clean
+.PHONY: sqlc build verify lint-no-raw-sql ci clean test test-integration test-unit test-coverage
 
 # Regenerate all sqlc code from schemas + queries
 sqlc:
@@ -48,3 +48,32 @@ ci: verify lint-no-raw-sql build
 clean:
 	rm -f internal/db/queries/*.sql.go internal/db/queries/models.go internal/db/queries/querier.go
 	rm -f internal/db/marketqueries/*.sql.go internal/db/marketqueries/models.go internal/db/marketqueries/querier.go
+
+# Run all tests (unit + integration)
+test:
+	@echo "Running all tests..."
+	go test ./... -v
+
+# Run integration tests (requires test database)
+test-integration:
+	@echo "Running integration tests..."
+	@if [ -z "$$TEST_DATABASE_URL" ]; then \
+		echo "ERROR: TEST_DATABASE_URL environment variable not set"; \
+		echo "Set it to your test database URL, e.g.:"; \
+		echo "  export TEST_DATABASE_URL='postgresql://localhost:5432/estara_test?sslmode=disable'"; \
+		exit 1; \
+	fi
+	go test -v ./tests/integration -count=1
+
+# Run unit tests only (no database required)
+test-unit:
+	@echo "Running unit tests..."
+	go test -v -short ./internal/...
+
+# Generate test coverage report
+test-coverage:
+	@echo "Generating coverage report..."
+	go test -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out -o coverage.html
+	@echo "Coverage report generated: coverage.html"
+	@echo "Open with: open coverage.html"
