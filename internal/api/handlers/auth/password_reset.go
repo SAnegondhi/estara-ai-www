@@ -337,11 +337,9 @@ func (h *Handler) validatePasswordResetToken(ctx context.Context, token string) 
 	return &tokenInfo{UserID: row.UserId, Email: row.Email}, nil
 }
 
-// markPasswordResetTokenUsed marks a token as used
+// markPasswordResetTokenUsed marks a token as used using sqlc-generated query
 func (h *Handler) markPasswordResetTokenUsed(ctx context.Context, token string) error {
-	query := `UPDATE password_reset_tokens SET used = true, "updatedAt" = NOW() WHERE token = $1`
-	_, err := h.store.Pool().Exec(ctx, query, token)
-	return err
+	return h.store.Q().MarkPasswordResetTokenUsedByToken(ctx, token)
 }
 
 // invalidateUserPasswordResetTokens invalidates all tokens for a user using sqlc-generated query
@@ -349,11 +347,12 @@ func (h *Handler) invalidateUserPasswordResetTokens(ctx context.Context, userID 
 	return h.store.Q().InvalidateUserPasswordResetTokens(ctx, userID)
 }
 
-// updateUserPassword updates the user's password in the database
+// updateUserPassword updates the user's password in the database using sqlc-generated query
 func (h *Handler) updateUserPassword(ctx context.Context, userID, hashedPassword string) error {
-	query := `UPDATE users SET password = $2, "updatedAt" = NOW() WHERE id = $1`
-	_, err := h.store.Pool().Exec(ctx, query, userID, hashedPassword)
-	return err
+	return h.store.Q().UpdateUserPassword(ctx, queries.UpdateUserPasswordParams{
+		ID:       userID,
+		Password: pgtype.Text{String: hashedPassword, Valid: true},
+	})
 }
 
 // logPasswordResetAudit logs a password reset audit event
