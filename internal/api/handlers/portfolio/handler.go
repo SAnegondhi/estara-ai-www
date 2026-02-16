@@ -162,6 +162,65 @@ type PortfolioSummary struct {
 	AverageCapRate  float64 `json:"averageCapRate"`
 }
 
+// Helper functions for safely dereferencing pointer types
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func derefInt(i *int) int {
+	if i == nil {
+		return 0
+	}
+	return *i
+}
+
+func derefFloat64(f *float64) float64 {
+	if f == nil {
+		return 0
+	}
+	return *f
+}
+
+func derefTime(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
+// Helper functions for converting pgtype to pointer types
+func pgtextToStringPtr(t pgtype.Text) *string {
+	if !t.Valid {
+		return nil
+	}
+	return &t.String
+}
+
+func pgint4ToIntPtr(i pgtype.Int4) *int {
+	if !i.Valid {
+		return nil
+	}
+	val := int(i.Int32)
+	return &val
+}
+
+func pgfloat8ToFloat64Ptr(f pgtype.Float8) *float64 {
+	if !f.Valid {
+		return nil
+	}
+	return &f.Float64
+}
+
+func pgtimestampToTimePtr(ts pgtype.Timestamp) *time.Time {
+	if !ts.Valid {
+		return nil
+	}
+	return &ts.Time
+}
+
 // AllocationItem represents allocation breakdown by category
 type AllocationItem struct {
 	Name    string  `json:"name"`
@@ -701,51 +760,78 @@ func (h *Handler) createProperty(ctx context.Context, userID string, req *Create
 		}
 	}
 
-	// Column names match Prisma @map directives in V2PortfolioProperty model
-	query := `
-		INSERT INTO v2_portfolio_properties (
-			id, user_id, address, city, state, zip_code, property_type,
-			property_status, bedrooms, bathrooms, sqft, year_built, purchase_price, purchase_date,
-			current_value, monthly_rent, vacancy_rate, expenses, mortgage_balance, mortgage_rate,
-			mortgage_payment, status, notes,
-			created_at, updated_at
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-			$16, $17, $18, $19, $20, $21, $22, $23, $24, $25
-		)
-		RETURNING id, user_id, address, city, state, zip_code, property_type,
-		          property_status, bedrooms, bathrooms, sqft, year_built, purchase_price, purchase_date,
-		          current_value, monthly_rent, vacancy_rate, expenses, mortgage_balance, mortgage_rate,
-		          mortgage_payment, status, notes,
-		          created_at, updated_at
-	`
-
-	var p PortfolioProperty
-	var vacancyRateDB *float64
-	var expensesDB []byte
-	err := h.store.Pool().QueryRow(ctx, query,
-		id, userID, req.Address, req.City, req.State, req.ZipCode,
-		req.PropertyType, propertyStatus, req.Beds, req.Baths, req.Sqft, req.YearBuilt,
-		req.PurchasePrice, purchaseDate, currentValue, monthlyRent,
-		vacancyRate, expensesJSON, mortgageBalance, mortgageRate, mortgagePayment,
-		"active", req.Notes, now, now,
-	).Scan(
-		&p.ID, &p.UserID, &p.Address, &p.City, &p.State, &p.ZipCode,
-		&p.PropertyType, &p.PropertyStatus, &p.Beds, &p.Baths, &p.Sqft, &p.YearBuilt,
-		&p.PurchasePrice, &p.PurchaseDate, &p.CurrentValue, &p.MonthlyRent,
-		&vacancyRateDB, &expensesDB, &p.MortgageBalance, &p.MortgageRate, &p.MortgagePayment,
-		&p.Status, &p.Notes,
-		&p.CreatedAt, &p.UpdatedAt,
-	)
+	// Use sqlc-generated CreatePortfolioProperty query
+	dbProperty, err := h.store.Q().CreatePortfolioProperty(ctx, queries.CreatePortfolioPropertyParams{
+		ID:               id,
+		UserID:           userID,
+		Address:          req.Address,
+		City:             req.City,
+		State:            req.State,
+		ZipCode:          req.ZipCode,
+		PropertyType:     pgtype.Text{String: derefString(req.PropertyType), Valid: req.PropertyType != nil && *req.PropertyType != ""},
+		Bedrooms:         pgtype.Int4{Int32: int32(derefInt(req.Beds)), Valid: req.Beds != nil && *req.Beds != 0},
+		Bathrooms:        pgtype.Float8{Float64: derefFloat64(req.Baths), Valid: req.Baths != nil && *req.Baths != 0},
+		Sqft:             pgtype.Int4{Int32: int32(derefInt(req.Sqft)), Valid: req.Sqft != nil && *req.Sqft != 0},
+		YearBuilt:        pgtype.Int4{Int32: int32(derefInt(req.YearBuilt)), Valid: req.YearBuilt != nil && *req.YearBuilt != 0},
+		PurchasePrice:    req.PurchasePrice,
+		PurchaseDate:     pgtype.Timestamp{Time: derefTime(purchaseDate), Valid: purchaseDate != nil},
+		CurrentValue:     pgtype.Float8{Float64: currentValue, Valid: true},
+		LastValuedAt:     pgtype.Timestamp{Time: now, Valid: true},
+		MonthlyRent:      pgtype.Float8{Float64: monthlyRent, Valid: monthlyRent != 0},
+		VacancyRate:      pgtype.Float8{Float64: derefFloat64(vacancyRate), Valid: vacancyRate != nil},
+		Expenses:         expensesJSON,
+		MortgageBalance:  pgtype.Float8{Float64: mortgageBalance, Valid: mortgageBalance != 0},
+		MortgageRate:     pgtype.Float8{Float64: mortgageRate, Valid: mortgageRate != 0},
+		MortgagePayment:  pgtype.Float8{Float64: mortgagePayment, Valid: mortgagePayment != 0},
+		LoanTermYears:    pgtype.Int4{Valid: false}, // Not provided in request
+		Lat:              pgtype.Float8{Valid: false},
+		Lng:              pgtype.Float8{Valid: false},
+		AcquisitionType:  "purchase",
+		ExpenseFrequency: "monthly",
+		RevenueFrequency: "monthly",
+		Status:           "active",
+		PropertyStatus:   propertyStatus,
+		Notes:            pgtype.Text{String: derefString(req.Notes), Valid: req.Notes != nil && *req.Notes != ""},
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse vacancy rate and expenses from DB
-	p.VacancyRate = vacancyRateDB
-	if len(expensesDB) > 0 {
+	// Convert DB property to handler property type
+	zipCode := dbProperty.ZipCode
+	p := PortfolioProperty{
+		ID:              dbProperty.ID,
+		UserID:          dbProperty.UserID,
+		Address:         dbProperty.Address,
+		City:            dbProperty.City,
+		State:           dbProperty.State,
+		ZipCode:         &zipCode,
+		PropertyType:    pgtextToStringPtr(dbProperty.PropertyType),
+		PropertyStatus:  dbProperty.PropertyStatus,
+		Beds:            pgint4ToIntPtr(dbProperty.Bedrooms),
+		Baths:           pgfloat8ToFloat64Ptr(dbProperty.Bathrooms),
+		Sqft:            pgint4ToIntPtr(dbProperty.Sqft),
+		YearBuilt:       pgint4ToIntPtr(dbProperty.YearBuilt),
+		PurchasePrice:   dbProperty.PurchasePrice,
+		PurchaseDate:    pgtimestampToTimePtr(dbProperty.PurchaseDate),
+		CurrentValue:    dbProperty.CurrentValue.Float64,
+		MonthlyRent:     dbProperty.MonthlyRent.Float64,
+		MortgageBalance: dbProperty.MortgageBalance.Float64,
+		MortgageRate:    dbProperty.MortgageRate.Float64,
+		MortgagePayment: dbProperty.MortgagePayment.Float64,
+		Status:          dbProperty.Status,
+		Notes:           pgtextToStringPtr(dbProperty.Notes),
+		CreatedAt:       dbProperty.CreatedAt.Time,
+		UpdatedAt:       dbProperty.UpdatedAt.Time,
+	}
+
+	// Handle nullable fields
+	if dbProperty.VacancyRate.Valid {
+		p.VacancyRate = &dbProperty.VacancyRate.Float64
+	}
+	if len(dbProperty.Expenses) > 0 {
 		var exp PropertyExpenses
-		if err := json.Unmarshal(expensesDB, &exp); err == nil {
+		if err := json.Unmarshal(dbProperty.Expenses, &exp); err == nil {
 			p.Expenses = &exp
 			// Calculate total monthly expenses
 			p.MonthlyExpenses = exp.Maintenance + exp.Tax + exp.Insurance + exp.HOA + exp.Other
@@ -758,138 +844,104 @@ func (h *Handler) createProperty(ctx context.Context, userID string, req *Create
 }
 
 func (h *Handler) updateProperty(ctx context.Context, propertyID, userID string, req *UpdatePropertyRequest) (*PortfolioProperty, error) {
-	// First verify property exists and belongs to user
-	existing, err := h.getPropertyByID(ctx, propertyID, userID)
-	if err != nil {
-		return nil, err
-	}
+	// Build update params using sqlc query
+	// Parse PurchaseDate if provided
+	var purchaseDate *time.Time
 
-	// Build dynamic update query - column names match Prisma @map directives
-	updates := make([]string, 0)
-	args := make([]interface{}, 0)
-	argIndex := 1
-
-	addUpdate := func(field string, value interface{}) {
-		updates = append(updates, fmt.Sprintf(`%s = $%d`, field, argIndex))
-		args = append(args, value)
-		argIndex++
-	}
-
-	if req.Address != nil {
-		addUpdate("address", *req.Address)
-	}
-	if req.City != nil {
-		addUpdate("city", *req.City)
-	}
-	if req.State != nil {
-		addUpdate("state", *req.State)
-	}
-	if req.ZipCode != nil {
-		addUpdate("zip_code", *req.ZipCode)
-	}
-	if req.PropertyType != nil {
-		addUpdate("property_type", *req.PropertyType)
-	}
-	if req.PropertyStatus != nil {
-		addUpdate("property_status", *req.PropertyStatus)
-	}
-	if req.Beds != nil {
-		addUpdate("bedrooms", *req.Beds)
-	}
-	if req.Baths != nil {
-		addUpdate("bathrooms", *req.Baths)
-	}
-	if req.Sqft != nil {
-		addUpdate("sqft", *req.Sqft)
-	}
-	if req.YearBuilt != nil {
-		addUpdate("year_built", *req.YearBuilt)
-	}
-	if req.PurchasePrice != nil {
-		addUpdate("purchase_price", *req.PurchasePrice)
-	}
 	if req.PurchaseDate != nil {
 		h.logger.Info("updating purchase_date", "value", *req.PurchaseDate)
 		if parsed, err := time.Parse("2006-01-02", *req.PurchaseDate); err == nil {
-			addUpdate("purchase_date", parsed)
+			purchaseDate = &parsed
 		} else {
 			h.logger.Error("failed to parse purchase_date", "value", *req.PurchaseDate, "error", err)
 		}
 	}
-	if req.CurrentValue != nil {
-		addUpdate("current_value", *req.CurrentValue)
-	}
-	if req.MonthlyRent != nil {
-		addUpdate("monthly_rent", *req.MonthlyRent)
-	}
-	if req.VacancyRate != nil {
-		addUpdate("vacancy_rate", *req.VacancyRate)
-	}
+
+	// Serialize expenses if provided
+	var expensesJSON []byte
 	if req.Expenses != nil {
-		expensesJSON, err := json.Marshal(req.Expenses)
-		if err == nil {
-			addUpdate("expenses", expensesJSON)
+		var err error
+		expensesJSON, err = json.Marshal(req.Expenses)
+		if err != nil {
+			h.logger.Warn("failed to serialize expenses", "error", err)
 		}
 	}
-	if req.MortgageBalance != nil {
-		addUpdate("mortgage_balance", *req.MortgageBalance)
-	}
-	if req.MortgageRate != nil {
-		addUpdate("mortgage_rate", *req.MortgageRate)
-	}
-	if req.MortgagePayment != nil {
-		addUpdate("mortgage_payment", *req.MortgagePayment)
-	}
-	if req.Status != nil {
-		addUpdate("status", *req.Status)
-	}
-	if req.Notes != nil {
-		addUpdate("notes", *req.Notes)
-	}
 
-	// Always update updated_at
-	addUpdate("updated_at", time.Now())
-
-	if len(updates) == 1 {
-		// Only updated_at, nothing else to update
-		return existing, nil
-	}
-
-	// Build and execute query
-	query := fmt.Sprintf(`
-		UPDATE v2_portfolio_properties
-		SET %s
-		WHERE id = $%d AND user_id = $%d
-		RETURNING id, user_id, address, city, state, zip_code, property_type,
-		          property_status, bedrooms, bathrooms, sqft, year_built, purchase_price, purchase_date,
-		          current_value, monthly_rent, vacancy_rate, expenses, mortgage_balance, mortgage_rate,
-		          mortgage_payment, status, notes,
-		          created_at, updated_at
-	`, join(updates, ", "), argIndex, argIndex+1)
-
-	args = append(args, propertyID, userID)
-
-	var p PortfolioProperty
-	var vacancyRate *float64
-	var expensesJSON []byte
-	err = h.store.Pool().QueryRow(ctx, query, args...).Scan(
-		&p.ID, &p.UserID, &p.Address, &p.City, &p.State, &p.ZipCode,
-		&p.PropertyType, &p.PropertyStatus, &p.Beds, &p.Baths, &p.Sqft, &p.YearBuilt,
-		&p.PurchasePrice, &p.PurchaseDate, &p.CurrentValue, &p.MonthlyRent,
-		&vacancyRate, &expensesJSON, &p.MortgageBalance, &p.MortgageRate, &p.MortgagePayment,
-		&p.Status, &p.Notes,
-		&p.CreatedAt, &p.UpdatedAt,
-	)
+	// Use sqlc-generated UpdatePortfolioProperty query
+	dbProperty, err := h.store.Q().UpdatePortfolioProperty(ctx, queries.UpdatePortfolioPropertyParams{
+		ID:               propertyID,
+		UserID:           userID,
+		Address:          pgtype.Text{String: derefString(req.Address), Valid: req.Address != nil},
+		City:             pgtype.Text{String: derefString(req.City), Valid: req.City != nil},
+		State:            pgtype.Text{String: derefString(req.State), Valid: req.State != nil},
+		ZipCode:          pgtype.Text{String: derefString(req.ZipCode), Valid: req.ZipCode != nil},
+		PropertyType:     pgtype.Text{String: derefString(req.PropertyType), Valid: req.PropertyType != nil},
+		Bedrooms:         pgtype.Int4{Int32: int32(derefInt(req.Beds)), Valid: req.Beds != nil},
+		Bathrooms:        pgtype.Float8{Float64: derefFloat64(req.Baths), Valid: req.Baths != nil},
+		Sqft:             pgtype.Int4{Int32: int32(derefInt(req.Sqft)), Valid: req.Sqft != nil},
+		YearBuilt:        pgtype.Int4{Int32: int32(derefInt(req.YearBuilt)), Valid: req.YearBuilt != nil},
+		PurchasePrice:    pgtype.Float8{Float64: derefFloat64(req.PurchasePrice), Valid: req.PurchasePrice != nil},
+		PurchaseDate:     pgtype.Timestamp{Time: derefTime(purchaseDate), Valid: purchaseDate != nil},
+		CurrentValue:     pgtype.Float8{Float64: derefFloat64(req.CurrentValue), Valid: req.CurrentValue != nil},
+		LastValuedAt:     pgtype.Timestamp{Valid: false}, // Not updated via this endpoint
+		MonthlyRent:      pgtype.Float8{Float64: derefFloat64(req.MonthlyRent), Valid: req.MonthlyRent != nil},
+		VacancyRate:      pgtype.Float8{Float64: derefFloat64(req.VacancyRate), Valid: req.VacancyRate != nil},
+		Expenses:         expensesJSON,
+		MortgageBalance:  pgtype.Float8{Float64: derefFloat64(req.MortgageBalance), Valid: req.MortgageBalance != nil},
+		MortgageRate:     pgtype.Float8{Float64: derefFloat64(req.MortgageRate), Valid: req.MortgageRate != nil},
+		MortgagePayment:  pgtype.Float8{Float64: derefFloat64(req.MortgagePayment), Valid: req.MortgagePayment != nil},
+		LoanTermYears:    pgtype.Int4{Valid: false},        // Not provided in request
+		Lat:              pgtype.Float8{Valid: false},      // Not updated via this endpoint
+		Lng:              pgtype.Float8{Valid: false},      // Not updated via this endpoint
+		AcquisitionType:  pgtype.Text{Valid: false},        // Not updated via this endpoint
+		ExpenseFrequency: pgtype.Text{Valid: false},        // Not updated via this endpoint
+		RevenueFrequency: pgtype.Text{Valid: false},        // Not updated via this endpoint
+		SaleDate:         pgtype.Timestamp{Valid: false},   // Not updated via this endpoint
+		SalePrice:        pgtype.Float8{Valid: false},      // Not updated via this endpoint
+		PropertyStatus:   pgtype.Text{String: derefString(req.PropertyStatus), Valid: req.PropertyStatus != nil},
+		Notes:            pgtype.Text{String: derefString(req.Notes), Valid: req.Notes != nil},
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse vacancy rate and expenses
-	p.VacancyRate = vacancyRate
-	if len(expensesJSON) > 0 {
+	// Convert DB property to handler property type
+	zipCode := dbProperty.ZipCode
+	p := PortfolioProperty{
+		ID:              dbProperty.ID,
+		UserID:          dbProperty.UserID,
+		Address:         dbProperty.Address,
+		City:            dbProperty.City,
+		State:           dbProperty.State,
+		ZipCode:         &zipCode,
+		PropertyType:    pgtextToStringPtr(dbProperty.PropertyType),
+		PropertyStatus:  dbProperty.PropertyStatus,
+		Beds:            pgint4ToIntPtr(dbProperty.Bedrooms),
+		Baths:           pgfloat8ToFloat64Ptr(dbProperty.Bathrooms),
+		Sqft:            pgint4ToIntPtr(dbProperty.Sqft),
+		YearBuilt:       pgint4ToIntPtr(dbProperty.YearBuilt),
+		PurchasePrice:   dbProperty.PurchasePrice,
+		PurchaseDate:    pgtimestampToTimePtr(dbProperty.PurchaseDate),
+		CurrentValue:    dbProperty.CurrentValue.Float64,
+		MonthlyRent:     dbProperty.MonthlyRent.Float64,
+		MortgageBalance: dbProperty.MortgageBalance.Float64,
+		MortgageRate:    dbProperty.MortgageRate.Float64,
+		MortgagePayment: dbProperty.MortgagePayment.Float64,
+		Status:          dbProperty.Status,
+		Notes:           pgtextToStringPtr(dbProperty.Notes),
+		CreatedAt:       dbProperty.CreatedAt.Time,
+		UpdatedAt:       dbProperty.UpdatedAt.Time,
+	}
+
+	// Handle nullable fields
+	if dbProperty.VacancyRate.Valid {
+		p.VacancyRate = &dbProperty.VacancyRate.Float64
+	}
+	if len(dbProperty.Expenses) > 0 {
 		var exp PropertyExpenses
-		if err := json.Unmarshal(expensesJSON, &exp); err == nil {
+		if err := json.Unmarshal(dbProperty.Expenses, &exp); err == nil {
 			p.Expenses = &exp
+			// Calculate total monthly expenses
 			p.MonthlyExpenses = exp.Maintenance + exp.Tax + exp.Insurance + exp.HOA + exp.Other
 		}
 	}
@@ -958,16 +1010,6 @@ func (h *Handler) calculateSummary(properties []PortfolioProperty) PortfolioSumm
 }
 
 // join is a simple helper to join strings
-func join(strs []string, sep string) string {
-	if len(strs) == 0 {
-		return ""
-	}
-	result := strs[0]
-	for _, s := range strs[1:] {
-		result += sep + s
-	}
-	return result
-}
 
 // ProjectionsResponse wraps the projections response
 type ProjectionsResponse struct {
