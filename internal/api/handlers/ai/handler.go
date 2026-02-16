@@ -3175,11 +3175,13 @@ func (h *Handler) InvalidateCache(w http.ResponseWriter, r *http.Request) {
 		redisDeleted = result
 
 		// Delete from database
-		dbResult, _ := h.store.Pool().Exec(ctx,
-			`DELETE FROM "AiResponseCache" WHERE user_id = $1 AND cache_key = $2`,
-			user.UserID, *req.CacheKey,
-		)
-		dbDeleted = dbResult.RowsAffected()
+		err := h.store.Q().DeleteAiResponseCacheByUserAndKey(ctx, queries.DeleteAiResponseCacheByUserAndKeyParams{
+			UserId: user.UserID,
+			Key:    *req.CacheKey,
+		})
+		if err == nil {
+			dbDeleted = 1
+		}
 
 	case "type":
 		if req.Type == nil {
@@ -3195,11 +3197,13 @@ func (h *Handler) InvalidateCache(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Delete from database
-		dbResult, _ := h.store.Pool().Exec(ctx,
-			`DELETE FROM "AiResponseCache" WHERE user_id = $1 AND cache_type = $2`,
-			user.UserID, *req.Type,
-		)
-		dbDeleted = dbResult.RowsAffected()
+		err := h.store.Q().DeleteAiResponseCacheByUserAndFeature(ctx, queries.DeleteAiResponseCacheByUserAndFeatureParams{
+			UserId:  user.UserID,
+			Feature: *req.Type,
+		})
+		if err == nil {
+			dbDeleted = 1
+		}
 
 	default:
 		httputil.BadRequest(w, "invalid strategy for client user")
@@ -3235,13 +3239,30 @@ func (h *Handler) createChatSession(ctx context.Context, userID string, properti
 
 		// Upsert property to cache - generate UUID for new records
 		propertyUUID := uuid.New().String()
-		var cachedID string
-		err := h.store.Pool().QueryRow(ctx, `
-			INSERT INTO cached_properties (id, listing_id, provider, address, city, state, zip_code, price, beds, baths, sqft, estimated_rent, cap_rate, listing_url, image_url)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-			ON CONFLICT (listing_id) DO UPDATE SET last_used_at = NOW()
-			RETURNING id
-		`, propertyUUID, p.ID, "discovery", p.Address, p.City, p.State, nilIfEmpty(p.ZipCode), p.Price, p.Beds, p.Baths, p.Sqft, p.EstimatedRent, parseCapRate(p.CapRate), nilIfEmpty(p.ListingUrl), nilIfEmpty(p.ImageUrl)).Scan(&cachedID)
+
+		capRate := parseCapRate(p.CapRate)
+		capRatePg := pgtype.Float8{}
+		if capRate != nil {
+			capRatePg = pgtype.Float8{Float64: *capRate, Valid: true}
+		}
+
+		cachedID, err := h.store.Q().UpsertCachedProperty(ctx, queries.UpsertCachedPropertyParams{
+			ID:            propertyUUID,
+			ListingID:     p.ID,
+			Provider:      "discovery",
+			Address:       p.Address,
+			City:          p.City,
+			State:         p.State,
+			ZipCode:       pgtype.Text{String: p.ZipCode, Valid: p.ZipCode != ""},
+			Price:         int32(p.Price),
+			Beds:          pgtype.Int4{Int32: int32(p.Beds), Valid: true},
+			Baths:         pgtype.Float8{Float64: float64(p.Baths), Valid: true},
+			Sqft:          pgtype.Int4{Int32: int32(p.Sqft), Valid: true},
+			EstimatedRent: pgtype.Int4{Int32: int32(p.EstimatedRent), Valid: p.EstimatedRent > 0},
+			CapRate:       capRatePg,
+			ListingUrl:    pgtype.Text{String: p.ListingUrl, Valid: p.ListingUrl != ""},
+			ImageUrl:      pgtype.Text{String: p.ImageUrl, Valid: p.ImageUrl != ""},
+		})
 
 		if err != nil {
 			h.logger.Warn("failed to cache property", "error", err, "property_id", p.ID)
@@ -3251,24 +3272,25 @@ func (h *Handler) createChatSession(ctx context.Context, userID string, properti
 	}
 
 	// Create session with all fields for parity with www_v1
-	var investorProfileJSON *string
+	var investorProfileJSON []byte
 	if profile != nil {
-		b, _ := json.Marshal(profile)
-		s := string(b)
-		investorProfileJSON = &s
+		investorProfileJSON, _ = json.Marshal(profile)
 	}
 
-	var portfolioSnapshotJSON *string
+	var portfolioSnapshotJSON []byte
 	if len(portfolioSnapshot) > 0 {
-		s := string(portfolioSnapshot)
-		portfolioSnapshotJSON = &s
+		portfolioSnapshotJSON = portfolioSnapshot
 	}
 
 	sessionID := uuid.New().String()
-	_, err := h.store.Pool().Exec(ctx, `
-		INSERT INTO evaluation_chat_sessions (id, user_id, property_ids, cached_property_ids, investor_profile, portfolio_snapshot, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-	`, sessionID, userID, listingIDs, cachedPropertyIDs, investorProfileJSON, portfolioSnapshotJSON)
+	_, err := h.store.Q().CreateEvaluationChatSession(ctx, queries.CreateEvaluationChatSessionParams{
+		ID:                sessionID,
+		UserID:            userID,
+		PropertyIds:       listingIDs,
+		CachedPropertyIds: cachedPropertyIDs,
+		InvestorProfile:   investorProfileJSON,
+		PortfolioSnapshot: portfolioSnapshotJSON,
+	})
 
 	if err != nil {
 		return "", fmt.Errorf("failed to create session: %w", err)
@@ -3287,66 +3309,69 @@ func nilIfEmpty(s string) *string {
 
 // validateSessionOwnership checks if a session belongs to a user
 func (h *Handler) validateSessionOwnership(ctx context.Context, sessionID, userID string) (bool, error) {
-	var exists bool
-	err := h.store.Pool().QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM evaluation_chat_sessions WHERE id = $1 AND user_id = $2)`,
-		sessionID, userID,
-	).Scan(&exists)
-	return exists, err
+	return h.store.Q().ValidateEvaluationChatSessionOwnership(ctx, queries.ValidateEvaluationChatSessionOwnershipParams{
+		ID:     sessionID,
+		UserID: userID,
+	})
 }
 
 // saveChatMessage saves a message to the database and returns the message ID
 func (h *Handler) saveChatMessage(ctx context.Context, sessionID, role, content string, blocks []byte, tokenUsage *TokenUsage) (string, error) {
-	var blocksJSON *string
-	if len(blocks) > 0 {
-		s := string(blocks)
-		blocksJSON = &s
-	}
-
-	var tokenUsageJSON *string
+	var tokenUsageJSON []byte
 	if tokenUsage != nil {
-		b, _ := json.Marshal(tokenUsage)
-		s := string(b)
-		tokenUsageJSON = &s
+		tokenUsageJSON, _ = json.Marshal(tokenUsage)
 	}
 
 	messageID := uuid.New().String()
-	_, err := h.store.Pool().Exec(ctx, `
-		INSERT INTO evaluation_chat_messages (id, session_id, role, content, parsed_blocks, token_usage, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())
-	`, messageID, sessionID, role, content, blocksJSON, tokenUsageJSON)
+	_, err := h.store.Q().CreateEvaluationChatMessage(ctx, queries.CreateEvaluationChatMessageParams{
+		ID:           messageID,
+		SessionID:    sessionID,
+		Role:         role,
+		Content:      content,
+		ParsedBlocks: blocks,
+		TokenUsage:   tokenUsageJSON,
+	})
 
 	if err != nil {
 		return "", fmt.Errorf("failed to save message: %w", err)
 	}
 
 	// Update session timestamp
-	h.store.Pool().Exec(ctx, `UPDATE evaluation_chat_sessions SET updated_at = NOW() WHERE id = $1`, sessionID)
+	h.store.Q().UpdateEvaluationChatSessionTimestamp(ctx, sessionID)
 
 	return messageID, nil
 }
 
 // getSessionHistory retrieves conversation history for a session
 func (h *Handler) getSessionHistory(ctx context.Context, sessionID string) ([]ChatMessage, error) {
-	query := `
-		SELECT id, session_id, role, content, created_at
-		FROM evaluation_chat_messages
-		WHERE session_id = $1
-		ORDER BY created_at ASC
-	`
-
-	rows, err := h.store.Pool().Query(ctx, query, sessionID)
+	dbMessages, err := h.store.Q().GetSessionHistory(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	messages := make([]ChatMessage, 0)
-	for rows.Next() {
-		var msg ChatMessage
-		if err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &msg.Content, &msg.CreatedAt); err != nil {
-			continue
+	messages := make([]ChatMessage, 0, len(dbMessages))
+	for _, dbMsg := range dbMessages {
+		msg := ChatMessage{
+			ID:        dbMsg.ID,
+			SessionID: dbMsg.SessionID,
+			Role:      dbMsg.Role,
+			Content:   dbMsg.Content,
+			CreatedAt: dbMsg.CreatedAt.Time,
 		}
+
+		// Convert parsed_blocks
+		if len(dbMsg.ParsedBlocks) > 0 {
+			msg.ParsedBlocks = json.RawMessage(dbMsg.ParsedBlocks)
+		}
+
+		// Convert token_usage
+		if len(dbMsg.TokenUsage) > 0 {
+			var usage TokenUsage
+			if json.Unmarshal(dbMsg.TokenUsage, &usage) == nil {
+				msg.TokenUsage = &usage
+			}
+		}
+
 		messages = append(messages, msg)
 	}
 
