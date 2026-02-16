@@ -1489,7 +1489,10 @@ func (h *Handler) deleteInvestmentPlanCache(ctx context.Context, userID, jobID s
 		}
 	}
 
-	_, err = h.store.Pool().Exec(ctx, `DELETE FROM analysis_cache WHERE id = $1 AND "userId" = $2`, record.ID, userID)
+	err = h.store.Q().DeleteCacheByIDAndUserID(ctx, queries.DeleteCacheByIDAndUserIDParams{
+		ID:     record.ID,
+		UserId: userID,
+	})
 	if err != nil {
 		return "", "", err
 	}
@@ -1501,11 +1504,13 @@ func (h *Handler) findInvestmentPlanCacheRecord(ctx context.Context, userID, job
 	record := &investmentPlanCacheRecord{}
 
 	if strings.HasPrefix(jobID, "investment_plan") {
-		err := h.store.Pool().QueryRow(ctx,
-			`SELECT id, key FROM analysis_cache WHERE key = $1 AND "userId" = $2`,
-			jobID, userID,
-		).Scan(&record.ID, &record.Key)
+		result, err := h.store.Q().GetCacheIDAndKeyByUserAndKey(ctx, queries.GetCacheIDAndKeyByUserAndKeyParams{
+			Key:    jobID,
+			UserId: userID,
+		})
 		if err == nil {
+			record.ID = result.ID
+			record.Key = result.Key
 			return record, nil
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -1513,10 +1518,10 @@ func (h *Handler) findInvestmentPlanCacheRecord(ctx context.Context, userID, job
 		}
 	}
 
-	err := h.store.Pool().QueryRow(ctx,
-		`SELECT id, key FROM analysis_cache WHERE id = $1 AND "userId" = $2 AND key LIKE 'investment_plan_%'`,
-		jobID, userID,
-	).Scan(&record.ID, &record.Key)
+	result, err := h.store.Q().GetInvestmentPlanCacheByID(ctx, queries.GetInvestmentPlanCacheByIDParams{
+		ID:     jobID,
+		UserId: userID,
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -1524,6 +1529,8 @@ func (h *Handler) findInvestmentPlanCacheRecord(ctx context.Context, userID, job
 		return nil, err
 	}
 
+	record.ID = result.ID
+	record.Key = result.Key
 	return record, nil
 }
 
