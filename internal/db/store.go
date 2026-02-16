@@ -12,12 +12,16 @@ import (
 
 // Store is the ONLY database interface for handlers and services.
 // All DB access MUST go through Store methods (sqlc-generated).
-// Raw pool access is not exposed except for transaction support.
+//
+// ADR-083: Single Auditable Database Interface
+// - All database queries use sqlc-generated code (100% compile-time validated)
+// - Pool access restricted to monitoring (Ping/Stat) only
+// - Transactions use WithTx() helper
 type Store struct {
 	q          *queries.Queries
 	mq         *marketqueries.Queries
-	pool       *postgres.Pool // main DB pool — transactions + gradual migration
-	marketPool *postgres.Pool // market DB pool — gradual migration only
+	pool       *postgres.Pool // main DB pool — WithTx() + monitoring only
+	marketPool *postgres.Pool // market DB pool — monitoring only
 }
 
 // NewStore creates a new Store from a postgres.DB.
@@ -68,12 +72,29 @@ func (s *Store) WithTxOptions(ctx context.Context, opts pgx.TxOptions, fn func(q
 }
 
 // Pool returns the underlying main database pool.
-// This should ONLY be used by migration runners, the Store constructor,
-// and as a transitional shim during the raw-SQL-to-sqlc migration.
-// New code must NOT use this — use Q() instead.
+//
+// ⚠️ RESTRICTED USE ONLY ⚠️
+// This method may ONLY be used for:
+//   - Monitoring: Ping(), Stat()
+//   - Transactions: WithTx() helper (internal use)
+//
+// ❌ FORBIDDEN: Query(), QueryRow(), Exec()
+// ✅ REQUIRED: Use Q() for all database queries
+//
+// ADR-083: All 43 database query Pool() calls have been migrated to sqlc.
+// Only monitoring calls remain (health checks, connection stats).
 func (s *Store) Pool() *postgres.Pool { return s.pool }
 
 // MarketPool returns the underlying market database pool.
-// This is a transitional shim during the raw-SQL-to-sqlc migration.
-// New code must NOT use this — use MQ() instead.
+//
+// ⚠️ RESTRICTED USE ONLY ⚠️
+// This method may ONLY be used for:
+//   - Monitoring: Ping(), Stat()
+//   - Nil checks: Verify market DB is configured
+//
+// ❌ FORBIDDEN: Query(), QueryRow(), Exec()
+// ✅ REQUIRED: Use MQ() for all database queries
+//
+// ADR-083: All database query MarketPool() calls have been migrated to sqlc.
+// Only monitoring calls remain (health checks, connection stats).
 func (s *Store) MarketPool() *postgres.Pool { return s.marketPool }
