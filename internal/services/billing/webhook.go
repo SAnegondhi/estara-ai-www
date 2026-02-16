@@ -352,33 +352,21 @@ func mapSubscriptionTierToV2Tier(subscriptionTier string) (v2Tier string, annual
 	}
 }
 
-// upsertV2EvaluationQuota creates or updates the V2 evaluation quota required for Insight login.
+// upsertV2EvaluationQuota creates or updates the V2 evaluation quota required for Insight login using sqlc-generated query
 func (s *WebhookService) upsertV2EvaluationQuota(ctx context.Context, userID, subscriptionTier string) error {
 	v2Tier, annualLimit := mapSubscriptionTierToV2Tier(subscriptionTier)
 
 	now := time.Now()
 	periodEnd := now.AddDate(1, 0, 0) // 1 year from now
 
-	query := `
-		INSERT INTO v2_evaluation_quotas (id, user_id, tier, annual_limit, used_this_period, period_start_date, period_end_date, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, 0, $5, $6, NOW(), NOW())
-		ON CONFLICT (user_id) DO UPDATE SET
-			tier = $3,
-			annual_limit = $4,
-			period_start_date = CASE WHEN v2_evaluation_quotas.period_end_date < NOW() THEN $5 ELSE v2_evaluation_quotas.period_start_date END,
-			period_end_date = CASE WHEN v2_evaluation_quotas.period_end_date < NOW() THEN $6 ELSE v2_evaluation_quotas.period_end_date END,
-			used_this_period = CASE WHEN v2_evaluation_quotas.period_end_date < NOW() THEN 0 ELSE v2_evaluation_quotas.used_this_period END,
-			updated_at = NOW()
-	`
-
-	_, err := s.store.Pool().Exec(ctx, query,
-		uuid.New().String(), // $1: id
-		userID,              // $2: user_id
-		v2Tier,              // $3: tier
-		annualLimit,         // $4: annual_limit
-		now,                 // $5: period_start_date
-		periodEnd,           // $6: period_end_date
-	)
+	err := s.store.Q().UpsertV2EvaluationQuotaWithPeriodReset(ctx, queries.UpsertV2EvaluationQuotaWithPeriodResetParams{
+		ID:              uuid.New().String(),
+		UserID:          userID,
+		Column3:         v2Tier, // Tier field - named Column3 due to cast in SQL
+		AnnualLimit:     int32(annualLimit),
+		PeriodStartDate: pgtype.Timestamp{Time: now, Valid: true},
+		PeriodEndDate:   pgtype.Timestamp{Time: periodEnd, Valid: true},
+	})
 	if err != nil {
 		return fmt.Errorf("failed to upsert v2_evaluation_quotas: %w", err)
 	}
@@ -1202,25 +1190,8 @@ func (s *WebhookService) handleDisputeClosed(ctx context.Context, event *stripe.
 // Helper methods
 
 func (s *WebhookService) recordAuditLog(ctx context.Context, params queries.CreateBillingAuditLogParams) error {
-	eventType := params.EventType
-	if value, ok := params.EventType.(string); ok {
-		eventType = value
-	}
-
-	_, err := s.store.Pool().Exec(ctx, `
-		INSERT INTO billing_audit_logs (
-			id, "userId", "stripeCustomerId", "stripeSubscriptionId",
-			"stripePaymentIntentId", "stripeInvoiceId",
-			"appleOriginalTransactionId", "appleTransactionId", "appleProductId", "appleEnvironment",
-			"eventType", "eventData", "ipAddress", "userAgent", "createdAt"
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW()
-		)
-	`, params.ID, params.UserId, params.StripeCustomerId, params.StripeSubscriptionId,
-		params.StripePaymentIntentId, params.StripeInvoiceId, params.AppleOriginalTransactionId,
-		params.AppleTransactionId, params.AppleProductId, params.AppleEnvironment, eventType,
-		params.EventData, params.IpAddress, params.UserAgent,
-	)
+	// Use sqlc-generated CreateBillingAuditLog query
+	_, err := s.store.Q().CreateBillingAuditLog(ctx, params)
 	return err
 }
 
