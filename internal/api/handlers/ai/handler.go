@@ -775,16 +775,13 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		propMap := make(map[string]propInfo)
 
-		propRows, propErr := h.store.Pool().Query(ctx,
-			`SELECT id, city, state, address FROM cached_properties WHERE id = ANY($1)`,
-			allIDs,
-		)
+		propRows, propErr := h.store.Q().GetCachedPropertiesSummaryByIDs(ctx, allIDs)
 		if propErr == nil {
-			defer propRows.Close()
-			for propRows.Next() {
-				var pid, city, state, addr string
-				if err := propRows.Scan(&pid, &city, &state, &addr); err == nil {
-					propMap[pid] = propInfo{city: city, state: state, address: addr}
+			for _, prop := range propRows {
+				propMap[prop.ID] = propInfo{
+					city:    prop.City,
+					state:   prop.State,
+					address: prop.Address,
 				}
 			}
 		}
@@ -848,64 +845,61 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get session (table: evaluation_chat_sessions per Prisma @@map)
-	query := `
-		SELECT id, user_id, cached_property_ids, investor_profile, portfolio_snapshot, created_at, updated_at
-		FROM evaluation_chat_sessions
-		WHERE id = $1 AND user_id = $2
-	`
-
-	var session ChatSession
-	var propertyIDs []string
-	var investorProfile, portfolioSnapshot *string
-
-	err := h.store.Pool().QueryRow(ctx, query, sessionID, user.UserID).Scan(
-		&session.ID, &session.UserID, &propertyIDs, &investorProfile, &portfolioSnapshot,
-		&session.CreatedAt, &session.UpdatedAt,
-	)
+	dbSession, err := h.store.Q().GetEvaluationChatSession(ctx, queries.GetEvaluationChatSessionParams{
+		ID:     sessionID,
+		UserID: user.UserID,
+	})
 	if err != nil {
 		httputil.NotFound(w, "session not found")
 		return
 	}
 
-	session.PropertyIDs = propertyIDs
-	session.PropertyCount = len(propertyIDs)
-	session.InvestorProfile = investorProfile
-	session.PortfolioSnapshot = portfolioSnapshot
+	// Convert to handler's ChatSession struct
+	var session ChatSession
+	session.ID = dbSession.ID
+	session.UserID = dbSession.UserID
+	session.PropertyIDs = dbSession.PropertyIds
+	session.PropertyCount = len(dbSession.PropertyIds)
+	session.CreatedAt = dbSession.CreatedAt.Time
+	session.UpdatedAt = dbSession.UpdatedAt.Time
+
+	// Convert JSONB []byte to *string
+	if len(dbSession.InvestorProfile) > 0 {
+		profileStr := string(dbSession.InvestorProfile)
+		session.InvestorProfile = &profileStr
+	}
+	if len(dbSession.PortfolioSnapshot) > 0 {
+		snapshotStr := string(dbSession.PortfolioSnapshot)
+		session.PortfolioSnapshot = &snapshotStr
+	}
 
 	// Get messages
-	messagesQuery := `
-		SELECT id, session_id, role, content, parsed_blocks, token_usage, created_at
-		FROM evaluation_chat_messages
-		WHERE session_id = $1
-		ORDER BY created_at ASC
-	`
-
-	rows, err := h.store.Pool().Query(ctx, messagesQuery, sessionID)
+	dbMessages, err := h.store.Q().ListEvaluationChatMessages(ctx, sessionID)
 	if err != nil {
 		h.logger.Error("failed to get messages", "error", err)
 		httputil.InternalError(w, fmt.Errorf("failed to get messages"))
 		return
 	}
-	defer rows.Close()
 
-	messages := make([]ChatMessage, 0)
-	for rows.Next() {
-		var msg ChatMessage
-		var parsedBlocks, tokenUsage *string
-
-		err := rows.Scan(
-			&msg.ID, &msg.SessionID, &msg.Role, &msg.Content, &parsedBlocks, &tokenUsage, &msg.CreatedAt,
-		)
-		if err != nil {
-			continue
+	messages := make([]ChatMessage, 0, len(dbMessages))
+	for _, dbMsg := range dbMessages {
+		msg := ChatMessage{
+			ID:        dbMsg.ID,
+			SessionID: dbMsg.SessionID,
+			Role:      dbMsg.Role,
+			Content:   dbMsg.Content,
+			CreatedAt: dbMsg.CreatedAt.Time,
 		}
 
-		if parsedBlocks != nil {
-			msg.ParsedBlocks = json.RawMessage(*parsedBlocks)
+		// Convert JSONB []byte to json.RawMessage
+		if len(dbMsg.ParsedBlocks) > 0 {
+			msg.ParsedBlocks = json.RawMessage(dbMsg.ParsedBlocks)
 		}
-		if tokenUsage != nil {
+
+		// Convert JSONB []byte to *TokenUsage
+		if len(dbMsg.TokenUsage) > 0 {
 			var tu TokenUsage
-			if json.Unmarshal([]byte(*tokenUsage), &tu) == nil {
+			if json.Unmarshal(dbMsg.TokenUsage, &tu) == nil {
 				msg.TokenUsage = &tu
 			}
 		}
@@ -915,31 +909,35 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 
 	// Get cached properties
 	properties := make([]PropertyInput, 0)
-	if len(propertyIDs) > 0 {
-		propQuery := `
-			SELECT id, listing_id, address, city, state, zip_code, price, beds, baths, sqft,
-			       estimated_rent, cap_rate, listing_url, image_url
-			FROM cached_properties
-			WHERE id = ANY($1)
-		`
-
-		propRows, err := h.store.Pool().Query(ctx, propQuery, propertyIDs)
+	if len(session.PropertyIDs) > 0 {
+		propRows, err := h.store.Q().GetCachedPropertiesDetailByIDs(ctx, session.PropertyIDs)
 		if err == nil {
-			defer propRows.Close()
-			for propRows.Next() {
-				var p PropertyInput
-				var listingID, zipCode, listingURL, imageURL *string
-				var capRate *float64
-
-				propRows.Scan(
-					&p.ID, &listingID, &p.Address, &p.City, &p.State, &zipCode,
-					&p.Price, &p.Beds, &p.Baths, &p.Sqft, &p.EstimatedRent, &capRate,
-					&listingURL, &imageURL,
-				)
-
-				if capRate != nil {
-					p.CapRate = fmt.Sprintf("%.2f%%", *capRate)
+			for _, dbProp := range propRows {
+				p := PropertyInput{
+					ID:      dbProp.ID,
+					Address: dbProp.Address,
+					City:    dbProp.City,
+					State:   dbProp.State,
+					Price:   int(dbProp.Price),
 				}
+
+				// Convert pgtype fields to Go types
+				if dbProp.Beds.Valid {
+					p.Beds = int(dbProp.Beds.Int32)
+				}
+				if dbProp.Baths.Valid {
+					p.Baths = dbProp.Baths.Float64
+				}
+				if dbProp.Sqft.Valid {
+					p.Sqft = int(dbProp.Sqft.Int32)
+				}
+				if dbProp.EstimatedRent.Valid {
+					p.EstimatedRent = int(dbProp.EstimatedRent.Int32)
+				}
+				if dbProp.CapRate.Valid {
+					p.CapRate = fmt.Sprintf("%.2f%%", dbProp.CapRate.Float64)
+				}
+
 				properties = append(properties, p)
 			}
 		}
@@ -969,16 +967,17 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Delete session and messages (cascade)
-	query := `DELETE FROM evaluation_chat_sessions WHERE id = $1 AND user_id = $2`
-
-	result, err := h.store.Pool().Exec(ctx, query, sessionID, user.UserID)
+	rowsAffected, err := h.store.Q().DeleteEvaluationChatSession(ctx, queries.DeleteEvaluationChatSessionParams{
+		ID:     sessionID,
+		UserID: user.UserID,
+	})
 	if err != nil {
 		h.logger.Error("failed to delete session", "error", err)
 		httputil.InternalError(w, fmt.Errorf("failed to delete session"))
 		return
 	}
 
-	if result.RowsAffected() == 0 {
+	if rowsAffected == 0 {
 		httputil.NotFound(w, "session not found")
 		return
 	}
