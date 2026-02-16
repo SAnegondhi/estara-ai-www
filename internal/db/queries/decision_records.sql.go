@@ -608,7 +608,7 @@ SELECT
     d.id, d.evaluation_id, d.user_id, d.memo_content, d.pdf_url,
     d.exported_at, d.created_at,
     e.property_address, e.property_city, e.property_state,
-    e.purchase_price, e.status::text AS evaluation_status
+    e.purchase_price, e.monthly_rent, e.status::text AS evaluation_status
 FROM v2_decision_records d
 JOIN v2_evaluations e ON d.evaluation_id = e.id
 WHERE d.user_id = $1
@@ -634,6 +634,7 @@ type ListDecisionRecordsWithEvaluationRow struct {
 	PropertyCity     string           `json:"property_city"`
 	PropertyState    string           `json:"property_state"`
 	PurchasePrice    float64          `json:"purchase_price"`
+	MonthlyRent      float64          `json:"monthly_rent"`
 	EvaluationStatus string           `json:"evaluation_status"`
 }
 
@@ -659,6 +660,7 @@ func (q *Queries) ListDecisionRecordsWithEvaluation(ctx context.Context, arg Lis
 			&i.PropertyCity,
 			&i.PropertyState,
 			&i.PurchasePrice,
+			&i.MonthlyRent,
 			&i.EvaluationStatus,
 		); err != nil {
 			return nil, err

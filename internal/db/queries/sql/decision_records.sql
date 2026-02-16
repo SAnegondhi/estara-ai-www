@@ -5,7 +5,7 @@ SELECT
     d.id, d.evaluation_id, d.user_id, d.memo_content, d.pdf_url,
     d.exported_at, d.created_at,
     e.property_address, e.property_city, e.property_state,
-    e.purchase_price, e.status::text AS evaluation_status
+    e.purchase_price, e.monthly_rent, e.status::text AS evaluation_status
 FROM v2_decision_records d
 JOIN v2_evaluations e ON d.evaluation_id = e.id
 WHERE d.user_id = $1

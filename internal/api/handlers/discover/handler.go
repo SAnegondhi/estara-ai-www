@@ -16,6 +16,7 @@ import (
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
 	dbstore "github.com/estara-ai/www/internal/db"
+	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 	"github.com/estara-ai/www/internal/services/investment/expenses"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
@@ -1116,19 +1117,7 @@ func (h *Handler) GetQuota(w http.ResponseWriter, r *http.Request) {
 	uid := user.UserID
 
 	// Query user's V2 evaluation quota from v2_evaluation_quotas table
-	// This matches the auth handler's getV2Quota query
-	query := `
-		SELECT tier, annual_limit, used_this_period,
-		       period_start_date, period_end_date
-		FROM v2_evaluation_quotas
-		WHERE user_id = $1
-	`
-
-	var tier string
-	var annualLimit, usedThisPeriod int
-	var periodStart, periodEnd time.Time
-
-	err := h.store.Pool().QueryRow(ctx, query, uid).Scan(&tier, &annualLimit, &usedThisPeriod, &periodStart, &periodEnd)
+	dbQuota, err := h.store.Q().GetV2EvaluationQuota(ctx, uid)
 	if err != nil {
 		h.logger.Error("failed to get user quota", "error", err, "user_id", uid)
 		// Return default free tier on error
@@ -1151,6 +1140,12 @@ func (h *Handler) GetQuota(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Use tier from database
+	tier := dbQuota.Tier
+	annualLimit := int(dbQuota.AnnualLimit)
+	usedThisPeriod := int(dbQuota.UsedThisPeriod)
+	periodStart := dbQuota.PeriodStartDate.Time
+	periodEnd := dbQuota.PeriodEndDate.Time
+
 	effectiveTier := tier
 	if effectiveTier == "" {
 		effectiveTier = "V2_FREE"
@@ -1287,26 +1282,11 @@ func (h *Handler) GetRecords(w http.ResponseWriter, r *http.Request) {
 
 	// Query decision records from v2_decision_records table joined with v2_evaluations
 	// Property info comes from v2_evaluations, not cached_properties
-	query := `
-		SELECT
-			r.id,
-			r.evaluation_id,
-			r.pdf_url,
-			r.exported_at,
-			r.created_at,
-			e.property_address,
-			e.property_city,
-			e.property_state,
-			e.purchase_price,
-			e.monthly_rent
-		FROM v2_decision_records r
-		JOIN v2_evaluations e ON r.evaluation_id = e.id
-		WHERE r.user_id = $1
-		ORDER BY r.exported_at DESC
-		LIMIT $2 OFFSET $3
-	`
-
-	rows, err := h.store.Pool().Query(ctx, query, uid, limit, offset)
+	dbRows, err := h.store.Q().ListDecisionRecordsWithEvaluation(ctx, queries.ListDecisionRecordsWithEvaluationParams{
+		UserID: uid,
+		Limit:  int32(limit),
+		Offset: int32(offset),
+	})
 	if err != nil {
 		h.logger.Error("failed to get decision records", "error", err)
 		// Return empty records on error
@@ -1322,45 +1302,52 @@ func (h *Handler) GetRecords(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer rows.Close()
 
-	records := make([]DecisionRecord, 0)
-	for rows.Next() {
-		var rec DecisionRecord
-		var evalID, pdfUrl *string
-		var exportedAt, createdAt time.Time
-
-		err := rows.Scan(
-			&rec.ID, &evalID, &pdfUrl, &exportedAt, &createdAt,
-			&rec.Property.Address, &rec.Property.City, &rec.Property.State,
-			&rec.Property.PurchasePrice, &rec.Property.MonthlyRent,
-		)
-		if err != nil {
-			h.logger.Warn("failed to scan decision record", "error", err)
-			continue
+	records := make([]DecisionRecord, 0, len(dbRows))
+	for _, row := range dbRows {
+		rec := DecisionRecord{
+			ID: row.ID,
+			Property: RecordProperty{
+				Address:       row.PropertyAddress,
+				City:          row.PropertyCity,
+				State:         row.PropertyState,
+				PurchasePrice: row.PurchasePrice,
+				MonthlyRent:   row.MonthlyRent,
+			},
+			CreatedAt: row.CreatedAt.Time.Format(time.RFC3339),
 		}
 
-		rec.EvaluationID = evalID
-		rec.PDFUrl = pdfUrl
-		exportedAtStr := exportedAt.Format(time.RFC3339)
-		rec.ExportedAt = &exportedAtStr
-		rec.CreatedAt = createdAt.Format(time.RFC3339)
+		// EvaluationID is non-nullable
+		rec.EvaluationID = &row.EvaluationID
+
+		// Handle nullable fields
+		if row.PdfUrl.Valid {
+			rec.PDFUrl = &row.PdfUrl.String
+		}
+		if row.ExportedAt.Valid {
+			exportedAtStr := row.ExportedAt.Time.Format(time.RFC3339)
+			rec.ExportedAt = &exportedAtStr
+		}
 
 		records = append(records, rec)
 	}
 
 	// Get total count
-	var total int
-	h.store.Pool().QueryRow(ctx, `SELECT COUNT(*) FROM v2_decision_records WHERE user_id = $1`, uid).Scan(&total)
+	total, err := h.store.Q().CountDecisionRecordsByUser(ctx, uid)
+	if err != nil {
+		h.logger.Warn("failed to get total count", "error", err)
+		total = 0
+	}
+	totalInt := int(total)
 
 	response := RecordsResponse{
 		Success: true,
 		Records: records,
 		Pagination: RecordsPagination{
-			Total:   total,
+			Total:   totalInt,
 			Limit:   limit,
 			Offset:  offset,
-			HasMore: offset+len(records) < total,
+			HasMore: offset+len(records) < totalInt,
 		},
 	}
 
