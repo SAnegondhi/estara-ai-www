@@ -132,6 +132,52 @@ func CreateTestUser(t *testing.T, env *TestEnv, email, password string) *TestUse
 	}
 }
 
+// CreateTestAdminUser creates an admin user and returns auth tokens
+func CreateTestAdminUser(t *testing.T, env *TestEnv, email, password string) *TestUser {
+	// Register user via API
+	user := CreateTestUser(t, env, email, password)
+
+	// Promote user to admin role via direct database update
+	ctx := context.Background()
+	_, err := env.DB.Main.Exec(ctx, `
+		UPDATE users SET role = 'admin' WHERE id = $1
+	`, user.ID)
+	require.NoError(t, err, "failed to promote user to admin")
+
+	// Need to get new token with admin role
+	// Login again to get token with updated role
+	loginBody := map[string]string{
+		"email":    email,
+		"password": password,
+	}
+	respBody := MakeRequest(t, env, Request{
+		Method: "POST",
+		Path:   "/api/auth/login",
+		Body:   loginBody,
+	})
+
+	var loginResp struct {
+		User struct {
+			ID    string `json:"id"`
+			Email string `json:"email"`
+			Role  string `json:"role"`
+		} `json:"user"`
+		AccessToken  string `json:"accessToken"`
+		RefreshToken string `json:"refreshToken"`
+	}
+	err = json.Unmarshal(respBody, &loginResp)
+	require.NoError(t, err, "failed to parse login response")
+	require.Equal(t, "admin", loginResp.User.Role, "user should have admin role")
+
+	return &TestUser{
+		ID:           loginResp.User.ID,
+		Email:        loginResp.User.Email,
+		Password:     password,
+		AccessToken:  loginResp.AccessToken,
+		RefreshToken: loginResp.RefreshToken,
+	}
+}
+
 // Request represents an HTTP request to make
 type Request struct {
 	Method      string

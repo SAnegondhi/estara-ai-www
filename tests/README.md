@@ -50,6 +50,17 @@ These tests verify **real API endpoints** by making actual HTTP requests to the 
 - ✅ Market analysis history
 - ✅ Investment planning history
 
+### Admin Endpoints (`admin_test.go`)
+- ✅ User management (list, get, activity)
+- ✅ Cache management (stats, invalidate)
+- ✅ AI metrics (metrics, usage, cache status)
+- ✅ Analytics (analytics, audit log)
+- ✅ Subscriptions (list subscriptions)
+- ✅ Vendor management (list, costs)
+- ✅ Revenue analytics (summary, trend, by-tier, at-risk, leakage, chargeback-rate)
+- ✅ **Authorization**: Only admin users can access admin endpoints
+- ✅ **Forbidden**: Regular users get 403 when accessing admin endpoints
+
 ## Setup
 
 ### Docker Setup (Recommended)
@@ -144,6 +155,9 @@ go test -v ./tests/integration -run TestPortfolioEndpoints
 
 # Discover tests only
 go test -v ./tests/integration -run TestDiscoverEndpoints
+
+# Admin tests only
+go test -v ./tests/integration -run TestAdminEndpoints
 
 # Market data tests only
 go test -v ./tests/integration -run TestMarketDataEndpoints
