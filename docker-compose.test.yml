@@ -1,20 +1,49 @@
 version: '3.8'
 
-# Integration test infrastructure
-# PostgreSQL provided by Neon (cloud) - only Redis runs locally
-
 services:
-  redis-test:
-    image: redis:7-alpine
+  postgres-test:
+    image: postgres:15-alpine
+    container_name: estara-postgres-test
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
     ports:
-      - "6380:6379"  # Different port to avoid conflicts with dev Redis
+      - "5433:5432"  # Expose on 5433 to avoid conflict with production DB
+    volumes:
+      - postgres-test-data:/var/lib/postgresql/data
+      - ./tests/scripts/init-test-dbs.sh:/docker-entrypoint-initdb.d/init-test-dbs.sh
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - test-network
+
+  redis-test:
+    image: redis:7-alpine
+    container_name: estara-redis-test
+    restart: unless-stopped
+    ports:
+      - "6380:6379"  # Expose on 6380 to avoid conflict with production Redis
     volumes:
       - redis-test-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - test-network
+
+networks:
+  test-network:
+    driver: bridge
 
 volumes:
+  postgres-test-data:
+    driver: local
   redis-test-data:
+    driver: local
