@@ -52,7 +52,57 @@ These tests verify **real API endpoints** by making actual HTTP requests to the 
 
 ## Setup
 
-### Prerequisites
+### Docker Setup (Recommended)
+
+**Easiest way to run tests with isolated databases:**
+
+```bash
+# 1. Start test infrastructure (PostgreSQL + Redis)
+docker compose -f docker-compose.test.yml up -d
+
+# 2. Copy environment template
+cp .env.test.example .env.test
+
+# 3. Run tests
+make test-integration
+
+# 4. Stop infrastructure (optional)
+docker compose -f docker-compose.test.yml down
+```
+
+**Or use the automated script:**
+```bash
+./tests/scripts/run-tests-docker.sh
+```
+
+**What you get:**
+- ✅ PostgreSQL 15 on port 5433 (no conflicts with dev DB)
+- ✅ Redis 7 on port 6380 (no conflicts with dev Redis)
+- ✅ Automatic database creation (`estara_test`, `estara_market_test`)
+- ✅ No manual PostgreSQL installation needed
+- ✅ Clean state on each restart
+- ✅ Same environment across all developers
+
+**Container management:**
+```bash
+# View logs
+docker compose -f docker-compose.test.yml logs -f
+
+# Check status
+docker compose -f docker-compose.test.yml ps
+
+# Clean slate (removes volumes)
+docker compose -f docker-compose.test.yml down -v
+
+# Connect to PostgreSQL (debugging)
+docker exec -it estara-postgres-test psql -U postgres -d estara_test
+```
+
+### Manual Setup (Alternative)
+
+If you prefer to use your own PostgreSQL installation:
+
+#### Prerequisites
 
 1. **Test Databases** (separate from development):
    ```bash
