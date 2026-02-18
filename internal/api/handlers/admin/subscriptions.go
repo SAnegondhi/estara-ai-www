@@ -1,3 +1,4 @@
+// Package admin provides HTTP handlers for the Estara admin API.
 package admin
 
 import (
