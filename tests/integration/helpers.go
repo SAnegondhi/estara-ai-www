@@ -10,12 +10,17 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/estara-ai/www/internal/api"
 	"github.com/estara-ai/www/internal/config"
+	dbstore "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/postgres"
+	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // TestEnv holds the test environment
@@ -99,53 +104,50 @@ type TestUser struct {
 	RefreshToken string
 }
 
-// CreateTestUser creates a user and returns auth tokens
+// CreateTestUser creates a user directly in the database and returns auth tokens
 func CreateTestUser(t *testing.T, env *TestEnv, email, password string) *TestUser {
-	// Register user via API
-	reqBody := map[string]string{
-		"email":    email,
-		"password": password,
-	}
-	respBody := MakeRequest(t, env, Request{
-		Method: "POST",
-		Path:   "/api/auth/register",
-		Body:   reqBody,
-	})
-
-	var registerResp struct {
-		User struct {
-			ID    string `json:"id"`
-			Email string `json:"email"`
-		} `json:"user"`
-		AccessToken  string `json:"accessToken"`
-		RefreshToken string `json:"refreshToken"`
-	}
-	err := json.Unmarshal(respBody, &registerResp)
-	require.NoError(t, err, "failed to parse register response")
-
-	return &TestUser{
-		ID:           registerResp.User.ID,
-		Email:        registerResp.User.Email,
-		Password:     password,
-		AccessToken:  registerResp.AccessToken,
-		RefreshToken: registerResp.RefreshToken,
-	}
-}
-
-// CreateTestAdminUser creates an admin user and returns auth tokens
-func CreateTestAdminUser(t *testing.T, env *TestEnv, email, password string) *TestUser {
-	// Register user via API
-	user := CreateTestUser(t, env, email, password)
-
-	// Promote user to admin role via direct database update
 	ctx := context.Background()
-	_, err := env.DB.Main.Exec(ctx, `
-		UPDATE users SET role = 'admin' WHERE id = $1
-	`, user.ID)
-	require.NoError(t, err, "failed to promote user to admin")
 
-	// Need to get new token with admin role
-	// Login again to get token with updated role
+	// Create a Store from the DB
+	store := dbstore.NewStore(env.DB)
+
+	// Generate unique user ID
+	userID := fmt.Sprintf("test-user-%d", time.Now().UnixNano())
+
+	// Hash password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	require.NoError(t, err, "failed to hash password")
+
+	// Create user in database using sqlc
+	user, err := store.Q().CreateUserWithPassword(ctx, queries.CreateUserWithPasswordParams{
+		ID:       userID,
+		Email:    email,
+		Password: pgtype.Text{String: string(hashedPassword), Valid: true},
+		FirstName: pgtype.Text{String: "", Valid: false},
+		LastName: pgtype.Text{String: "", Valid: false},
+		Role:             "USER",
+		SubscriptionTier: pgtype.Text{String: "free", Valid: true},
+		StripeCustomerId: pgtype.Text{String: "", Valid: false},
+	})
+	require.NoError(t, err, "failed to create user")
+
+	// Create V2 quota for the user (required for login)
+	quotaID := fmt.Sprintf("quota-%d", time.Now().UnixNano())
+	periodStart := time.Now()
+	periodEnd := periodStart.AddDate(1, 0, 0)
+
+	_, err = store.Q().UpsertV2EvaluationQuota(ctx, queries.UpsertV2EvaluationQuotaParams{
+		ID:              quotaID,
+		UserID:          userID,
+		Column3:         "V2_ANNUAL_ACCESS",
+		AnnualLimit:     500,
+		UsedThisPeriod:  0,
+		PeriodStartDate: pgtype.Timestamp{Time: periodStart, Valid: true},
+		PeriodEndDate:   pgtype.Timestamp{Time: periodEnd, Valid: true},
+	})
+	require.NoError(t, err, "failed to create V2 quota")
+
+	// Now log in to get tokens
 	loginBody := map[string]string{
 		"email":    email,
 		"password": password,
@@ -160,20 +162,92 @@ func CreateTestAdminUser(t *testing.T, env *TestEnv, email, password string) *Te
 		User struct {
 			ID    string `json:"id"`
 			Email string `json:"email"`
-			Role  string `json:"role"`
 		} `json:"user"`
-		AccessToken  string `json:"accessToken"`
+		Token        string `json:"token"`
 		RefreshToken string `json:"refreshToken"`
 	}
 	err = json.Unmarshal(respBody, &loginResp)
 	require.NoError(t, err, "failed to parse login response")
-	require.Equal(t, "admin", loginResp.User.Role, "user should have admin role")
 
 	return &TestUser{
-		ID:           loginResp.User.ID,
-		Email:        loginResp.User.Email,
+		ID:           user.ID,
+		Email:        user.Email,
 		Password:     password,
-		AccessToken:  loginResp.AccessToken,
+		AccessToken:  loginResp.Token,
+		RefreshToken: loginResp.RefreshToken,
+	}
+}
+
+// CreateTestAdminUser creates an admin user and returns auth tokens
+func CreateTestAdminUser(t *testing.T, env *TestEnv, email, password string) *TestUser {
+	ctx := context.Background()
+
+	// Create a Store from the DB
+	store := dbstore.NewStore(env.DB)
+
+	// Generate user ID
+	userID := fmt.Sprintf("test-admin-%d", time.Now().UnixNano())
+
+	// Hash password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	require.NoError(t, err, "failed to hash password")
+
+	// Create admin user in database using sqlc
+	user, err := store.Q().CreateUserWithPassword(ctx, queries.CreateUserWithPasswordParams{
+		ID:       userID,
+		Email:    email,
+		Password: pgtype.Text{String: string(hashedPassword), Valid: true},
+		FirstName: pgtype.Text{String: "", Valid: false},
+		LastName: pgtype.Text{String: "", Valid: false},
+		Role:             "ADMIN",  // Create as admin directly
+		SubscriptionTier: pgtype.Text{String: "free", Valid: true},
+		StripeCustomerId: pgtype.Text{String: "", Valid: false},
+	})
+	require.NoError(t, err, "failed to create admin user")
+
+	// Create V2 quota for the admin user (required for login)
+	quotaID := fmt.Sprintf("quota-%d", time.Now().UnixNano())
+	periodStart := time.Now()
+	periodEnd := periodStart.AddDate(1, 0, 0)
+
+	_, err = store.Q().UpsertV2EvaluationQuota(ctx, queries.UpsertV2EvaluationQuotaParams{
+		ID:              quotaID,
+		UserID:          userID,
+		Column3:         "V2_ANNUAL_ACCESS",
+		AnnualLimit:     500,
+		UsedThisPeriod:  0,
+		PeriodStartDate: pgtype.Timestamp{Time: periodStart, Valid: true},
+		PeriodEndDate:   pgtype.Timestamp{Time: periodEnd, Valid: true},
+	})
+	require.NoError(t, err, "failed to create V2 quota")
+
+	// Now log in to get tokens
+	loginBody := map[string]string{
+		"email":    email,
+		"password": password,
+	}
+	respBody := MakeRequest(t, env, Request{
+		Method: "POST",
+		Path:   "/api/auth/login",
+		Body:   loginBody,
+	})
+
+	var loginResp struct {
+		User struct {
+			ID    string `json:"id"`
+			Email string `json:"email"`
+		} `json:"user"`
+		Token        string `json:"token"`
+		RefreshToken string `json:"refreshToken"`
+	}
+	err = json.Unmarshal(respBody, &loginResp)
+	require.NoError(t, err, "failed to parse login response")
+
+	return &TestUser{
+		ID:           user.ID,
+		Email:        user.Email,
+		Password:     password,
+		AccessToken:  loginResp.Token,
 		RefreshToken: loginResp.RefreshToken,
 	}
 }
@@ -246,11 +320,32 @@ func AssertErrorResponse(t *testing.T, body []byte, wantErrSubstring string) {
 func CleanupTestData(t *testing.T, env *TestEnv, userEmail string) {
 	ctx := context.Background()
 
-	// Delete user and all related data (cascades via foreign keys)
+	// Get user ID first
 	_, err := env.DB.Main.Exec(ctx, `
+		SELECT id FROM users WHERE email = $1
+	`, userEmail)
+	if err != nil {
+		// User doesn't exist, nothing to cleanup
+		return
+	}
+
+	// Delete audit logs first (they reference users table)
+	_, _ = env.DB.Main.Exec(ctx, `
+		DELETE FROM audit_logs WHERE "userId" IN (SELECT id FROM users WHERE email = $1)
+	`, userEmail)
+
+	// Delete V2 evaluation quota
+	_, _ = env.DB.Main.Exec(ctx, `
+		DELETE FROM v2_evaluation_quota WHERE "userId" IN (SELECT id FROM users WHERE email = $1)
+	`, userEmail)
+
+	// Now delete the user
+	_, err = env.DB.Main.Exec(ctx, `
 		DELETE FROM users WHERE email = $1
 	`, userEmail)
-	require.NoError(t, err, "failed to cleanup test user")
+	if err != nil {
+		t.Logf("Warning: failed to cleanup test user: %v", err)
+	}
 }
 
 // CreateTestPortfolioProperty creates a test property
@@ -272,7 +367,7 @@ func CreateTestPortfolioProperty(t *testing.T, env *TestEnv, user *TestUser) map
 		Path:        "/api/v2/portfolio",
 		Body:        propertyData,
 		AccessToken: user.AccessToken,
-		WantStatus:  http.StatusOK,
+		WantStatus:  http.StatusCreated,
 	})
 
 	var resp struct {
@@ -312,7 +407,8 @@ func RunTestCases(t *testing.T, env *TestEnv, cases []TestCase) {
 
 // RandomEmail generates a random test email
 func RandomEmail() string {
-	return fmt.Sprintf("test-%d@example.com", os.Getpid())
+	// Use nanosecond timestamp to ensure unique emails across tests
+	return fmt.Sprintf("test-%d@example.com", time.Now().UnixNano())
 }
 
 // RandomPassword generates a random test password

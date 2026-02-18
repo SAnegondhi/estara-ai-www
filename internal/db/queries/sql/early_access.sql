@@ -3,9 +3,11 @@
 -- name: CreateEarlyAccessRequest :one
 INSERT INTO early_access_requests (
     id, email, first_name, last_name, company, use_case,
-    portfolio_size, linkedin_url, status, created_at
+    portfolio_size, linkedin_url,
+    primary_markets, key_investment_decisions, current_analytical_approach,
+    status, created_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, 'pending', NOW()
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', NOW()
 ) RETURNING *;
 
 -- name: GetEarlyAccessRequestByID :one
@@ -23,6 +25,14 @@ LIMIT $2 OFFSET $3;
 -- name: CountEarlyAccessRequests :one
 SELECT COUNT(*) FROM early_access_requests
 WHERE ($1::text = '' OR status = $1);
+
+-- name: SummarizeEarlyAccessRequests :one
+SELECT
+    COUNT(*)::bigint                                          AS total,
+    COUNT(*) FILTER (WHERE status = 'pending')::bigint        AS pending_count,
+    COUNT(*) FILTER (WHERE status = 'approved')::bigint       AS approved_count,
+    COUNT(*) FILTER (WHERE status = 'rejected')::bigint       AS rejected_count
+FROM early_access_requests;
 
 -- name: ApproveEarlyAccessRequest :exec
 UPDATE early_access_requests SET

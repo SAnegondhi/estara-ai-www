@@ -28,6 +28,7 @@ type Querier interface {
 	// Admin Dashboard Analytics Queries
 	CountActiveSubscriptions(ctx context.Context) (int64, error)
 	CountActiveWhitelistedEmails(ctx context.Context) (int64, error)
+	CountAdminActionsForUser(ctx context.Context, resourceID pgtype.Text) (int64, error)
 	CountAllCache(ctx context.Context) (int64, error)
 	CountAnalysisJobsByUser(ctx context.Context, userid string) (int64, error)
 	CountAuditLogFiltered(ctx context.Context, arg CountAuditLogFilteredParams) (int64, error)
@@ -490,6 +491,7 @@ type Querier interface {
 	ListActiveVendorConfigs(ctx context.Context) ([]ListActiveVendorConfigsRow, error)
 	ListActiveVendorNames(ctx context.Context) ([]ListActiveVendorNamesRow, error)
 	ListActiveWhitelistedEmails(ctx context.Context) ([]ListActiveWhitelistedEmailsRow, error)
+	ListAdminActionsForUser(ctx context.Context, arg ListAdminActionsForUserParams) ([]ListAdminActionsForUserRow, error)
 	ListAdminAuditLogs(ctx context.Context, arg ListAdminAuditLogsParams) ([]ListAdminAuditLogsRow, error)
 	ListAdminAuditLogsByAction(ctx context.Context, arg ListAdminAuditLogsByActionParams) ([]ListAdminAuditLogsByActionRow, error)
 	ListAdminAuditLogsByAdmin(ctx context.Context, arg ListAdminAuditLogsByAdminParams) ([]ListAdminAuditLogsByAdminRow, error)
@@ -606,6 +608,7 @@ type Querier interface {
 	// Sets password hash and marks account active (used in password setup flow)
 	SetUserPasswordAndStatus(ctx context.Context, arg SetUserPasswordAndStatusParams) error
 	SoftDeletePortfolioProperty(ctx context.Context, arg SoftDeletePortfolioPropertyParams) error
+	SummarizeEarlyAccessRequests(ctx context.Context) (SummarizeEarlyAccessRequestsRow, error)
 	SupersedeInvestorReport(ctx context.Context, arg SupersedeInvestorReportParams) error
 	SuspendUser(ctx context.Context, arg SuspendUserParams) error
 	ToggleCronJobConfig(ctx context.Context, arg ToggleCronJobConfigParams) (CronJobConfig, error)

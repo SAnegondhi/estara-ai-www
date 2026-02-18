@@ -13,7 +13,7 @@ SET UP YOUR ACCOUNT:
 This link expires in 72 hours.
 
 EARLY ACCESS INCLUDES
-- AI Property Evaluations — Structured analysis with market data
+- Property Evaluations — Structured analysis with market data
 - Investment Planning — Portfolio projections with conservative underwriting
 - Market Intelligence — Trends and data for any US market
 - Decision Memos — Exportable investor-grade reports

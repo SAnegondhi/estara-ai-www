@@ -208,7 +208,10 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 // User Activity
 // ===============================
 
-// GetUserActivity returns audit log entries for a specific user.
+// GetUserActivity returns activity entries for a specific user — a merged view of:
+//   - User's own actions from audit_logs (login, analysis, etc.)
+//   - Admin actions targeting this user from admin_audit_log (suspension, approvals, etc.)
+//
 // GET /api/admin/users/{id}/activity
 func (h *Handler) GetUserActivity(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -227,9 +230,21 @@ func (h *Handler) GetUserActivity(w http.ResponseWriter, r *http.Request) {
 
 	q := h.store.Q()
 
-	// Count audit_logs for this user
+	type activityEntry struct {
+		ID          string  `json:"id"`
+		EventType   string  `json:"eventType"`
+		Description *string `json:"description"`
+		IPAddress   *string `json:"ipAddress"`
+		Timestamp   string  `json:"timestamp"`
+		Success     bool    `json:"success"`
+		Action      *string `json:"action"`
+		Source      string  `json:"source"` // "user" | "admin"
+		AdminEmail  *string `json:"adminEmail,omitempty"`
+	}
+
+	// Count both sources
 	userIDFilter := pgtype.Text{String: userID, Valid: true}
-	total, err := q.CountAuditLogsFiltered(ctx, queries.CountAuditLogsFilteredParams{
+	userTotal, err := q.CountAuditLogsFiltered(ctx, queries.CountAuditLogsFilteredParams{
 		UserID:         userIDFilter,
 		ActionFilter:   pgtype.Text{},
 		ResourceFilter: pgtype.Text{},
@@ -238,7 +253,13 @@ func (h *Handler) GetUserActivity(w http.ResponseWriter, r *http.Request) {
 		httputil.InternalError(w, fmt.Errorf("failed to count activity"))
 		return
 	}
+	adminTotal, err := q.CountAdminActionsForUser(ctx, pgtype.Text{String: userID, Valid: true})
+	if err != nil {
+		adminTotal = 0 // non-fatal: may have no admin actions
+	}
+	total := userTotal + adminTotal
 
+	// Fetch user's own activity
 	auditRows, err := q.ListAuditLogsFiltered(ctx, queries.ListAuditLogsFilteredParams{
 		UserID:         userIDFilter,
 		ActionFilter:   pgtype.Text{},
@@ -251,36 +272,66 @@ func (h *Handler) GetUserActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type activityEntry struct {
-		ID          string  `json:"id"`
-		EventType   string  `json:"eventType"`
-		Description *string `json:"description"`
-		IPAddress   *string `json:"ipAddress"`
-		Timestamp   string  `json:"timestamp"`
-		Success     bool    `json:"success"`
-		Action      *string `json:"action"`
-	}
-
 	entries := make([]activityEntry, 0, len(auditRows))
-	for _, r := range auditRows {
+	for _, row := range auditRows {
 		e := activityEntry{
-			ID:        r.ID,
-			EventType: r.Event,
+			ID:        row.ID,
+			EventType: row.Event,
+			Success:   row.Success,
+			Source:    "user",
 		}
-		if r.Action != "" {
-			a := r.Action
+		if row.Action != "" {
+			a := row.Action
 			e.Action = &a
 		}
-		if r.IpAddress.Valid {
-			e.IPAddress = &r.IpAddress.String
+		if row.Description != "" {
+			d := row.Description
+			e.Description = &d
 		}
-		if r.CreatedAt.Valid {
-			e.Timestamp = r.CreatedAt.Time.Format("2006-01-02T15:04:05Z07:00")
+		if row.IpAddress.Valid {
+			e.IPAddress = &row.IpAddress.String
 		}
-		// Note: ListAuditLogsFiltered doesn't return description or success fields,
-		// map from metadata if available
-		e.Success = true // default to true for audit log entries
+		if row.CreatedAt.Valid {
+			e.Timestamp = row.CreatedAt.Time.Format("2006-01-02T15:04:05Z07:00")
+		}
 		entries = append(entries, e)
+	}
+
+	// Fetch admin actions targeting this user (when there's room on the page)
+	remaining := pageSize - len(entries)
+	if remaining > 0 && offset < int(adminTotal) {
+		adminOffset := offset
+		if adminOffset < 0 {
+			adminOffset = 0
+		}
+		adminRows, adminErr := q.ListAdminActionsForUser(ctx, queries.ListAdminActionsForUserParams{
+			ResourceID: pgtype.Text{String: userID, Valid: true},
+			Offset:     int32(adminOffset),
+			Limit:      int32(remaining),
+		})
+		if adminErr == nil {
+			for _, row := range adminRows {
+				action := row.Action
+				e := activityEntry{
+					ID:         row.ID,
+					EventType:  "ADMIN_ACTION",
+					Action:     &action,
+					Success:    true,
+					Source:     "admin",
+					AdminEmail: &row.AdminEmail,
+				}
+				desc := fmt.Sprintf("Admin %s: %s %s", row.AdminEmail, row.Action, row.Resource)
+				e.Description = &desc
+				if row.IpAddress != "" {
+					ip := row.IpAddress
+					e.IPAddress = &ip
+				}
+				if row.CreatedAt.Valid {
+					e.Timestamp = row.CreatedAt.Time.Format("2006-01-02T15:04:05Z07:00")
+				}
+				entries = append(entries, e)
+			}
+		}
 	}
 
 	httputil.Success(w, map[string]any{
@@ -323,25 +374,43 @@ func (h *Handler) GetUserFinancialProfile(w http.ResponseWriter, r *http.Request
 
 	// Get subscription info
 	type subscriptionInfo struct {
-		Tier      string  `json:"tier"`
-		Status    string  `json:"status"`
-		StartDate *string `json:"startDate"`
-		EndDate   *string `json:"endDate"`
+		Tier               string  `json:"tier"`
+		Status             string  `json:"status"`
+		StartDate          *string `json:"startDate"`
+		EndDate            *string `json:"endDate"`
+		TrialEnd           *string `json:"trialEnd"`
+		CancelAtPeriodEnd  bool    `json:"cancelAtPeriodEnd"`
+		CanceledAt         *string `json:"canceledAt"`
+		StripeSubID        *string `json:"stripeSubscriptionId"`
 	}
 
 	var sub subscriptionInfo
-	subRow, subErr := q.GetUserSubscriptionInfo(ctx, userID)
+	fullSub, subErr := q.GetSubscriptionByUserID(ctx, userID)
 	if subErr != nil && subErr != pgx.ErrNoRows {
 		h.logger.Warn("failed to get subscription", "error", subErr, "user_id", userID)
 	}
 	if subErr == nil {
-		sub.Tier = subRow.Tier
-		sub.Status = subRow.Status
-		if sd, ok := subRow.StartDate.(string); ok && sd != "" {
-			sub.StartDate = &sd
+		sub.Tier = fmt.Sprint(fullSub.Tier)
+		sub.Status = fmt.Sprint(fullSub.Status)
+		sub.CancelAtPeriodEnd = fullSub.CancelAtPeriodEnd
+		if fullSub.CurrentPeriodStart.Valid {
+			t := fullSub.CurrentPeriodStart.Time.Format("2006-01-02T15:04:05Z07:00")
+			sub.StartDate = &t
 		}
-		if ed, ok := subRow.EndDate.(string); ok && ed != "" {
-			sub.EndDate = &ed
+		if fullSub.CurrentPeriodEnd.Valid {
+			t := fullSub.CurrentPeriodEnd.Time.Format("2006-01-02T15:04:05Z07:00")
+			sub.EndDate = &t
+		}
+		if fullSub.TrialEnd.Valid {
+			t := fullSub.TrialEnd.Time.Format("2006-01-02T15:04:05Z07:00")
+			sub.TrialEnd = &t
+		}
+		if fullSub.CanceledAt.Valid {
+			t := fullSub.CanceledAt.Time.Format("2006-01-02T15:04:05Z07:00")
+			sub.CanceledAt = &t
+		}
+		if fullSub.StripeSubscriptionId.Valid {
+			sub.StripeSubID = &fullSub.StripeSubscriptionId.String
 		}
 	}
 
@@ -493,4 +562,140 @@ func (h *Handler) DeleteUserData(w http.ResponseWriter, r *http.Request) {
 
 	h.logger.Info("user data deleted (GDPR)", "user_id", userID, "email", user.Email)
 	httputil.Success(w, map[string]any{"deleted": true})
+}
+
+// ===============================
+// Role Management (SUPER_ADMIN only)
+// ===============================
+
+// PromoteToSuperAdmin promotes an ADMIN user to SUPER_ADMIN role.
+// POST /api/admin/users/{id}/promote-super-admin
+// Only SUPER_ADMIN users can perform this action.
+func (h *Handler) PromoteToSuperAdmin(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	userID := chi.URLParam(r, "id")
+	if userID == "" {
+		httputil.BadRequest(w, "user ID required")
+		return
+	}
+
+	// Verify requesting user is SUPER_ADMIN
+	admin := middleware.GetUserFromContext(ctx)
+	if admin == nil || admin.Role != "SUPER_ADMIN" {
+		httputil.Forbidden(w, "only SUPER_ADMIN can promote users")
+		return
+	}
+
+	q := h.store.Q()
+
+	// Get target user
+	user, err := q.GetUserByID(ctx, userID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			httputil.NotFound(w, "user not found")
+		} else {
+			httputil.InternalError(w, fmt.Errorf("failed to get user"))
+		}
+		return
+	}
+
+	// Verify user is currently ADMIN
+	if user.Role != "ADMIN" {
+		httputil.BadRequest(w, fmt.Sprintf("user must be ADMIN to promote (current role: %s)", user.Role))
+		return
+	}
+
+	// Update role to SUPER_ADMIN
+	err = q.UpdateUserRole(ctx, queries.UpdateUserRoleParams{
+		ID:   userID,
+		Role: "SUPER_ADMIN",
+	})
+	if err != nil {
+		h.logger.Error("promote to SUPER_ADMIN failed", "error", err, "user_id", userID)
+		httputil.InternalError(w, fmt.Errorf("failed to update user role"))
+		return
+	}
+
+	h.logAdminAudit(ctx, r, "USER_UPDATE", "user", userID, map[string]any{
+		"action":         "promote_super_admin",
+		"previous_role":  "ADMIN",
+		"new_role":       "SUPER_ADMIN",
+		"promoted_by":    admin.UserID,
+		"promoted_email": user.Email,
+	})
+
+	h.logger.Info("user promoted to SUPER_ADMIN", "user_id", userID, "email", user.Email, "by", admin.UserID)
+	httputil.Success(w, map[string]any{
+		"role":    "SUPER_ADMIN",
+		"updated": true,
+	})
+}
+
+// DemoteFromSuperAdmin demotes a SUPER_ADMIN user to ADMIN role.
+// POST /api/admin/users/{id}/demote-from-super-admin
+// Only SUPER_ADMIN users can perform this action.
+func (h *Handler) DemoteFromSuperAdmin(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	userID := chi.URLParam(r, "id")
+	if userID == "" {
+		httputil.BadRequest(w, "user ID required")
+		return
+	}
+
+	// Verify requesting user is SUPER_ADMIN
+	admin := middleware.GetUserFromContext(ctx)
+	if admin == nil || admin.Role != "SUPER_ADMIN" {
+		httputil.Forbidden(w, "only SUPER_ADMIN can demote users")
+		return
+	}
+
+	// Prevent self-demotion
+	if admin.UserID == userID {
+		httputil.BadRequest(w, "cannot demote yourself")
+		return
+	}
+
+	q := h.store.Q()
+
+	// Get target user
+	user, err := q.GetUserByID(ctx, userID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			httputil.NotFound(w, "user not found")
+		} else {
+			httputil.InternalError(w, fmt.Errorf("failed to get user"))
+		}
+		return
+	}
+
+	// Verify user is currently SUPER_ADMIN
+	if user.Role != "SUPER_ADMIN" {
+		httputil.BadRequest(w, fmt.Sprintf("user must be SUPER_ADMIN to demote (current role: %s)", user.Role))
+		return
+	}
+
+	// Update role to ADMIN
+	err = q.UpdateUserRole(ctx, queries.UpdateUserRoleParams{
+		ID:   userID,
+		Role: "ADMIN",
+	})
+	if err != nil {
+		h.logger.Error("demote from SUPER_ADMIN failed", "error", err, "user_id", userID)
+		httputil.InternalError(w, fmt.Errorf("failed to update user role"))
+		return
+	}
+
+	h.logAdminAudit(ctx, r, "USER_UPDATE", "user", userID, map[string]any{
+		"action":        "demote_from_super_admin",
+		"previous_role": "SUPER_ADMIN",
+		"new_role":      "ADMIN",
+		"demoted_by":    admin.UserID,
+		"demoted_email": user.Email,
+	})
+
+	h.logger.Info("user demoted from SUPER_ADMIN", "user_id", userID, "email", user.Email, "by", admin.UserID)
+	httputil.Success(w, map[string]any{
+		"role":    "ADMIN",
+		"updated": true,
+	})
 }

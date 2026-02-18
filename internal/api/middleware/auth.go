@@ -118,6 +118,37 @@ func (m *AuthMiddleware) RequireAdmin(next http.Handler) http.Handler {
 	})
 }
 
+// AuthenticateHeaderOnly validates the JWT token from the Authorization header only.
+// Unlike Authenticate, it does NOT check cookies. Use this for admin routes to prevent
+// regular-user httpOnly cookies from overriding the admin Bearer token.
+func (m *AuthMiddleware) AuthenticateHeaderOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := extractBearerTokenFromHeader(r)
+		if token == "" {
+			httputil.Error(w, http.StatusUnauthorized, ErrMissingToken.Error())
+			return
+		}
+
+		claims, err := m.validateToken(token)
+		if err != nil {
+			m.logger.Warn("token validation failed",
+				"error", err,
+				"path", r.URL.Path,
+				"method", r.Method,
+			)
+			if errors.Is(err, ErrTokenExpired) {
+				httputil.Error(w, http.StatusUnauthorized, "token expired")
+			} else {
+				httputil.Error(w, http.StatusUnauthorized, "invalid token")
+			}
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), userContextKey, claims)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 // OptionalAuth tries to authenticate but doesn't require it
 func (m *AuthMiddleware) OptionalAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -311,6 +342,20 @@ func extractBearerToken(r *http.Request) string {
 	// FALLBACK: Query param for SSE connections
 	// Note: SSE with cookies still uses query param for CSRF validation
 	return r.URL.Query().Get("token")
+}
+
+// extractBearerTokenFromHeader extracts the token from the Authorization header only.
+// Does NOT check cookies — used for admin routes to prevent regular-user cookies
+// from shadowing the admin Bearer token when both are present in the browser.
+func extractBearerTokenFromHeader(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if auth != "" {
+		parts := strings.SplitN(auth, " ", 2)
+		if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
+			return parts[1]
+		}
+	}
+	return ""
 }
 
 // GetUserFromContext retrieves the user claims from context

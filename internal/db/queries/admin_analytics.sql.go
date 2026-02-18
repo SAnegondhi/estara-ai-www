@@ -7,6 +7,7 @@ package queries
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -19,6 +20,17 @@ SELECT COUNT(*) FROM subscriptions WHERE status IN ('ACTIVE', 'TRIALING')
 // Admin Dashboard Analytics Queries
 func (q *Queries) CountActiveSubscriptions(ctx context.Context) (int64, error) {
 	row := q.db.QueryRow(ctx, CountActiveSubscriptions)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const CountAdminActionsForUser = `-- name: CountAdminActionsForUser :one
+SELECT COUNT(*) FROM admin_audit_log WHERE "resourceId" = $1
+`
+
+func (q *Queries) CountAdminActionsForUser(ctx context.Context, resourceID pgtype.Text) (int64, error) {
+	row := q.db.QueryRow(ctx, CountAdminActionsForUser, resourceID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -295,8 +307,68 @@ func (q *Queries) GetUserAnalytics(ctx context.Context) (GetUserAnalyticsRow, er
 	return i, err
 }
 
+const ListAdminActionsForUser = `-- name: ListAdminActionsForUser :many
+SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+       details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log
+WHERE "resourceId" = $1
+ORDER BY "createdAt" DESC
+LIMIT $3 OFFSET $2
+`
+
+type ListAdminActionsForUserParams struct {
+	ResourceID pgtype.Text `json:"resource_id"`
+	Offset     int32       `json:"offset"`
+	Limit      int32       `json:"limit"`
+}
+
+type ListAdminActionsForUserRow struct {
+	ID         string           `json:"id"`
+	AdminId    string           `json:"adminId"`
+	AdminEmail string           `json:"adminEmail"`
+	Action     string           `json:"action"`
+	Resource   string           `json:"resource"`
+	ResourceId pgtype.Text      `json:"resourceId"`
+	Details    json.RawMessage  `json:"details"`
+	IpAddress  string           `json:"ipAddress"`
+	UserAgent  string           `json:"userAgent"`
+	CreatedAt  pgtype.Timestamp `json:"createdAt"`
+}
+
+func (q *Queries) ListAdminActionsForUser(ctx context.Context, arg ListAdminActionsForUserParams) ([]ListAdminActionsForUserRow, error) {
+	rows, err := q.db.Query(ctx, ListAdminActionsForUser, arg.ResourceID, arg.Offset, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAdminActionsForUserRow{}
+	for rows.Next() {
+		var i ListAdminActionsForUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AdminId,
+			&i.AdminEmail,
+			&i.Action,
+			&i.Resource,
+			&i.ResourceId,
+			&i.Details,
+			&i.IpAddress,
+			&i.UserAgent,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListAuditLogsFiltered = `-- name: ListAuditLogsFiltered :many
 SELECT id, "userId", event::text, COALESCE(action, '') as action, COALESCE(resource, '') as resource,
+       COALESCE(description, '') as description, success,
        metadata, "ipAddress", "userAgent", "createdAt"
 FROM audit_logs
 WHERE ($1::text IS NULL OR "userId" = $1)
@@ -315,15 +387,17 @@ type ListAuditLogsFilteredParams struct {
 }
 
 type ListAuditLogsFilteredRow struct {
-	ID        string           `json:"id"`
-	UserId    pgtype.Text      `json:"userId"`
-	Event     string           `json:"event"`
-	Action    string           `json:"action"`
-	Resource  string           `json:"resource"`
-	Metadata  []byte           `json:"metadata"`
-	IpAddress pgtype.Text      `json:"ipAddress"`
-	UserAgent pgtype.Text      `json:"userAgent"`
-	CreatedAt pgtype.Timestamp `json:"createdAt"`
+	ID          string           `json:"id"`
+	UserId      pgtype.Text      `json:"userId"`
+	Event       string           `json:"event"`
+	Action      string           `json:"action"`
+	Resource    string           `json:"resource"`
+	Description string           `json:"description"`
+	Success     bool             `json:"success"`
+	Metadata    []byte           `json:"metadata"`
+	IpAddress   pgtype.Text      `json:"ipAddress"`
+	UserAgent   pgtype.Text      `json:"userAgent"`
+	CreatedAt   pgtype.Timestamp `json:"createdAt"`
 }
 
 func (q *Queries) ListAuditLogsFiltered(ctx context.Context, arg ListAuditLogsFilteredParams) ([]ListAuditLogsFilteredRow, error) {
@@ -347,6 +421,8 @@ func (q *Queries) ListAuditLogsFiltered(ctx context.Context, arg ListAuditLogsFi
 			&i.Event,
 			&i.Action,
 			&i.Resource,
+			&i.Description,
+			&i.Success,
 			&i.Metadata,
 			&i.IpAddress,
 			&i.UserAgent,

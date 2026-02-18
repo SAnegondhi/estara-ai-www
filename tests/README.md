@@ -61,6 +61,13 @@ These tests verify **real API endpoints** by making actual HTTP requests to the 
 - ✅ **Authorization**: Only admin users can access admin endpoints
 - ✅ **Forbidden**: Regular users get 403 when accessing admin endpoints
 
+### Cron Job Endpoints (`cron_test.go`)
+- ✅ Authentication (X-Cron-Secret header validation)
+- ✅ General cron jobs (16 endpoints)
+- ✅ Market data status
+- ⏭️  Market data imports (skipped - require external dependencies)
+- ✅ Cron job tracking system
+
 ## Setup
 
 ### Docker Setup (Recommended)
@@ -158,6 +165,9 @@ go test -v ./tests/integration -run TestDiscoverEndpoints
 
 # Admin tests only
 go test -v ./tests/integration -run TestAdminEndpoints
+
+# Cron tests only
+go test -v ./tests/integration -run TestCronEndpoints
 
 # Market data tests only
 go test -v ./tests/integration -run TestMarketDataEndpoints
@@ -395,19 +405,30 @@ go build ./...
 - Use -race flag to detect race conditions
 - Use -count=1 to disable test caching
 
-## Coverage
+## Reporting
 
-### Generate Coverage Report
+### Quick Summary (No Test Execution)
 ```bash
-go test -coverprofile=coverage.out ./tests/integration
-go tool cover -html=coverage.out -o coverage.html
+./tests/scripts/test-summary.sh
+```
+
+### Comprehensive Test Report
+```bash
+make test-report
+```
+Generates:
+- JSON test output
+- HTML coverage report
+- Test summary with statistics
+- Timestamped reports for history
+
+### Coverage Report Only
+```bash
+make test-coverage
 open coverage.html
 ```
 
-### Coverage by Package
-```bash
-go test -cover ./tests/integration
-```
+**📖 See [REPORTING.md](REPORTING.md) for detailed reporting guide**
 
 ## Maintenance
 

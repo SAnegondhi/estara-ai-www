@@ -57,13 +57,12 @@ test:
 # Run integration tests (requires test database)
 test-integration:
 	@echo "Running integration tests..."
-	@if [ -z "$$TEST_DATABASE_URL" ]; then \
-		echo "ERROR: TEST_DATABASE_URL environment variable not set"; \
-		echo "Set it to your test database URL, e.g.:"; \
-		echo "  export TEST_DATABASE_URL='postgresql://localhost:5432/estara_test?sslmode=disable'"; \
+	@if [ ! -f .env.test ]; then \
+		echo "ERROR: .env.test file not found"; \
+		echo "Run: ./tests/scripts/setup-test-db.sh to create it"; \
 		exit 1; \
 	fi
-	go test -v ./tests/integration -count=1
+	@set -a && . ./.env.test && set +a && go test -v ./tests/integration -count=1
 
 # Run unit tests only (no database required)
 test-unit:
@@ -77,3 +76,13 @@ test-coverage:
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report generated: coverage.html"
 	@echo "Open with: open coverage.html"
+
+# Generate comprehensive test report with summary
+test-report:
+	@echo "Generating comprehensive test report..."
+	@if [ ! -f .env.test ]; then \
+		echo "ERROR: .env.test file not found"; \
+		echo "Run: ./tests/scripts/setup-test-db.sh to create it"; \
+		exit 1; \
+	fi
+	@set -a && . ./.env.test && set +a && ./tests/scripts/test-report.sh

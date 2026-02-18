@@ -421,20 +421,23 @@ type EarlyAccess struct {
 }
 
 type EarlyAccessRequest struct {
-	ID            string             `json:"id"`
-	Email         string             `json:"email"`
-	FirstName     string             `json:"first_name"`
-	LastName      string             `json:"last_name"`
-	Company       pgtype.Text        `json:"company"`
-	UseCase       string             `json:"use_case"`
-	PortfolioSize pgtype.Text        `json:"portfolio_size"`
-	LinkedinUrl   pgtype.Text        `json:"linkedin_url"`
-	Status        string             `json:"status"`
-	UserID        pgtype.Text        `json:"user_id"`
-	AdminNotes    pgtype.Text        `json:"admin_notes"`
-	CreatedAt     time.Time          `json:"created_at"`
-	ReviewedAt    pgtype.Timestamptz `json:"reviewed_at"`
-	ReviewedBy    pgtype.Text        `json:"reviewed_by"`
+	ID                        string             `json:"id"`
+	Email                     string             `json:"email"`
+	FirstName                 string             `json:"first_name"`
+	LastName                  string             `json:"last_name"`
+	Company                   pgtype.Text        `json:"company"`
+	UseCase                   string             `json:"use_case"`
+	PortfolioSize             pgtype.Text        `json:"portfolio_size"`
+	LinkedinUrl               pgtype.Text        `json:"linkedin_url"`
+	PrimaryMarkets            pgtype.Text        `json:"primary_markets"`
+	KeyInvestmentDecisions    pgtype.Text        `json:"key_investment_decisions"`
+	CurrentAnalyticalApproach pgtype.Text        `json:"current_analytical_approach"`
+	Status                    string             `json:"status"`
+	UserID                    pgtype.Text        `json:"user_id"`
+	AdminNotes                pgtype.Text        `json:"admin_notes"`
+	CreatedAt                 time.Time          `json:"created_at"`
+	ReviewedAt                pgtype.Timestamptz `json:"reviewed_at"`
+	ReviewedBy                pgtype.Text        `json:"reviewed_by"`
 }
 
 type EmailVerificationCode struct {

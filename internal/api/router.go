@@ -467,7 +467,10 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 
 	// Admin routes
 	r.Route("/api/admin", func(r chi.Router) {
-		r.Use(authMiddleware.Authenticate)
+		// Use header-only auth for admin routes: prevents a regular-user httpOnly cookie
+		// (access_token) from shadowing the admin Bearer token when both are present in
+		// the same browser session. Admin frontend uses localStorage + Bearer, not cookies.
+		r.Use(authMiddleware.AuthenticateHeaderOnly)
 		r.Use(authMiddleware.RequireAdmin)
 
 		// User management

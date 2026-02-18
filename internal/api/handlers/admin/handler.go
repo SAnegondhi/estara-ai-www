@@ -69,16 +69,19 @@ func NewHandler(store *dbstore.Store, redis *redisClient.Client, cfg *config.Con
 
 // User represents a user from the database
 type User struct {
-	ID               string     `json:"id"`
-	Email            string     `json:"email"`
-	FirstName        *string    `json:"firstName,omitempty"`
-	LastName         *string    `json:"lastName,omitempty"`
-	Role             string     `json:"role"`
-	SubscriptionTier *string    `json:"subscriptionTier,omitempty"`
-	StripeCustomerID *string    `json:"stripeCustomerId,omitempty"`
-	SuspendedAt      *time.Time `json:"suspendedAt,omitempty"`
-	CreatedAt        time.Time  `json:"createdAt"`
-	UpdatedAt        time.Time  `json:"updatedAt"`
+	ID                 string     `json:"id"`
+	Email              string     `json:"email"`
+	FirstName          *string    `json:"firstName,omitempty"`
+	LastName           *string    `json:"lastName,omitempty"`
+	Role               string     `json:"role"`
+	SubscriptionTier   *string    `json:"subscriptionTier,omitempty"`
+	StripeCustomerID   *string    `json:"stripeCustomerId,omitempty"`
+	SuspendedAt        *time.Time `json:"suspendedAt,omitempty"`
+	SuspendedBy        *string    `json:"suspendedBy,omitempty"`
+	SuspendReason      *string    `json:"suspendReason,omitempty"`
+	EarlyAccessStatus  *string    `json:"earlyAccessStatus,omitempty"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
 }
 
 // UpdateUserRequest represents the request to update a user
@@ -1159,6 +1162,15 @@ func mapQueryUserToLocal(qu queries.User) User {
 	}
 	if qu.SuspendedAt.Valid {
 		u.SuspendedAt = &qu.SuspendedAt.Time
+	}
+	if qu.SuspendedBy.Valid {
+		u.SuspendedBy = &qu.SuspendedBy.String
+	}
+	if qu.SuspendReason.Valid {
+		u.SuspendReason = &qu.SuspendReason.String
+	}
+	if qu.EarlyAccessStatus.Valid {
+		u.EarlyAccessStatus = &qu.EarlyAccessStatus.String
 	}
 	if qu.CreatedAt.Valid {
 		u.CreatedAt = qu.CreatedAt.Time

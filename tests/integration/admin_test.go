@@ -44,13 +44,16 @@ func testAdminUserManagement(env *TestEnv, adminUser, regularUser *TestUser) fun
 					},
 					WantStatus: http.StatusOK,
 					Validate: func(t *testing.T, body []byte) {
+						// Response shape: {"success": true, "data": {"users": [...], "pagination": {...}}}
 						var resp struct {
-							Users []map[string]interface{} `json:"users"`
+							Data struct {
+								Users []map[string]interface{} `json:"users"`
+							} `json:"data"`
 						}
 						ParseJSON(t, body, &resp)
-						require.NotNil(t, resp.Users)
+						require.NotNil(t, resp.Data.Users)
 						// Should have at least the admin and regular user
-						assert.GreaterOrEqual(t, len(resp.Users), 2)
+						assert.GreaterOrEqual(t, len(resp.Data.Users), 2)
 					},
 				},
 				{
@@ -76,6 +79,7 @@ func testAdminUserManagement(env *TestEnv, adminUser, regularUser *TestUser) fun
 
 		t.Run("GetUser", func(t *testing.T) {
 			// Admin can get regular user's details
+			// Response shape: {"success": true, "data": {user fields...}}
 			body := MakeRequest(t, env, Request{
 				Method:      "GET",
 				Path:        "/api/admin/users/" + regularUser.ID,
@@ -84,11 +88,12 @@ func testAdminUserManagement(env *TestEnv, adminUser, regularUser *TestUser) fun
 			})
 
 			var resp struct {
-				User map[string]interface{} `json:"user"`
+				Data map[string]interface{} `json:"data"`
 			}
 			ParseJSON(t, body, &resp)
-			assert.Equal(t, regularUser.ID, resp.User["id"])
-			assert.Equal(t, regularUser.Email, resp.User["email"])
+			require.NotNil(t, resp.Data)
+			assert.Equal(t, regularUser.ID, resp.Data["id"])
+			assert.Equal(t, regularUser.Email, resp.Data["email"])
 
 			// Regular user cannot access admin endpoint
 			MakeRequest(t, env, Request{
@@ -101,6 +106,7 @@ func testAdminUserManagement(env *TestEnv, adminUser, regularUser *TestUser) fun
 
 		t.Run("GetUserActivity", func(t *testing.T) {
 			// Admin can get user activity
+			// Response shape: {"success": true, "data": {"entries": [...], "pagination": {...}}}
 			body := MakeRequest(t, env, Request{
 				Method:      "GET",
 				Path:        "/api/admin/users/" + regularUser.ID + "/activity",
@@ -109,10 +115,13 @@ func testAdminUserManagement(env *TestEnv, adminUser, regularUser *TestUser) fun
 			})
 
 			var resp struct {
-				Activity []interface{} `json:"activity"`
+				Data struct {
+					Entries []interface{} `json:"entries"`
+				} `json:"data"`
 			}
 			ParseJSON(t, body, &resp)
-			require.NotNil(t, resp.Activity)
+			// entries may be empty for a fresh user, just ensure the key exists
+			assert.NotNil(t, resp.Data.Entries)
 		})
 	}
 }
@@ -149,13 +158,13 @@ func testAdminCacheManagement(env *TestEnv, adminUser, regularUser *TestUser) fu
 		})
 
 		t.Run("InvalidateCache", func(t *testing.T) {
-			// Admin can invalidate cache
+			// Admin can invalidate cache (strategy is required: all|expired|type|user|key)
 			MakeRequest(t, env, Request{
 				Method:      "DELETE",
 				Path:        "/api/admin/cache/invalidate",
 				AccessToken: adminUser.AccessToken,
 				Body: map[string]interface{}{
-					"pattern": "test:*",
+					"strategy": "all",
 				},
 				WantStatus: http.StatusOK,
 			})
@@ -166,7 +175,7 @@ func testAdminCacheManagement(env *TestEnv, adminUser, regularUser *TestUser) fu
 				Path:        "/api/admin/cache/invalidate",
 				AccessToken: regularUser.AccessToken,
 				Body: map[string]interface{}{
-					"pattern": "test:*",
+					"strategy": "all",
 				},
 				WantStatus: http.StatusForbidden,
 			})
@@ -237,6 +246,7 @@ func testAdminAnalytics(env *TestEnv, adminUser, regularUser *TestUser) func(t *
 
 		t.Run("GetAuditLog", func(t *testing.T) {
 			// Admin can view audit log
+			// Response shape: {"success": true, "data": {"entries": [...], "pagination": {...}}}
 			body := MakeRequest(t, env, Request{
 				Method:      "GET",
 				Path:        "/api/admin/audit-log",
@@ -245,10 +255,12 @@ func testAdminAnalytics(env *TestEnv, adminUser, regularUser *TestUser) func(t *
 			})
 
 			var resp struct {
-				Logs []interface{} `json:"logs"`
+				Data struct {
+					Entries []interface{} `json:"entries"`
+				} `json:"data"`
 			}
 			ParseJSON(t, body, &resp)
-			require.NotNil(t, resp.Logs)
+			require.NotNil(t, resp.Data.Entries)
 
 			// Regular user cannot view audit log
 			MakeRequest(t, env, Request{
@@ -265,6 +277,7 @@ func testAdminSubscriptions(env *TestEnv, adminUser, regularUser *TestUser) func
 	return func(t *testing.T) {
 		t.Run("ListSubscriptions", func(t *testing.T) {
 			// Admin can list subscriptions
+			// Response shape: {"success": true, "data": {"subscriptions": [...], "summary": {...}, "pagination": {...}}}
 			body := MakeRequest(t, env, Request{
 				Method:      "GET",
 				Path:        "/api/admin/subscriptions",
@@ -273,10 +286,12 @@ func testAdminSubscriptions(env *TestEnv, adminUser, regularUser *TestUser) func
 			})
 
 			var resp struct {
-				Subscriptions []interface{} `json:"subscriptions"`
+				Data struct {
+					Subscriptions []interface{} `json:"subscriptions"`
+				} `json:"data"`
 			}
 			ParseJSON(t, body, &resp)
-			require.NotNil(t, resp.Subscriptions)
+			require.NotNil(t, resp.Data.Subscriptions)
 
 			// Regular user cannot list subscriptions
 			MakeRequest(t, env, Request{
@@ -289,7 +304,7 @@ func testAdminSubscriptions(env *TestEnv, adminUser, regularUser *TestUser) func
 	}
 }
 
-func TestAdminVendorManagement(env *TestEnv, adminUser, regularUser *TestUser) func(t *testing.T) {
+func testAdminVendorManagement(env *TestEnv, adminUser, regularUser *TestUser) func(t *testing.T) {
 	return func(t *testing.T) {
 		t.Run("ListVendors", func(t *testing.T) {
 			// Admin can list vendors
@@ -331,7 +346,7 @@ func TestAdminVendorManagement(env *TestEnv, adminUser, regularUser *TestUser) f
 	}
 }
 
-func TestAdminRevenueAnalytics(env *TestEnv, adminUser, regularUser *TestUser) func(t *testing.T) {
+func testAdminRevenueAnalytics(env *TestEnv, adminUser, regularUser *TestUser) func(t *testing.T) {
 	return func(t *testing.T) {
 		endpoints := []struct {
 			name string

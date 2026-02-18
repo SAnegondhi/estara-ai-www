@@ -58,13 +58,16 @@ func NewHandler(store *dbstore.Store, redis *redisClient.Client, cfg *config.Con
 
 // ApplyRequest is the body for POST /api/early-access/apply.
 type ApplyRequest struct {
-	FirstName     string `json:"firstName"`
-	LastName      string `json:"lastName"`
-	Email         string `json:"email"`
-	Company       string `json:"company"`
-	UseCase       string `json:"useCase"`
-	PortfolioSize string `json:"portfolioSize"`
-	LinkedInURL   string `json:"linkedinUrl"`
+	FirstName                  string `json:"firstName"`
+	LastName                   string `json:"lastName"`
+	Email                      string `json:"email"`
+	Company                    string `json:"company"`
+	UseCase                    string `json:"useCase"`
+	PortfolioSize              string `json:"portfolioSize"`
+	LinkedInURL                string `json:"linkedinUrl"`
+	PrimaryMarkets             string `json:"primaryMarkets"`
+	KeyInvestmentDecisions     string `json:"keyInvestmentDecisions"`
+	CurrentAnalyticalApproach  string `json:"currentAnalyticalApproach"`
 }
 
 // SetupPasswordRequest is the body for POST /api/auth/setup-password.
@@ -127,16 +130,22 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 	companyNull := pgtype.Text{String: req.Company, Valid: req.Company != ""}
 	portfolioNull := pgtype.Text{String: req.PortfolioSize, Valid: req.PortfolioSize != ""}
 	linkedinNull := pgtype.Text{String: req.LinkedInURL, Valid: req.LinkedInURL != ""}
+	marketsNull := pgtype.Text{String: req.PrimaryMarkets, Valid: req.PrimaryMarkets != ""}
+	investDecNull := pgtype.Text{String: req.KeyInvestmentDecisions, Valid: req.KeyInvestmentDecisions != ""}
+	analyticalNull := pgtype.Text{String: req.CurrentAnalyticalApproach, Valid: req.CurrentAnalyticalApproach != ""}
 
 	_, err = h.store.Q().CreateEarlyAccessRequest(ctx, queries.CreateEarlyAccessRequestParams{
-		ID:            id,
-		Email:         req.Email,
-		FirstName:     req.FirstName,
-		LastName:      req.LastName,
-		Company:       companyNull,
-		UseCase:       req.UseCase,
-		PortfolioSize: portfolioNull,
-		LinkedinUrl:   linkedinNull,
+		ID:                         id,
+		Email:                      req.Email,
+		FirstName:                  req.FirstName,
+		LastName:                   req.LastName,
+		Company:                    companyNull,
+		UseCase:                    req.UseCase,
+		PortfolioSize:              portfolioNull,
+		LinkedinUrl:                linkedinNull,
+		PrimaryMarkets:             marketsNull,
+		KeyInvestmentDecisions:     investDecNull,
+		CurrentAnalyticalApproach:  analyticalNull,
 	})
 	if err != nil {
 		h.logger.Error("failed to create early access request", "error", err)

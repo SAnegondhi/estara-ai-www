@@ -103,6 +103,7 @@ WHERE (sqlc.narg('user_id')::text IS NULL OR "userId" = sqlc.narg('user_id'))
 
 -- name: ListAuditLogsFiltered :many
 SELECT id, "userId", event::text, COALESCE(action, '') as action, COALESCE(resource, '') as resource,
+       COALESCE(description, '') as description, success,
        metadata, "ipAddress", "userAgent", "createdAt"
 FROM audit_logs
 WHERE (sqlc.narg('user_id')::text IS NULL OR "userId" = sqlc.narg('user_id'))
@@ -110,6 +111,17 @@ WHERE (sqlc.narg('user_id')::text IS NULL OR "userId" = sqlc.narg('user_id'))
   AND (sqlc.narg('resource_filter')::text IS NULL OR resource = sqlc.narg('resource_filter'))
 ORDER BY "createdAt" DESC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: ListAdminActionsForUser :many
+SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+       details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log
+WHERE "resourceId" = sqlc.arg('resource_id')
+ORDER BY "createdAt" DESC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: CountAdminActionsForUser :one
+SELECT COUNT(*) FROM admin_audit_log WHERE "resourceId" = sqlc.arg('resource_id');
 
 -- name: CountSystemAlertsFiltered :one
 SELECT COUNT(*) FROM system_alerts

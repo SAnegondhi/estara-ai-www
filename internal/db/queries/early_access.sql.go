@@ -54,21 +54,26 @@ const CreateEarlyAccessRequest = `-- name: CreateEarlyAccessRequest :one
 
 INSERT INTO early_access_requests (
     id, email, first_name, last_name, company, use_case,
-    portfolio_size, linkedin_url, status, created_at
+    portfolio_size, linkedin_url,
+    primary_markets, key_investment_decisions, current_analytical_approach,
+    status, created_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, 'pending', NOW()
-) RETURNING id, email, first_name, last_name, company, use_case, portfolio_size, linkedin_url, status, user_id, admin_notes, created_at, reviewed_at, reviewed_by
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', NOW()
+) RETURNING id, email, first_name, last_name, company, use_case, portfolio_size, linkedin_url, primary_markets, key_investment_decisions, current_analytical_approach, status, user_id, admin_notes, created_at, reviewed_at, reviewed_by
 `
 
 type CreateEarlyAccessRequestParams struct {
-	ID            string      `json:"id"`
-	Email         string      `json:"email"`
-	FirstName     string      `json:"first_name"`
-	LastName      string      `json:"last_name"`
-	Company       pgtype.Text `json:"company"`
-	UseCase       string      `json:"use_case"`
-	PortfolioSize pgtype.Text `json:"portfolio_size"`
-	LinkedinUrl   pgtype.Text `json:"linkedin_url"`
+	ID                        string      `json:"id"`
+	Email                     string      `json:"email"`
+	FirstName                 string      `json:"first_name"`
+	LastName                  string      `json:"last_name"`
+	Company                   pgtype.Text `json:"company"`
+	UseCase                   string      `json:"use_case"`
+	PortfolioSize             pgtype.Text `json:"portfolio_size"`
+	LinkedinUrl               pgtype.Text `json:"linkedin_url"`
+	PrimaryMarkets            pgtype.Text `json:"primary_markets"`
+	KeyInvestmentDecisions    pgtype.Text `json:"key_investment_decisions"`
+	CurrentAnalyticalApproach pgtype.Text `json:"current_analytical_approach"`
 }
 
 // Early Access Request Queries (ADR-085)
@@ -82,6 +87,9 @@ func (q *Queries) CreateEarlyAccessRequest(ctx context.Context, arg CreateEarlyA
 		arg.UseCase,
 		arg.PortfolioSize,
 		arg.LinkedinUrl,
+		arg.PrimaryMarkets,
+		arg.KeyInvestmentDecisions,
+		arg.CurrentAnalyticalApproach,
 	)
 	var i EarlyAccessRequest
 	err := row.Scan(
@@ -93,6 +101,9 @@ func (q *Queries) CreateEarlyAccessRequest(ctx context.Context, arg CreateEarlyA
 		&i.UseCase,
 		&i.PortfolioSize,
 		&i.LinkedinUrl,
+		&i.PrimaryMarkets,
+		&i.KeyInvestmentDecisions,
+		&i.CurrentAnalyticalApproach,
 		&i.Status,
 		&i.UserID,
 		&i.AdminNotes,
@@ -104,7 +115,7 @@ func (q *Queries) CreateEarlyAccessRequest(ctx context.Context, arg CreateEarlyA
 }
 
 const GetEarlyAccessRequestByEmail = `-- name: GetEarlyAccessRequestByEmail :one
-SELECT id, email, first_name, last_name, company, use_case, portfolio_size, linkedin_url, status, user_id, admin_notes, created_at, reviewed_at, reviewed_by FROM early_access_requests WHERE email = $1
+SELECT id, email, first_name, last_name, company, use_case, portfolio_size, linkedin_url, primary_markets, key_investment_decisions, current_analytical_approach, status, user_id, admin_notes, created_at, reviewed_at, reviewed_by FROM early_access_requests WHERE email = $1
 `
 
 func (q *Queries) GetEarlyAccessRequestByEmail(ctx context.Context, email string) (EarlyAccessRequest, error) {
@@ -119,6 +130,9 @@ func (q *Queries) GetEarlyAccessRequestByEmail(ctx context.Context, email string
 		&i.UseCase,
 		&i.PortfolioSize,
 		&i.LinkedinUrl,
+		&i.PrimaryMarkets,
+		&i.KeyInvestmentDecisions,
+		&i.CurrentAnalyticalApproach,
 		&i.Status,
 		&i.UserID,
 		&i.AdminNotes,
@@ -130,7 +144,7 @@ func (q *Queries) GetEarlyAccessRequestByEmail(ctx context.Context, email string
 }
 
 const GetEarlyAccessRequestByID = `-- name: GetEarlyAccessRequestByID :one
-SELECT id, email, first_name, last_name, company, use_case, portfolio_size, linkedin_url, status, user_id, admin_notes, created_at, reviewed_at, reviewed_by FROM early_access_requests WHERE id = $1
+SELECT id, email, first_name, last_name, company, use_case, portfolio_size, linkedin_url, primary_markets, key_investment_decisions, current_analytical_approach, status, user_id, admin_notes, created_at, reviewed_at, reviewed_by FROM early_access_requests WHERE id = $1
 `
 
 func (q *Queries) GetEarlyAccessRequestByID(ctx context.Context, id string) (EarlyAccessRequest, error) {
@@ -145,6 +159,9 @@ func (q *Queries) GetEarlyAccessRequestByID(ctx context.Context, id string) (Ear
 		&i.UseCase,
 		&i.PortfolioSize,
 		&i.LinkedinUrl,
+		&i.PrimaryMarkets,
+		&i.KeyInvestmentDecisions,
+		&i.CurrentAnalyticalApproach,
 		&i.Status,
 		&i.UserID,
 		&i.AdminNotes,
@@ -156,7 +173,7 @@ func (q *Queries) GetEarlyAccessRequestByID(ctx context.Context, id string) (Ear
 }
 
 const ListEarlyAccessRequests = `-- name: ListEarlyAccessRequests :many
-SELECT id, email, first_name, last_name, company, use_case, portfolio_size, linkedin_url, status, user_id, admin_notes, created_at, reviewed_at, reviewed_by FROM early_access_requests
+SELECT id, email, first_name, last_name, company, use_case, portfolio_size, linkedin_url, primary_markets, key_investment_decisions, current_analytical_approach, status, user_id, admin_notes, created_at, reviewed_at, reviewed_by FROM early_access_requests
 WHERE ($1::text = '' OR status = $1)
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -186,6 +203,9 @@ func (q *Queries) ListEarlyAccessRequests(ctx context.Context, arg ListEarlyAcce
 			&i.UseCase,
 			&i.PortfolioSize,
 			&i.LinkedinUrl,
+			&i.PrimaryMarkets,
+			&i.KeyInvestmentDecisions,
+			&i.CurrentAnalyticalApproach,
 			&i.Status,
 			&i.UserID,
 			&i.AdminNotes,
@@ -221,4 +241,32 @@ type RejectEarlyAccessRequestParams struct {
 func (q *Queries) RejectEarlyAccessRequest(ctx context.Context, arg RejectEarlyAccessRequestParams) error {
 	_, err := q.db.Exec(ctx, RejectEarlyAccessRequest, arg.ID, arg.AdminNotes, arg.ReviewedBy)
 	return err
+}
+
+const SummarizeEarlyAccessRequests = `-- name: SummarizeEarlyAccessRequests :one
+SELECT
+    COUNT(*)::bigint                                          AS total,
+    COUNT(*) FILTER (WHERE status = 'pending')::bigint        AS pending_count,
+    COUNT(*) FILTER (WHERE status = 'approved')::bigint       AS approved_count,
+    COUNT(*) FILTER (WHERE status = 'rejected')::bigint       AS rejected_count
+FROM early_access_requests
+`
+
+type SummarizeEarlyAccessRequestsRow struct {
+	Total         int64 `json:"total"`
+	PendingCount  int64 `json:"pending_count"`
+	ApprovedCount int64 `json:"approved_count"`
+	RejectedCount int64 `json:"rejected_count"`
+}
+
+func (q *Queries) SummarizeEarlyAccessRequests(ctx context.Context) (SummarizeEarlyAccessRequestsRow, error) {
+	row := q.db.QueryRow(ctx, SummarizeEarlyAccessRequests)
+	var i SummarizeEarlyAccessRequestsRow
+	err := row.Scan(
+		&i.Total,
+		&i.PendingCount,
+		&i.ApprovedCount,
+		&i.RejectedCount,
+	)
+	return i, err
 }

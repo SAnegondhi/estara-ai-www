@@ -143,12 +143,164 @@ type RefreshResponse struct {
 	CSRFToken    string        `json:"csrfToken,omitempty"` // ADR-066: CSRF token
 }
 
+// RegisterRequest represents a user registration request
+type RegisterRequest struct {
+	Email     string  `json:"email" validate:"required,email"`
+	Password  string  `json:"password" validate:"required,min=8"`
+	FirstName *string `json:"firstName,omitempty"`
+	LastName  *string `json:"lastName,omitempty"`
+}
+
+// RegisterResponse represents a registration response (same as login)
+type RegisterResponse = LoginResponse
+
 // Rate limiting constants
 const (
 	maxLoginAttempts    = 5
 	loginLockoutMinutes = 15
 	rateLimitKeyPrefix  = "login_attempts:"
 )
+
+// Register creates a new user account
+func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var req RegisterRequest
+	if err := httputil.DecodeJSON(r, &req); err != nil {
+		httputil.BadRequest(w, "invalid request body")
+		return
+	}
+
+	if err := h.validate.Struct(req); err != nil {
+		httputil.BadRequest(w, "validation failed: "+err.Error())
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+
+	// Check if user already exists
+	_, err := h.getUserByEmail(ctx, email)
+	if err == nil {
+		h.logger.Warn("registration attempt with existing email", "email", email)
+		httputil.JSON(w, http.StatusConflict, map[string]interface{}{
+			"success": false,
+			"error":   "Email already registered",
+			"code":    "EMAIL_EXISTS",
+		})
+		return
+	}
+
+	// Hash password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		h.logger.Error("failed to hash password", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, "Failed to create account")
+		return
+	}
+
+	// Generate user ID
+	userID := generateID()
+
+	// Create user in database using sqlc
+	user, err := h.store.Q().CreateUserWithPassword(ctx, queries.CreateUserWithPasswordParams{
+		ID:               userID,
+		Email:            email,
+		Password:         pgtype.Text{String: string(hashedPassword), Valid: true},
+		FirstName:        pgtype.Text{String: getStringValue(req.FirstName), Valid: req.FirstName != nil},
+		LastName:         pgtype.Text{String: getStringValue(req.LastName), Valid: req.LastName != nil},
+		Role:             "USER",
+		SubscriptionTier: pgtype.Text{String: "free", Valid: true},
+		StripeCustomerId: pgtype.Text{String: "", Valid: false},
+	})
+	if err != nil {
+		h.logger.Error("failed to create user", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, "Failed to create account")
+		return
+	}
+
+	// Create V2 quota for the new user (free tier - no evaluations)
+	quotaID := generateID()
+	periodStart := time.Now()
+	periodEnd := periodStart.AddDate(1, 0, 0)
+
+	_, err = h.store.Q().UpsertV2EvaluationQuota(ctx, queries.UpsertV2EvaluationQuotaParams{
+		ID:              quotaID,
+		UserID:          userID,
+		Column3:         "V2_ANNUAL_ACCESS", // Free tier uses ANNUAL_ACCESS with 0 limit
+		AnnualLimit:     0,                   // Free tier has no evaluations
+		UsedThisPeriod:  0,
+		PeriodStartDate: pgtype.Timestamp{Time: periodStart, Valid: true},
+		PeriodEndDate:   pgtype.Timestamp{Time: periodEnd, Valid: true},
+	})
+	if err != nil {
+		h.logger.Warn("failed to create V2 quota for new user", "error", err, "user_id", userID)
+		// Don't fail registration - quota can be created later
+	}
+
+	// Generate tokens
+	accessToken, err := h.auth.GenerateToken(
+		user.ID,
+		"", // No Clerk ID for direct registration
+		email,
+		user.Role,
+		24*time.Hour,
+	)
+	if err != nil {
+		h.logger.Error("failed to generate access token", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, "Failed to generate token")
+		return
+	}
+
+	refreshToken, err := h.auth.GenerateRefreshToken(user.ID, 7*24*time.Hour)
+	if err != nil {
+		h.logger.Error("failed to generate refresh token", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, "Failed to generate token")
+		return
+	}
+
+	// ADR-066: Set httpOnly cookies for authentication
+	secure := !h.cfg.IsDevelopment()
+	middleware.SetAuthCookies(w, accessToken, refreshToken, secure)
+
+	// ADR-066: Set CSRF cookie and get token for response
+	csrfToken := middleware.SetCSRFCookie(w, secure, h.cfg.Security.CSRFTokenLength)
+
+	// Get V2 quota for entitlements
+	v2Quota, _ := h.getV2Quota(ctx, user.ID)
+	entitlements := h.buildEntitlements(mapDBUserToLocal(&user), v2Quota)
+
+	// Build response
+	tier := "free"
+	if v2Quota != nil {
+		tier = strings.ToLower(strings.TrimPrefix(v2Quota.Tier, "V2_"))
+	}
+
+	// Extract theme from pgtype.Text
+	var themePtr *string
+	if user.Theme.Valid {
+		themePtr = &user.Theme.String
+	}
+
+	response := RegisterResponse{
+		Success:      true,
+		Token:        accessToken,
+		RefreshToken: refreshToken,
+		User: UserResponse{
+			ID:               user.ID,
+			Email:            email,
+			FirstName:        req.FirstName,
+			LastName:         req.LastName,
+			SubscriptionTier: tier,
+			Theme:            getStringOrDefault(themePtr, "estara"),
+		},
+		Entitlements: entitlements,
+		CSRFToken:    csrfToken,
+	}
+
+	h.logAuthAudit(ctx, r, user.ID, "USER_SIGNUP", "User registered successfully", true, "")
+	h.logger.Info("user registered", "user_id", user.ID, "email", email)
+	httputil.JSON(w, http.StatusOK, response)
+}
 
 // Health returns server health status
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
@@ -884,6 +1036,19 @@ func getStringOrDefault(s *string, defaultVal string) string {
 		return defaultVal
 	}
 	return *s
+}
+
+func getStringValue(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func generateID() string {
+	idBytes := make([]byte, 16)
+	_, _ = rand.Read(idBytes)
+	return hex.EncodeToString(idBytes)
 }
 
 func getTierDisplayName(tier string) string {

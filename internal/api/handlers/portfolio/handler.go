@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/estara-ai/www/internal/api/middleware"
@@ -902,6 +903,9 @@ func (h *Handler) updateProperty(ctx context.Context, propertyID, userID string,
 		Notes:            pgtype.Text{String: derefString(req.Notes), Valid: req.Notes != nil},
 	})
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, fmt.Errorf("property not found")
+		}
 		return nil, err
 	}
 
@@ -952,6 +956,18 @@ func (h *Handler) updateProperty(ctx context.Context, propertyID, userID string,
 }
 
 func (h *Handler) deleteProperty(ctx context.Context, propertyID, userID string) error {
+	// First verify the property exists and belongs to this user
+	_, err := h.store.Q().GetPortfolioProperty(ctx, queries.GetPortfolioPropertyParams{
+		ID:     propertyID,
+		UserID: userID,
+	})
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return fmt.Errorf("property not found")
+		}
+		return err
+	}
+
 	// SoftDeletePortfolioProperty sets status = 'deleted' and updated_at = NOW()
 	return h.store.Q().SoftDeletePortfolioProperty(ctx, queries.SoftDeletePortfolioPropertyParams{
 		ID:     propertyID,

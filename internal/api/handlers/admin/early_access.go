@@ -47,24 +47,81 @@ type suspendEarlyAccessRequest struct {
 // List / Get
 // ─────────────────────────────────────────────────────────────────────────────
 
+// earlyAccessAppResponse is the camelCase DTO sent to the admin frontend.
+type earlyAccessAppResponse struct {
+	ID                        string  `json:"id"`
+	Email                     string  `json:"email"`
+	FirstName                 string  `json:"firstName"`
+	LastName                  string  `json:"lastName"`
+	Company                   *string `json:"company"`
+	UseCase                   string  `json:"useCase"`
+	PortfolioSize             *string `json:"portfolioSize"`
+	LinkedinUrl               *string `json:"linkedinUrl"`
+	PrimaryMarkets            *string `json:"primaryMarkets"`
+	KeyInvestmentDecisions    *string `json:"keyInvestmentDecisions"`
+	CurrentAnalyticalApproach *string `json:"currentAnalyticalApproach"`
+	Status                    string  `json:"status"`
+	UserID                    *string `json:"userId"`
+	AdminNotes                *string `json:"adminNotes"`
+	CreatedAt                 string  `json:"createdAt"`
+	ReviewedAt                *string `json:"reviewedAt"`
+	ReviewedBy                *string `json:"reviewedBy"`
+}
+
+func toEarlyAccessAppResponse(r queries.EarlyAccessRequest) earlyAccessAppResponse {
+	nullStr := func(pt pgtype.Text) *string {
+		if pt.Valid {
+			s := pt.String
+			return &s
+		}
+		return nil
+	}
+	nullTime := func(pt pgtype.Timestamptz) *string {
+		if pt.Valid {
+			s := pt.Time.Format(time.RFC3339)
+			return &s
+		}
+		return nil
+	}
+	return earlyAccessAppResponse{
+		ID:                        r.ID,
+		Email:                     r.Email,
+		FirstName:                 r.FirstName,
+		LastName:                  r.LastName,
+		Company:                   nullStr(r.Company),
+		UseCase:                   r.UseCase,
+		PortfolioSize:             nullStr(r.PortfolioSize),
+		LinkedinUrl:               nullStr(r.LinkedinUrl),
+		PrimaryMarkets:            nullStr(r.PrimaryMarkets),
+		KeyInvestmentDecisions:    nullStr(r.KeyInvestmentDecisions),
+		CurrentAnalyticalApproach: nullStr(r.CurrentAnalyticalApproach),
+		Status:                    r.Status,
+		UserID:                    nullStr(r.UserID),
+		AdminNotes:                nullStr(r.AdminNotes),
+		CreatedAt:                 r.CreatedAt.Format(time.RFC3339),
+		ReviewedAt:                nullTime(r.ReviewedAt),
+		ReviewedBy:                nullStr(r.ReviewedBy),
+	}
+}
+
 // ListEarlyAccessRequests handles GET /api/admin/early-access
 func (h *Handler) ListEarlyAccessRequests(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	status := r.URL.Query().Get("status") // "" | "pending" | "approved" | "rejected"
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 || limit > 100 {
-		limit = 50
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 50
 	}
 	if page < 1 {
 		page = 1
 	}
-	offset := int32((page - 1) * limit)
+	offset := int32((page - 1) * pageSize)
 
 	rows, err := h.store.Q().ListEarlyAccessRequests(ctx, queries.ListEarlyAccessRequestsParams{
 		Column1: status,
-		Limit:   int32(limit),
+		Limit:   int32(pageSize),
 		Offset:  offset,
 	})
 	if err != nil {
@@ -73,16 +130,34 @@ func (h *Handler) ListEarlyAccessRequests(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	total, err := h.store.Q().CountEarlyAccessRequests(ctx, status)
-	if err != nil {
-		total = 0
+	total, _ := h.store.Q().CountEarlyAccessRequests(ctx, status)
+	summary, _ := h.store.Q().SummarizeEarlyAccessRequests(ctx)
+
+	totalPages := int64(1)
+	if pageSize > 0 && total > 0 {
+		totalPages = (total + int64(pageSize) - 1) / int64(pageSize)
+	}
+
+	apps := make([]earlyAccessAppResponse, len(rows))
+	for i, row := range rows {
+		apps[i] = toEarlyAccessAppResponse(row)
 	}
 
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{
-		"requests": rows,
-		"total":    total,
-		"page":     page,
-		"limit":    limit,
+		"success": true,
+		"data": map[string]interface{}{
+			"applications": apps,
+			"total":        total,
+			"page":         page,
+			"pageSize":     pageSize,
+			"totalPages":   totalPages,
+			"summary": map[string]interface{}{
+				"total":    summary.Total,
+				"pending":  summary.PendingCount,
+				"approved": summary.ApprovedCount,
+				"rejected": summary.RejectedCount,
+			},
+		},
 	})
 }
 
@@ -97,7 +172,10 @@ func (h *Handler) GetEarlyAccessRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	httputil.JSON(w, http.StatusOK, row)
+	httputil.JSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"data":    toEarlyAccessAppResponse(row),
+	})
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -202,6 +280,10 @@ func (h *Handler) ApproveEarlyAccess(w http.ResponseWriter, r *http.Request) {
 		httputil.Error(w, http.StatusInternalServerError, "failed to update request")
 		return
 	}
+
+	// Add to whitelist so the user can log in (early access requires whitelist clearance)
+	fullName := ear.FirstName + " " + ear.LastName
+	h.autoWhitelistEmail(ctx, r, ear.Email, &fullName)
 
 	// Send welcome email with setup link
 	setupURL := h.cfg.Server.ClientURL + "/setup-password?token=" + setupToken
