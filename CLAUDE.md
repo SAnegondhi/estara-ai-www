@@ -4,6 +4,43 @@ These rules are specific to the `www/` Go backend. They supplement the global ru
 
 ---
 
+## FUNDAMENTAL ARCHITECTURE RULES
+
+These are non-negotiable constraints on all Go code in `www/`. No exceptions.
+
+### 1. sqlc is the ONLY database interface (ADR-083)
+
+> **"Make sqlc-generated code the only interface between Go and PostgreSQL. Zero raw SQL in handlers or services. Every query validated at build time."**
+> — ADR-083: Single Auditable Database Interface
+
+- ❌ **NEVER** write raw SQL strings in Go handlers, services, or helpers
+- ❌ **NEVER** call `db.Exec()`, `db.Query()`, or `db.QueryRow()` directly in handlers or services
+- ❌ **NEVER** access `Store.Pool()` or `Store.MarketPool()` outside of `internal/db/store.go`
+- ✅ **ALWAYS** add new queries to the appropriate `.sql` file, run `sqlc generate`, and use the generated method
+- ✅ **ALWAYS** run `sqlc generate && go build ./...` before committing — both must pass
+
+Every SQL query that bypasses sqlc is a defect. The cost of a missing sqlc query is 5 minutes of boilerplate. The cost of a raw SQL bug is a runtime failure in production with a wrong column name or NULL scan that only surfaces under load.
+
+### 2. Store pattern — all DB access via `Store`
+
+All handlers and services receive a `*db.Store` (from `internal/db/store.go`). Database access flows:
+
+```
+Handler → Store.Q()  → sqlc Queries (main DB)
+Handler → Store.MQ() → sqlc Queries (market DB)
+```
+
+Never pass `*pgxpool.Pool` directly to handlers or services.
+
+### 3. Build must be clean before every commit
+
+```bash
+sqlc generate   # Must produce no errors
+go build ./...  # Must compile with zero errors
+```
+
+---
+
 ## SQLC - MANDATORY FOR ALL DATABASE QUERIES
 
 **CRITICAL**: All database queries MUST use sqlc-generated code. No raw SQL strings in Go code.

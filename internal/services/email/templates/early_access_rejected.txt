@@ -1,0 +1,14 @@
+ESTARA AI
+Decision Infrastructure for Real Estate Investors
+
+---
+
+{{.FirstName}}, thank you for applying.
+
+After reviewing your application, we're unable to offer early access at this time. We're onboarding a limited cohort and have more qualified applicants than available spots.
+
+We appreciate your interest in Estara Insight. If additional spots open or the program expands, we'll reach out to our waitlist first.
+
+---
+
+(c) {{.Year}} Estara AI. All rights reserved.

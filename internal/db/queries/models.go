@@ -420,6 +420,23 @@ type EarlyAccess struct {
 	UpdatedAt   pgtype.Timestamp `json:"updatedAt"`
 }
 
+type EarlyAccessRequest struct {
+	ID            string             `json:"id"`
+	Email         string             `json:"email"`
+	FirstName     string             `json:"first_name"`
+	LastName      string             `json:"last_name"`
+	Company       pgtype.Text        `json:"company"`
+	UseCase       string             `json:"use_case"`
+	PortfolioSize pgtype.Text        `json:"portfolio_size"`
+	LinkedinUrl   pgtype.Text        `json:"linkedin_url"`
+	Status        string             `json:"status"`
+	UserID        pgtype.Text        `json:"user_id"`
+	AdminNotes    pgtype.Text        `json:"admin_notes"`
+	CreatedAt     time.Time          `json:"created_at"`
+	ReviewedAt    pgtype.Timestamptz `json:"reviewed_at"`
+	ReviewedBy    pgtype.Text        `json:"reviewed_by"`
+}
+
 type EmailVerificationCode struct {
 	ID        string           `json:"id"`
 	Email     string           `json:"email"`
@@ -565,6 +582,15 @@ type PasswordResetToken struct {
 	Used      bool             `json:"used"`
 	CreatedAt pgtype.Timestamp `json:"createdAt"`
 	UpdatedAt pgtype.Timestamp `json:"updatedAt"`
+}
+
+type PasswordSetupToken struct {
+	ID        string             `json:"id"`
+	UserID    string             `json:"user_id"`
+	Token     string             `json:"token"`
+	ExpiresAt time.Time          `json:"expires_at"`
+	UsedAt    pgtype.Timestamptz `json:"used_at"`
+	CreatedAt time.Time          `json:"created_at"`
 }
 
 // Size-based FIFO cache for individual property details (ADR-061)
@@ -765,6 +791,7 @@ type User struct {
 	SuspendedAt                pgtype.Timestamp `json:"suspendedAt"`
 	SuspendedBy                pgtype.Text      `json:"suspendedBy"`
 	SuspendReason              pgtype.Text      `json:"suspendReason"`
+	EarlyAccessStatus          pgtype.Text      `json:"early_access_status"`
 }
 
 type UserAnalysisPreference struct {

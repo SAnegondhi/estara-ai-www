@@ -1,0 +1,29 @@
+ESTARA AI
+Decision Infrastructure for Real Estate Investors
+
+---
+
+{{.FirstName}}, you're approved.
+
+Your application to the Estara Insight early access program has been approved. Set your password using the link below to activate your account.
+
+SET UP YOUR ACCOUNT:
+{{.SetupURL}}
+
+This link expires in 72 hours.
+
+EARLY ACCESS INCLUDES
+- AI Property Evaluations — Structured analysis with market data
+- Investment Planning — Portfolio projections with conservative underwriting
+- Market Intelligence — Trends and data for any US market
+- Decision Memos — Exportable investor-grade reports
+
+Unlimited access. No credit card required. You're among a select group with early access. Your feedback shapes the platform.
+
+---
+
+Can't click the link? Copy and paste: {{.SetupURL}}
+
+Independent decision-support platform. Not investment advice.
+
+(c) {{.Year}} Estara AI. All rights reserved.

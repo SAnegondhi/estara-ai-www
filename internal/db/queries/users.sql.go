@@ -54,13 +54,72 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const CreateEarlyAccessUser = `-- name: CreateEarlyAccessUser :one
+INSERT INTO users (
+    id, email, "firstName", "lastName", role,
+    "subscriptionTier", early_access_status, "createdAt", "updatedAt"
+) VALUES (
+    $1, $2, $3, $4, 'USER', 'early_access', 'active', NOW(), NOW()
+) RETURNING id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason", early_access_status
+`
+
+type CreateEarlyAccessUserParams struct {
+	ID        string      `json:"id"`
+	Email     string      `json:"email"`
+	FirstName pgtype.Text `json:"firstName"`
+	LastName  pgtype.Text `json:"lastName"`
+}
+
+// Creates an early access user without a password (password set via setup link)
+func (q *Queries) CreateEarlyAccessUser(ctx context.Context, arg CreateEarlyAccessUserParams) (User, error) {
+	row := q.db.QueryRow(ctx, CreateEarlyAccessUser,
+		arg.ID,
+		arg.Email,
+		arg.FirstName,
+		arg.LastName,
+	)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Email,
+		&i.FirstName,
+		&i.LastName,
+		&i.StripeCustomerId,
+		&i.Role,
+		&i.HasDataTier,
+		&i.Password,
+		&i.Theme,
+		&i.SubscriptionTier,
+		&i.Phone,
+		&i.StreetAddress,
+		&i.City,
+		&i.State,
+		&i.ZipCode,
+		&i.InvestorProfile,
+		&i.IapPlatform,
+		&i.IapProductId,
+		&i.IapReceiptData,
+		&i.IapExpiresAt,
+		&i.IapLastValidated,
+		&i.AppleOriginalTransactionId,
+		&i.AppleEnvironment,
+		&i.SuspendedAt,
+		&i.SuspendedBy,
+		&i.SuspendReason,
+		&i.EarlyAccessStatus,
+	)
+	return i, err
+}
+
 const CreateUser = `-- name: CreateUser :one
 INSERT INTO users (
     id, email, "firstName", "lastName", role,
     "subscriptionTier", "createdAt", "updatedAt"
 ) VALUES (
     $1, $2, $3, $4, $5, $6, NOW(), NOW()
-) RETURNING id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason"
+) RETURNING id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason", early_access_status
 `
 
 type CreateUserParams struct {
@@ -111,6 +170,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.SuspendedAt,
 		&i.SuspendedBy,
 		&i.SuspendReason,
+		&i.EarlyAccessStatus,
 	)
 	return i, err
 }
@@ -121,7 +181,7 @@ INSERT INTO users (
     "subscriptionTier", "stripeCustomerId", "createdAt", "updatedAt"
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW()
-) RETURNING id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason"
+) RETURNING id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason", early_access_status
 `
 
 type CreateUserWithPasswordParams struct {
@@ -177,6 +237,7 @@ func (q *Queries) CreateUserWithPassword(ctx context.Context, arg CreateUserWith
 		&i.SuspendedAt,
 		&i.SuspendedBy,
 		&i.SuspendReason,
+		&i.EarlyAccessStatus,
 	)
 	return i, err
 }
@@ -191,7 +252,7 @@ func (q *Queries) DeleteUser(ctx context.Context, id string) error {
 }
 
 const GetUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason" FROM users WHERE email = $1
+SELECT id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason", early_access_status FROM users WHERE email = $1
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -226,12 +287,13 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.SuspendedAt,
 		&i.SuspendedBy,
 		&i.SuspendReason,
+		&i.EarlyAccessStatus,
 	)
 	return i, err
 }
 
 const GetUserByID = `-- name: GetUserByID :one
-SELECT id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason" FROM users WHERE id = $1
+SELECT id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason", early_access_status FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id string) (User, error) {
@@ -266,12 +328,13 @@ func (q *Queries) GetUserByID(ctx context.Context, id string) (User, error) {
 		&i.SuspendedAt,
 		&i.SuspendedBy,
 		&i.SuspendReason,
+		&i.EarlyAccessStatus,
 	)
 	return i, err
 }
 
 const GetUserByStripeCustomerID = `-- name: GetUserByStripeCustomerID :one
-SELECT id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason" FROM users WHERE "stripeCustomerId" = $1
+SELECT id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason", early_access_status FROM users WHERE "stripeCustomerId" = $1
 `
 
 func (q *Queries) GetUserByStripeCustomerID(ctx context.Context, stripecustomerid pgtype.Text) (User, error) {
@@ -306,6 +369,7 @@ func (q *Queries) GetUserByStripeCustomerID(ctx context.Context, stripecustomeri
 		&i.SuspendedAt,
 		&i.SuspendedBy,
 		&i.SuspendReason,
+		&i.EarlyAccessStatus,
 	)
 	return i, err
 }
@@ -339,7 +403,7 @@ func (q *Queries) GetUserStats(ctx context.Context) (GetUserStatsRow, error) {
 }
 
 const ListUsers = `-- name: ListUsers :many
-SELECT id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason" FROM users
+SELECT id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason", early_access_status FROM users
 ORDER BY "createdAt" DESC
 LIMIT $1 OFFSET $2
 `
@@ -387,6 +451,7 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 			&i.SuspendedAt,
 			&i.SuspendedBy,
 			&i.SuspendReason,
+			&i.EarlyAccessStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -399,7 +464,7 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 }
 
 const ListUsersByRole = `-- name: ListUsersByRole :many
-SELECT id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason" FROM users
+SELECT id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason", early_access_status FROM users
 WHERE role = $1
 ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3
@@ -449,6 +514,7 @@ func (q *Queries) ListUsersByRole(ctx context.Context, arg ListUsersByRoleParams
 			&i.SuspendedAt,
 			&i.SuspendedBy,
 			&i.SuspendReason,
+			&i.EarlyAccessStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -461,7 +527,7 @@ func (q *Queries) ListUsersByRole(ctx context.Context, arg ListUsersByRoleParams
 }
 
 const SearchUsersByEmail = `-- name: SearchUsersByEmail :many
-SELECT id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason" FROM users
+SELECT id, "createdAt", "updatedAt", email, "firstName", "lastName", "stripeCustomerId", role, "hasDataTier", password, theme, "subscriptionTier", phone, "streetAddress", city, state, "zipCode", "investorProfile", "iapPlatform", "iapProductId", "iapReceiptData", "iapExpiresAt", "iapLastValidated", "appleOriginalTransactionId", "appleEnvironment", "suspendedAt", "suspendedBy", "suspendReason", early_access_status FROM users
 WHERE email ILIKE '%' || $1 || '%'
 ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3
@@ -511,6 +577,7 @@ func (q *Queries) SearchUsersByEmail(ctx context.Context, arg SearchUsersByEmail
 			&i.SuspendedAt,
 			&i.SuspendedBy,
 			&i.SuspendReason,
+			&i.EarlyAccessStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -520,6 +587,25 @@ func (q *Queries) SearchUsersByEmail(ctx context.Context, arg SearchUsersByEmail
 		return nil, err
 	}
 	return items, nil
+}
+
+const SetUserPasswordAndStatus = `-- name: SetUserPasswordAndStatus :exec
+UPDATE users SET
+    password = $2,
+    early_access_status = 'active',
+    "updatedAt" = NOW()
+WHERE id = $1
+`
+
+type SetUserPasswordAndStatusParams struct {
+	ID       string      `json:"id"`
+	Password pgtype.Text `json:"password"`
+}
+
+// Sets password hash and marks account active (used in password setup flow)
+func (q *Queries) SetUserPasswordAndStatus(ctx context.Context, arg SetUserPasswordAndStatusParams) error {
+	_, err := q.db.Exec(ctx, SetUserPasswordAndStatus, arg.ID, arg.Password)
+	return err
 }
 
 const SuspendUser = `-- name: SuspendUser :exec
@@ -553,6 +639,24 @@ WHERE id = $1
 
 func (q *Queries) UnsuspendUser(ctx context.Context, id string) error {
 	_, err := q.db.Exec(ctx, UnsuspendUser, id)
+	return err
+}
+
+const UpdateUserEarlyAccessStatus = `-- name: UpdateUserEarlyAccessStatus :exec
+UPDATE users SET
+    early_access_status = $2,
+    "updatedAt" = NOW()
+WHERE id = $1
+`
+
+type UpdateUserEarlyAccessStatusParams struct {
+	ID                string      `json:"id"`
+	EarlyAccessStatus pgtype.Text `json:"early_access_status"`
+}
+
+// Updates early_access_status and optionally the account status field
+func (q *Queries) UpdateUserEarlyAccessStatus(ctx context.Context, arg UpdateUserEarlyAccessStatusParams) error {
+	_, err := q.db.Exec(ctx, UpdateUserEarlyAccessStatus, arg.ID, arg.EarlyAccessStatus)
 	return err
 }
 

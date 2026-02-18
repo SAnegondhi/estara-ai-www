@@ -13,6 +13,7 @@ import (
 type Querier interface {
 	AdminUpdateUserProfile(ctx context.Context, arg AdminUpdateUserProfileParams) error
 	ApplyAdminCredit(ctx context.Context, id string) (AdminCredit, error)
+	ApproveEarlyAccessRequest(ctx context.Context, arg ApproveEarlyAccessRequestParams) error
 	ArchiveDiscoverySession(ctx context.Context, arg ArchiveDiscoverySessionParams) (DiscoverySession, error)
 	AutoArchiveOldSessions(ctx context.Context) error
 	AutoArchiveOldSessionsRows(ctx context.Context) (int64, error)
@@ -43,6 +44,7 @@ type Querier interface {
 	CountCronJobRunsByStatus(ctx context.Context, cronjobid string) (CountCronJobRunsByStatusRow, error)
 	CountDecisionRecordsByUser(ctx context.Context, userID string) (int64, error)
 	CountEarlyAccess(ctx context.Context) (int64, error)
+	CountEarlyAccessRequests(ctx context.Context, dollar_1 string) (int64, error)
 	// Evaluation Chat Sessions and Messages Queries
 	CountEvaluationChatSessionsByUser(ctx context.Context, userID string) (int64, error)
 	CountExpiredCache(ctx context.Context) (int64, error)
@@ -118,6 +120,10 @@ type Querier interface {
 	// Discovery Session Properties Queries
 	CreateDiscoverySessionProperty(ctx context.Context, arg CreateDiscoverySessionPropertyParams) (DiscoverySessionProperty, error)
 	CreateEarlyAccess(ctx context.Context, arg CreateEarlyAccessParams) (EarlyAccess, error)
+	// Early Access Request Queries (ADR-085)
+	CreateEarlyAccessRequest(ctx context.Context, arg CreateEarlyAccessRequestParams) (EarlyAccessRequest, error)
+	// Creates an early access user without a password (password set via setup link)
+	CreateEarlyAccessUser(ctx context.Context, arg CreateEarlyAccessUserParams) (User, error)
 	CreateEmailVerificationCode(ctx context.Context, arg CreateEmailVerificationCodeParams) (EmailVerificationCode, error)
 	CreateEvaluationChatMessage(ctx context.Context, arg CreateEvaluationChatMessageParams) (EvaluationChatMessage, error)
 	CreateEvaluationChatSession(ctx context.Context, arg CreateEvaluationChatSessionParams) (EvaluationChatSession, error)
@@ -130,6 +136,8 @@ type Querier interface {
 	// Create or update a baseline change for a property/field/effective_date combination
 	CreateOrUpdateBaselineChange(ctx context.Context, arg CreateOrUpdateBaselineChangeParams) (V2BaselineChange, error)
 	CreatePasswordResetToken(ctx context.Context, arg CreatePasswordResetTokenParams) (PasswordResetToken, error)
+	// Password Setup Token Queries (ADR-085)
+	CreatePasswordSetupToken(ctx context.Context, arg CreatePasswordSetupTokenParams) (PasswordSetupToken, error)
 	CreatePortfolioProperty(ctx context.Context, arg CreatePortfolioPropertyParams) (V2PortfolioProperty, error)
 	// Create a new portfolio snapshot
 	CreatePortfolioSnapshot(ctx context.Context, arg CreatePortfolioSnapshotParams) (V2PortfolioSnapshot, error)
@@ -312,6 +320,8 @@ type Querier interface {
 	GetEarlyAccessByEmail(ctx context.Context, email string) (EarlyAccess, error)
 	// Early Access (Waitlist)
 	GetEarlyAccessByID(ctx context.Context, id string) (EarlyAccess, error)
+	GetEarlyAccessRequestByEmail(ctx context.Context, email string) (EarlyAccessRequest, error)
+	GetEarlyAccessRequestByID(ctx context.Context, id string) (EarlyAccessRequest, error)
 	// Email Verification Code Queries
 	GetEmailVerificationCode(ctx context.Context, arg GetEmailVerificationCodeParams) (EmailVerificationCode, error)
 	GetEmailVerificationCodeByID(ctx context.Context, id string) (EmailVerificationCode, error)
@@ -357,6 +367,7 @@ type Querier interface {
 	// Gets token without checking expiry/used (handler validates manually)
 	GetPasswordResetTokenRaw(ctx context.Context, token string) (GetPasswordResetTokenRawRow, error)
 	GetPasswordResetTokensByUser(ctx context.Context, arg GetPasswordResetTokensByUserParams) ([]PasswordResetToken, error)
+	GetPasswordSetupToken(ctx context.Context, token string) (PasswordSetupToken, error)
 	GetPendingInvestorReports(ctx context.Context, limit int32) ([]InvestorReport, error)
 	GetPortfolioPropertiesByIDs(ctx context.Context, arg GetPortfolioPropertiesByIDsParams) ([]V2PortfolioProperty, error)
 	GetPortfolioProperty(ctx context.Context, arg GetPortfolioPropertyParams) (V2PortfolioProperty, error)
@@ -512,6 +523,7 @@ type Querier interface {
 	// V2 Decision Records and Evaluations Queries
 	ListDecisionRecordsWithEvaluation(ctx context.Context, arg ListDecisionRecordsWithEvaluationParams) ([]ListDecisionRecordsWithEvaluationRow, error)
 	ListEarlyAccess(ctx context.Context, arg ListEarlyAccessParams) ([]EarlyAccess, error)
+	ListEarlyAccessRequests(ctx context.Context, arg ListEarlyAccessRequestsParams) ([]EarlyAccessRequest, error)
 	ListEvaluationChatMessages(ctx context.Context, sessionID string) ([]EvaluationChatMessage, error)
 	ListEvaluationChatSessionsExtended(ctx context.Context, arg ListEvaluationChatSessionsExtendedParams) ([]ListEvaluationChatSessionsExtendedRow, error)
 	ListEvaluationChatSessionsWithStats(ctx context.Context, arg ListEvaluationChatSessionsWithStatsParams) ([]ListEvaluationChatSessionsWithStatsRow, error)
@@ -575,7 +587,9 @@ type Querier interface {
 	MarkEmailVerificationCodeVerified(ctx context.Context, id string) error
 	MarkPasswordResetTokenUsed(ctx context.Context, id string) error
 	MarkPasswordResetTokenUsedByToken(ctx context.Context, token string) error
+	MarkPasswordSetupTokenUsed(ctx context.Context, id string) error
 	MarkSnapshotConverted(ctx context.Context, id string) (SnapshotRequest, error)
+	RejectEarlyAccessRequest(ctx context.Context, arg RejectEarlyAccessRequestParams) error
 	ResetCronJobFailures(ctx context.Context, id string) error
 	ResetInvestorReportForRetry(ctx context.Context, id string) (int64, error)
 	ResetV2EvaluationQuotaUsage(ctx context.Context, arg ResetV2EvaluationQuotaUsageParams) error
@@ -589,6 +603,8 @@ type Querier interface {
 	SearchUsersByEmail(ctx context.Context, arg SearchUsersByEmailParams) ([]User, error)
 	SearchWhitelistedEmails(ctx context.Context, arg SearchWhitelistedEmailsParams) ([]SearchWhitelistedEmailsRow, error)
 	SessionExistsByUser(ctx context.Context, arg SessionExistsByUserParams) (bool, error)
+	// Sets password hash and marks account active (used in password setup flow)
+	SetUserPasswordAndStatus(ctx context.Context, arg SetUserPasswordAndStatusParams) error
 	SoftDeletePortfolioProperty(ctx context.Context, arg SoftDeletePortfolioPropertyParams) error
 	SupersedeInvestorReport(ctx context.Context, arg SupersedeInvestorReportParams) error
 	SuspendUser(ctx context.Context, arg SuspendUserParams) error
@@ -641,6 +657,8 @@ type Querier interface {
 	UpdateSubscriptionTier(ctx context.Context, arg UpdateSubscriptionTierParams) error
 	UpdateTrendAccessTracking(ctx context.Context, arg UpdateTrendAccessTrackingParams) error
 	UpdateTrendLastAccessed(ctx context.Context, key string) error
+	// Updates early_access_status and optionally the account status field
+	UpdateUserEarlyAccessStatus(ctx context.Context, arg UpdateUserEarlyAccessStatusParams) error
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
 	UpdateUserProfileAdmin(ctx context.Context, arg UpdateUserProfileAdminParams) error

@@ -1102,6 +1102,13 @@ var tierConfigs = map[string]struct {
 		Limit:        -1, // unlimited
 		Features:     []string{"discover", "propertySearch", "aiEvaluation", "investmentPlanning", "portfolioTracking", "apiAccess", "prioritySupport"},
 	},
+	// ADR-085: Early Access Program — unlimited access, no charge
+	"EARLY_ACCESS": {
+		DisplayName:  "Early Access",
+		PricePerYear: 0,
+		Limit:        -1, // unlimited
+		Features:     []string{"discover", "propertySearch", "aiEvaluation", "investmentPlanning", "portfolioTracking"},
+	},
 }
 
 // GetQuota returns the user's quota/subscription status

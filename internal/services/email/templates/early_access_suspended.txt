@@ -1,0 +1,18 @@
+ESTARA AI
+Decision Infrastructure for Real Estate Investors
+
+---
+
+{{.FirstName}}, your access has been suspended.
+
+Your Estara Insight early access account has been temporarily suspended.
+
+{{if .Reason}}Reason: {{.Reason}}
+{{end}}
+If you believe this is in error, reply to this email and our team will review.
+
+Questions? Contact support@estara-ai.com
+
+---
+
+(c) {{.Year}} Estara AI. All rights reserved.

@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS users (
     "appleEnvironment" TEXT,
     "suspendedAt" TIMESTAMP(3),
     "suspendedBy" TEXT,
-    "suspendReason" TEXT
+    "suspendReason" TEXT,
+    early_access_status TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_email ON users(email);

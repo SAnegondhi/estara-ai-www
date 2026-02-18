@@ -8,7 +8,8 @@ DO $$ BEGIN
         'V2_ADVANCED',
         'V2_PRIVATE',
         'V2_ANNUAL_ACCESS',
-        'V2_PROFESSIONAL_ALLOCATOR'
+        'V2_PROFESSIONAL_ALLOCATOR',
+        'EARLY_ACCESS'
     );
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;

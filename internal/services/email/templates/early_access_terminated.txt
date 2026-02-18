@@ -1,0 +1,14 @@
+ESTARA AI
+Decision Infrastructure for Real Estate Investors
+
+---
+
+{{.FirstName}}, your account has been closed.
+
+Your Estara Insight early access account has been closed. You have been signed out of all sessions.
+
+Your data is retained for 90 days per our data retention policy. If you change your mind, contact support@estara-ai.com.
+
+---
+
+(c) {{.Year}} Estara AI. All rights reserved.

@@ -1,0 +1,14 @@
+ESTARA AI
+Decision Infrastructure for Real Estate Investors
+
+---
+
+{{.FirstName}}, your access has been restored.
+
+Your Estara Insight early access account has been re-enabled. You can sign in and continue using the platform.
+
+Sign in: https://insight.estara-ai.com
+
+---
+
+(c) {{.Year}} Estara AI. All rights reserved.

@@ -14,6 +14,7 @@ import (
 	"github.com/estara-ai/www/internal/api/handlers/billing"
 	"github.com/estara-ai/www/internal/api/handlers/cron"
 	"github.com/estara-ai/www/internal/api/handlers/discover"
+	"github.com/estara-ai/www/internal/api/handlers/earlyaccess"
 	"github.com/estara-ai/www/internal/api/handlers/iap"
 	"github.com/estara-ai/www/internal/api/handlers/location"
 	"github.com/estara-ai/www/internal/api/handlers/market"
@@ -57,6 +58,7 @@ type Handlers struct {
 	IAP           *iap.Handler
 	Website       *website.Handler
 	Public        *public.Handler
+	EarlyAccess   *earlyaccess.Handler
 	StripeWebhook *webhooks.StripeHandler
 	AppleWebhook  *webhooks.AppleHandler
 }
@@ -106,6 +108,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		IAP:           iap.NewHandler(ctx, store, cfg),
 		Website:       website.NewHandler(store, cfg),
 		Public:        public.NewHandler(store, cfg),
+		EarlyAccess:   earlyaccess.NewHandler(store, redis, cfg, authMiddleware),
 		StripeWebhook: webhooks.NewStripeHandler(store, cfg),
 		AppleWebhook:  webhooks.NewAppleHandler(store, cfg),
 	}
@@ -174,9 +177,15 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	r.Get("/robots.txt", handleRobotsTxt)
 	r.Get("/llms.txt", handleLLMsTxt)
 
+	// ADR-085: Early Access Program — public application endpoint
+	r.Route("/api/early-access", func(r chi.Router) {
+		r.Post("/apply", handlers.EarlyAccess.Apply)
+	})
+
 	// Auth routes (no auth required for login)
 	r.Route("/api/auth", func(r chi.Router) {
-		// Standard login/refresh endpoints
+		// Standard login/refresh/register endpoints
+		r.Post("/register", handlers.Auth.Register)
 		r.Post("/login", handlers.Auth.Login)
 		r.Post("/refresh", handlers.Auth.RefreshToken)
 
@@ -203,12 +212,18 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Post("/passkey/login/begin", handlers.Auth.BeginPasskeyLogin)
 		r.Post("/passkey/login/finish", handlers.Auth.FinishPasskeyLogin)
 
+		// ADR-085: Early access password setup (no auth required — token-gated)
+		r.Get("/verify-setup-token", handlers.EarlyAccess.VerifySetupToken)
+		r.Post("/setup-password", handlers.EarlyAccess.SetupPassword)
+
 		// Protected auth routes
 		r.Group(func(r chi.Router) {
 			r.Use(authMiddleware.Authenticate)
 			r.Get("/me", handlers.Auth.Me) // ADR-066: Returns user, entitlements, and CSRF token
 			r.Post("/logout", handlers.Auth.Logout)
 			r.Post("/update-password", handlers.Auth.UpdatePassword)
+			// ADR-085: Early access user self-termination
+			r.Post("/request-termination", handlers.EarlyAccess.RequestTermination)
 
 			// ADR-081: Passkey management (authenticated)
 			r.Post("/passkey/register/begin", handlers.Auth.BeginPasskeyRegistration)
@@ -464,10 +479,24 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 			r.Post("/{id}/impersonate", handlers.Admin.ImpersonateUser)
 			r.Post("/{id}/suspend", handlers.Admin.SuspendUser)
 			r.Post("/{id}/unsuspend", handlers.Admin.UnsuspendUser)
+			r.Post("/{id}/promote-super-admin", handlers.Admin.PromoteToSuperAdmin)
+			r.Post("/{id}/demote-from-super-admin", handlers.Admin.DemoteFromSuperAdmin)
 			r.Get("/{id}/activity", handlers.Admin.GetUserActivity)
 			r.Get("/{id}/financial-profile", handlers.Admin.GetUserFinancialProfile)
 			r.Post("/{id}/export", handlers.Admin.ExportUserData)
 			r.Delete("/{id}/data", handlers.Admin.DeleteUserData)
+			// ADR-085: Early access lifecycle management
+			r.Post("/{id}/suspend-early-access", handlers.Admin.SuspendEarlyAccessUser)
+			r.Post("/{id}/restore-early-access", handlers.Admin.RestoreEarlyAccessUser)
+			r.Post("/{id}/terminate-early-access", handlers.Admin.TerminateEarlyAccessUser)
+		})
+
+		// ADR-085: Early Access application management
+		r.Route("/early-access", func(r chi.Router) {
+			r.Get("/", handlers.Admin.ListEarlyAccessRequests)
+			r.Get("/{id}", handlers.Admin.GetEarlyAccessRequest)
+			r.Post("/{id}/approve", handlers.Admin.ApproveEarlyAccess)
+			r.Post("/{id}/reject", handlers.Admin.RejectEarlyAccess)
 		})
 
 		// Cache management

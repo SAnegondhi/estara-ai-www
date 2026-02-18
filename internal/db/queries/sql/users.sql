@@ -117,3 +117,27 @@ UPDATE users SET
     "updatedAt" = NOW()
 WHERE id = $1;
 
+-- name: UpdateUserEarlyAccessStatus :exec
+-- Updates early_access_status and optionally the account status field
+UPDATE users SET
+    early_access_status = $2,
+    "updatedAt" = NOW()
+WHERE id = $1;
+
+-- name: SetUserPasswordAndStatus :exec
+-- Sets password hash and marks account active (used in password setup flow)
+UPDATE users SET
+    password = $2,
+    early_access_status = 'active',
+    "updatedAt" = NOW()
+WHERE id = $1;
+
+-- name: CreateEarlyAccessUser :one
+-- Creates an early access user without a password (password set via setup link)
+INSERT INTO users (
+    id, email, "firstName", "lastName", role,
+    "subscriptionTier", early_access_status, "createdAt", "updatedAt"
+) VALUES (
+    $1, $2, $3, $4, 'USER', 'early_access', 'active', NOW(), NOW()
+) RETURNING *;
+

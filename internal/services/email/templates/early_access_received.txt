@@ -1,0 +1,22 @@
+ESTARA AI
+Decision Infrastructure for Real Estate Investors
+
+---
+
+{{.FirstName}}, we received your application.
+
+Thank you for applying to the Estara Insight early access program. We review every application personally and will be in touch within 2-3 business days.
+
+WHAT HAPPENS NEXT
+
+1. Our team reviews your application (2-3 business days)
+2. If approved, you receive a welcome email with a setup link
+3. Set your password and gain immediate unlimited access
+
+Questions? Reply to this email and we'll get back to you.
+
+---
+
+Independent decision-support platform. Not investment advice.
+
+(c) {{.Year}} Estara AI. All rights reserved.
