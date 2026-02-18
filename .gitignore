@@ -13,6 +13,9 @@ railway.env
 # Binary and build artifacts
 /www
 /marketdata
+/bootstrap
+/dbq
+tests/reports/
 *.exe
 *.dll
 *.so
