@@ -47,3 +47,4 @@ logs/
 # Temporary files
 tmp/
 temp/
+secrets.txt
