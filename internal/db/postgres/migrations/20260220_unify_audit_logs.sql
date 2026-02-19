@@ -23,6 +23,14 @@ DO $$ BEGIN
     END IF;
 END $$;
 
+-- Step 2b: Add resourceId column to audit_logs (if not exists)
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name = 'audit_logs' AND column_name = 'resourceId') THEN
+        ALTER TABLE audit_logs ADD COLUMN "resourceId" TEXT;
+    END IF;
+END $$;
+
 -- Step 3: Migrate data from admin_audit_log to audit_logs
 INSERT INTO audit_logs (
     id, "createdAt", "userId", event, action, resource, "resourceId",
@@ -33,7 +41,7 @@ SELECT
     "createdAt",
     NULL as "userId",  -- Admin actions don't have userId
     action::text as event,  -- Map action to event
-    action,
+    action::text as action,  -- Also populate action field
     resource,
     "resourceId",
     details as metadata,  -- Map details to metadata
