@@ -3096,12 +3096,16 @@ func (h *Handler) GetAnalysisReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := h.store.Q()
-	cache, err := q.GetCacheByUserAndKey(ctx, queries.GetCacheByUserAndKeyParams{
-		UserId: user.UserID,
-		Key:    cacheKey,
-	})
+
+	// ADR-087: Market analysis reports are shared across users
+	// Use GetCacheByKey (no user filter) for location-based market reports
+	cache, err := q.GetCacheByKey(ctx, cacheKey)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			h.logger.Warn("analysis report not found",
+				"key", cacheKey,
+				"user_id", user.UserID,
+			)
 			httputil.NotFound(w, "report not found")
 			return
 		}
@@ -3109,6 +3113,13 @@ func (h *Handler) GetAnalysisReport(w http.ResponseWriter, r *http.Request) {
 		httputil.Error(w, http.StatusInternalServerError, "failed to load report")
 		return
 	}
+
+	h.logger.Info("analysis report retrieved",
+		"key", cacheKey,
+		"user_id", user.UserID,
+		"creator_user_id", cache.UserId,
+		"location", cache.Location,
+	)
 
 	// Build response
 	resp := map[string]interface{}{

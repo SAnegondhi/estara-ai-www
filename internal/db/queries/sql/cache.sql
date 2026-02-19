@@ -98,6 +98,7 @@ INSERT INTO analysis_cache (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW()
 )
 ON CONFLICT (key) DO UPDATE SET
+    "userId" = EXCLUDED."userId",
     content = EXCLUDED.content,
     "fullReport" = EXCLUDED."fullReport",
     feature = EXCLUDED.feature,
