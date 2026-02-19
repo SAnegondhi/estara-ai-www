@@ -940,7 +940,7 @@ type AdminAuditLogEntry struct {
 	CreatedAt   time.Time              `json:"createdAt"`
 }
 
-// GetAuditLog returns admin audit log entries with optional search
+// GetAuditLog returns unified audit log (now all in audit_logs table)
 func (h *Handler) GetAuditLog(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	page := httputil.GetQueryParamInt(r, "page", 1)
@@ -967,8 +967,8 @@ func (h *Handler) GetAuditLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		h.logger.Error("failed to get admin audit log", "error", err)
-		httputil.Error(w, http.StatusInternalServerError, "failed to get admin audit log")
+		h.logger.Error("failed to get audit log", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, "failed to get audit log")
 		return
 	}
 
