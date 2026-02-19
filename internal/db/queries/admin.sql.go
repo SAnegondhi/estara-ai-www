@@ -109,6 +109,19 @@ func (q *Queries) CountAuditLogsByEventType(ctx context.Context, arg CountAuditL
 	return items, nil
 }
 
+const CountOldAdminAuditLogs = `-- name: CountOldAdminAuditLogs :one
+SELECT COUNT(*)
+FROM admin_audit_log
+WHERE "createdAt" < $1
+`
+
+func (q *Queries) CountOldAdminAuditLogs(ctx context.Context, createdat pgtype.Timestamp) (int64, error) {
+	row := q.db.QueryRow(ctx, CountOldAdminAuditLogs, createdat)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const CreateAdminAuditLog = `-- name: CreateAdminAuditLog :exec
 
 INSERT INTO admin_audit_log (
@@ -384,6 +397,23 @@ DELETE FROM system_alerts WHERE "expiresAt" IS NOT NULL AND "expiresAt" < NOW()
 func (q *Queries) DeleteExpiredSystemAlerts(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, DeleteExpiredSystemAlerts)
 	return err
+}
+
+const DeleteOldAdminAuditLogs = `-- name: DeleteOldAdminAuditLogs :execrows
+
+DELETE FROM admin_audit_log
+WHERE "createdAt" < $1
+`
+
+// ===============================
+// Admin Audit Log Cleanup Queries
+// ===============================
+func (q *Queries) DeleteOldAdminAuditLogs(ctx context.Context, createdat pgtype.Timestamp) (int64, error) {
+	result, err := q.db.Exec(ctx, DeleteOldAdminAuditLogs, createdat)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const DisableAdminTwoFactor = `-- name: DisableAdminTwoFactor :exec

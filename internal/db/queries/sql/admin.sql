@@ -290,3 +290,16 @@ GROUP BY severity;
 
 -- name: DeleteExpiredSystemAlerts :exec
 DELETE FROM system_alerts WHERE "expiresAt" IS NOT NULL AND "expiresAt" < NOW();
+
+-- ===============================
+-- Admin Audit Log Cleanup Queries
+-- ===============================
+
+-- name: DeleteOldAdminAuditLogs :execrows
+DELETE FROM admin_audit_log
+WHERE "createdAt" < $1;
+
+-- name: CountOldAdminAuditLogs :one
+SELECT COUNT(*)
+FROM admin_audit_log
+WHERE "createdAt" < $1;

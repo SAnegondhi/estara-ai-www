@@ -54,6 +54,7 @@ type Querier interface {
 	CountInvestmentPlanHistory(ctx context.Context, arg CountInvestmentPlanHistoryParams) (int64, error)
 	CountInvestorReportsFiltered(ctx context.Context, arg CountInvestorReportsFilteredParams) (int64, error)
 	CountMarketAnalysisHistory(ctx context.Context, arg CountMarketAnalysisHistoryParams) (int64, error)
+	CountOldAdminAuditLogs(ctx context.Context, createdat pgtype.Timestamp) (int64, error)
 	CountPaidInvoicesAfterDate(ctx context.Context, createdat pgtype.Timestamp) (int64, error)
 	CountPendingEarlyAccess(ctx context.Context) (int64, error)
 	CountPortfolioProperties(ctx context.Context, userID string) (int64, error)
@@ -215,6 +216,10 @@ type Querier interface {
 	DeleteExpiredSnapshots(ctx context.Context) error
 	DeleteExpiredSystemAlerts(ctx context.Context) error
 	DeleteExpiredSystemCache(ctx context.Context) (int64, error)
+	// ===============================
+	// Admin Audit Log Cleanup Queries
+	// ===============================
+	DeleteOldAdminAuditLogs(ctx context.Context, createdat pgtype.Timestamp) (int64, error)
 	DeleteOldAnalysisJobs(ctx context.Context) error
 	DeleteOldCronJobRuns(ctx context.Context, dollar_1 pgtype.Text) error
 	// Deletes the oldest N entries from the cache (FIFO eviction)

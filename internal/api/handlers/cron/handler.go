@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/estara-ai/www/internal/config"
 	db "github.com/estara-ai/www/internal/db"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
@@ -506,4 +508,60 @@ func (h *Handler) MarketDataStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httputil.Success(w, status)
+}
+
+// ===============================
+// Admin Audit Log Cleanup (ADR-086)
+// ===============================
+
+// CleanupAdminAuditLogs deletes admin audit logs older than 90 days
+// POST /api/cron/admin/audit-cleanup
+func (h *Handler) CleanupAdminAuditLogs(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	start := time.Now()
+	result := newCronResult(start)
+
+	h.logger.Info("starting admin audit log cleanup")
+
+	// Calculate cutoff date (90 days ago)
+	cutoffDate := time.Now().AddDate(0, 0, -90)
+	cutoffTimestamp := pgtype.Timestamp{Time: cutoffDate, Valid: true}
+
+	// Count logs to be deleted
+	count, err := h.store.Q().CountOldAdminAuditLogs(ctx, cutoffTimestamp)
+	if err != nil {
+		h.logger.Error("failed to count old audit logs", "error", err)
+		result.Status = "error"
+		result.Message = "failed to count old audit logs"
+		httputil.Error(w, http.StatusInternalServerError, result.Message)
+		return
+	}
+
+	// Delete old logs
+	deleted, err := h.store.Q().DeleteOldAdminAuditLogs(ctx, cutoffTimestamp)
+	if err != nil {
+		h.logger.Error("failed to delete old audit logs", "error", err)
+		result.Status = "error"
+		result.Message = "failed to delete old audit logs"
+		httputil.Error(w, http.StatusInternalServerError, result.Message)
+		return
+	}
+
+	result.Status = "completed"
+	result.Message = "admin audit logs cleaned up"
+	result.AffectedRows = deleted
+	result.Details = map[string]interface{}{
+		"cutoffDate":    cutoffDate.Format(time.RFC3339),
+		"retentionDays": 90,
+		"counted":       count,
+	}
+	result.Duration = time.Since(start).String()
+
+	h.logger.Info("admin audit log cleanup completed",
+		"deleted", deleted,
+		"cutoff", cutoffDate.Format(time.RFC3339),
+		"duration", result.Duration,
+	)
+
+	httputil.Success(w, result)
 }

@@ -281,12 +281,24 @@ func (h *Handler) ToggleWhitelistEntry(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusOK, resp)
 }
 
+// DeleteWhitelistRequest represents the request to delete a whitelist entry
+type DeleteWhitelistRequest struct {
+	Reason string `json:"reason"`
+}
+
 // DeleteWhitelistEntry removes a whitelist entry
 func (h *Handler) DeleteWhitelistEntry(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		httputil.BadRequest(w, "id is required")
+		return
+	}
+
+	// Parse request body for reason
+	var req DeleteWhitelistRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.BadRequest(w, "invalid request body")
 		return
 	}
 
@@ -314,8 +326,10 @@ func (h *Handler) DeleteWhitelistEntry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Cascade: revoke the corresponding waitlist entry if one exists
+	revokedWaitlist := false
 	if entry.Type == "EMAIL" {
 		h.revokeWaitlistByEmail(ctx, entry.Email)
+		revokedWaitlist = true
 	}
 
 	// Send removal notification for EMAIL type entries
@@ -325,9 +339,31 @@ func (h *Handler) DeleteWhitelistEntry(w http.ResponseWriter, r *http.Request) {
 		emailSent, emailError = h.sendWhitelistRemovedEmail(entry.Email, entry.Name)
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "WHITELIST_DELETE", "whitelist", id, map[string]interface{}{
-		"email": entry.Email,
-	})
+	// Prepare before state for audit
+	beforeState := map[string]interface{}{
+		"email":  entry.Email,
+		"type":   entry.Type,
+		"active": entry.Active,
+	}
+	if entry.Name != nil {
+		beforeState["name"] = *entry.Name
+	}
+	if entry.Reason != nil {
+		beforeState["originalReason"] = *entry.Reason
+	}
+
+	// Build audit details with reason and before state
+	auditDetails := buildAuditDetails(
+		req.Reason,
+		beforeState,
+		nil,
+		map[string]interface{}{
+			"cascadedWaitlist": revokedWaitlist,
+			"emailSent":        emailSent,
+		},
+	)
+
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "WHITELIST_DELETE", "whitelist", id, auditDetails)
 
 	resp := map[string]interface{}{
 		"success":   true,

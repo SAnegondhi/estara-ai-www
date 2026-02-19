@@ -684,6 +684,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Post("/cleanup-guest-sessions", c.Tracked("cleanup-guest-sessions", c.CleanupGuestSessions))
 		r.Post("/discovery-cleanup", c.Tracked("discovery-cleanup", c.DiscoveryCleanup))
 		r.Post("/expire-iap-subscriptions", c.Tracked("expire-iap-subscriptions", c.ExpireIAPSubscriptions))
+		r.Post("/admin-audit-cleanup", c.Tracked("admin-audit-cleanup", c.CleanupAdminAuditLogs)) // ADR-086
 
 		// Market data import endpoints (ADR-075)
 		r.Route("/market-data", func(r chi.Router) {
