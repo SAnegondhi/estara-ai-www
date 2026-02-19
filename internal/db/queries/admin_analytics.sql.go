@@ -101,6 +101,55 @@ func (q *Queries) CountVendorConfigs(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const CreateAuditLog = `-- name: CreateAuditLog :exec
+INSERT INTO audit_logs (
+    id, "userId", event, description, "ipAddress", "userAgent", metadata,
+    success, error, action, endpoint, "requestId", resource, "sessionId",
+    severity, "createdAt"
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW()
+)
+`
+
+type CreateAuditLogParams struct {
+	ID          string      `json:"id"`
+	UserId      pgtype.Text `json:"userId"`
+	Event       interface{} `json:"event"`
+	Description pgtype.Text `json:"description"`
+	IpAddress   pgtype.Text `json:"ipAddress"`
+	UserAgent   pgtype.Text `json:"userAgent"`
+	Metadata    []byte      `json:"metadata"`
+	Success     bool        `json:"success"`
+	Error       pgtype.Text `json:"error"`
+	Action      pgtype.Text `json:"action"`
+	Endpoint    pgtype.Text `json:"endpoint"`
+	RequestId   pgtype.Text `json:"requestId"`
+	Resource    pgtype.Text `json:"resource"`
+	SessionId   pgtype.Text `json:"sessionId"`
+	Severity    string      `json:"severity"`
+}
+
+func (q *Queries) CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) error {
+	_, err := q.db.Exec(ctx, CreateAuditLog,
+		arg.ID,
+		arg.UserId,
+		arg.Event,
+		arg.Description,
+		arg.IpAddress,
+		arg.UserAgent,
+		arg.Metadata,
+		arg.Success,
+		arg.Error,
+		arg.Action,
+		arg.Endpoint,
+		arg.RequestId,
+		arg.Resource,
+		arg.SessionId,
+		arg.Severity,
+	)
+	return err
+}
+
 const DeleteAllCache = `-- name: DeleteAllCache :exec
 DELETE FROM analysis_cache
 `
@@ -520,4 +569,49 @@ func (q *Queries) ResetInvestorReportForRetry(ctx context.Context, id string) (i
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const UpsertSystemAlert = `-- name: UpsertSystemAlert :one
+INSERT INTO system_alerts (
+    id, type, severity, title, description, "alertKey", metadata,
+    "firstSeen", "lastSeen", "occurrenceCount", dismissed, "actionRequired",
+    "expiresAt", "createdAt", "updatedAt"
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), 1, false, $8, $9, NOW(), NOW()
+)
+ON CONFLICT ("alertKey")
+DO UPDATE SET
+    "lastSeen" = NOW(),
+    "occurrenceCount" = system_alerts."occurrenceCount" + 1,
+    "updatedAt" = NOW()
+RETURNING id
+`
+
+type UpsertSystemAlertParams struct {
+	ID             string           `json:"id"`
+	Type           string           `json:"type"`
+	Severity       string           `json:"severity"`
+	Title          string           `json:"title"`
+	Description    string           `json:"description"`
+	AlertKey       string           `json:"alertKey"`
+	Metadata       string           `json:"metadata"`
+	ActionRequired bool             `json:"actionRequired"`
+	ExpiresAt      pgtype.Timestamp `json:"expiresAt"`
+}
+
+func (q *Queries) UpsertSystemAlert(ctx context.Context, arg UpsertSystemAlertParams) (string, error) {
+	row := q.db.QueryRow(ctx, UpsertSystemAlert,
+		arg.ID,
+		arg.Type,
+		arg.Severity,
+		arg.Title,
+		arg.Description,
+		arg.AlertKey,
+		arg.Metadata,
+		arg.ActionRequired,
+		arg.ExpiresAt,
+	)
+	var id string
+	err := row.Scan(&id)
+	return id, err
 }

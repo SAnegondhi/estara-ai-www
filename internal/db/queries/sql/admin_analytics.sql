@@ -126,3 +126,27 @@ SELECT COUNT(*) FROM admin_audit_log WHERE "resourceId" = sqlc.arg('resource_id'
 -- name: CountSystemAlertsFiltered :one
 SELECT COUNT(*) FROM system_alerts
 WHERE (sqlc.narg('dismissed_filter')::boolean IS NULL OR dismissed = sqlc.narg('dismissed_filter'));
+
+-- name: CreateAuditLog :exec
+INSERT INTO audit_logs (
+    id, "userId", event, description, "ipAddress", "userAgent", metadata,
+    success, error, action, endpoint, "requestId", resource, "sessionId",
+    severity, "createdAt"
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW()
+);
+
+-- name: UpsertSystemAlert :one
+INSERT INTO system_alerts (
+    id, type, severity, title, description, "alertKey", metadata,
+    "firstSeen", "lastSeen", "occurrenceCount", dismissed, "actionRequired",
+    "expiresAt", "createdAt", "updatedAt"
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), 1, false, $8, $9, NOW(), NOW()
+)
+ON CONFLICT ("alertKey")
+DO UPDATE SET
+    "lastSeen" = NOW(),
+    "occurrenceCount" = system_alerts."occurrenceCount" + 1,
+    "updatedAt" = NOW()
+RETURNING id;

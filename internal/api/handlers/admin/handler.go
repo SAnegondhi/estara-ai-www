@@ -1174,15 +1174,15 @@ func (h *Handler) logAdminAudit(ctx context.Context, r *http.Request, actorType,
 	q := h.store.Q()
 	err := q.CreateAdminAuditLog(ctx, queries.CreateAdminAuditLogParams{
 		ID:         id,
-		AdminId:    adminID,
-		AdminEmail: adminEmail,
+		AdminID:    pgtype.Text{String: adminID, Valid: true},
+		AdminEmail: pgtype.Text{String: adminEmail, Valid: true},
 		ActorType:  actorType,
-		Action:     action,
-		Resource:   resource,
-		ResourceId: pgtype.Text{String: resourceID, Valid: resourceID != ""},
+		Action:     pgtype.Text{String: action, Valid: true},
+		Resource:   pgtype.Text{String: resource, Valid: true},
+		ResourceID: pgtype.Text{String: resourceID, Valid: resourceID != ""},
 		Details:    detailsJSON,
-		IpAddress:  clientIP,
-		UserAgent:  r.UserAgent(),
+		IpAddress:  pgtype.Text{String: clientIP, Valid: true},
+		UserAgent:  pgtype.Text{String: r.UserAgent(), Valid: true},
 	})
 	if err != nil {
 		h.logger.Warn("failed to write admin audit log", "error", err, "action", action)

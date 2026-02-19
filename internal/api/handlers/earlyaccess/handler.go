@@ -471,14 +471,15 @@ func (h *Handler) logAudit(ctx context.Context, r *http.Request, actorID, action
 
 	err := h.store.Q().CreateAdminAuditLog(ctx, queries.CreateAdminAuditLogParams{
 		ID:         id,
-		AdminId:    actorID,
-		AdminEmail: actorID,
-		Action:     action,
-		Resource:   resource,
-		ResourceId: pgtype.Text{String: resourceID, Valid: resourceID != ""},
+		AdminID:    pgtype.Text{String: actorID, Valid: true},
+		AdminEmail: pgtype.Text{String: actorID, Valid: true},
+		ActorType:  "SYSTEM",
+		Action:     pgtype.Text{String: action, Valid: true},
+		Resource:   pgtype.Text{String: resource, Valid: true},
+		ResourceID: pgtype.Text{String: resourceID, Valid: resourceID != ""},
 		Details:    detailsJSON,
-		IpAddress:  clientIP,
-		UserAgent:  r.UserAgent(),
+		IpAddress:  pgtype.Text{String: clientIP, Valid: true},
+		UserAgent:  pgtype.Text{String: r.UserAgent(), Valid: true},
 	})
 	if err != nil {
 		h.logger.Warn("failed to write audit log", "error", err, "action", action)

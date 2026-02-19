@@ -28,6 +28,8 @@ type Querier interface {
 	CountActiveSubscriptions(ctx context.Context) (int64, error)
 	CountActiveWhitelistedEmails(ctx context.Context) (int64, error)
 	CountAdminActionsForUser(ctx context.Context, resourceID pgtype.Text) (int64, error)
+	CountAdminAuditLogs(ctx context.Context, arg CountAdminAuditLogsParams) (int64, error)
+	CountAdminAuditLogsByDetailsText(ctx context.Context, arg CountAdminAuditLogsByDetailsTextParams) (int64, error)
 	CountAllCache(ctx context.Context) (int64, error)
 	CountAnalysisJobsByUser(ctx context.Context, userid string) (int64, error)
 	CountAuditLogFiltered(ctx context.Context, arg CountAuditLogFilteredParams) (int64, error)
@@ -51,6 +53,7 @@ type Querier interface {
 	CountInvestmentPlanHistory(ctx context.Context, arg CountInvestmentPlanHistoryParams) (int64, error)
 	CountInvestorReportsFiltered(ctx context.Context, arg CountInvestorReportsFilteredParams) (int64, error)
 	CountMarketAnalysisHistory(ctx context.Context, arg CountMarketAnalysisHistoryParams) (int64, error)
+	CountOldAdminAuditLogs(ctx context.Context, cutoffTimestamp pgtype.Timestamp) (int64, error)
 	CountPaidInvoicesAfterDate(ctx context.Context, createdat pgtype.Timestamp) (int64, error)
 	CountPendingEarlyAccess(ctx context.Context) (int64, error)
 	CountPortfolioProperties(ctx context.Context, userID string) (int64, error)
@@ -85,11 +88,14 @@ type Querier interface {
 	CountWhitelistedEmails(ctx context.Context) (int64, error)
 	// Activity Linking Queries
 	CreateActivityLink(ctx context.Context, arg CreateActivityLinkParams) (DiscoverySessionActivity, error)
+	// Admin Audit Log Queries (Unified audit_logs table)
+	CreateAdminAuditLog(ctx context.Context, arg CreateAdminAuditLogParams) error
 	// =========================================================
 	// Admin Credits
 	// =========================================================
 	CreateAdminCredit(ctx context.Context, arg CreateAdminCreditParams) (AdminCredit, error)
 	CreateAnalysisJob(ctx context.Context, arg CreateAnalysisJobParams) (CreateAnalysisJobRow, error)
+	CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) error
 	// Billing Audit Log Queries
 	CreateBillingAuditLog(ctx context.Context, arg CreateBillingAuditLogParams) (BillingAuditLog, error)
 	CreateBillingCycle(ctx context.Context, arg CreateBillingCycleParams) (BillingCycle, error)
@@ -199,6 +205,7 @@ type Querier interface {
 	DeleteExpiredSilentLoginSessions(ctx context.Context) error
 	DeleteExpiredSnapshots(ctx context.Context) error
 	DeleteExpiredSystemCache(ctx context.Context) (int64, error)
+	DeleteOldAdminAuditLogs(ctx context.Context, cutoffTimestamp pgtype.Timestamp) (int64, error)
 	DeleteOldAnalysisJobs(ctx context.Context) error
 	DeleteOldCronJobRuns(ctx context.Context, dollar_1 pgtype.Text) error
 	// Deletes the oldest N entries from the cache (FIFO eviction)
@@ -462,6 +469,7 @@ type Querier interface {
 	ListActiveVendorNames(ctx context.Context) ([]ListActiveVendorNamesRow, error)
 	ListActiveWhitelistedEmails(ctx context.Context) ([]ListActiveWhitelistedEmailsRow, error)
 	ListAdminActionsForUser(ctx context.Context, arg ListAdminActionsForUserParams) ([]ListAdminActionsForUserRow, error)
+	ListAdminAuditLogs(ctx context.Context, arg ListAdminAuditLogsParams) ([]ListAdminAuditLogsRow, error)
 	ListAdminCredits(ctx context.Context, arg ListAdminCreditsParams) ([]AdminCredit, error)
 	// Analysis Jobs Queries
 	ListAnalysisJobsByUser(ctx context.Context, arg ListAnalysisJobsByUserParams) ([]ListAnalysisJobsByUserRow, error)
@@ -555,6 +563,7 @@ type Querier interface {
 	RestoreDiscoverySession(ctx context.Context, arg RestoreDiscoverySessionParams) (DiscoverySession, error)
 	RevokeUserConsent(ctx context.Context, arg RevokeUserConsentParams) error
 	RevokeWaitlistByEmail(ctx context.Context, email string) error
+	SearchAdminAuditLogsByDetailsText(ctx context.Context, arg SearchAdminAuditLogsByDetailsTextParams) ([]SearchAdminAuditLogsByDetailsTextRow, error)
 	SearchAnalysisJobsByUser(ctx context.Context, arg SearchAnalysisJobsByUserParams) ([]SearchAnalysisJobsByUserRow, error)
 	SearchUserScenarios(ctx context.Context, arg SearchUserScenariosParams) ([]Scenario, error)
 	SearchUsersByEmail(ctx context.Context, arg SearchUsersByEmailParams) ([]User, error)
@@ -643,6 +652,7 @@ type Querier interface {
 	UpsertInvoice(ctx context.Context, arg UpsertInvoiceParams) (Invoice, error)
 	// Inserts or updates a property in the cache
 	UpsertPropertyCache(ctx context.Context, arg UpsertPropertyCacheParams) error
+	UpsertSystemAlert(ctx context.Context, arg UpsertSystemAlertParams) (string, error)
 	UpsertSystemCache(ctx context.Context, arg UpsertSystemCacheParams) (SystemCache, error)
 	UpsertTrendCache(ctx context.Context, arg UpsertTrendCacheParams) error
 	UpsertUserAnalysisPreference(ctx context.Context, arg UpsertUserAnalysisPreferenceParams) (UserAnalysisPreference, error)
