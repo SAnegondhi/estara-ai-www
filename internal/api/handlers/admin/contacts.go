@@ -148,7 +148,7 @@ func (h *Handler) UpdateContact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "CONTACT_UPDATE", "contact", id, map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "CONTACT_UPDATE", "contact", contact.Email, map[string]interface{}{
 		"status": req.Status,
 	})
 	httputil.Success(w, contact)
@@ -164,7 +164,7 @@ func (h *Handler) DeleteContact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check existence first since DeleteContactSubmission is :exec (no RowsAffected)
-	_, err := h.store.Q().GetContactByID(ctx, id)
+	contact, err := h.store.Q().GetContactByID(ctx, id)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			httputil.Error(w, http.StatusNotFound, "contact not found")
@@ -181,7 +181,7 @@ func (h *Handler) DeleteContact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "CONTACT_DELETE", "contact", id, nil)
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "CONTACT_DELETE", "contact", contact.Email, nil)
 	httputil.Success(w, map[string]interface{}{"deleted": true})
 }
 

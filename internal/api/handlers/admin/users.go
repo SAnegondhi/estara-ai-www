@@ -59,7 +59,7 @@ func (h *Handler) SuspendUser(w http.ResponseWriter, r *http.Request) {
 	q := h.store.Q()
 
 	// Check user exists
-	_, err := q.GetUserByID(ctx, userID)
+	user, err := q.GetUserByID(ctx, userID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			httputil.NotFound(w, "user not found")
@@ -86,7 +86,7 @@ func (h *Handler) SuspendUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_SUSPEND", "user", userID, map[string]any{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_SUSPEND", "user", user.Email, map[string]any{
 		"reason": req.Reason,
 	})
 
@@ -129,7 +129,7 @@ func (h *Handler) UnsuspendUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_UNSUSPEND", "user", userID, map[string]any{})
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_UNSUSPEND", "user", user.Email, map[string]any{})
 
 	h.logger.Info("user unsuspended", "user_id", userID)
 	httputil.Success(w, map[string]any{"suspended": false})
@@ -191,7 +191,7 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_CREATE", "user", userID, map[string]any{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_CREATE", "user", req.Email, map[string]any{
 		"email": req.Email,
 		"role":  req.Role,
 	})
@@ -514,7 +514,7 @@ func (h *Handler) ExportUserData(w http.ResponseWriter, r *http.Request) {
 		"auditLogs": auditLogs,
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_DATA_EXPORT", "user", userID, map[string]any{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_DATA_EXPORT", "user", user.Email, map[string]any{
 		"email": user.Email,
 	})
 
@@ -556,7 +556,7 @@ func (h *Handler) DeleteUserData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_DATA_DELETE", "user", userID, map[string]any{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_DATA_DELETE", "user", user.Email, map[string]any{
 		"email": user.Email,
 	})
 
@@ -616,7 +616,7 @@ func (h *Handler) PromoteToSuperAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_UPDATE", "user", userID, map[string]any{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_UPDATE", "user", user.Email, map[string]any{
 		"action":         "promote_super_admin",
 		"previous_role":  "ADMIN",
 		"new_role":       "SUPER_ADMIN",
@@ -685,7 +685,7 @@ func (h *Handler) DemoteFromSuperAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_UPDATE", "user", userID, map[string]any{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_UPDATE", "user", user.Email, map[string]any{
 		"action":        "demote_from_super_admin",
 		"previous_role": "SUPER_ADMIN",
 		"new_role":      "ADMIN",

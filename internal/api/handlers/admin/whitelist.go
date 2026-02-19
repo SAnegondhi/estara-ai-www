@@ -179,7 +179,7 @@ func (h *Handler) CreateWhitelistEntry(w http.ResponseWriter, r *http.Request) {
 		emailSent, emailError = h.sendWhitelistInviteEmail(req.Email, req.Name)
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "WHITELIST_CREATE", "whitelist", id, map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "WHITELIST_CREATE", "whitelist", req.Email, map[string]interface{}{
 		"email": req.Email,
 		"type":  req.Type,
 	})
@@ -222,7 +222,7 @@ func (h *Handler) UpdateWhitelistEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "WHITELIST_UPDATE", "whitelist", id, nil)
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "WHITELIST_UPDATE", "whitelist", entry.Email, nil)
 	httputil.Success(w, entry)
 }
 
@@ -266,7 +266,7 @@ func (h *Handler) ToggleWhitelistEntry(w http.ResponseWriter, r *http.Request) {
 		emailSent, emailError = h.sendWhitelistToggleEmail(entry.Email, entry.Name, req.Active)
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "WHITELIST_TOGGLE", "whitelist", id, map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "WHITELIST_TOGGLE", "whitelist", entry.Email, map[string]interface{}{
 		"active": req.Active,
 	})
 
@@ -363,7 +363,7 @@ func (h *Handler) DeleteWhitelistEntry(w http.ResponseWriter, r *http.Request) {
 		},
 	)
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "WHITELIST_DELETE", "whitelist", id, auditDetails)
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "WHITELIST_DELETE", "whitelist", entry.Email, auditDetails)
 
 	resp := map[string]interface{}{
 		"success":   true,
