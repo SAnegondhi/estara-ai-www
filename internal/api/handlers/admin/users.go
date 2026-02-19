@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -75,6 +76,23 @@ func (h *Handler) SuspendUser(w http.ResponseWriter, r *http.Request) {
 		adminID = admin.UserID
 	}
 
+	// Capture before state for audit
+	beforeState := map[string]interface{}{
+		"email":            user.Email,
+		"role":             user.Role,
+		"subscriptionTier": user.SubscriptionTier.String,
+		"wasSuspended":     user.SuspendedAt.Valid,
+	}
+	if user.SuspendedAt.Valid {
+		beforeState["previousSuspendedAt"] = user.SuspendedAt.Time.Format(time.RFC3339)
+		if user.SuspendedBy.Valid {
+			beforeState["previousSuspendedBy"] = user.SuspendedBy.String
+		}
+		if user.SuspendReason.Valid {
+			beforeState["previousSuspendReason"] = user.SuspendReason.String
+		}
+	}
+
 	err = q.SuspendUser(ctx, queries.SuspendUserParams{
 		ID:            userID,
 		SuspendedBy:   pgtype.Text{String: adminID, Valid: true},
@@ -86,9 +104,14 @@ func (h *Handler) SuspendUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_SUSPEND", "user", user.Email, map[string]any{
-		"reason": req.Reason,
-	})
+	// After state
+	afterState := map[string]interface{}{
+		"suspendedAt": time.Now().UTC().Format(time.RFC3339),
+		"suspendedBy": adminID,
+	}
+
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_SUSPEND", "user", user.Email,
+		buildAuditDetails(req.Reason, beforeState, afterState, nil))
 
 	h.logger.Info("user suspended", "user_id", userID, "admin_id", adminID)
 	httputil.Success(w, map[string]any{"suspended": true})
@@ -122,6 +145,20 @@ func (h *Handler) UnsuspendUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Capture before state for audit (user is suspended)
+	beforeState := map[string]interface{}{
+		"email":            user.Email,
+		"role":             user.Role,
+		"subscriptionTier": user.SubscriptionTier.String,
+		"suspendedAt":      user.SuspendedAt.Time.Format(time.RFC3339),
+	}
+	if user.SuspendedBy.Valid {
+		beforeState["suspendedBy"] = user.SuspendedBy.String
+	}
+	if user.SuspendReason.Valid {
+		beforeState["suspendReason"] = user.SuspendReason.String
+	}
+
 	err = q.UnsuspendUser(ctx, userID)
 	if err != nil {
 		h.logger.Error("unsuspend user failed", "error", err, "user_id", userID)
@@ -129,7 +166,15 @@ func (h *Handler) UnsuspendUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_UNSUSPEND", "user", user.Email, map[string]any{})
+	// After state (user is active)
+	afterState := map[string]interface{}{
+		"suspendedAt": nil,
+		"suspendedBy": nil,
+		"active":      true,
+	}
+
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_UNSUSPEND", "user", user.Email,
+		buildAuditDetails("User unsuspended", beforeState, afterState, nil))
 
 	h.logger.Info("user unsuspended", "user_id", userID)
 	httputil.Success(w, map[string]any{"suspended": false})
@@ -616,13 +661,27 @@ func (h *Handler) PromoteToSuperAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_UPDATE", "user", user.Email, map[string]any{
-		"action":         "promote_super_admin",
-		"previous_role":  "ADMIN",
-		"new_role":       "SUPER_ADMIN",
-		"promoted_by":    admin.UserID,
-		"promoted_email": user.Email,
-	})
+	// Capture before/after state for audit
+	beforeState := map[string]interface{}{
+		"userId": userID,
+		"email":  user.Email,
+		"role":   "ADMIN",
+	}
+	if user.FirstName.Valid {
+		beforeState["firstName"] = user.FirstName.String
+	}
+	if user.LastName.Valid {
+		beforeState["lastName"] = user.LastName.String
+	}
+
+	afterState := map[string]interface{}{
+		"role":       "SUPER_ADMIN",
+		"promotedBy": admin.UserID,
+		"promotedAt": time.Now().UTC().Format(time.RFC3339),
+	}
+
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_UPDATE", "user", user.Email,
+		buildAuditDetails("User promoted to SUPER_ADMIN", beforeState, afterState, nil))
 
 	h.logger.Info("user promoted to SUPER_ADMIN", "user_id", userID, "email", user.Email, "by", admin.UserID)
 	httputil.Success(w, map[string]any{
@@ -685,13 +744,27 @@ func (h *Handler) DemoteFromSuperAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_UPDATE", "user", user.Email, map[string]any{
-		"action":        "demote_from_super_admin",
-		"previous_role": "SUPER_ADMIN",
-		"new_role":      "ADMIN",
-		"demoted_by":    admin.UserID,
-		"demoted_email": user.Email,
-	})
+	// Capture before/after state for audit
+	beforeState := map[string]interface{}{
+		"userId": userID,
+		"email":  user.Email,
+		"role":   "SUPER_ADMIN",
+	}
+	if user.FirstName.Valid {
+		beforeState["firstName"] = user.FirstName.String
+	}
+	if user.LastName.Valid {
+		beforeState["lastName"] = user.LastName.String
+	}
+
+	afterState := map[string]interface{}{
+		"role":      "ADMIN",
+		"demotedBy": admin.UserID,
+		"demotedAt": time.Now().UTC().Format(time.RFC3339),
+	}
+
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_UPDATE", "user", user.Email,
+		buildAuditDetails("User demoted from SUPER_ADMIN", beforeState, afterState, nil))
 
 	h.logger.Info("user demoted from SUPER_ADMIN", "user_id", userID, "email", user.Email, "by", admin.UserID)
 	httputil.Success(w, map[string]any{

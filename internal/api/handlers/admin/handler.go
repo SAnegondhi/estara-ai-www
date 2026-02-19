@@ -367,8 +367,8 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check user exists
-	_, err := h.getUserByID(ctx, userID)
+	// Get user before update (for audit before state)
+	userBefore, err := h.getUserByID(ctx, userID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			httputil.Error(w, http.StatusNotFound, "user not found")
@@ -377,6 +377,18 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to get user", "error", err, "user_id", userID)
 		httputil.Error(w, http.StatusInternalServerError, "failed to get user")
 		return
+	}
+
+	// Capture before state for audit
+	beforeState := map[string]interface{}{
+		"email": userBefore.Email,
+		"role":  userBefore.Role,
+	}
+	if userBefore.FirstName != nil {
+		beforeState["firstName"] = *userBefore.FirstName
+	}
+	if userBefore.LastName != nil {
+		beforeState["lastName"] = *userBefore.LastName
 	}
 
 	// Update user
@@ -394,9 +406,17 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_UPDATE", "user", userID, map[string]interface{}{
-		"changes": req,
-	})
+	// Capture after state
+	afterState := map[string]interface{}{}
+	if req.FirstName != nil {
+		afterState["firstName"] = *req.FirstName
+	}
+	if req.LastName != nil {
+		afterState["lastName"] = *req.LastName
+	}
+
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_UPDATE", "user", userID,
+		buildAuditDetails("User profile updated", beforeState, afterState, nil))
 	h.logger.Info("user updated", "user_id", userID)
 	httputil.Success(w, user)
 }

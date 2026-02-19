@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -175,6 +176,18 @@ func (h *Handler) UpdateVendor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get current vendor for audit before state
+	vendor, err := h.store.Q().GetVendorConfigAdmin(ctx, vendorID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			httputil.Error(w, http.StatusNotFound, "vendor not found")
+			return
+		}
+		h.logger.Error("failed to get vendor", "error", err, "vendor_id", vendorID)
+		httputil.Error(w, http.StatusInternalServerError, "failed to get vendor")
+		return
+	}
+
 	// Build update params using sqlc COALESCE pattern
 	params := queries.UpdateVendorConfigParams{
 		ID: vendorID,
@@ -200,7 +213,24 @@ func (h *Handler) UpdateVendor(w http.ResponseWriter, r *http.Request) {
 		params.Notes = pgtype.Text{String: *req.Notes, Valid: true}
 	}
 
-	_, err := h.store.Q().UpdateVendorConfig(ctx, params)
+	// Capture before state for audit
+	beforeState := map[string]interface{}{
+		"name":        vendor.Name,
+		"displayName": vendor.DisplayName,
+		"category":    vendor.Category,
+	}
+	if vendor.MonthlyCost.Valid {
+		beforeState["monthlyCost"] = vendor.MonthlyCost.Int.String()
+	}
+	if vendor.ApiKeyEnvVar.Valid {
+		beforeState["apiKeyEnvVar"] = vendor.ApiKeyEnvVar.String
+	}
+	if vendor.HealthCheckUrl.Valid {
+		beforeState["healthUrl"] = vendor.HealthCheckUrl.String
+	}
+	beforeState["isPrimary"] = vendor.IsPrimary
+
+	_, err = h.store.Q().UpdateVendorConfig(ctx, params)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			httputil.Error(w, http.StatusNotFound, "vendor not found")
@@ -211,9 +241,36 @@ func (h *Handler) UpdateVendor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "VENDOR_UPDATE", "vendor", vendorID, map[string]any{
-		"changes": req,
-	})
+	// Build after state with only changed fields
+	afterState := make(map[string]interface{})
+	if req.DisplayName != nil {
+		afterState["displayName"] = *req.DisplayName
+	}
+	if req.MonthlyCost != nil {
+		afterState["monthlyCost"] = *req.MonthlyCost
+	}
+	if req.ApiKeyEnvVar != nil {
+		afterState["apiKeyEnvVar"] = *req.ApiKeyEnvVar
+	}
+	if req.HealthUrl != nil {
+		afterState["healthUrl"] = *req.HealthUrl
+	}
+	if req.IsPrimary != nil {
+		afterState["isPrimary"] = *req.IsPrimary
+	}
+
+	changedFields := make([]string, 0, len(afterState))
+	for field := range afterState {
+		changedFields = append(changedFields, field)
+	}
+
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "VENDOR_UPDATE", "vendor", vendorID,
+		buildAuditDetails(
+			fmt.Sprintf("Vendor updated: %s", strings.Join(changedFields, ", ")),
+			beforeState,
+			afterState,
+			map[string]interface{}{"changedFields": changedFields},
+		))
 	h.logger.Info("vendor updated", "vendor_id", vendorID)
 	httputil.Success(w, map[string]any{
 		"vendorId": vendorID,

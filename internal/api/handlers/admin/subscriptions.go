@@ -366,6 +366,17 @@ func (h *Handler) ChangePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Capture before state for audit
+	oldPriceID := h.billing.GetPriceIDForTier(billingTier(oldTier))
+	beforeState := map[string]interface{}{
+		"subscriptionId": subID,
+		"tier":           oldTier,
+		"priceId":        oldPriceID,
+	}
+	if stripeSubID.Valid {
+		beforeState["stripeSubscriptionId"] = stripeSubID.String
+	}
+
 	// Update in Stripe if subscription has a Stripe ID
 	if stripeSubID.Valid && stripeSubID.String != "" {
 		_, err = h.billing.UpdateSubscriptionTier(stripeSubID.String, newPriceID)
@@ -389,10 +400,14 @@ func (h *Handler) ChangePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "SUBSCRIPTION_CHANGE_PLAN", "subscription", subID, map[string]any{
-		"oldTier": oldTier,
-		"newTier": req.NewTier,
-	})
+	// After state
+	afterState := map[string]interface{}{
+		"tier":    req.NewTier,
+		"priceId": newPriceID,
+	}
+
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "SUBSCRIPTION_CHANGE_PLAN", "subscription", subID,
+		buildAuditDetails(fmt.Sprintf("Plan changed from %s to %s", oldTier, req.NewTier), beforeState, afterState, nil))
 	h.logger.Info("subscription plan changed", "sub_id", subID, "new_tier", req.NewTier)
 	httputil.Success(w, map[string]any{
 		"subscriptionId": subID,

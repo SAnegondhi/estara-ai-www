@@ -292,10 +292,35 @@ func (h *Handler) ApproveEarlyAccess(w http.ResponseWriter, r *http.Request) {
 		h.logger.Warn("failed to send early access welcome email", "error", emailErr, "email", ear.Email)
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "EARLY_ACCESS_APPROVED", "early_access_requests", ear.Email, map[string]interface{}{
-		"email":  ear.Email,
-		"userId": newUser.ID,
-	})
+	// Capture before state (pending request) for audit
+	beforeState := map[string]interface{}{
+		"requestId":   id,
+		"email":       ear.Email,
+		"firstName":   ear.FirstName,
+		"lastName":    ear.LastName,
+		"status":      ear.Status,
+		"useCase":     ear.UseCase,
+		"submittedAt": ear.CreatedAt.Format(time.RFC3339),
+	}
+	if ear.Company.Valid {
+		beforeState["company"] = ear.Company.String
+	}
+	if ear.PortfolioSize.Valid {
+		beforeState["portfolioSize"] = ear.PortfolioSize.String
+	}
+
+	// After state (approved, user created)
+	afterState := map[string]interface{}{
+		"status":     "approved",
+		"userId":     newUser.ID,
+		"approvedBy": adminID,
+		"approvedAt": time.Now().UTC().Format(time.RFC3339),
+		"whitelisted": true,
+		"welcomeEmailSent": true,
+	}
+
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "EARLY_ACCESS_APPROVED", "early_access_requests", ear.Email,
+		buildAuditDetails("Early access request approved", beforeState, afterState, nil))
 
 	h.logger.Info("early access approved", "request_id", id, "user_id", newUser.ID, "email", ear.Email)
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{
@@ -350,9 +375,33 @@ func (h *Handler) RejectEarlyAccess(w http.ResponseWriter, r *http.Request) {
 		h.logger.Warn("failed to send rejection email", "error", emailErr)
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "EARLY_ACCESS_REJECTED", "early_access_requests", ear.Email, map[string]interface{}{
-		"email": ear.Email,
-	})
+	// Capture before state (pending request) for audit
+	beforeState := map[string]interface{}{
+		"requestId":   id,
+		"email":       ear.Email,
+		"firstName":   ear.FirstName,
+		"lastName":    ear.LastName,
+		"status":      ear.Status,
+		"useCase":     ear.UseCase,
+		"submittedAt": ear.CreatedAt.Format(time.RFC3339),
+	}
+	if ear.Company.Valid {
+		beforeState["company"] = ear.Company.String
+	}
+
+	// After state (rejected)
+	afterState := map[string]interface{}{
+		"status":       "rejected",
+		"rejectedBy":   adminID,
+		"rejectedAt":   time.Now().UTC().Format(time.RFC3339),
+		"rejectionEmailSent": true,
+	}
+	if req.AdminNotes != "" {
+		afterState["adminNotes"] = req.AdminNotes
+	}
+
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "EARLY_ACCESS_REJECTED", "early_access_requests", ear.Email,
+		buildAuditDetails("Early access request rejected", beforeState, afterState, nil))
 
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{"success": true})
 }
@@ -409,9 +458,31 @@ func (h *Handler) SuspendEarlyAccessUser(w http.ResponseWriter, r *http.Request)
 		h.logger.Warn("failed to send suspension email", "error", emailErr)
 	}
 
-	h.logAdminAudit(ctx, r, "ADMIN_USER", "EARLY_ACCESS_SUSPENDED", "users", user.Email, map[string]interface{}{
-		"reason": req.Reason,
-	})
+	// Capture before state (active early access user) for audit
+	beforeState := map[string]interface{}{
+		"userId":           userID,
+		"email":            user.Email,
+		"subscriptionTier": user.SubscriptionTier.String,
+		"role":             user.Role,
+	}
+	if user.FirstName.Valid {
+		beforeState["firstName"] = user.FirstName.String
+	}
+	if user.LastName.Valid {
+		beforeState["lastName"] = user.LastName.String
+	}
+
+	// After state (suspended)
+	afterState := map[string]interface{}{
+		"earlyAccessStatus": "suspended",
+		"accountSuspended":  true,
+		"suspendedBy":       h.extractAdminID(r),
+		"suspendedAt":       time.Now().UTC().Format(time.RFC3339),
+		"emailSent":         true,
+	}
+
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "EARLY_ACCESS_SUSPENDED", "users", user.Email,
+		buildAuditDetails(req.Reason, beforeState, afterState, nil))
 
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{"success": true})
 }
