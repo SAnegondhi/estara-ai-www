@@ -2141,18 +2141,23 @@ func (h *Handler) convertAdminAuditSearchRows(rows []queries.SearchAdminAuditLog
 	for _, r := range rows {
 		entry := AdminAuditLogEntry{
 			ID:         r.ID,
-			AdminID:    r.AdminId.String,
-			AdminEmail: r.AdminEmail.String,
-			ActorType:  r.ActorType,
-			Action:     r.Action,              // string
-			Resource:   r.Resource.String,
-			IPAddress:  r.IpAddress.String,
-			UserAgent:  r.UserAgent.String,
+			AdminID:    r.AdminId.String,      // pgtype.Text
+			AdminEmail: r.AdminEmail,           // string
+			ActorType:  r.ActorType,            // string
+			Resource:   r.Resource.String,      // pgtype.Text
+			IPAddress:  r.IpAddress.String,     // pgtype.Text
+			UserAgent:  r.UserAgent.String,     // pgtype.Text
 			CreatedAt:  r.CreatedAt.Time,
 		}
+		// Handle Action which is interface{}
+		if actionStr, ok := r.Action.(string); ok {
+			entry.Action = actionStr
+		}
+		// Handle ResourceID
 		if r.ResourceId.Valid {
 			entry.ResourceID = &r.ResourceId.String
 		}
+		// Unmarshal Details
 		if r.Details != nil {
 			_ = json.Unmarshal(r.Details, &entry.Details)
 		}

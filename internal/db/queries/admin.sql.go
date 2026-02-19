@@ -12,11 +12,11 @@ import (
 )
 
 const CountAdminAuditLogs = `-- name: CountAdminAuditLogs :one
-SELECT COUNT(*) FROM audit_logs
-WHERE ($1::text IS NULL OR "actorType"::text = $1)
-  AND ($2::text IS NULL OR (action::text = $2 OR event::text = $2))
-  AND ($3::text IS NULL OR resource = $3)
-  AND ($4::text IS NULL OR ("adminId" = $4 OR "userId" = $4))
+SELECT COUNT(*) FROM audit_logs a
+WHERE ($1::text IS NULL OR a."actorType"::text = $1)
+  AND ($2::text IS NULL OR (a.action::text = $2 OR a.event::text = $2))
+  AND ($3::text IS NULL OR a.resource = $3)
+  AND ($4::text IS NULL OR (a."adminId" = $4 OR a."userId" = $4))
 `
 
 type CountAdminAuditLogsParams struct {
@@ -39,11 +39,11 @@ func (q *Queries) CountAdminAuditLogs(ctx context.Context, arg CountAdminAuditLo
 }
 
 const CountAdminAuditLogsByDetailsText = `-- name: CountAdminAuditLogsByDetailsText :one
-SELECT COUNT(*) FROM audit_logs
-WHERE metadata::text ILIKE '%' || $1::text || '%'
-  AND ($2::text IS NULL OR "actorType"::text = $2)
-  AND ($3::text IS NULL OR action::text = $3)
-  AND ($4::text IS NULL OR resource = $4)
+SELECT COUNT(*) FROM audit_logs a
+WHERE a.metadata::text ILIKE '%' || $1::text || '%'
+  AND ($2::text IS NULL OR a."actorType"::text = $2)
+  AND ($3::text IS NULL OR a.action::text = $3)
+  AND ($4::text IS NULL OR a.resource = $4)
 `
 
 type CountAdminAuditLogsByDetailsTextParams struct {
@@ -341,15 +341,25 @@ func (q *Queries) GetAdminTwoFactorByUserID(ctx context.Context, userid string) 
 }
 
 const ListAdminAuditLogs = `-- name: ListAdminAuditLogs :many
-SELECT id, COALESCE("adminId", "userId") as "adminId", COALESCE("adminEmail", '') as "adminEmail",
-    "actorType"::text, COALESCE(action::text, event::text) as action, resource, "resourceId",
-    metadata as details, "ipAddress", "userAgent", "createdAt"
-FROM audit_logs
-WHERE ($1::text IS NULL OR "actorType"::text = $1)
-  AND ($2::text IS NULL OR (action::text = $2 OR event::text = $2))
-  AND ($3::text IS NULL OR resource = $3)
-  AND ($4::text IS NULL OR ("adminId" = $4 OR "userId" = $4))
-ORDER BY "createdAt" DESC
+SELECT
+    a.id AS id,
+    COALESCE(a."adminId", a."userId") AS "adminId",
+    COALESCE(a."adminEmail", u.email, '') AS "adminEmail",
+    a."actorType"::text AS "actorType",
+    COALESCE(a.action::text, a.event::text) AS action,
+    a.resource AS resource,
+    a."resourceId" AS "resourceId",
+    a.metadata AS details,
+    a."ipAddress" AS "ipAddress",
+    a."userAgent" AS "userAgent",
+    a."createdAt" AS "createdAt"
+FROM audit_logs a
+LEFT JOIN users u ON a."userId" = u.id
+WHERE ($1::text IS NULL OR a."actorType"::text = $1)
+  AND ($2::text IS NULL OR (a.action::text = $2 OR a.event::text = $2))
+  AND ($3::text IS NULL OR a.resource = $3)
+  AND ($4::text IS NULL OR (a."adminId" = $4 OR a."userId" = $4))
+ORDER BY a."createdAt" DESC
 LIMIT $6 OFFSET $5
 `
 
@@ -478,14 +488,25 @@ func (q *Queries) RevokeAllAdminSessionsForUser(ctx context.Context, userid stri
 }
 
 const SearchAdminAuditLogsByDetailsText = `-- name: SearchAdminAuditLogsByDetailsText :many
-SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
-    metadata as details, "ipAddress", "userAgent", "createdAt"
-FROM audit_logs
-WHERE metadata::text ILIKE '%' || $1::text || '%'
-  AND ($2::text IS NULL OR "actorType"::text = $2)
-  AND ($3::text IS NULL OR action::text = $3)
-  AND ($4::text IS NULL OR resource = $4)
-ORDER BY "createdAt" DESC
+SELECT
+    a.id AS id,
+    COALESCE(a."adminId", a."userId") AS "adminId",
+    COALESCE(a."adminEmail", u.email, '') AS "adminEmail",
+    a."actorType"::text AS "actorType",
+    COALESCE(a.action::text, a.event::text) AS action,
+    a.resource AS resource,
+    a."resourceId" AS "resourceId",
+    a.metadata AS details,
+    a."ipAddress" AS "ipAddress",
+    a."userAgent" AS "userAgent",
+    a."createdAt" AS "createdAt"
+FROM audit_logs a
+LEFT JOIN users u ON a."userId" = u.id
+WHERE a.metadata::text ILIKE '%' || $1::text || '%'
+  AND ($2::text IS NULL OR a."actorType"::text = $2)
+  AND ($3::text IS NULL OR a.action::text = $3)
+  AND ($4::text IS NULL OR a.resource = $4)
+ORDER BY a."createdAt" DESC
 LIMIT $6 OFFSET $5
 `
 
@@ -501,9 +522,9 @@ type SearchAdminAuditLogsByDetailsTextParams struct {
 type SearchAdminAuditLogsByDetailsTextRow struct {
 	ID         string           `json:"id"`
 	AdminId    pgtype.Text      `json:"adminId"`
-	AdminEmail pgtype.Text      `json:"adminEmail"`
+	AdminEmail string           `json:"adminEmail"`
 	ActorType  string           `json:"actorType"`
-	Action     string           `json:"action"`
+	Action     interface{}      `json:"action"`
 	Resource   pgtype.Text      `json:"resource"`
 	ResourceId pgtype.Text      `json:"resourceId"`
 	Details    []byte           `json:"details"`

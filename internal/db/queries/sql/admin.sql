@@ -20,41 +20,62 @@ INSERT INTO audit_logs (
 );
 
 -- name: ListAdminAuditLogs :many
-SELECT id, COALESCE("adminId", "userId") as "adminId", COALESCE("adminEmail", '') as "adminEmail",
-    "actorType"::text, COALESCE(action::text, event::text) as action, resource, "resourceId",
-    metadata as details, "ipAddress", "userAgent", "createdAt"
-FROM audit_logs
-WHERE (sqlc.narg('actor_type')::text IS NULL OR "actorType"::text = sqlc.narg('actor_type'))
-  AND (sqlc.narg('action_filter')::text IS NULL OR (action::text = sqlc.narg('action_filter') OR event::text = sqlc.narg('action_filter')))
-  AND (sqlc.narg('resource_filter')::text IS NULL OR resource = sqlc.narg('resource_filter'))
-  AND (sqlc.narg('admin_id')::text IS NULL OR ("adminId" = sqlc.narg('admin_id') OR "userId" = sqlc.narg('admin_id')))
-ORDER BY "createdAt" DESC
+SELECT
+    a.id AS id,
+    COALESCE(a."adminId", a."userId") AS "adminId",
+    COALESCE(a."adminEmail", u.email, '') AS "adminEmail",
+    a."actorType"::text AS "actorType",
+    COALESCE(a.action::text, a.event::text) AS action,
+    a.resource AS resource,
+    a."resourceId" AS "resourceId",
+    a.metadata AS details,
+    a."ipAddress" AS "ipAddress",
+    a."userAgent" AS "userAgent",
+    a."createdAt" AS "createdAt"
+FROM audit_logs a
+LEFT JOIN users u ON a."userId" = u.id
+WHERE (sqlc.narg('actor_type')::text IS NULL OR a."actorType"::text = sqlc.narg('actor_type'))
+  AND (sqlc.narg('action_filter')::text IS NULL OR (a.action::text = sqlc.narg('action_filter') OR a.event::text = sqlc.narg('action_filter')))
+  AND (sqlc.narg('resource_filter')::text IS NULL OR a.resource = sqlc.narg('resource_filter'))
+  AND (sqlc.narg('admin_id')::text IS NULL OR (a."adminId" = sqlc.narg('admin_id') OR a."userId" = sqlc.narg('admin_id')))
+ORDER BY a."createdAt" DESC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 
 -- name: CountAdminAuditLogs :one
-SELECT COUNT(*) FROM audit_logs
-WHERE (sqlc.narg('actor_type')::text IS NULL OR "actorType"::text = sqlc.narg('actor_type'))
-  AND (sqlc.narg('action_filter')::text IS NULL OR (action::text = sqlc.narg('action_filter') OR event::text = sqlc.narg('action_filter')))
-  AND (sqlc.narg('resource_filter')::text IS NULL OR resource = sqlc.narg('resource_filter'))
-  AND (sqlc.narg('admin_id')::text IS NULL OR ("adminId" = sqlc.narg('admin_id') OR "userId" = sqlc.narg('admin_id')));
+SELECT COUNT(*) FROM audit_logs a
+WHERE (sqlc.narg('actor_type')::text IS NULL OR a."actorType"::text = sqlc.narg('actor_type'))
+  AND (sqlc.narg('action_filter')::text IS NULL OR (a.action::text = sqlc.narg('action_filter') OR a.event::text = sqlc.narg('action_filter')))
+  AND (sqlc.narg('resource_filter')::text IS NULL OR a.resource = sqlc.narg('resource_filter'))
+  AND (sqlc.narg('admin_id')::text IS NULL OR (a."adminId" = sqlc.narg('admin_id') OR a."userId" = sqlc.narg('admin_id')));
 
 -- name: SearchAdminAuditLogsByDetailsText :many
-SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
-    metadata as details, "ipAddress", "userAgent", "createdAt"
-FROM audit_logs
-WHERE metadata::text ILIKE '%' || sqlc.arg('search_text')::text || '%'
-  AND (sqlc.narg('actor_type')::text IS NULL OR "actorType"::text = sqlc.narg('actor_type'))
-  AND (sqlc.narg('action')::text IS NULL OR action::text = sqlc.narg('action'))
-  AND (sqlc.narg('resource')::text IS NULL OR resource = sqlc.narg('resource'))
-ORDER BY "createdAt" DESC
+SELECT
+    a.id AS id,
+    COALESCE(a."adminId", a."userId") AS "adminId",
+    COALESCE(a."adminEmail", u.email, '') AS "adminEmail",
+    a."actorType"::text AS "actorType",
+    COALESCE(a.action::text, a.event::text) AS action,
+    a.resource AS resource,
+    a."resourceId" AS "resourceId",
+    a.metadata AS details,
+    a."ipAddress" AS "ipAddress",
+    a."userAgent" AS "userAgent",
+    a."createdAt" AS "createdAt"
+FROM audit_logs a
+LEFT JOIN users u ON a."userId" = u.id
+WHERE a.metadata::text ILIKE '%' || sqlc.arg('search_text')::text || '%'
+  AND (sqlc.narg('actor_type')::text IS NULL OR a."actorType"::text = sqlc.narg('actor_type'))
+  AND (sqlc.narg('action')::text IS NULL OR a.action::text = sqlc.narg('action'))
+  AND (sqlc.narg('resource')::text IS NULL OR a.resource = sqlc.narg('resource'))
+ORDER BY a."createdAt" DESC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 
 -- name: CountAdminAuditLogsByDetailsText :one
-SELECT COUNT(*) FROM audit_logs
-WHERE metadata::text ILIKE '%' || sqlc.arg('search_text')::text || '%'
-  AND (sqlc.narg('actor_type')::text IS NULL OR "actorType"::text = sqlc.narg('actor_type'))
-  AND (sqlc.narg('action')::text IS NULL OR action::text = sqlc.narg('action'))
-  AND (sqlc.narg('resource')::text IS NULL OR resource = sqlc.narg('resource'));
+SELECT COUNT(*) FROM audit_logs a
+WHERE a.metadata::text ILIKE '%' || sqlc.arg('search_text')::text || '%'
+  AND (sqlc.narg('actor_type')::text IS NULL OR a."actorType"::text = sqlc.narg('actor_type'))
+  AND (sqlc.narg('action')::text IS NULL OR a.action::text = sqlc.narg('action'))
+  AND (sqlc.narg('resource')::text IS NULL OR a.resource = sqlc.narg('resource'));
 
 -- name: DeleteOldAdminAuditLogs :execrows
 DELETE FROM audit_logs
