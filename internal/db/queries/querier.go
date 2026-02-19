@@ -30,6 +30,8 @@ type Querier interface {
 	CountActiveWhitelistedEmails(ctx context.Context) (int64, error)
 	CountAdminActionsForUser(ctx context.Context, resourceID pgtype.Text) (int64, error)
 	CountAdminAuditLogs(ctx context.Context, arg CountAdminAuditLogsParams) (int64, error)
+	// Count results for pagination
+	CountAdminAuditLogsByDetailsText(ctx context.Context, arg CountAdminAuditLogsByDetailsTextParams) (int64, error)
 	CountAllCache(ctx context.Context) (int64, error)
 	CountAnalysisJobsByUser(ctx context.Context, userid string) (int64, error)
 	CountAuditLogFiltered(ctx context.Context, arg CountAuditLogFilteredParams) (int64, error)
@@ -606,6 +608,13 @@ type Querier interface {
 	RevokeAllAdminSessionsByUser(ctx context.Context, userid string) error
 	RevokeUserConsent(ctx context.Context, arg RevokeUserConsentParams) error
 	RevokeWaitlistByEmail(ctx context.Context, email string) error
+	// ===============================
+	// Admin Audit Log Advanced Search (ADR-086 Phase 3)
+	// ===============================
+	// Full-text search on details JSONB field
+	SearchAdminAuditLogsByDetailsText(ctx context.Context, arg SearchAdminAuditLogsByDetailsTextParams) ([]SearchAdminAuditLogsByDetailsTextRow, error)
+	// Optimized search specifically for the "reason" field
+	SearchAdminAuditLogsByReason(ctx context.Context, arg SearchAdminAuditLogsByReasonParams) ([]SearchAdminAuditLogsByReasonRow, error)
 	SearchAnalysisJobsByUser(ctx context.Context, arg SearchAnalysisJobsByUserParams) ([]SearchAnalysisJobsByUserRow, error)
 	SearchUserScenarios(ctx context.Context, arg SearchUserScenariosParams) ([]Scenario, error)
 	SearchUsersByEmail(ctx context.Context, arg SearchUsersByEmailParams) ([]User, error)

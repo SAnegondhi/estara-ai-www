@@ -925,24 +925,50 @@ func (h *Handler) RetryInvestorReport(w http.ResponseWriter, r *http.Request) {
 // Audit Log
 // ===============================
 
-// GetAuditLog returns audit log entries
+// AdminAuditLogEntry represents an admin audit log entry for API responses
+type AdminAuditLogEntry struct {
+	ID          string                 `json:"id"`
+	AdminID     string                 `json:"adminId"`
+	AdminEmail  string                 `json:"adminEmail"`
+	ActorType   string                 `json:"actorType"`
+	Action      string                 `json:"action"`
+	Resource    string                 `json:"resource"`
+	ResourceID  *string                `json:"resourceId,omitempty"`
+	Details     map[string]interface{} `json:"details,omitempty"`
+	IPAddress   string                 `json:"ipAddress"`
+	UserAgent   string                 `json:"userAgent"`
+	CreatedAt   time.Time              `json:"createdAt"`
+}
+
+// GetAuditLog returns admin audit log entries with optional search
 func (h *Handler) GetAuditLog(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	page := httputil.GetQueryParamInt(r, "page", 1)
 	pageSize := httputil.GetQueryParamInt(r, "pageSize", 50)
-	userID := r.URL.Query().Get("userId")
 	action := r.URL.Query().Get("action")
 	resource := r.URL.Query().Get("resource")
+	actorType := r.URL.Query().Get("actorType")
+	detailsSearch := r.URL.Query().Get("detailsSearch")
 
 	if pageSize > 100 {
 		pageSize = 100
 	}
 	offset := (page - 1) * pageSize
 
-	entries, total, err := h.getAuditLogEntries(ctx, userID, action, resource, pageSize, offset)
+	var entries []AdminAuditLogEntry
+	var total int64
+	var err error
+
+	// Use search if detailsSearch parameter is provided
+	if detailsSearch != "" {
+		entries, total, err = h.searchAdminAuditLogs(ctx, detailsSearch, actorType, action, resource, pageSize, offset)
+	} else {
+		entries, total, err = h.listAdminAuditLogs(ctx, actorType, action, resource, pageSize, offset)
+	}
+
 	if err != nil {
-		h.logger.Error("failed to get audit log", "error", err)
-		httputil.Error(w, http.StatusInternalServerError, "failed to get audit log")
+		h.logger.Error("failed to get admin audit log", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, "failed to get admin audit log")
 		return
 	}
 
@@ -2010,4 +2036,122 @@ func (h *Handler) getBasicVendorCosts(ctx context.Context, period string) ([]Ven
 	}
 
 	return costs, nil
+}
+
+// listAdminAuditLogs retrieves admin audit logs with optional filters
+func (h *Handler) listAdminAuditLogs(ctx context.Context, actorType, action, resource string, limit, offset int) ([]AdminAuditLogEntry, int64, error) {
+	q := h.store.Q()
+
+	// Count total
+	countParams := queries.CountAdminAuditLogsParams{
+		ActorType:      pgtextFromString(actorType),
+		ActionFilter:   pgtextFromString(action),
+		ResourceFilter: pgtextFromString(resource),
+		AdminID:        pgtype.Text{Valid: false}, // Not filtering by admin ID
+	}
+	total, err := q.CountAdminAuditLogs(ctx, countParams)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// List entries
+	listParams := queries.ListAdminAuditLogsParams{
+		ActorType:      pgtextFromString(actorType),
+		ActionFilter:   pgtextFromString(action),
+		ResourceFilter: pgtextFromString(resource),
+		AdminID:        pgtype.Text{Valid: false},
+		Limit:          int32(limit),
+		Offset:         int32(offset),
+	}
+	rows, err := q.ListAdminAuditLogs(ctx, listParams)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return h.convertAdminAuditListRows(rows), total, nil
+}
+
+// searchAdminAuditLogs searches admin audit logs by details text
+func (h *Handler) searchAdminAuditLogs(ctx context.Context, searchText, actorType, action, resource string, limit, offset int) ([]AdminAuditLogEntry, int64, error) {
+	q := h.store.Q()
+
+	// Count total
+	countParams := queries.CountAdminAuditLogsByDetailsTextParams{
+		SearchText: searchText,
+		ActorType:  pgtextFromString(actorType),
+		Action:     pgtextFromString(action),
+		Resource:   pgtextFromString(resource),
+	}
+	total, err := q.CountAdminAuditLogsByDetailsText(ctx, countParams)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Search entries
+	searchParams := queries.SearchAdminAuditLogsByDetailsTextParams{
+		SearchText: searchText,
+		ActorType:  pgtextFromString(actorType),
+		Action:     pgtextFromString(action),
+		Resource:   pgtextFromString(resource),
+		Limit:      int32(limit),
+		Offset:     int32(offset),
+	}
+	rows, err := q.SearchAdminAuditLogsByDetailsText(ctx, searchParams)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return h.convertAdminAuditSearchRows(rows), total, nil
+}
+
+// convertAdminAuditListRows converts ListAdminAuditLogsRow to AdminAuditLogEntry
+func (h *Handler) convertAdminAuditListRows(rows []queries.ListAdminAuditLogsRow) []AdminAuditLogEntry {
+	entries := make([]AdminAuditLogEntry, 0, len(rows))
+	for _, r := range rows {
+		entry := AdminAuditLogEntry{
+			ID:         r.ID,
+			AdminID:    r.AdminId,
+			AdminEmail: r.AdminEmail,
+			ActorType:  r.ActorType,
+			Action:     r.Action,
+			Resource:   r.Resource,
+			IPAddress:  r.IpAddress,
+			UserAgent:  r.UserAgent,
+			CreatedAt:  r.CreatedAt.Time,
+		}
+		if r.ResourceId.Valid {
+			entry.ResourceID = &r.ResourceId.String
+		}
+		if r.Details != nil {
+			_ = json.Unmarshal(r.Details, &entry.Details)
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+// convertAdminAuditSearchRows converts SearchAdminAuditLogsByDetailsTextRow to AdminAuditLogEntry
+func (h *Handler) convertAdminAuditSearchRows(rows []queries.SearchAdminAuditLogsByDetailsTextRow) []AdminAuditLogEntry {
+	entries := make([]AdminAuditLogEntry, 0, len(rows))
+	for _, r := range rows {
+		entry := AdminAuditLogEntry{
+			ID:         r.ID,
+			AdminID:    r.AdminId,
+			AdminEmail: r.AdminEmail,
+			ActorType:  r.ActorType,
+			Action:     r.Action,
+			Resource:   r.Resource,
+			IPAddress:  r.IpAddress,
+			UserAgent:  r.UserAgent,
+			CreatedAt:  r.CreatedAt.Time,
+		}
+		if r.ResourceId.Valid {
+			entry.ResourceID = &r.ResourceId.String
+		}
+		if r.Details != nil {
+			_ = json.Unmarshal(r.Details, &entry.Details)
+		}
+		entries = append(entries, entry)
+	}
+	return entries
 }

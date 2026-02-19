@@ -303,3 +303,37 @@ WHERE "createdAt" < $1;
 SELECT COUNT(*)
 FROM admin_audit_log
 WHERE "createdAt" < $1;
+
+-- ===============================
+-- Admin Audit Log Advanced Search (ADR-086 Phase 3)
+-- ===============================
+
+-- name: SearchAdminAuditLogsByDetailsText :many
+-- Full-text search on details JSONB field
+SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
+    details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log
+WHERE details::text ILIKE '%' || sqlc.arg('search_text')::text || '%'
+  AND (sqlc.narg('actor_type')::text IS NULL OR "actorType"::text = sqlc.narg('actor_type'))
+  AND (sqlc.narg('action')::text IS NULL OR action::text = sqlc.narg('action'))
+  AND (sqlc.narg('resource')::text IS NULL OR resource = sqlc.narg('resource'))
+ORDER BY "createdAt" DESC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: CountAdminAuditLogsByDetailsText :one
+-- Count results for pagination
+SELECT COUNT(*)
+FROM admin_audit_log
+WHERE details::text ILIKE '%' || sqlc.arg('search_text')::text || '%'
+  AND (sqlc.narg('actor_type')::text IS NULL OR "actorType"::text = sqlc.narg('actor_type'))
+  AND (sqlc.narg('action')::text IS NULL OR action::text = sqlc.narg('action'))
+  AND (sqlc.narg('resource')::text IS NULL OR resource = sqlc.narg('resource'));
+
+-- name: SearchAdminAuditLogsByReason :many
+-- Optimized search specifically for the "reason" field
+SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
+    details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log
+WHERE details->>'reason' ILIKE '%' || sqlc.arg('reason_search')::text || '%'
+ORDER BY "createdAt" DESC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');

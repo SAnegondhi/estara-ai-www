@@ -71,6 +71,35 @@ func (q *Queries) CountAdminAuditLogs(ctx context.Context, arg CountAdminAuditLo
 	return count, err
 }
 
+const CountAdminAuditLogsByDetailsText = `-- name: CountAdminAuditLogsByDetailsText :one
+SELECT COUNT(*)
+FROM admin_audit_log
+WHERE details::text ILIKE '%' || $1::text || '%'
+  AND ($2::text IS NULL OR "actorType"::text = $2)
+  AND ($3::text IS NULL OR action::text = $3)
+  AND ($4::text IS NULL OR resource = $4)
+`
+
+type CountAdminAuditLogsByDetailsTextParams struct {
+	SearchText string      `json:"search_text"`
+	ActorType  pgtype.Text `json:"actor_type"`
+	Action     pgtype.Text `json:"action"`
+	Resource   pgtype.Text `json:"resource"`
+}
+
+// Count results for pagination
+func (q *Queries) CountAdminAuditLogsByDetailsText(ctx context.Context, arg CountAdminAuditLogsByDetailsTextParams) (int64, error) {
+	row := q.db.QueryRow(ctx, CountAdminAuditLogsByDetailsText,
+		arg.SearchText,
+		arg.ActorType,
+		arg.Action,
+		arg.Resource,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const CountAuditLogsByEventType = `-- name: CountAuditLogsByEventType :many
 SELECT event::text, COUNT(*) as count
 FROM audit_logs
@@ -1647,6 +1676,147 @@ WHERE "userId" = $1 AND "revokedAt" IS NULL
 func (q *Queries) RevokeAllAdminSessionsByUser(ctx context.Context, userid string) error {
 	_, err := q.db.Exec(ctx, RevokeAllAdminSessionsByUser, userid)
 	return err
+}
+
+const SearchAdminAuditLogsByDetailsText = `-- name: SearchAdminAuditLogsByDetailsText :many
+
+SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
+    details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log
+WHERE details::text ILIKE '%' || $1::text || '%'
+  AND ($2::text IS NULL OR "actorType"::text = $2)
+  AND ($3::text IS NULL OR action::text = $3)
+  AND ($4::text IS NULL OR resource = $4)
+ORDER BY "createdAt" DESC
+LIMIT $6 OFFSET $5
+`
+
+type SearchAdminAuditLogsByDetailsTextParams struct {
+	SearchText string      `json:"search_text"`
+	ActorType  pgtype.Text `json:"actor_type"`
+	Action     pgtype.Text `json:"action"`
+	Resource   pgtype.Text `json:"resource"`
+	Offset     int32       `json:"offset"`
+	Limit      int32       `json:"limit"`
+}
+
+type SearchAdminAuditLogsByDetailsTextRow struct {
+	ID         string           `json:"id"`
+	AdminId    string           `json:"adminId"`
+	AdminEmail string           `json:"adminEmail"`
+	ActorType  string           `json:"actorType"`
+	Action     string           `json:"action"`
+	Resource   string           `json:"resource"`
+	ResourceId pgtype.Text      `json:"resourceId"`
+	Details    json.RawMessage  `json:"details"`
+	IpAddress  string           `json:"ipAddress"`
+	UserAgent  string           `json:"userAgent"`
+	CreatedAt  pgtype.Timestamp `json:"createdAt"`
+}
+
+// ===============================
+// Admin Audit Log Advanced Search (ADR-086 Phase 3)
+// ===============================
+// Full-text search on details JSONB field
+func (q *Queries) SearchAdminAuditLogsByDetailsText(ctx context.Context, arg SearchAdminAuditLogsByDetailsTextParams) ([]SearchAdminAuditLogsByDetailsTextRow, error) {
+	rows, err := q.db.Query(ctx, SearchAdminAuditLogsByDetailsText,
+		arg.SearchText,
+		arg.ActorType,
+		arg.Action,
+		arg.Resource,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SearchAdminAuditLogsByDetailsTextRow{}
+	for rows.Next() {
+		var i SearchAdminAuditLogsByDetailsTextRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AdminId,
+			&i.AdminEmail,
+			&i.ActorType,
+			&i.Action,
+			&i.Resource,
+			&i.ResourceId,
+			&i.Details,
+			&i.IpAddress,
+			&i.UserAgent,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const SearchAdminAuditLogsByReason = `-- name: SearchAdminAuditLogsByReason :many
+SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
+    details, "ipAddress", "userAgent", "createdAt"
+FROM admin_audit_log
+WHERE details->>'reason' ILIKE '%' || $1::text || '%'
+ORDER BY "createdAt" DESC
+LIMIT $3 OFFSET $2
+`
+
+type SearchAdminAuditLogsByReasonParams struct {
+	ReasonSearch string `json:"reason_search"`
+	Offset       int32  `json:"offset"`
+	Limit        int32  `json:"limit"`
+}
+
+type SearchAdminAuditLogsByReasonRow struct {
+	ID         string           `json:"id"`
+	AdminId    string           `json:"adminId"`
+	AdminEmail string           `json:"adminEmail"`
+	ActorType  string           `json:"actorType"`
+	Action     string           `json:"action"`
+	Resource   string           `json:"resource"`
+	ResourceId pgtype.Text      `json:"resourceId"`
+	Details    json.RawMessage  `json:"details"`
+	IpAddress  string           `json:"ipAddress"`
+	UserAgent  string           `json:"userAgent"`
+	CreatedAt  pgtype.Timestamp `json:"createdAt"`
+}
+
+// Optimized search specifically for the "reason" field
+func (q *Queries) SearchAdminAuditLogsByReason(ctx context.Context, arg SearchAdminAuditLogsByReasonParams) ([]SearchAdminAuditLogsByReasonRow, error) {
+	rows, err := q.db.Query(ctx, SearchAdminAuditLogsByReason, arg.ReasonSearch, arg.Offset, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SearchAdminAuditLogsByReasonRow{}
+	for rows.Next() {
+		var i SearchAdminAuditLogsByReasonRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AdminId,
+			&i.AdminEmail,
+			&i.ActorType,
+			&i.Action,
+			&i.Resource,
+			&i.ResourceId,
+			&i.Details,
+			&i.IpAddress,
+			&i.UserAgent,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const UpdateAdminSessionLastActive = `-- name: UpdateAdminSessionLastActive :exec
