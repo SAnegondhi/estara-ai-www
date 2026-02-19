@@ -63,3 +63,87 @@ WHERE "createdAt" < sqlc.arg('cutoff_timestamp') AND "actorType" IS NOT NULL;
 -- name: CountOldAdminAuditLogs :one
 SELECT COUNT(*) FROM audit_logs
 WHERE "createdAt" < sqlc.arg('cutoff_timestamp') AND "actorType" IS NOT NULL;
+
+-- ========================================
+-- Admin Sessions
+-- ========================================
+
+-- name: CreateAdminSession :one
+INSERT INTO admin_sessions (
+    id, "userId", "tokenHash", "ipAddress", "userAgent", "deviceName",
+    location, "expiresAt", "createdAt", "lastActive"
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW()
+)
+RETURNING id, "userId", "tokenHash", "ipAddress", "userAgent", "deviceName",
+    location, "createdAt", "lastActive", "expiresAt", "revokedAt";
+
+-- name: GetAdminSessionByToken :one
+SELECT id, "userId", "tokenHash", "ipAddress", "userAgent", "deviceName",
+    location, "createdAt", "lastActive", "expiresAt", "revokedAt"
+FROM admin_sessions
+WHERE "tokenHash" = $1 AND "revokedAt" IS NULL AND "expiresAt" > NOW();
+
+-- name: UpdateAdminSessionLastActive :exec
+UPDATE admin_sessions
+SET "lastActive" = NOW()
+WHERE id = $1;
+
+-- name: RevokeAdminSession :exec
+UPDATE admin_sessions
+SET "revokedAt" = NOW()
+WHERE id = $1;
+
+-- name: ListAdminSessionsByUser :many
+SELECT id, "userId", "tokenHash", "ipAddress", "userAgent", "deviceName",
+    location, "createdAt", "lastActive", "expiresAt", "revokedAt"
+FROM admin_sessions
+WHERE "userId" = $1 AND "revokedAt" IS NULL
+ORDER BY "lastActive" DESC;
+
+-- name: RevokeAllAdminSessionsForUser :exec
+UPDATE admin_sessions
+SET "revokedAt" = NOW()
+WHERE "userId" = $1 AND "revokedAt" IS NULL;
+
+-- ========================================
+-- Admin Two-Factor Authentication
+-- ========================================
+
+-- name: CreateAdminTwoFactor :one
+INSERT INTO admin_two_factor (
+    id, "userId", secret, enabled, "backupCodes", "createdAt", "updatedAt"
+) VALUES (
+    $1, $2, $3, false, $4, NOW(), NOW()
+)
+RETURNING id, "userId", secret, enabled, "backupCodes", "createdAt", "updatedAt";
+
+-- name: GetAdminTwoFactorByUserID :one
+SELECT id, "userId", secret, enabled, "backupCodes", "createdAt", "updatedAt"
+FROM admin_two_factor
+WHERE "userId" = $1;
+
+-- name: EnableAdminTwoFactor :exec
+UPDATE admin_two_factor
+SET enabled = true, "updatedAt" = NOW()
+WHERE "userId" = $1;
+
+-- name: DisableAdminTwoFactor :exec
+UPDATE admin_two_factor
+SET enabled = false, "updatedAt" = NOW()
+WHERE "userId" = $1;
+
+-- name: DeleteAdminTwoFactor :exec
+DELETE FROM admin_two_factor
+WHERE "userId" = $1;
+
+-- name: UpdateAdminTwoFactorBackupCodes :exec
+UPDATE admin_two_factor
+SET "backupCodes" = $2, "updatedAt" = NOW()
+WHERE "userId" = $1;
+
+-- name: GetAdminSessionByID :one
+SELECT id, "userId", "tokenHash", "ipAddress", "userAgent", "deviceName",
+    location, "createdAt", "lastActive", "expiresAt", "revokedAt"
+FROM admin_sessions
+WHERE id = $1;

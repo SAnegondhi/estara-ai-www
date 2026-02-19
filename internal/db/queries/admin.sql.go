@@ -128,6 +128,110 @@ func (q *Queries) CreateAdminAuditLog(ctx context.Context, arg CreateAdminAuditL
 	return err
 }
 
+const CreateAdminSession = `-- name: CreateAdminSession :one
+
+INSERT INTO admin_sessions (
+    id, "userId", "tokenHash", "ipAddress", "userAgent", "deviceName",
+    location, "expiresAt", "createdAt", "lastActive"
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW()
+)
+RETURNING id, "userId", "tokenHash", "ipAddress", "userAgent", "deviceName",
+    location, "createdAt", "lastActive", "expiresAt", "revokedAt"
+`
+
+type CreateAdminSessionParams struct {
+	ID         string           `json:"id"`
+	UserId     string           `json:"userId"`
+	TokenHash  string           `json:"tokenHash"`
+	IpAddress  string           `json:"ipAddress"`
+	UserAgent  string           `json:"userAgent"`
+	DeviceName pgtype.Text      `json:"deviceName"`
+	Location   pgtype.Text      `json:"location"`
+	ExpiresAt  pgtype.Timestamp `json:"expiresAt"`
+}
+
+// ========================================
+// Admin Sessions
+// ========================================
+func (q *Queries) CreateAdminSession(ctx context.Context, arg CreateAdminSessionParams) (AdminSession, error) {
+	row := q.db.QueryRow(ctx, CreateAdminSession,
+		arg.ID,
+		arg.UserId,
+		arg.TokenHash,
+		arg.IpAddress,
+		arg.UserAgent,
+		arg.DeviceName,
+		arg.Location,
+		arg.ExpiresAt,
+	)
+	var i AdminSession
+	err := row.Scan(
+		&i.ID,
+		&i.UserId,
+		&i.TokenHash,
+		&i.IpAddress,
+		&i.UserAgent,
+		&i.DeviceName,
+		&i.Location,
+		&i.CreatedAt,
+		&i.LastActive,
+		&i.ExpiresAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const CreateAdminTwoFactor = `-- name: CreateAdminTwoFactor :one
+
+INSERT INTO admin_two_factor (
+    id, "userId", secret, enabled, "backupCodes", "createdAt", "updatedAt"
+) VALUES (
+    $1, $2, $3, false, $4, NOW(), NOW()
+)
+RETURNING id, "userId", secret, enabled, "backupCodes", "createdAt", "updatedAt"
+`
+
+type CreateAdminTwoFactorParams struct {
+	ID          string   `json:"id"`
+	UserId      string   `json:"userId"`
+	Secret      string   `json:"secret"`
+	BackupCodes []string `json:"backupCodes"`
+}
+
+// ========================================
+// Admin Two-Factor Authentication
+// ========================================
+func (q *Queries) CreateAdminTwoFactor(ctx context.Context, arg CreateAdminTwoFactorParams) (AdminTwoFactor, error) {
+	row := q.db.QueryRow(ctx, CreateAdminTwoFactor,
+		arg.ID,
+		arg.UserId,
+		arg.Secret,
+		arg.BackupCodes,
+	)
+	var i AdminTwoFactor
+	err := row.Scan(
+		&i.ID,
+		&i.UserId,
+		&i.Secret,
+		&i.Enabled,
+		&i.BackupCodes,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const DeleteAdminTwoFactor = `-- name: DeleteAdminTwoFactor :exec
+DELETE FROM admin_two_factor
+WHERE "userId" = $1
+`
+
+func (q *Queries) DeleteAdminTwoFactor(ctx context.Context, userid string) error {
+	_, err := q.db.Exec(ctx, DeleteAdminTwoFactor, userid)
+	return err
+}
+
 const DeleteOldAdminAuditLogs = `-- name: DeleteOldAdminAuditLogs :execrows
 DELETE FROM audit_logs
 WHERE "createdAt" < $1 AND "actorType" IS NOT NULL
@@ -139,6 +243,101 @@ func (q *Queries) DeleteOldAdminAuditLogs(ctx context.Context, cutoffTimestamp p
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const DisableAdminTwoFactor = `-- name: DisableAdminTwoFactor :exec
+UPDATE admin_two_factor
+SET enabled = false, "updatedAt" = NOW()
+WHERE "userId" = $1
+`
+
+func (q *Queries) DisableAdminTwoFactor(ctx context.Context, userid string) error {
+	_, err := q.db.Exec(ctx, DisableAdminTwoFactor, userid)
+	return err
+}
+
+const EnableAdminTwoFactor = `-- name: EnableAdminTwoFactor :exec
+UPDATE admin_two_factor
+SET enabled = true, "updatedAt" = NOW()
+WHERE "userId" = $1
+`
+
+func (q *Queries) EnableAdminTwoFactor(ctx context.Context, userid string) error {
+	_, err := q.db.Exec(ctx, EnableAdminTwoFactor, userid)
+	return err
+}
+
+const GetAdminSessionByID = `-- name: GetAdminSessionByID :one
+SELECT id, "userId", "tokenHash", "ipAddress", "userAgent", "deviceName",
+    location, "createdAt", "lastActive", "expiresAt", "revokedAt"
+FROM admin_sessions
+WHERE id = $1
+`
+
+func (q *Queries) GetAdminSessionByID(ctx context.Context, id string) (AdminSession, error) {
+	row := q.db.QueryRow(ctx, GetAdminSessionByID, id)
+	var i AdminSession
+	err := row.Scan(
+		&i.ID,
+		&i.UserId,
+		&i.TokenHash,
+		&i.IpAddress,
+		&i.UserAgent,
+		&i.DeviceName,
+		&i.Location,
+		&i.CreatedAt,
+		&i.LastActive,
+		&i.ExpiresAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const GetAdminSessionByToken = `-- name: GetAdminSessionByToken :one
+SELECT id, "userId", "tokenHash", "ipAddress", "userAgent", "deviceName",
+    location, "createdAt", "lastActive", "expiresAt", "revokedAt"
+FROM admin_sessions
+WHERE "tokenHash" = $1 AND "revokedAt" IS NULL AND "expiresAt" > NOW()
+`
+
+func (q *Queries) GetAdminSessionByToken(ctx context.Context, tokenhash string) (AdminSession, error) {
+	row := q.db.QueryRow(ctx, GetAdminSessionByToken, tokenhash)
+	var i AdminSession
+	err := row.Scan(
+		&i.ID,
+		&i.UserId,
+		&i.TokenHash,
+		&i.IpAddress,
+		&i.UserAgent,
+		&i.DeviceName,
+		&i.Location,
+		&i.CreatedAt,
+		&i.LastActive,
+		&i.ExpiresAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const GetAdminTwoFactorByUserID = `-- name: GetAdminTwoFactorByUserID :one
+SELECT id, "userId", secret, enabled, "backupCodes", "createdAt", "updatedAt"
+FROM admin_two_factor
+WHERE "userId" = $1
+`
+
+func (q *Queries) GetAdminTwoFactorByUserID(ctx context.Context, userid string) (AdminTwoFactor, error) {
+	row := q.db.QueryRow(ctx, GetAdminTwoFactorByUserID, userid)
+	var i AdminTwoFactor
+	err := row.Scan(
+		&i.ID,
+		&i.UserId,
+		&i.Secret,
+		&i.Enabled,
+		&i.BackupCodes,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const ListAdminAuditLogs = `-- name: ListAdminAuditLogs :many
@@ -216,6 +415,68 @@ func (q *Queries) ListAdminAuditLogs(ctx context.Context, arg ListAdminAuditLogs
 	return items, nil
 }
 
+const ListAdminSessionsByUser = `-- name: ListAdminSessionsByUser :many
+SELECT id, "userId", "tokenHash", "ipAddress", "userAgent", "deviceName",
+    location, "createdAt", "lastActive", "expiresAt", "revokedAt"
+FROM admin_sessions
+WHERE "userId" = $1 AND "revokedAt" IS NULL
+ORDER BY "lastActive" DESC
+`
+
+func (q *Queries) ListAdminSessionsByUser(ctx context.Context, userid string) ([]AdminSession, error) {
+	rows, err := q.db.Query(ctx, ListAdminSessionsByUser, userid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AdminSession{}
+	for rows.Next() {
+		var i AdminSession
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserId,
+			&i.TokenHash,
+			&i.IpAddress,
+			&i.UserAgent,
+			&i.DeviceName,
+			&i.Location,
+			&i.CreatedAt,
+			&i.LastActive,
+			&i.ExpiresAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const RevokeAdminSession = `-- name: RevokeAdminSession :exec
+UPDATE admin_sessions
+SET "revokedAt" = NOW()
+WHERE id = $1
+`
+
+func (q *Queries) RevokeAdminSession(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, RevokeAdminSession, id)
+	return err
+}
+
+const RevokeAllAdminSessionsForUser = `-- name: RevokeAllAdminSessionsForUser :exec
+UPDATE admin_sessions
+SET "revokedAt" = NOW()
+WHERE "userId" = $1 AND "revokedAt" IS NULL
+`
+
+func (q *Queries) RevokeAllAdminSessionsForUser(ctx context.Context, userid string) error {
+	_, err := q.db.Exec(ctx, RevokeAllAdminSessionsForUser, userid)
+	return err
+}
+
 const SearchAdminAuditLogsByDetailsText = `-- name: SearchAdminAuditLogsByDetailsText :many
 SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
     metadata as details, "ipAddress", "userAgent", "createdAt"
@@ -288,4 +549,31 @@ func (q *Queries) SearchAdminAuditLogsByDetailsText(ctx context.Context, arg Sea
 		return nil, err
 	}
 	return items, nil
+}
+
+const UpdateAdminSessionLastActive = `-- name: UpdateAdminSessionLastActive :exec
+UPDATE admin_sessions
+SET "lastActive" = NOW()
+WHERE id = $1
+`
+
+func (q *Queries) UpdateAdminSessionLastActive(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, UpdateAdminSessionLastActive, id)
+	return err
+}
+
+const UpdateAdminTwoFactorBackupCodes = `-- name: UpdateAdminTwoFactorBackupCodes :exec
+UPDATE admin_two_factor
+SET "backupCodes" = $2, "updatedAt" = NOW()
+WHERE "userId" = $1
+`
+
+type UpdateAdminTwoFactorBackupCodesParams struct {
+	UserId      string   `json:"userId"`
+	BackupCodes []string `json:"backupCodes"`
+}
+
+func (q *Queries) UpdateAdminTwoFactorBackupCodes(ctx context.Context, arg UpdateAdminTwoFactorBackupCodesParams) error {
+	_, err := q.db.Exec(ctx, UpdateAdminTwoFactorBackupCodes, arg.UserId, arg.BackupCodes)
+	return err
 }

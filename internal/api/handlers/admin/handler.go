@@ -1205,15 +1205,15 @@ func (h *Handler) logSystemAudit(ctx context.Context, actorType, action, resourc
 	q := h.store.Q()
 	err := q.CreateAdminAuditLog(ctx, queries.CreateAdminAuditLogParams{
 		ID:         id,
-		AdminId:    "system",
-		AdminEmail: "system@estara-ai.com",
+		AdminID:    pgtype.Text{String: "system", Valid: true},
+		AdminEmail: pgtype.Text{String: "system@estara-ai.com", Valid: true},
 		ActorType:  actorType,
-		Action:     action,
-		Resource:   resource,
-		ResourceId: pgtype.Text{String: resourceID, Valid: resourceID != ""},
+		Action:     pgtype.Text{String: action, Valid: true},
+		Resource:   pgtype.Text{String: resource, Valid: true},
+		ResourceID: pgtype.Text{String: resourceID, Valid: resourceID != ""},
 		Details:    detailsJSON,
-		IpAddress:  "0.0.0.0", // No IP for system processes
-		UserAgent:  "System Process",
+		IpAddress:  pgtype.Text{String: "0.0.0.0", Valid: true}, // No IP for system processes
+		UserAgent:  pgtype.Text{String: "System Process", Valid: true},
 	})
 	if err != nil {
 		h.logger.Warn("failed to write system audit log", "error", err, "action", action)
@@ -2110,18 +2110,23 @@ func (h *Handler) convertAdminAuditListRows(rows []queries.ListAdminAuditLogsRow
 	for _, r := range rows {
 		entry := AdminAuditLogEntry{
 			ID:         r.ID,
-			AdminID:    r.AdminId,
-			AdminEmail: r.AdminEmail,
-			ActorType:  r.ActorType,
-			Action:     r.Action,
-			Resource:   r.Resource,
-			IPAddress:  r.IpAddress,
-			UserAgent:  r.UserAgent,
+			AdminID:    r.AdminId.String,      // pgtype.Text
+			AdminEmail: r.AdminEmail,           // string
+			ActorType:  r.ActorType,            // string
+			Resource:   r.Resource.String,      // pgtype.Text
+			IPAddress:  r.IpAddress.String,     // pgtype.Text
+			UserAgent:  r.UserAgent.String,     // pgtype.Text
 			CreatedAt:  r.CreatedAt.Time,
 		}
+		// Handle Action which is interface{}
+		if actionStr, ok := r.Action.(string); ok {
+			entry.Action = actionStr
+		}
+		// Handle ResourceID
 		if r.ResourceId.Valid {
 			entry.ResourceID = &r.ResourceId.String
 		}
+		// Unmarshal Details
 		if r.Details != nil {
 			_ = json.Unmarshal(r.Details, &entry.Details)
 		}
@@ -2136,13 +2141,13 @@ func (h *Handler) convertAdminAuditSearchRows(rows []queries.SearchAdminAuditLog
 	for _, r := range rows {
 		entry := AdminAuditLogEntry{
 			ID:         r.ID,
-			AdminID:    r.AdminId,
-			AdminEmail: r.AdminEmail,
+			AdminID:    r.AdminId.String,
+			AdminEmail: r.AdminEmail.String,
 			ActorType:  r.ActorType,
-			Action:     r.Action,
-			Resource:   r.Resource,
-			IPAddress:  r.IpAddress,
-			UserAgent:  r.UserAgent,
+			Action:     r.Action,              // string
+			Resource:   r.Resource.String,
+			IPAddress:  r.IpAddress.String,
+			UserAgent:  r.UserAgent.String,
 			CreatedAt:  r.CreatedAt.Time,
 		}
 		if r.ResourceId.Valid {

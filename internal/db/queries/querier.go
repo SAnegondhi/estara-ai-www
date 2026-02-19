@@ -94,6 +94,14 @@ type Querier interface {
 	// Admin Credits
 	// =========================================================
 	CreateAdminCredit(ctx context.Context, arg CreateAdminCreditParams) (AdminCredit, error)
+	// ========================================
+	// Admin Sessions
+	// ========================================
+	CreateAdminSession(ctx context.Context, arg CreateAdminSessionParams) (AdminSession, error)
+	// ========================================
+	// Admin Two-Factor Authentication
+	// ========================================
+	CreateAdminTwoFactor(ctx context.Context, arg CreateAdminTwoFactorParams) (AdminTwoFactor, error)
 	CreateAnalysisJob(ctx context.Context, arg CreateAnalysisJobParams) (CreateAnalysisJobRow, error)
 	CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) error
 	// Billing Audit Log Queries
@@ -169,6 +177,7 @@ type Querier interface {
 	DeleteActivityLink(ctx context.Context, arg DeleteActivityLinkParams) error
 	// Delete an adjustment by ID
 	DeleteAdjustment(ctx context.Context, id string) error
+	DeleteAdminTwoFactor(ctx context.Context, userid string) error
 	DeleteAiResponseCacheByUserAndFeature(ctx context.Context, arg DeleteAiResponseCacheByUserAndFeatureParams) error
 	DeleteAiResponseCacheByUserAndKey(ctx context.Context, arg DeleteAiResponseCacheByUserAndKeyParams) error
 	DeleteAllCache(ctx context.Context) error
@@ -229,9 +238,11 @@ type Querier interface {
 	DeleteVendorContract(ctx context.Context, id string) error
 	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) error
 	DeleteWhitelistedEmail(ctx context.Context, id string) error
+	DisableAdminTwoFactor(ctx context.Context, userid string) error
 	DismissAnalysisJob(ctx context.Context, arg DismissAnalysisJobParams) error
 	DismissSystemAlertRows(ctx context.Context, id string) (int64, error)
 	DowngradeIAPUser(ctx context.Context, id string) error
+	EnableAdminTwoFactor(ctx context.Context, userid string) error
 	// Cron Job Extended Queries (Category B+C live operations)
 	ExpireIAPSubscriptions(ctx context.Context) error
 	ExpireIAPSubscriptionsRows(ctx context.Context) (int64, error)
@@ -256,6 +267,9 @@ type Querier interface {
 	GetActiveVendorContractCount(ctx context.Context) (int64, error)
 	GetActivityLink(ctx context.Context, arg GetActivityLinkParams) (DiscoverySessionActivity, error)
 	GetAdminCreditsByUser(ctx context.Context, userid string) ([]AdminCredit, error)
+	GetAdminSessionByID(ctx context.Context, id string) (AdminSession, error)
+	GetAdminSessionByToken(ctx context.Context, tokenhash string) (AdminSession, error)
+	GetAdminTwoFactorByUserID(ctx context.Context, userid string) (AdminTwoFactor, error)
 	GetAdminUserStats(ctx context.Context) (GetAdminUserStatsRow, error)
 	GetAllReportPacksByUserID(ctx context.Context, userid string) ([]ReportPack, error)
 	// Analysis Cache Queries
@@ -471,6 +485,7 @@ type Querier interface {
 	ListAdminActionsForUser(ctx context.Context, arg ListAdminActionsForUserParams) ([]ListAdminActionsForUserRow, error)
 	ListAdminAuditLogs(ctx context.Context, arg ListAdminAuditLogsParams) ([]ListAdminAuditLogsRow, error)
 	ListAdminCredits(ctx context.Context, arg ListAdminCreditsParams) ([]AdminCredit, error)
+	ListAdminSessionsByUser(ctx context.Context, userid string) ([]AdminSession, error)
 	// Analysis Jobs Queries
 	ListAnalysisJobsByUser(ctx context.Context, arg ListAnalysisJobsByUserParams) ([]ListAnalysisJobsByUserRow, error)
 	ListAuditLogFiltered(ctx context.Context, arg ListAuditLogFilteredParams) ([]ListAuditLogFilteredRow, error)
@@ -561,6 +576,8 @@ type Querier interface {
 	ResetInvestorReportForRetry(ctx context.Context, id string) (int64, error)
 	ResetV2EvaluationQuotaUsage(ctx context.Context, arg ResetV2EvaluationQuotaUsageParams) error
 	RestoreDiscoverySession(ctx context.Context, arg RestoreDiscoverySessionParams) (DiscoverySession, error)
+	RevokeAdminSession(ctx context.Context, id string) error
+	RevokeAllAdminSessionsForUser(ctx context.Context, userid string) error
 	RevokeUserConsent(ctx context.Context, arg RevokeUserConsentParams) error
 	RevokeWaitlistByEmail(ctx context.Context, email string) error
 	SearchAdminAuditLogsByDetailsText(ctx context.Context, arg SearchAdminAuditLogsByDetailsTextParams) ([]SearchAdminAuditLogsByDetailsTextRow, error)
@@ -581,6 +598,8 @@ type Querier interface {
 	ToggleVendorActiveRows(ctx context.Context, arg ToggleVendorActiveRowsParams) (int64, error)
 	ToggleWhitelistedEmail(ctx context.Context, arg ToggleWhitelistedEmailParams) (ToggleWhitelistedEmailRow, error)
 	UnsuspendUser(ctx context.Context, id string) error
+	UpdateAdminSessionLastActive(ctx context.Context, id string) error
+	UpdateAdminTwoFactorBackupCodes(ctx context.Context, arg UpdateAdminTwoFactorBackupCodesParams) error
 	UpdateAnalysisJobResults(ctx context.Context, arg UpdateAnalysisJobResultsParams) error
 	UpdateAnalysisJobStatus(ctx context.Context, arg UpdateAnalysisJobStatusParams) error
 	UpdateCacheAccess(ctx context.Context, key string) error
