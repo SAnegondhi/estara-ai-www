@@ -4,43 +4,18 @@
 -- Date: 2026-02-20
 
 -- Step 0: Add 'ADMIN_ACTION' to AuditEventType enum (for admin audit entries)
-DO $enum_add$ BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_enum e
-        JOIN pg_type t ON e.enumtypid = t.oid
-        WHERE t.typname = 'AuditEventType' AND e.enumlabel = 'ADMIN_ACTION'
-    ) THEN
-        ALTER TYPE "AuditEventType" ADD VALUE 'ADMIN_ACTION';
-    END IF;
-END $enum_add$;
+-- Note: ALTER TYPE ADD VALUE cannot run in a transaction, must check manually
+ALTER TYPE "AuditEventType" ADD VALUE IF NOT EXISTS 'ADMIN_ACTION';
 
 -- Step 1: Add actorType column to audit_logs (if not exists)
-DO $actor_col$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_name = 'audit_logs' AND column_name = 'actorType') THEN
-        ALTER TABLE audit_logs ADD COLUMN "actorType" "AuditActorType" DEFAULT 'ADMIN_USER';
-    END IF;
-END $actor_col$;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS "actorType" "AuditActorType" DEFAULT 'ADMIN_USER';
 
 -- Step 2: Add adminId and adminEmail columns to audit_logs (for admin actions)
-DO $admin_cols$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_name = 'audit_logs' AND column_name = 'adminId') THEN
-        ALTER TABLE audit_logs ADD COLUMN "adminId" TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_name = 'audit_logs' AND column_name = 'adminEmail') THEN
-        ALTER TABLE audit_logs ADD COLUMN "adminEmail" TEXT;
-    END IF;
-END $admin_cols$;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS "adminId" TEXT;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS "adminEmail" TEXT;
 
 -- Step 2b: Add resourceId column to audit_logs (if not exists)
-DO $resource_col$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_name = 'audit_logs' AND column_name = 'resourceId') THEN
-        ALTER TABLE audit_logs ADD COLUMN "resourceId" TEXT;
-    END IF;
-END $resource_col$;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS "resourceId" TEXT;
 
 -- Step 3: Migrate data from admin_audit_log to audit_logs
 INSERT INTO audit_logs (
@@ -62,7 +37,8 @@ SELECT
     "adminId",
     "adminEmail"
 FROM admin_audit_log
-WHERE id NOT IN (SELECT id FROM audit_logs);  -- Avoid duplicates
+WHERE id NOT IN (SELECT id FROM audit_logs)  -- Avoid duplicates
+ON CONFLICT (id) DO NOTHING;
 
 -- Step 4: Set actorType for existing user events (backward fill)
 UPDATE audit_logs
