@@ -10,7 +10,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/estara-ai/www/internal/api/handlers/util"
 	"github.com/estara-ai/www/internal/api/middleware"
+	"github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/services/ai/agents"
 	"github.com/estara-ai/www/internal/services/cache"
 	"github.com/estara-ai/www/internal/services/jobs/queue"
@@ -20,6 +22,7 @@ import (
 
 // AnalysisHandler handles market analysis endpoints
 type AnalysisHandler struct {
+	store    *db.Store
 	queue    *queue.Queue
 	registry *sse.ConnectionRegistry
 	cache    *cache.HybridCache
@@ -28,11 +31,13 @@ type AnalysisHandler struct {
 
 // NewAnalysisHandler creates a new analysis handler
 func NewAnalysisHandler(
+	store *db.Store,
 	q *queue.Queue,
 	registry *sse.ConnectionRegistry,
 	cache *cache.HybridCache,
 ) *AnalysisHandler {
 	return &AnalysisHandler{
+		store:    store,
 		queue:    q,
 		registry: registry,
 		cache:    cache,
@@ -100,6 +105,17 @@ func (h *AnalysisHandler) QueueAnalysis(w http.ResponseWriter, r *http.Request) 
 
 	// Generate stream token (simplified - in production use JWT)
 	streamToken := fmt.Sprintf("%s:%s", user.UserID, jobID)
+
+	// Log feature usage for customer support and chargeback defense
+	_ = util.LogFeatureUsage(ctx, h.store, r, user.UserID, "FEATURE_MARKET_ANALYSIS",
+		fmt.Sprintf("Market analysis: %s", req.Location),
+		map[string]any{
+			"jobId":        jobID,
+			"location":     req.Location,
+			"cacheKey":     req.CacheKey,
+			"forceRefresh": req.ForceRefresh,
+		},
+	)
 
 	response := agents.AnalysisJobResponse{
 		Success:   true,

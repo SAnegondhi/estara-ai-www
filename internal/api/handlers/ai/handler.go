@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/estara-ai/www/internal/api/handlers/util"
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
 	dbstore "github.com/estara-ai/www/internal/db"
@@ -2549,6 +2550,17 @@ func (h *Handler) QueueAnalysis(w http.ResponseWriter, r *http.Request) {
 		"job_id", jobID,
 		"user_id", user.UserID,
 		"location", req.Location,
+	)
+
+	// Log feature usage for customer support and chargeback defense
+	_ = util.LogFeatureUsage(ctx, h.store, r, user.UserID, "FEATURE_MARKET_ANALYSIS",
+		fmt.Sprintf("Market analysis: %s", req.Location),
+		map[string]any{
+			"jobId":        jobID,
+			"location":     req.Location,
+			"cacheKey":     req.CacheKey,
+			"forceRefresh": req.ForceRefresh,
+		},
 	)
 
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{

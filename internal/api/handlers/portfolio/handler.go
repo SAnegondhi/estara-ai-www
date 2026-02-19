@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/estara-ai/www/internal/api/handlers/util"
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
 	dbstore "github.com/estara-ai/www/internal/db"
@@ -380,6 +381,19 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		httputil.Error(w, http.StatusInternalServerError, "failed to create property")
 		return
 	}
+
+	// Log feature usage for customer support and chargeback defense
+	_ = util.LogFeatureUsage(ctx, h.store, r, user.UserID, "FEATURE_PORTFOLIO_ADD",
+		fmt.Sprintf("Property added: %s, %s %s", req.Address, req.City, req.State),
+		map[string]any{
+			"propertyId":    property.ID,
+			"address":       req.Address,
+			"city":          req.City,
+			"state":         req.State,
+			"zipCode":       req.ZipCode,
+			"purchasePrice": req.PurchasePrice,
+		},
+	)
 
 	httputil.JSON(w, http.StatusCreated, map[string]interface{}{
 		"success":  true,

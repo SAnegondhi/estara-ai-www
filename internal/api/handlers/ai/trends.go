@@ -2,11 +2,14 @@ package ai
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
 
+	"github.com/estara-ai/www/internal/api/handlers/util"
 	"github.com/estara-ai/www/internal/api/middleware"
+	"github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/services/cache"
 	"github.com/estara-ai/www/internal/services/market/trends"
 	"github.com/estara-ai/www/pkg/httputil"
@@ -14,6 +17,7 @@ import (
 
 // TrendsHandler handles market trends endpoints
 type TrendsHandler struct {
+	store  *db.Store
 	trends *trends.Service
 	cache  *cache.HybridCache
 	logger *slog.Logger
@@ -21,10 +25,12 @@ type TrendsHandler struct {
 
 // NewTrendsHandler creates a new trends handler
 func NewTrendsHandler(
+	store *db.Store,
 	trendsService *trends.Service,
 	cache *cache.HybridCache,
 ) *TrendsHandler {
 	return &TrendsHandler{
+		store:  store,
 		trends: trendsService,
 		cache:  cache,
 		logger: slog.Default().With("component", "trends_handler"),
@@ -88,6 +94,18 @@ func (h *TrendsHandler) GetMarketTrends(w http.ResponseWriter, r *http.Request) 
 		httputil.Error(w, http.StatusInternalServerError, "failed to get market trends")
 		return
 	}
+
+	// Log feature usage for customer support and chargeback defense
+	_ = util.LogFeatureUsage(ctx, h.store, r, user.UserID, "FEATURE_MARKET_TRENDS",
+		fmt.Sprintf("Market trends: %s (%d years)", location, years),
+		map[string]any{
+			"location":     location,
+			"years":        years,
+			"includeAI":    includeAI,
+			"forceRefresh": forceRefresh,
+			"cacheKey":     cacheKey,
+		},
+	)
 
 	httputil.JSON(w, http.StatusOK, trends.TrendsResponse{
 		Success: true,

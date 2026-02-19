@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/estara-ai/www/internal/api/handlers/util"
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/services/property/finder"
 	"github.com/estara-ai/www/internal/services/property/providers"
@@ -202,6 +203,31 @@ func (h *Handler) StreamingSearch(w http.ResponseWriter, r *http.Request) {
 						len(properties),
 						propertyIds,
 						properties,
+					)
+				}
+
+				// Log feature usage for customer support and chargeback defense
+				if discoverySessionId != "" {
+					_ = util.LogFeatureUsage(ctx, h.store, r, userID, "FEATURE_DISCOVER_SEARCH",
+						fmt.Sprintf("Property search: %s", location),
+						map[string]any{
+							"location":           location,
+							"discoverySessionId": discoverySessionId,
+							"totalProperties":    totalCount,
+							"enrichedProperties": enrichedCount,
+							"failedProperties":   failedCount,
+							"noDataProperties":   noDataCount,
+							"filters": map[string]any{
+								"minPrice":    params.MinPrice,
+								"maxPrice":    params.MaxPrice,
+								"minBeds":     params.MinBeds,
+								"maxBeds":     params.MaxBeds,
+								"minBaths":    params.MinBaths,
+								"maxBaths":    params.MaxBaths,
+								"minCapRate":  minCapRate,
+								"propertyType": params.PropertyType,
+							},
+						},
 					)
 				}
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/estara-ai/www/internal/api/handlers/util"
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/jobs/queue"
@@ -112,6 +113,17 @@ func (h *Handler) QueueDecisionMemos(w http.ResponseWriter, r *http.Request) {
 		httputil.Error(w, http.StatusInternalServerError, "failed to queue memo generation")
 		return
 	}
+
+	// Log feature usage for customer support and chargeback defense
+	_ = util.LogFeatureUsage(ctx, h.store, r, user.UserID, "FEATURE_DECISION_MEMO",
+		fmt.Sprintf("Decision memo queued: %d properties", len(req.Properties)),
+		map[string]any{
+			"jobId":         jobID,
+			"propertyCount": len(req.Properties),
+			"strategy":      req.Strategy,
+			"forceRefresh":  req.ForceRefresh,
+		},
+	)
 
 	httputil.JSON(w, http.StatusAccepted, map[string]interface{}{
 		"success": true,
