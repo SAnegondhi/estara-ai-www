@@ -26,8 +26,19 @@ DO $$ BEGIN
         'SUBSCRIPTION_VIEW', 'SUBSCRIPTION_OVERRIDE', 'SUBSCRIPTION_CANCEL', 'SUBSCRIPTION_REFUND',
         'WHITELIST_ADD', 'WHITELIST_UPDATE', 'WHITELIST_DELETE', 'WHITELIST_TOGGLE',
         'CACHE_INVALIDATE', 'CACHE_PRUNE',
-        'MODEL_CREATE', 'MODEL_UPDATE', 'MODEL_DELETE',
+        'MODEL_CREATE', 'MODEL_DELETE', 'MODEL_UPDATE',
         'QUOTA_UPDATE', 'ALERT_DISMISS'
+    );
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE "AuditActorType" AS ENUM (
+        'ADMIN_USER',       -- Human admin via web UI
+        'SYSTEM',           -- Automated system processes
+        'CRON_JOB',         -- Scheduled cron jobs
+        'API_AUTOMATION',   -- External API calls (future)
+        'BACKGROUND_WORKER' -- Async worker processes
     );
 EXCEPTION WHEN duplicate_object THEN null;
 END $$;
@@ -68,6 +79,7 @@ CREATE TABLE IF NOT EXISTS admin_audit_log (
     id TEXT PRIMARY KEY,
     "adminId" TEXT NOT NULL,
     "adminEmail" TEXT NOT NULL,
+    "actorType" "AuditActorType" NOT NULL DEFAULT 'ADMIN_USER',
     action "AdminAction" NOT NULL,
     resource TEXT NOT NULL,
     "resourceId" TEXT,
@@ -78,6 +90,7 @@ CREATE TABLE IF NOT EXISTS admin_audit_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_admin_audit_admin_created ON admin_audit_log("adminId", "createdAt");
+CREATE INDEX IF NOT EXISTS idx_admin_audit_actor_created ON admin_audit_log("actorType", "createdAt");
 CREATE INDEX IF NOT EXISTS idx_admin_audit_action_created ON admin_audit_log(action, "createdAt");
 CREATE INDEX IF NOT EXISTS idx_admin_audit_resource ON admin_audit_log(resource, "resourceId");
 CREATE INDEX IF NOT EXISTS idx_admin_audit_created ON admin_audit_log("createdAt");

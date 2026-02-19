@@ -149,7 +149,7 @@ func (h *Handler) DowngradeIAPSubscription(w http.ResponseWriter, r *http.Reques
 	// Also update subscription record if exists
 	_ = q.CancelIAPSubscriptions(ctx, userID)
 
-	h.logAdminAudit(ctx, r, "IAP_DOWNGRADE", "iap", userID, map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "IAP_DOWNGRADE", "iap", userID, map[string]interface{}{
 		"previousPlatform": iapPlatformVal.String,
 	})
 

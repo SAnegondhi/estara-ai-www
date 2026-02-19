@@ -75,26 +75,37 @@ DELETE FROM audit_logs WHERE "createdAt" < $1;
 
 -- name: CreateAdminAuditLog :exec
 INSERT INTO admin_audit_log (
-    id, "adminId", "adminEmail", action, resource, "resourceId",
+    id, "adminId", "adminEmail", "actorType", action, resource, "resourceId",
     details, "ipAddress", "userAgent", "createdAt"
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW()
 );
 
 -- name: GetAdminAuditLogByID :one
-SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
     details, "ipAddress", "userAgent", "createdAt"
 FROM admin_audit_log WHERE id = $1;
 
 -- name: ListAdminAuditLogs :many
-SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
     details, "ipAddress", "userAgent", "createdAt"
 FROM admin_audit_log
+WHERE (sqlc.narg('actor_type')::text IS NULL OR "actorType"::text = sqlc.narg('actor_type'))
+  AND (sqlc.narg('action_filter')::text IS NULL OR action::text = sqlc.narg('action_filter'))
+  AND (sqlc.narg('resource_filter')::text IS NULL OR resource = sqlc.narg('resource_filter'))
+  AND (sqlc.narg('admin_id')::text IS NULL OR "adminId" = sqlc.narg('admin_id'))
 ORDER BY "createdAt" DESC
-LIMIT $1 OFFSET $2;
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: CountAdminAuditLogs :one
+SELECT COUNT(*) FROM admin_audit_log
+WHERE (sqlc.narg('actor_type')::text IS NULL OR "actorType"::text = sqlc.narg('actor_type'))
+  AND (sqlc.narg('action_filter')::text IS NULL OR action::text = sqlc.narg('action_filter'))
+  AND (sqlc.narg('resource_filter')::text IS NULL OR resource = sqlc.narg('resource_filter'))
+  AND (sqlc.narg('admin_id')::text IS NULL OR "adminId" = sqlc.narg('admin_id'));
 
 -- name: ListAdminAuditLogsByAdmin :many
-SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
     details, "ipAddress", "userAgent", "createdAt"
 FROM admin_audit_log
 WHERE "adminId" = $1
@@ -102,7 +113,7 @@ ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3;
 
 -- name: ListAdminAuditLogsByAction :many
-SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
     details, "ipAddress", "userAgent", "createdAt"
 FROM admin_audit_log
 WHERE action::text = $1
@@ -110,7 +121,7 @@ ORDER BY "createdAt" DESC
 LIMIT $2 OFFSET $3;
 
 -- name: ListAdminAuditLogsByResource :many
-SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
     details, "ipAddress", "userAgent", "createdAt"
 FROM admin_audit_log
 WHERE resource = $1 AND ("resourceId" = $2 OR $2 IS NULL)
@@ -118,7 +129,7 @@ ORDER BY "createdAt" DESC
 LIMIT $3 OFFSET $4;
 
 -- name: ListAdminAuditLogsByDateRange :many
-SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
     details, "ipAddress", "userAgent", "createdAt"
 FROM admin_audit_log
 WHERE "createdAt" >= $1 AND "createdAt" <= $2

@@ -141,7 +141,7 @@ func (h *Handler) ProcessRefund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "STRIPE_REFUND", "payment", req.PaymentIntentID, map[string]any{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "STRIPE_REFUND", "payment", req.PaymentIntentID, map[string]any{
 		"refundId": ref.ID,
 		"amount":   ref.Amount,
 		"reason":   req.Reason,

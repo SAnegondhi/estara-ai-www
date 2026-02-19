@@ -163,7 +163,7 @@ func (h *Handler) InviteWaitlistEntry(w http.ResponseWriter, r *http.Request) {
 	// Send invite email synchronously so admin gets feedback
 	emailSent, emailError := h.sendWaitlistInviteEmail(entry.Email, entry.Name)
 
-	h.logAdminAudit(ctx, r, "WAITLIST_INVITE", "early_access", id, map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "WAITLIST_INVITE", "early_access", id, map[string]interface{}{
 		"email": entry.Email,
 	})
 
@@ -220,7 +220,7 @@ func (h *Handler) UpdateWaitlistEntryStatus(w http.ResponseWriter, r *http.Reque
 
 	e := mapWaitlistRow(row.ID, row.Email, row.Name, row.Source, row.Notes, row.Status, row.Invited, row.Contacted, row.RequestedAt, row.CreatedAt, row.UpdatedAt)
 
-	h.logAdminAudit(ctx, r, "WAITLIST_STATUS_UPDATE", "early_access", id, map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "WAITLIST_STATUS_UPDATE", "early_access", id, map[string]interface{}{
 		"status": newStatus,
 	})
 	httputil.Success(w, e)
@@ -253,7 +253,7 @@ func (h *Handler) DeleteWaitlistEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "WAITLIST_DELETE", "early_access", id, nil)
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "WAITLIST_DELETE", "early_access", id, nil)
 	httputil.Success(w, map[string]interface{}{"deleted": true})
 }
 

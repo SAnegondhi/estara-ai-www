@@ -292,7 +292,7 @@ func (h *Handler) ApproveEarlyAccess(w http.ResponseWriter, r *http.Request) {
 		h.logger.Warn("failed to send early access welcome email", "error", emailErr, "email", ear.Email)
 	}
 
-	h.logAdminAudit(ctx, r, "EARLY_ACCESS_APPROVED", "early_access_requests", id, map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "EARLY_ACCESS_APPROVED", "early_access_requests", id, map[string]interface{}{
 		"email":  ear.Email,
 		"userId": newUser.ID,
 	})
@@ -350,7 +350,7 @@ func (h *Handler) RejectEarlyAccess(w http.ResponseWriter, r *http.Request) {
 		h.logger.Warn("failed to send rejection email", "error", emailErr)
 	}
 
-	h.logAdminAudit(ctx, r, "EARLY_ACCESS_REJECTED", "early_access_requests", id, map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "EARLY_ACCESS_REJECTED", "early_access_requests", id, map[string]interface{}{
 		"email": ear.Email,
 	})
 
@@ -409,7 +409,7 @@ func (h *Handler) SuspendEarlyAccessUser(w http.ResponseWriter, r *http.Request)
 		h.logger.Warn("failed to send suspension email", "error", emailErr)
 	}
 
-	h.logAdminAudit(ctx, r, "EARLY_ACCESS_SUSPENDED", "users", userID, map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "EARLY_ACCESS_SUSPENDED", "users", userID, map[string]interface{}{
 		"reason": req.Reason,
 	})
 
@@ -456,7 +456,7 @@ func (h *Handler) RestoreEarlyAccessUser(w http.ResponseWriter, r *http.Request)
 		h.logger.Warn("failed to send restore email", "error", emailErr)
 	}
 
-	h.logAdminAudit(ctx, r, "EARLY_ACCESS_RESTORED", "users", userID, nil)
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "EARLY_ACCESS_RESTORED", "users", userID, nil)
 
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{"success": true})
 }
@@ -506,7 +506,7 @@ func (h *Handler) TerminateEarlyAccessUser(w http.ResponseWriter, r *http.Reques
 		h.logger.Warn("failed to send termination email", "error", emailErr)
 	}
 
-	h.logAdminAudit(ctx, r, "EARLY_ACCESS_TERMINATED", "users", userID, nil)
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "EARLY_ACCESS_TERMINATED", "users", userID, nil)
 
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{"success": true})
 }

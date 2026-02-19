@@ -389,7 +389,7 @@ func (h *Handler) ChangePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "SUBSCRIPTION_CHANGE_PLAN", "subscription", subID, map[string]any{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "SUBSCRIPTION_CHANGE_PLAN", "subscription", subID, map[string]any{
 		"oldTier": oldTier,
 		"newTier": req.NewTier,
 	})
@@ -454,7 +454,7 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "CREDIT_APPLY", "admin_credit", creditID, map[string]any{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "CREDIT_APPLY", "admin_credit", creditID, map[string]any{
 		"userId":         userID,
 		"subscriptionId": subID,
 		"amount":         req.Amount,
@@ -532,7 +532,7 @@ func (h *Handler) AdminCancelSubscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "SUBSCRIPTION_CANCEL", "subscription", subID, map[string]any{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "SUBSCRIPTION_CANCEL", "subscription", subID, map[string]any{
 		"immediate": req.Immediate,
 		"oldStatus": oldStatus,
 	})

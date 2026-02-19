@@ -376,7 +376,7 @@ func (h *Handler) ExportAccounting(w http.ResponseWriter, r *http.Request) {
 		httputil.BadRequest(w, "export not supported for section: "+req.Section)
 	}
 
-	h.logAdminAudit(ctx, r, "ACCOUNTING_EXPORT", "accounting", "", map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "ACCOUNTING_EXPORT", "accounting", "", map[string]interface{}{
 		"format":  req.Format,
 		"section": req.Section,
 	})

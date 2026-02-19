@@ -148,7 +148,7 @@ func (h *Handler) UpdateContact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "CONTACT_UPDATE", "contact", id, map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "CONTACT_UPDATE", "contact", id, map[string]interface{}{
 		"status": req.Status,
 	})
 	httputil.Success(w, contact)
@@ -181,7 +181,7 @@ func (h *Handler) DeleteContact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "CONTACT_DELETE", "contact", id, nil)
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "CONTACT_DELETE", "contact", id, nil)
 	httputil.Success(w, map[string]interface{}{"deleted": true})
 }
 

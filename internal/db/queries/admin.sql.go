@@ -44,6 +44,33 @@ func (q *Queries) CountActiveAlertsBySeverity(ctx context.Context) ([]CountActiv
 	return items, nil
 }
 
+const CountAdminAuditLogs = `-- name: CountAdminAuditLogs :one
+SELECT COUNT(*) FROM admin_audit_log
+WHERE ($1::text IS NULL OR "actorType"::text = $1)
+  AND ($2::text IS NULL OR action::text = $2)
+  AND ($3::text IS NULL OR resource = $3)
+  AND ($4::text IS NULL OR "adminId" = $4)
+`
+
+type CountAdminAuditLogsParams struct {
+	ActorType      pgtype.Text `json:"actor_type"`
+	ActionFilter   pgtype.Text `json:"action_filter"`
+	ResourceFilter pgtype.Text `json:"resource_filter"`
+	AdminID        pgtype.Text `json:"admin_id"`
+}
+
+func (q *Queries) CountAdminAuditLogs(ctx context.Context, arg CountAdminAuditLogsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, CountAdminAuditLogs,
+		arg.ActorType,
+		arg.ActionFilter,
+		arg.ResourceFilter,
+		arg.AdminID,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const CountAuditLogsByEventType = `-- name: CountAuditLogsByEventType :many
 SELECT event::text, COUNT(*) as count
 FROM audit_logs
@@ -85,10 +112,10 @@ func (q *Queries) CountAuditLogsByEventType(ctx context.Context, arg CountAuditL
 const CreateAdminAuditLog = `-- name: CreateAdminAuditLog :exec
 
 INSERT INTO admin_audit_log (
-    id, "adminId", "adminEmail", action, resource, "resourceId",
+    id, "adminId", "adminEmail", "actorType", action, resource, "resourceId",
     details, "ipAddress", "userAgent", "createdAt"
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW()
 )
 `
 
@@ -96,6 +123,7 @@ type CreateAdminAuditLogParams struct {
 	ID         string          `json:"id"`
 	AdminId    string          `json:"adminId"`
 	AdminEmail string          `json:"adminEmail"`
+	ActorType  interface{}     `json:"actorType"`
 	Action     interface{}     `json:"action"`
 	Resource   string          `json:"resource"`
 	ResourceId pgtype.Text     `json:"resourceId"`
@@ -110,6 +138,7 @@ func (q *Queries) CreateAdminAuditLog(ctx context.Context, arg CreateAdminAuditL
 		arg.ID,
 		arg.AdminId,
 		arg.AdminEmail,
+		arg.ActorType,
 		arg.Action,
 		arg.Resource,
 		arg.ResourceId,
@@ -406,7 +435,7 @@ func (q *Queries) EnableAdminTwoFactor(ctx context.Context, userid string) error
 }
 
 const GetAdminAuditLogByID = `-- name: GetAdminAuditLogByID :one
-SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
     details, "ipAddress", "userAgent", "createdAt"
 FROM admin_audit_log WHERE id = $1
 `
@@ -415,6 +444,7 @@ type GetAdminAuditLogByIDRow struct {
 	ID         string           `json:"id"`
 	AdminId    string           `json:"adminId"`
 	AdminEmail string           `json:"adminEmail"`
+	ActorType  string           `json:"actorType"`
 	Action     string           `json:"action"`
 	Resource   string           `json:"resource"`
 	ResourceId pgtype.Text      `json:"resourceId"`
@@ -431,6 +461,7 @@ func (q *Queries) GetAdminAuditLogByID(ctx context.Context, id string) (GetAdmin
 		&i.ID,
 		&i.AdminId,
 		&i.AdminEmail,
+		&i.ActorType,
 		&i.Action,
 		&i.Resource,
 		&i.ResourceId,
@@ -717,22 +748,31 @@ func (q *Queries) ListActiveSystemAlerts(ctx context.Context, arg ListActiveSyst
 }
 
 const ListAdminAuditLogs = `-- name: ListAdminAuditLogs :many
-SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
     details, "ipAddress", "userAgent", "createdAt"
 FROM admin_audit_log
+WHERE ($1::text IS NULL OR "actorType"::text = $1)
+  AND ($2::text IS NULL OR action::text = $2)
+  AND ($3::text IS NULL OR resource = $3)
+  AND ($4::text IS NULL OR "adminId" = $4)
 ORDER BY "createdAt" DESC
-LIMIT $1 OFFSET $2
+LIMIT $6 OFFSET $5
 `
 
 type ListAdminAuditLogsParams struct {
-	Limit  int32 `json:"limit"`
-	Offset int32 `json:"offset"`
+	ActorType      pgtype.Text `json:"actor_type"`
+	ActionFilter   pgtype.Text `json:"action_filter"`
+	ResourceFilter pgtype.Text `json:"resource_filter"`
+	AdminID        pgtype.Text `json:"admin_id"`
+	Offset         int32       `json:"offset"`
+	Limit          int32       `json:"limit"`
 }
 
 type ListAdminAuditLogsRow struct {
 	ID         string           `json:"id"`
 	AdminId    string           `json:"adminId"`
 	AdminEmail string           `json:"adminEmail"`
+	ActorType  string           `json:"actorType"`
 	Action     string           `json:"action"`
 	Resource   string           `json:"resource"`
 	ResourceId pgtype.Text      `json:"resourceId"`
@@ -743,7 +783,14 @@ type ListAdminAuditLogsRow struct {
 }
 
 func (q *Queries) ListAdminAuditLogs(ctx context.Context, arg ListAdminAuditLogsParams) ([]ListAdminAuditLogsRow, error) {
-	rows, err := q.db.Query(ctx, ListAdminAuditLogs, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, ListAdminAuditLogs,
+		arg.ActorType,
+		arg.ActionFilter,
+		arg.ResourceFilter,
+		arg.AdminID,
+		arg.Offset,
+		arg.Limit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -755,6 +802,7 @@ func (q *Queries) ListAdminAuditLogs(ctx context.Context, arg ListAdminAuditLogs
 			&i.ID,
 			&i.AdminId,
 			&i.AdminEmail,
+			&i.ActorType,
 			&i.Action,
 			&i.Resource,
 			&i.ResourceId,
@@ -774,7 +822,7 @@ func (q *Queries) ListAdminAuditLogs(ctx context.Context, arg ListAdminAuditLogs
 }
 
 const ListAdminAuditLogsByAction = `-- name: ListAdminAuditLogsByAction :many
-SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
     details, "ipAddress", "userAgent", "createdAt"
 FROM admin_audit_log
 WHERE action::text = $1
@@ -792,6 +840,7 @@ type ListAdminAuditLogsByActionRow struct {
 	ID         string           `json:"id"`
 	AdminId    string           `json:"adminId"`
 	AdminEmail string           `json:"adminEmail"`
+	ActorType  string           `json:"actorType"`
 	Action     string           `json:"action"`
 	Resource   string           `json:"resource"`
 	ResourceId pgtype.Text      `json:"resourceId"`
@@ -814,6 +863,7 @@ func (q *Queries) ListAdminAuditLogsByAction(ctx context.Context, arg ListAdminA
 			&i.ID,
 			&i.AdminId,
 			&i.AdminEmail,
+			&i.ActorType,
 			&i.Action,
 			&i.Resource,
 			&i.ResourceId,
@@ -833,7 +883,7 @@ func (q *Queries) ListAdminAuditLogsByAction(ctx context.Context, arg ListAdminA
 }
 
 const ListAdminAuditLogsByAdmin = `-- name: ListAdminAuditLogsByAdmin :many
-SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
     details, "ipAddress", "userAgent", "createdAt"
 FROM admin_audit_log
 WHERE "adminId" = $1
@@ -851,6 +901,7 @@ type ListAdminAuditLogsByAdminRow struct {
 	ID         string           `json:"id"`
 	AdminId    string           `json:"adminId"`
 	AdminEmail string           `json:"adminEmail"`
+	ActorType  string           `json:"actorType"`
 	Action     string           `json:"action"`
 	Resource   string           `json:"resource"`
 	ResourceId pgtype.Text      `json:"resourceId"`
@@ -873,6 +924,7 @@ func (q *Queries) ListAdminAuditLogsByAdmin(ctx context.Context, arg ListAdminAu
 			&i.ID,
 			&i.AdminId,
 			&i.AdminEmail,
+			&i.ActorType,
 			&i.Action,
 			&i.Resource,
 			&i.ResourceId,
@@ -892,7 +944,7 @@ func (q *Queries) ListAdminAuditLogsByAdmin(ctx context.Context, arg ListAdminAu
 }
 
 const ListAdminAuditLogsByDateRange = `-- name: ListAdminAuditLogsByDateRange :many
-SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
     details, "ipAddress", "userAgent", "createdAt"
 FROM admin_audit_log
 WHERE "createdAt" >= $1 AND "createdAt" <= $2
@@ -911,6 +963,7 @@ type ListAdminAuditLogsByDateRangeRow struct {
 	ID         string           `json:"id"`
 	AdminId    string           `json:"adminId"`
 	AdminEmail string           `json:"adminEmail"`
+	ActorType  string           `json:"actorType"`
 	Action     string           `json:"action"`
 	Resource   string           `json:"resource"`
 	ResourceId pgtype.Text      `json:"resourceId"`
@@ -938,6 +991,7 @@ func (q *Queries) ListAdminAuditLogsByDateRange(ctx context.Context, arg ListAdm
 			&i.ID,
 			&i.AdminId,
 			&i.AdminEmail,
+			&i.ActorType,
 			&i.Action,
 			&i.Resource,
 			&i.ResourceId,
@@ -957,7 +1011,7 @@ func (q *Queries) ListAdminAuditLogsByDateRange(ctx context.Context, arg ListAdm
 }
 
 const ListAdminAuditLogsByResource = `-- name: ListAdminAuditLogsByResource :many
-SELECT id, "adminId", "adminEmail", action::text, resource, "resourceId",
+SELECT id, "adminId", "adminEmail", "actorType"::text, action::text, resource, "resourceId",
     details, "ipAddress", "userAgent", "createdAt"
 FROM admin_audit_log
 WHERE resource = $1 AND ("resourceId" = $2 OR $2 IS NULL)
@@ -976,6 +1030,7 @@ type ListAdminAuditLogsByResourceRow struct {
 	ID         string           `json:"id"`
 	AdminId    string           `json:"adminId"`
 	AdminEmail string           `json:"adminEmail"`
+	ActorType  string           `json:"actorType"`
 	Action     string           `json:"action"`
 	Resource   string           `json:"resource"`
 	ResourceId pgtype.Text      `json:"resourceId"`
@@ -1003,6 +1058,7 @@ func (q *Queries) ListAdminAuditLogsByResource(ctx context.Context, arg ListAdmi
 			&i.ID,
 			&i.AdminId,
 			&i.AdminEmail,
+			&i.ActorType,
 			&i.Action,
 			&i.Resource,
 			&i.ResourceId,

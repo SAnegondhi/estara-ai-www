@@ -88,7 +88,7 @@ func (h *Handler) TriggerMarketDataImport(w http.ResponseWriter, r *http.Request
 	}
 	defer resp.Body.Close()
 
-	h.logAdminAudit(ctx, r, "MARKET_DATA_IMPORT", "market_data", "", map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "MARKET_DATA_IMPORT", "market_data", "", map[string]interface{}{
 		"source":     req.Source,
 		"endpoint":   endpoint,
 		"statusCode": resp.StatusCode,

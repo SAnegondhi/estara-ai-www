@@ -15,6 +15,7 @@ type AdminAuditLog struct {
 	ID         string           `json:"id"`
 	AdminId    string           `json:"adminId"`
 	AdminEmail string           `json:"adminEmail"`
+	ActorType  interface{}      `json:"actorType"`
 	Action     interface{}      `json:"action"`
 	Resource   string           `json:"resource"`
 	ResourceId pgtype.Text      `json:"resourceId"`

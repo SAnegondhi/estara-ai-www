@@ -29,6 +29,7 @@ type Querier interface {
 	CountActiveSubscriptions(ctx context.Context) (int64, error)
 	CountActiveWhitelistedEmails(ctx context.Context) (int64, error)
 	CountAdminActionsForUser(ctx context.Context, resourceID pgtype.Text) (int64, error)
+	CountAdminAuditLogs(ctx context.Context, arg CountAdminAuditLogsParams) (int64, error)
 	CountAllCache(ctx context.Context) (int64, error)
 	CountAnalysisJobsByUser(ctx context.Context, userid string) (int64, error)
 	CountAuditLogFiltered(ctx context.Context, arg CountAuditLogFilteredParams) (int64, error)

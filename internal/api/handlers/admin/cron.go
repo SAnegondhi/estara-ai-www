@@ -221,7 +221,7 @@ func (h *Handler) ToggleCronJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "CRON_TOGGLE", "cron_job", jobID, map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "CRON_TOGGLE", "cron_job", jobID, map[string]interface{}{
 		"enabled": req.Enabled,
 		"name":    config.Name,
 	})
@@ -269,7 +269,7 @@ func (h *Handler) TriggerCronJob(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	h.logAdminAudit(ctx, r, "CRON_TRIGGER", "cron_job", jobID, map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "CRON_TRIGGER", "cron_job", jobID, map[string]interface{}{
 		"name":       config.Name,
 		"endpoint":   config.Endpoint,
 		"statusCode": resp.StatusCode,

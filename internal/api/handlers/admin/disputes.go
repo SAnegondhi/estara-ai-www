@@ -195,7 +195,7 @@ func (h *Handler) SubmitEvidence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(r.Context(), r, "DISPUTE_EVIDENCE_SUBMIT", "dispute", disputeID, map[string]interface{}{
+	h.logAdminAudit(r.Context(), r, "ADMIN_USER", "DISPUTE_EVIDENCE_SUBMIT", "dispute", disputeID, map[string]interface{}{
 		"amount": d.Amount,
 		"reason": string(d.Reason),
 	})
@@ -268,7 +268,7 @@ func (h *Handler) AutoCompileEvidence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "DISPUTE_AUTO_EVIDENCE", "dispute", disputeID, map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "DISPUTE_AUTO_EVIDENCE", "dispute", disputeID, map[string]interface{}{
 		"amount":         d.Amount,
 		"reason":         string(d.Reason),
 		"hasCustomerInfo": evidence.CustomerName != "",

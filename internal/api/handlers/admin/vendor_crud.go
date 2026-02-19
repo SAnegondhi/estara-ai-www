@@ -144,7 +144,7 @@ func (h *Handler) CreateVendor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "VENDOR_CREATE", "vendor", id, map[string]any{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "VENDOR_CREATE", "vendor", id, map[string]any{
 		"name":     req.Name,
 		"category": req.Category,
 	})
@@ -211,7 +211,7 @@ func (h *Handler) UpdateVendor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "VENDOR_UPDATE", "vendor", vendorID, map[string]any{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "VENDOR_UPDATE", "vendor", vendorID, map[string]any{
 		"changes": req,
 	})
 	h.logger.Info("vendor updated", "vendor_id", vendorID)
@@ -245,7 +245,7 @@ func (h *Handler) DeleteVendor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "VENDOR_DELETE", "vendor", vendorID, nil)
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "VENDOR_DELETE", "vendor", vendorID, nil)
 	h.logger.Info("vendor soft-deleted", "vendor_id", vendorID)
 	httputil.Success(w, map[string]any{
 		"vendorId": vendorID,
@@ -382,7 +382,7 @@ func (h *Handler) CreateOrUpdateContract(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "VENDOR_CONTRACT_UPDATE", "vendor_contract", contract.ID, map[string]any{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "VENDOR_CONTRACT_UPDATE", "vendor_contract", contract.ID, map[string]any{
 		"vendorId": vendorID,
 	})
 	httputil.Success(w, map[string]any{

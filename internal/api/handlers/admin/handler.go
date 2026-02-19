@@ -394,7 +394,7 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "USER_UPDATE", "user", userID, map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_UPDATE", "user", userID, map[string]interface{}{
 		"changes": req,
 	})
 	h.logger.Info("user updated", "user_id", userID)
@@ -430,7 +430,7 @@ func (h *Handler) ImpersonateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "USER_IMPERSONATE", "user", userID, map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "USER_IMPERSONATE", "user", userID, map[string]interface{}{
 		"targetEmail": user.Email,
 		"expiresIn":   3600,
 	})
@@ -555,7 +555,7 @@ func (h *Handler) InvalidateCache(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "CACHE_INVALIDATE", "cache", "", map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "CACHE_INVALIDATE", "cache", "", map[string]interface{}{
 		"strategy": req.Strategy,
 		"deleted":  deleted,
 	})
@@ -642,7 +642,7 @@ func (h *Handler) ToggleVendor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "WHITELIST_TOGGLE", "vendor", vendorID, map[string]interface{}{
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "WHITELIST_TOGGLE", "vendor", vendorID, map[string]interface{}{
 		"enabled": req.Enabled,
 	})
 	h.logger.Info("vendor toggled", "vendor_id", vendorID, "enabled", req.Enabled)
@@ -1032,7 +1032,7 @@ func (h *Handler) ResolveSystemAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAdminAudit(ctx, r, "ALERT_DISMISS", "system_alert", alertID, nil)
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "ALERT_DISMISS", "system_alert", alertID, nil)
 	h.logger.Info("system alert resolved", "alert_id", alertID)
 	httputil.Success(w, map[string]interface{}{
 		"alertId":  alertID,
@@ -1080,9 +1080,34 @@ func (h *Handler) GetVendorCosts(w http.ResponseWriter, r *http.Request) {
 // Audit Logging
 // ===============================
 
+// buildAuditDetails constructs standardized audit details with before/after tracking.
+// ADR-086: Enhanced Admin Audit Logging
+func buildAuditDetails(reason string, before, after, additional map[string]interface{}) map[string]interface{} {
+	details := make(map[string]interface{})
+
+	if reason != "" {
+		details["reason"] = reason
+	}
+	if before != nil {
+		details["before"] = before
+	}
+	if after != nil {
+		details["after"] = after
+	}
+
+	// Merge additional context
+	for k, v := range additional {
+		details[k] = v
+	}
+
+	return details
+}
+
 // logAdminAudit writes an admin audit log entry for admin operations.
 // action must be a valid AdminAction enum value.
-func (h *Handler) logAdminAudit(ctx context.Context, r *http.Request, action, resource, resourceID string, details map[string]interface{}) {
+// actorType must be a valid AuditActorType enum value ("ADMIN_USER", "SYSTEM", "CRON_JOB", etc.)
+// ADR-086: Enhanced with actor type classification
+func (h *Handler) logAdminAudit(ctx context.Context, r *http.Request, actorType, action, resource, resourceID string, details map[string]interface{}) {
 	idBytes := make([]byte, 12)
 	_, _ = rand.Read(idBytes)
 	id := hex.EncodeToString(idBytes)
@@ -1125,6 +1150,7 @@ func (h *Handler) logAdminAudit(ctx context.Context, r *http.Request, action, re
 		ID:         id,
 		AdminId:    adminID,
 		AdminEmail: adminEmail,
+		ActorType:  actorType,
 		Action:     action,
 		Resource:   resource,
 		ResourceId: pgtype.Text{String: resourceID, Valid: resourceID != ""},
@@ -1134,6 +1160,37 @@ func (h *Handler) logAdminAudit(ctx context.Context, r *http.Request, action, re
 	})
 	if err != nil {
 		h.logger.Warn("failed to write admin audit log", "error", err, "action", action)
+	}
+}
+
+// logSystemAudit writes an audit log entry for system processes (cron, background workers).
+// Bypasses HTTP request context since these operations don't originate from HTTP requests.
+// ADR-086: System process audit logging
+func (h *Handler) logSystemAudit(ctx context.Context, actorType, action, resource, resourceID string, details map[string]interface{}) {
+	idBytes := make([]byte, 12)
+	_, _ = rand.Read(idBytes)
+	id := hex.EncodeToString(idBytes)
+
+	var detailsJSON json.RawMessage
+	if details != nil {
+		detailsJSON, _ = json.Marshal(details)
+	}
+
+	q := h.store.Q()
+	err := q.CreateAdminAuditLog(ctx, queries.CreateAdminAuditLogParams{
+		ID:         id,
+		AdminId:    "system",
+		AdminEmail: "system@estara-ai.com",
+		ActorType:  actorType,
+		Action:     action,
+		Resource:   resource,
+		ResourceId: pgtype.Text{String: resourceID, Valid: resourceID != ""},
+		Details:    detailsJSON,
+		IpAddress:  "0.0.0.0", // No IP for system processes
+		UserAgent:  "System Process",
+	})
+	if err != nil {
+		h.logger.Warn("failed to write system audit log", "error", err, "action", action)
 	}
 }
 
