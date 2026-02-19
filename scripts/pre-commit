@@ -1,0 +1,110 @@
+#!/bin/bash
+# Pre-commit hook for www (Go backend)
+# Enforces: sqlc generation, Go build, migration safety checks
+
+set -e
+
+echo "🔍 Running pre-commit checks for www..."
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Track if we're in www/ directory
+if [ ! -f "go.mod" ]; then
+    echo -e "${RED}❌ Must run from www/ directory${NC}"
+    exit 1
+fi
+
+# Check 1: sqlc generate
+echo "📋 Step 1/4: Running sqlc generate..."
+if ! sqlc generate 2>&1; then
+    echo -e "${RED}❌ sqlc generate failed${NC}"
+    echo "Fix schema/query files before committing"
+    exit 1
+fi
+echo -e "${GREEN}✅ sqlc generate passed${NC}"
+
+# Check 2: Go build
+echo "🔨 Step 2/4: Running go build..."
+if ! go build ./... 2>&1; then
+    echo -e "${RED}❌ go build failed${NC}"
+    echo "Fix compilation errors before committing"
+    exit 1
+fi
+echo -e "${GREEN}✅ go build passed${NC}"
+
+# Check 3: Migration safety checks
+echo "🔍 Step 3/4: Checking migration files..."
+MIGRATION_ERRORS=0
+
+# Get list of staged migration files
+STAGED_MIGRATIONS=$(git diff --cached --name-only --diff-filter=ACM | grep "migrations/.*\.sql$" || true)
+
+if [ -n "$STAGED_MIGRATIONS" ]; then
+    echo -e "${YELLOW}⚠️  Found staged migration files:${NC}"
+    echo "$STAGED_MIGRATIONS"
+    echo ""
+
+    for migration in $STAGED_MIGRATIONS; do
+        # Check for common migration issues
+
+        # Issue 1: Raw column names without checking existence
+        if grep -q "ALTER TABLE.*ADD COLUMN" "$migration" && ! grep -q "IF NOT EXISTS" "$migration"; then
+            echo -e "${YELLOW}⚠️  Warning: $migration adds columns without IF NOT EXISTS check${NC}"
+            echo "   Consider using: IF NOT EXISTS (SELECT 1 FROM information_schema.columns...)"
+        fi
+
+        # Issue 2: Enum modifications without checking existence
+        if grep -q "ALTER TYPE.*ADD VALUE" "$migration" && ! grep -q "IF NOT EXISTS" "$migration"; then
+            echo -e "${YELLOW}⚠️  Warning: $migration modifies enum without existence check${NC}"
+            echo "   Consider checking: SELECT 1 FROM pg_enum WHERE enumlabel = '...'"
+        fi
+
+        # Issue 3: Direct enum casting without intermediate steps
+        if grep -q "::[A-Z][a-zA-Z]*Type" "$migration" && ! grep -q "::text::" "$migration"; then
+            echo -e "${YELLOW}⚠️  Warning: $migration casts directly between types${NC}"
+            echo "   Consider using: value::text::\"TargetType\" for safety"
+        fi
+
+        # Issue 4: Missing migration header
+        if ! grep -q "^-- Migration:" "$migration"; then
+            echo -e "${YELLOW}⚠️  Warning: $migration missing header comment${NC}"
+            MIGRATION_ERRORS=$((MIGRATION_ERRORS + 1))
+        fi
+    done
+
+    echo ""
+    echo -e "${YELLOW}⚠️  IMPORTANT: Have you tested these migrations locally?${NC}"
+    echo "   1. Start local server: go run ./cmd/www"
+    echo "   2. Check logs for: 'failed to run migrations'"
+    echo "   3. Verify migration succeeded before committing"
+    echo ""
+
+    # Don't fail on warnings, just inform
+    if [ $MIGRATION_ERRORS -gt 0 ]; then
+        echo -e "${YELLOW}⚠️  Found $MIGRATION_ERRORS migration issues (warnings only)${NC}"
+    fi
+fi
+echo -e "${GREEN}✅ Migration checks passed${NC}"
+
+# Check 4: Go fmt
+echo "💅 Step 4/4: Checking go fmt..."
+UNFORMATTED=$(gofmt -l . 2>&1 | grep -v "internal/db/queries" | grep -v "internal/db/marketqueries" || true)
+if [ -n "$UNFORMATTED" ]; then
+    echo -e "${RED}❌ Found unformatted Go files:${NC}"
+    echo "$UNFORMATTED"
+    echo ""
+    echo "Run: gofmt -w ."
+    exit 1
+fi
+echo -e "${GREEN}✅ go fmt passed${NC}"
+
+# All checks passed
+echo ""
+echo -e "${GREEN}✅ All pre-commit checks passed!${NC}"
+echo ""
+
+exit 0
