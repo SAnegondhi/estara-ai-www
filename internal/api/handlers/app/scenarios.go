@@ -2,23 +2,28 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/estara-ai/www/internal/api/handlers/util"
 	"github.com/estara-ai/www/internal/api/middleware"
+	"github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/services/scenarios"
 	"github.com/estara-ai/www/pkg/httputil"
 )
 
 // ScenariosHandler handles scenario-related HTTP requests
 type ScenariosHandler struct {
+	store   *db.Store
 	service *scenarios.Service
 }
 
 // NewScenariosHandler creates a new scenarios handler
-func NewScenariosHandler(service *scenarios.Service) *ScenariosHandler {
+func NewScenariosHandler(store *db.Store, service *scenarios.Service) *ScenariosHandler {
 	return &ScenariosHandler{
+		store:   store,
 		service: service,
 	}
 }
@@ -76,6 +81,14 @@ func (h *ScenariosHandler) GetScenario(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Log feature usage for customer support and chargeback defense
+	_ = util.LogFeatureUsage(ctx, h.store, r, claims.UserID, "FEATURE_SCENARIO_VIEW",
+		fmt.Sprintf("Scenario viewed: %s", scenarioID),
+		map[string]any{
+			"scenarioId": scenarioID,
+		},
+	)
+
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{
 		"success":  true,
 		"scenario": scenario,
@@ -112,6 +125,15 @@ func (h *ScenariosHandler) CreateScenario(w http.ResponseWriter, r *http.Request
 		httputil.Error(w, http.StatusInternalServerError, "Failed to create scenario")
 		return
 	}
+
+	// Log feature usage for customer support and chargeback defense
+	_ = util.LogFeatureUsage(ctx, h.store, r, claims.UserID, "FEATURE_SCENARIO_CREATE",
+		fmt.Sprintf("Scenario created: %s", input.Name),
+		map[string]any{
+			"scenarioId":   scenario.ID,
+			"scenarioName": input.Name,
+		},
+	)
 
 	httputil.JSON(w, http.StatusCreated, map[string]interface{}{
 		"success":  true,
@@ -154,6 +176,14 @@ func (h *ScenariosHandler) UpdateScenario(w http.ResponseWriter, r *http.Request
 		httputil.Error(w, http.StatusInternalServerError, "Failed to update scenario")
 		return
 	}
+
+	// Log feature usage for customer support and chargeback defense
+	_ = util.LogFeatureUsage(ctx, h.store, r, claims.UserID, "FEATURE_SCENARIO_UPDATE",
+		fmt.Sprintf("Scenario updated: %s", scenarioID),
+		map[string]any{
+			"scenarioId": scenarioID,
+		},
+	)
 
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{
 		"success":  true,

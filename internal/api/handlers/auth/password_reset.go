@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/estara-ai/www/internal/api/handlers/util"
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/email"
@@ -263,6 +264,15 @@ func (h *Handler) UpdatePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.logger.Info("password updated", "user_id", userID)
+
+	// Log feature usage for customer support and chargeback defense
+	_ = util.LogFeatureUsage(ctx, h.store, r, userID, "FEATURE_PASSWORD_CHANGE",
+		"Password changed by user",
+		map[string]any{
+			"method": "authenticated_change",
+		},
+	)
+
 	httputil.Success(w, map[string]interface{}{
 		"success": true,
 		"message": "Password updated successfully",

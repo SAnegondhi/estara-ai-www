@@ -30,7 +30,7 @@ func NewHandler(store *dbstore.Store, cfg *config.Config) *Handler {
 		cfg:                cfg,
 		entitlementService: entitlements.NewService(store, cfg),
 		logger:             slog.Default().With("component", "app_handler"),
-		Scenarios:          NewScenariosHandler(scenariosService),
+		Scenarios:          NewScenariosHandler(store, scenariosService),
 	}
 }
 
