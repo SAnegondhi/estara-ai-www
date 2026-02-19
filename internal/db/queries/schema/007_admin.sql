@@ -13,7 +13,8 @@ DO $$ BEGIN
         'AUTH_SUCCESS', 'AUTH_FAILURE', 'AUTH_TOKEN_REFRESH', 'UNAUTHORIZED_ACCESS',
         'AI_REQUEST_STARTED', 'AI_REQUEST_COMPLETED', 'AI_REQUEST_FAILED', 'AI_REQUEST_BLOCKED',
         'CONTENT_VALIDATION_FAILED', 'PROMPT_INJECTION_DETECTED', 'PII_DETECTED', 'MALICIOUS_CONTENT_DETECTED',
-        'SYSTEM_ERROR'
+        'SYSTEM_ERROR',
+        'ADMIN_ACTION'
     );
 EXCEPTION WHEN duplicate_object THEN null;
 END $$;
@@ -61,6 +62,10 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     "performanceMetrics" JSONB,
     "requestId" TEXT,
     resource TEXT,
+    "resourceId" TEXT,
+    "actorType" "AuditActorType",
+    "adminId" TEXT,
+    "adminEmail" TEXT,
     "securityContext" JSONB,
     "sessionId" TEXT,
     severity TEXT NOT NULL DEFAULT 'info'

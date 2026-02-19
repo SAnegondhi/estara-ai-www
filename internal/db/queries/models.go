@@ -193,6 +193,10 @@ type AuditLog struct {
 	PerformanceMetrics []byte           `json:"performanceMetrics"`
 	RequestId          pgtype.Text      `json:"requestId"`
 	Resource           pgtype.Text      `json:"resource"`
+	ResourceId         pgtype.Text      `json:"resourceId"`
+	ActorType          interface{}      `json:"actorType"`
+	AdminId            pgtype.Text      `json:"adminId"`
+	AdminEmail         pgtype.Text      `json:"adminEmail"`
 	SecurityContext    []byte           `json:"securityContext"`
 	SessionId          pgtype.Text      `json:"sessionId"`
 	Severity           string           `json:"severity"`

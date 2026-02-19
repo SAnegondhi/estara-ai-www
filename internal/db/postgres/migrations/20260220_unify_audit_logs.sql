@@ -3,6 +3,17 @@
 -- Author: Claude Sonnet 4.5
 -- Date: 2026-02-20
 
+-- Step 0: Add 'ADMIN_ACTION' to AuditEventType enum (for admin audit entries)
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_enum e
+        JOIN pg_type t ON e.enumtypid = t.oid
+        WHERE t.typname = 'AuditEventType' AND e.enumlabel = 'ADMIN_ACTION'
+    ) THEN
+        ALTER TYPE "AuditEventType" ADD VALUE 'ADMIN_ACTION';
+    END IF;
+END $$;
+
 -- Step 1: Add actorType column to audit_logs (if not exists)
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns
@@ -40,8 +51,8 @@ SELECT
     id,
     "createdAt",
     NULL as "userId",  -- Admin actions don't have userId
-    action::text as event,  -- Map action to event
-    action::text as action,  -- Also populate action field
+    'ADMIN_ACTION'::"AuditEventType" as event,  -- Use generic ADMIN_ACTION event type
+    action::text as action,  -- Store actual admin action as text
     resource,
     "resourceId",
     details as metadata,  -- Map details to metadata
