@@ -11,6 +11,12 @@ WHERE "userId" = $1 AND key = $2 AND "expiresAt" > NOW();
 SELECT * FROM analysis_cache
 WHERE "userId" = $1 AND key = $2;
 
+-- name: GetCacheByKeyNoExpiry :one
+-- Used for viewing historical reports (analysis, trends) that should remain accessible after expiry
+-- ADR-087: Analysis reports are shared across users (no userId constraint)
+SELECT * FROM analysis_cache
+WHERE key = $1;
+
 -- name: GetCacheByID :one
 SELECT * FROM analysis_cache WHERE id = $1;
 

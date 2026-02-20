@@ -310,6 +310,9 @@ type Querier interface {
 	GetBillingCycleByID(ctx context.Context, id string) (BillingCycle, error)
 	GetCacheByID(ctx context.Context, id string) (AnalysisCache, error)
 	GetCacheByKey(ctx context.Context, key string) (AnalysisCache, error)
+	// Used for viewing historical reports (analysis, trends) that should remain accessible after expiry
+	// ADR-087: Analysis reports are shared across users (no userId constraint)
+	GetCacheByKeyNoExpiry(ctx context.Context, key string) (AnalysisCache, error)
 	GetCacheByUserAndKey(ctx context.Context, arg GetCacheByUserAndKeyParams) (AnalysisCache, error)
 	// Used for investment plans which shouldn't expire like ephemeral cached data
 	GetCacheByUserAndKeyNoExpiry(ctx context.Context, arg GetCacheByUserAndKeyNoExpiryParams) (AnalysisCache, error)

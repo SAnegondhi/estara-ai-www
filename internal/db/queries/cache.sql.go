@@ -421,6 +421,45 @@ func (q *Queries) GetCacheByKey(ctx context.Context, key string) (AnalysisCache,
 	return i, err
 }
 
+const GetCacheByKeyNoExpiry = `-- name: GetCacheByKeyNoExpiry :one
+SELECT id, key, "userId", location, feature, prompt, "promptHash", complexity, "investorProfile", "marketData", content, "fullReport", "metricsData", "narrativeData", metadata, "createdAt", "expiresAt", "lastAccessedAt", "accessCount", "supersededBy", "supersededAt", "cacheHits", "generationCost", "savingsGenerated" FROM analysis_cache
+WHERE key = $1
+`
+
+// Used for viewing historical reports (analysis, trends) that should remain accessible after expiry
+// ADR-087: Analysis reports are shared across users (no userId constraint)
+func (q *Queries) GetCacheByKeyNoExpiry(ctx context.Context, key string) (AnalysisCache, error) {
+	row := q.db.QueryRow(ctx, GetCacheByKeyNoExpiry, key)
+	var i AnalysisCache
+	err := row.Scan(
+		&i.ID,
+		&i.Key,
+		&i.UserId,
+		&i.Location,
+		&i.Feature,
+		&i.Prompt,
+		&i.PromptHash,
+		&i.Complexity,
+		&i.InvestorProfile,
+		&i.MarketData,
+		&i.Content,
+		&i.FullReport,
+		&i.MetricsData,
+		&i.NarrativeData,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.LastAccessedAt,
+		&i.AccessCount,
+		&i.SupersededBy,
+		&i.SupersededAt,
+		&i.CacheHits,
+		&i.GenerationCost,
+		&i.SavingsGenerated,
+	)
+	return i, err
+}
+
 const GetCacheByUserAndKey = `-- name: GetCacheByUserAndKey :one
 SELECT id, key, "userId", location, feature, prompt, "promptHash", complexity, "investorProfile", "marketData", content, "fullReport", "metricsData", "narrativeData", metadata, "createdAt", "expiresAt", "lastAccessedAt", "accessCount", "supersededBy", "supersededAt", "cacheHits", "generationCost", "savingsGenerated" FROM analysis_cache
 WHERE "userId" = $1 AND key = $2 AND "expiresAt" > NOW()

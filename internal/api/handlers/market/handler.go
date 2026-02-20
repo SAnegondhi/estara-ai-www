@@ -1326,8 +1326,8 @@ func (h *Handler) GetTrendReport(w http.ResponseWriter, r *http.Request) {
 
 	q := h.store.Q()
 
-	// Fetch cached trend report from analysis_cache table
-	cache, err := q.GetCacheByKey(ctx, cacheKey)
+	// Fetch cached trend report from analysis_cache table (no expiry check for historical viewing)
+	cache, err := q.GetCacheByKeyNoExpiry(ctx, cacheKey)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			h.logger.Warn("trend report not found",

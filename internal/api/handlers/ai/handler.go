@@ -621,6 +621,11 @@ func (h *Handler) StreamEvaluationChat(w http.ResponseWriter, r *http.Request) {
 					messageID, _ = h.saveChatMessage(ctx, sessionID, "assistant", fullContent, blocksJSON, nil)
 				}
 
+				// Record AI usage metrics (fire and forget)
+				if event.Usage != nil {
+					go h.recordEvalChatUsage(job.UserID, jobID, event.Usage.InputTokens, event.Usage.OutputTokens)
+				}
+
 				// Complete the job
 				h.jobQueue.Complete(jobID, &queue.JobResult{
 					Data: map[string]interface{}{
@@ -3177,9 +3182,9 @@ func (h *Handler) GetAnalysisReport(w http.ResponseWriter, r *http.Request) {
 
 	q := h.store.Q()
 
-	// ADR-087: Market analysis reports are shared across users
-	// Use GetCacheByKey (no user filter) for location-based market reports
-	cache, err := q.GetCacheByKey(ctx, cacheKey)
+	// ADR-087: Market analysis reports are shared across users and should remain viewable after expiry
+	// Use GetCacheByKeyNoExpiry to access historical reports
+	cache, err := q.GetCacheByKeyNoExpiry(ctx, cacheKey)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			h.logger.Warn("analysis report not found",
@@ -3617,4 +3622,49 @@ func (h *Handler) buildMarketExpenseContext(properties []PropertyInput) string {
 	}
 
 	return context.String()
+}
+
+// recordEvalChatUsage persists AI token usage for an evaluation chat request.
+// Pricing: claude-sonnet-4-20250514 — input $3.00/MTok, output $15.00/MTok.
+func (h *Handler) recordEvalChatUsage(userID, jobID string, inputTokens, outputTokens int) {
+	if h.store == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context2.Background(), 10*time.Second)
+	defer cancel()
+
+	const inputPricePerToken = 0.000003  // $3.00 / 1M
+	const outputPricePerToken = 0.000015 // $15.00 / 1M
+
+	baseInputCost := float64(inputTokens) * inputPricePerToken
+	outputCost := float64(outputTokens) * outputPricePerToken
+	totalCost := baseInputCost + outputCost
+
+	toNumeric := func(v float64) pgtype.Numeric {
+		n := pgtype.Numeric{}
+		_ = n.Scan(fmt.Sprintf("%.8f", v))
+		return n
+	}
+
+	err := h.store.Q().CreateAIUsage(ctx, queries.CreateAIUsageParams{
+		ID:             uuid.New().String(),
+		UserID:         userID,
+		SessionID:      jobID,
+		Model:          "claude-sonnet-4-20250514",
+		InputTokens:    int32(inputTokens),
+		OutputTokens:   int32(outputTokens),
+		TotalTokens:    int32(inputTokens + outputTokens),
+		BaseInputCost:  toNumeric(baseInputCost),
+		OutputCost:     toNumeric(outputCost),
+		TotalCost:      toNumeric(totalCost),
+		RequestType:    "stream",
+		Feature:        "evaluation_chat",
+		Location:       pgtype.Text{Valid: false},
+		RequestID:      jobID,
+		ProcessingTime: pgtype.Int4{Valid: false},
+	})
+	if err != nil {
+		h.logger.Warn("failed to record eval chat AI usage", "error", err, "user_id", userID)
+	}
 }
