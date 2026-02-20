@@ -3217,6 +3217,11 @@ func (h *Handler) GetAnalysisReport(w http.ResponseWriter, r *http.Request) {
 		resp["content"] = cache.FullReport.String
 	}
 
+	// Add generated timestamp if available
+	if cache.CreatedAt.Valid {
+		resp["generatedAt"] = cache.CreatedAt.Time.Format(time.RFC3339)
+	}
+
 	if cache.MetricsData != nil {
 		var metrics map[string]interface{}
 		if json.Unmarshal(cache.MetricsData, &metrics) == nil {
