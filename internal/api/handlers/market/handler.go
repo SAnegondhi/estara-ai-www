@@ -1088,50 +1088,97 @@ func (h *Handler) GetTrendsHistory(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	offset := (page - 1) * limit
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
 
-	dbTrends, err := h.store.Q().ListTrendsHistory(ctx, queries.ListTrendsHistoryParams{
-		UserId: user.UserID,
-		Limit:  int32(limit),
-		Offset: int32(offset),
-	})
-	if err != nil {
-		h.logger.Error("failed to get trends history", "error", err)
-		httputil.JSON(w, http.StatusOK, map[string]interface{}{
-			"success": true,
-			"trends":  []TrendHistoryItem{},
-			"total":   0,
+	// Query all trends (shared, not user-filtered)
+	items := make([]TrendHistoryItem, 0)
+
+	if search != "" {
+		dbTrends, err := h.store.Q().ListAllTrendsWithSearch(ctx, queries.ListAllTrendsWithSearchParams{
+			Search: pgtype.Text{String: search, Valid: true},
+			Limit:  int32(limit),
+			Offset: int32(offset),
 		})
-		return
-	}
-
-	items := make([]TrendHistoryItem, 0, len(dbTrends))
-	for _, dbTrend := range dbTrends {
-		item := TrendHistoryItem{
-			ID:        dbTrend.ID,
-			CacheKey:  dbTrend.Key,
-			Location:  dbTrend.Location,
-			CreatedAt: dbTrend.LastAccessedAt.Time.Format(time.RFC3339),
+		if err != nil {
+			h.logger.Error("failed to get trends history", "error", err)
+			httputil.JSON(w, http.StatusOK, map[string]interface{}{
+				"success": true,
+				"trends":  []TrendHistoryItem{},
+				"total":   0,
+			})
+			return
 		}
 
-		// Parse stored TrendsResult to extract preview data
-		var result trends.TrendsResult
-		if json.Unmarshal([]byte(dbTrend.Content), &result) == nil {
-			item.CurrentMetrics = result.CurrentMetrics
-			item.CalculatedMetrics = result.CalculatedMetrics
-			item.Synthesis = result.Synthesis
-			if result.Synthesis != nil && result.Synthesis.Summary != "" {
-				item.Preview = result.Synthesis.Summary
-				if len(item.Preview) > 200 {
-					item.Preview = item.Preview[:200] + "..."
+		for _, dbTrend := range dbTrends {
+			item := TrendHistoryItem{
+				ID:        dbTrend.ID,
+				CacheKey:  dbTrend.Key,
+				Location:  dbTrend.Location,
+				CreatedAt: dbTrend.LastAccessedAt.Time.Format(time.RFC3339),
+			}
+
+			var result trends.TrendsResult
+			if json.Unmarshal([]byte(dbTrend.Content), &result) == nil {
+				item.CurrentMetrics = result.CurrentMetrics
+				item.CalculatedMetrics = result.CalculatedMetrics
+				item.Synthesis = result.Synthesis
+				if result.Synthesis != nil && result.Synthesis.Summary != "" {
+					item.Preview = result.Synthesis.Summary
+					if len(item.Preview) > 200 {
+						item.Preview = item.Preview[:200] + "..."
+					}
 				}
 			}
+
+			items = append(items, item)
+		}
+	} else {
+		dbTrends, err := h.store.Q().ListAllTrends(ctx, queries.ListAllTrendsParams{
+			Limit:  int32(limit),
+			Offset: int32(offset),
+		})
+		if err != nil {
+			h.logger.Error("failed to get trends history", "error", err)
+			httputil.JSON(w, http.StatusOK, map[string]interface{}{
+				"success": true,
+				"trends":  []TrendHistoryItem{},
+				"total":   0,
+			})
+			return
 		}
 
-		items = append(items, item)
+		for _, dbTrend := range dbTrends {
+			item := TrendHistoryItem{
+				ID:        dbTrend.ID,
+				CacheKey:  dbTrend.Key,
+				Location:  dbTrend.Location,
+				CreatedAt: dbTrend.LastAccessedAt.Time.Format(time.RFC3339),
+			}
+
+			var result trends.TrendsResult
+			if json.Unmarshal([]byte(dbTrend.Content), &result) == nil {
+				item.CurrentMetrics = result.CurrentMetrics
+				item.CalculatedMetrics = result.CalculatedMetrics
+				item.Synthesis = result.Synthesis
+				if result.Synthesis != nil && result.Synthesis.Summary != "" {
+					item.Preview = result.Synthesis.Summary
+					if len(item.Preview) > 200 {
+						item.Preview = item.Preview[:200] + "..."
+					}
+				}
+			}
+
+			items = append(items, item)
+		}
 	}
 
-	// Get total count
-	totalCount, _ := h.store.Q().CountTrendsHistory(ctx, user.UserID)
+	// Get total count (all trends, not filtered by user)
+	var totalCount int64
+	if search != "" {
+		totalCount, _ = h.store.Q().CountAllTrendsWithSearch(ctx, pgtype.Text{String: search, Valid: true})
+	} else {
+		totalCount, _ = h.store.Q().CountAllTrends(ctx)
+	}
 	total := int(totalCount)
 
 	httputil.JSON(w, http.StatusOK, map[string]interface{}{

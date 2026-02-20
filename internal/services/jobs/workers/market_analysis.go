@@ -8,11 +8,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
+	dbstore "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/postgres"
+	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/ai/agents"
 	"github.com/estara-ai/www/internal/services/cache"
 	"github.com/estara-ai/www/internal/services/jobs/queue"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
+	"github.com/estara-ai/www/internal/services/market/analysis"
 	"github.com/estara-ai/www/internal/services/market/trends"
 )
 
@@ -23,6 +28,7 @@ type MarketAnalysisWorker struct {
 	cache        *cache.HybridCache
 	trends       *trends.Service
 	mainDB       *postgres.Pool
+	store        *dbstore.Store // ADR-087: For updating market_analysis_reports
 	logger       *slog.Logger
 }
 
@@ -33,6 +39,7 @@ type MarketAnalysisWorkerConfig struct {
 	Cache        *cache.HybridCache
 	Trends       *trends.Service
 	MainDB       *postgres.Pool
+	Store        *dbstore.Store // ADR-087: For report tracking
 }
 
 // NewMarketAnalysisWorker creates a new market analysis worker
@@ -43,6 +50,7 @@ func NewMarketAnalysisWorker(cfg MarketAnalysisWorkerConfig) *MarketAnalysisWork
 		cache:        cfg.Cache,
 		trends:       cfg.Trends,
 		mainDB:       cfg.MainDB,
+		store:        cfg.Store, // ADR-087
 		logger:       slog.Default().With("component", "market_analysis_worker"),
 	}
 }
@@ -187,6 +195,9 @@ func (w *MarketAnalysisWorker) Process(
 		"location", req.Location,
 		"confidence", result.Confidence,
 	)
+
+	// ADR-087: Update report status to completed
+	w.updateReportStatus(ctx, req.Location, "completed", "", result)
 
 	// Background: generate trends for the same location
 	w.backgroundGenerateTrends(job.UserID, req.Location)
@@ -359,7 +370,7 @@ func (w *MarketAnalysisWorker) checkCache(ctx context.Context, userID, cacheKey 
 	return &result, nil
 }
 
-// cacheResult stores the result in the hybrid cache
+// cacheResult stores the result in the hybrid cache with dynamic TTL (ADR-087)
 func (w *MarketAnalysisWorker) cacheResult(
 	ctx context.Context,
 	userID string,
@@ -370,8 +381,17 @@ func (w *MarketAnalysisWorker) cacheResult(
 		return nil
 	}
 
+	// ADR-087: Calculate dynamic TTL based on data freshness
+	// Use standard data sources as we don't track individual timestamps yet
+	ttl := analysis.CalculateCacheTTL(analysis.GetStandardDataSources())
+
+	w.logger.Info("caching market analysis with dynamic TTL",
+		"cache_key", cacheKey,
+		"ttl_hours", ttl.Hours(),
+	)
+
 	fullKey := fmt.Sprintf("market_analysis:%s:%s", userID, cacheKey)
-	return w.cache.Set(ctx, userID, fullKey, "market_analysis", result, 24*time.Hour) // Cache for 24 hours
+	return w.cache.Set(ctx, userID, fullKey, "market_analysis", result, ttl)
 }
 
 // reportProgress sends a progress event
@@ -403,6 +423,11 @@ func (w *MarketAnalysisWorker) failedResult(job *queue.Job, err error) (*queue.J
 		"job_id", job.ID,
 		"error", err,
 	)
+
+	// ADR-087: Update report status to failed
+	if location, ok := job.Payload["location"].(string); ok {
+		w.updateReportStatus(context.Background(), location, "failed", err.Error(), nil)
+	}
 
 	return &queue.JobResult{
 		JobID:       job.ID,
@@ -456,15 +481,19 @@ func (w *MarketAnalysisWorker) processV2(
 
 	// Cache V2 report in analysis_cache with fullReport column
 	if w.cache != nil && req.CacheKey != "" {
-		w.logger.Info("caching V2 report",
+		// ADR-087: Calculate dynamic TTL based on data freshness
+		ttl := analysis.CalculateCacheTTL(analysis.GetStandardDataSources())
+
+		w.logger.Info("caching V2 report with dynamic TTL",
 			"cache_key", req.CacheKey,
 			"user_id", job.UserID,
 			"report_len", len(v2Result.FullReport),
+			"ttl_hours", ttl.Hours(),
 		)
 		if err := w.cache.SetAnalysisReport(ctx, job.UserID, req.CacheKey, v2Result, cache.AnalysisReportCacheOptions{
 			Location:   req.Location,
 			FullReport: v2Result.FullReport,
-		}, 24*time.Hour); err != nil {
+		}, ttl); err != nil {
 			w.logger.Error("failed to cache V2 report", "error", err, "cache_key", req.CacheKey)
 		}
 	} else {
@@ -497,6 +526,9 @@ func (w *MarketAnalysisWorker) processV2(
 		"data_completeness", v2Result.DataCompleteness,
 		"report_length", len(v2Result.FullReport),
 	)
+
+	// ADR-087: Update report status to completed
+	w.updateReportStatus(ctx, req.Location, "completed", "", result)
 
 	// Background: generate trends for the same location
 	w.backgroundGenerateTrends(job.UserID, req.Location)
@@ -604,4 +636,72 @@ func (w *MarketAnalysisWorker) resultToMap(result *agents.MarketAnalysisResult) 
 		"generatedAt":       result.GeneratedAt,
 		"cachedAt":          result.CachedAt,
 	}
+}
+
+// updateReportStatus updates the market_analysis_reports table status (ADR-087)
+func (w *MarketAnalysisWorker) updateReportStatus(
+	ctx context.Context,
+	location string,
+	status string,
+	errorMessage string,
+	result *agents.MarketAnalysisResult,
+) {
+	if w.store == nil {
+		return // Store not configured
+	}
+
+	// Normalize location for cache key
+	locationNormalized := strings.ToLower(strings.ReplaceAll(location, " ", "_"))
+	locationNormalized = strings.ReplaceAll(locationNormalized, ",", "")
+	cacheKey := fmt.Sprintf("market_analysis:%s", locationNormalized)
+
+	// Calculate metadata
+	var dataFreshnessDate *time.Time
+	var reportSizeBytes *int32
+	if result != nil {
+		// Use generated time as data freshness date
+		dataFreshnessDate = &result.GeneratedAt
+
+		// Calculate approximate report size
+		size := len(result.MetricsAnalysis) + len(result.NarrativeAnalysis) + len(result.CombinedInsight)
+		size32 := int32(size)
+		reportSizeBytes = &size32
+	}
+
+	// Update report status
+	if dataFreshnessDate != nil && reportSizeBytes != nil {
+		err := w.store.Q().UpdateReportStatusWithMetadata(ctx, queries.UpdateReportStatusWithMetadataParams{
+			CacheKey:           cacheKey,
+			Status:             status,
+			ErrorMessage:       pgtype.Text{String: errorMessage, Valid: errorMessage != ""},
+			DataFreshnessDate:  pgtype.Timestamptz{Time: *dataFreshnessDate, Valid: true},
+			ReportSizeBytes:    pgtype.Int4{Int32: *reportSizeBytes, Valid: true},
+		})
+		if err != nil {
+			w.logger.Warn("failed to update report status with metadata",
+				"error", err,
+				"cache_key", cacheKey,
+				"status", status,
+			)
+		}
+	} else {
+		err := w.store.Q().UpdateReportStatus(ctx, queries.UpdateReportStatusParams{
+			CacheKey:     cacheKey,
+			Status:       status,
+			ErrorMessage: pgtype.Text{String: errorMessage, Valid: errorMessage != ""},
+		})
+		if err != nil {
+			w.logger.Warn("failed to update report status",
+				"error", err,
+				"cache_key", cacheKey,
+				"status", status,
+			)
+		}
+	}
+
+	w.logger.Info("updated report status",
+		"cache_key", cacheKey,
+		"status", status,
+		"has_metadata", dataFreshnessDate != nil,
+	)
 }

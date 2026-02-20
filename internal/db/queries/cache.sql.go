@@ -23,6 +23,37 @@ func (q *Queries) CountAllCache(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const CountAllTrends = `-- name: CountAllTrends :one
+SELECT COUNT(*)
+FROM analysis_cache
+WHERE feature = 'market_trends'
+    AND "supersededBy" IS NULL
+    AND "expiresAt" > NOW()
+`
+
+func (q *Queries) CountAllTrends(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, CountAllTrends)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const CountAllTrendsWithSearch = `-- name: CountAllTrendsWithSearch :one
+SELECT COUNT(*)
+FROM analysis_cache
+WHERE feature = 'market_trends'
+    AND "supersededBy" IS NULL
+    AND "expiresAt" > NOW()
+    AND location ILIKE '%' || $1 || '%'
+`
+
+func (q *Queries) CountAllTrendsWithSearch(ctx context.Context, search pgtype.Text) (int64, error) {
+	row := q.db.QueryRow(ctx, CountAllTrendsWithSearch, search)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const CountCacheByUser = `-- name: CountCacheByUser :one
 SELECT COUNT(*) FROM analysis_cache WHERE "userId" = $1
 `
@@ -579,6 +610,106 @@ func (q *Queries) GetLatestMarketAnalysisByLocation(ctx context.Context, arg Get
 		&i.LastAccessedAt,
 	)
 	return i, err
+}
+
+const ListAllTrends = `-- name: ListAllTrends :many
+SELECT id, key, location, content, "lastAccessedAt"
+FROM analysis_cache
+WHERE feature = 'market_trends'
+    AND "supersededBy" IS NULL
+    AND "expiresAt" > NOW()
+ORDER BY "lastAccessedAt" DESC
+LIMIT $1 OFFSET $2
+`
+
+type ListAllTrendsParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+type ListAllTrendsRow struct {
+	ID             string           `json:"id"`
+	Key            string           `json:"key"`
+	Location       string           `json:"location"`
+	Content        string           `json:"content"`
+	LastAccessedAt pgtype.Timestamp `json:"lastAccessedAt"`
+}
+
+func (q *Queries) ListAllTrends(ctx context.Context, arg ListAllTrendsParams) ([]ListAllTrendsRow, error) {
+	rows, err := q.db.Query(ctx, ListAllTrends, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAllTrendsRow{}
+	for rows.Next() {
+		var i ListAllTrendsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Key,
+			&i.Location,
+			&i.Content,
+			&i.LastAccessedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListAllTrendsWithSearch = `-- name: ListAllTrendsWithSearch :many
+SELECT id, key, location, content, "lastAccessedAt"
+FROM analysis_cache
+WHERE feature = 'market_trends'
+    AND "supersededBy" IS NULL
+    AND "expiresAt" > NOW()
+    AND location ILIKE '%' || $3 || '%'
+ORDER BY "lastAccessedAt" DESC
+LIMIT $1 OFFSET $2
+`
+
+type ListAllTrendsWithSearchParams struct {
+	Limit  int32       `json:"limit"`
+	Offset int32       `json:"offset"`
+	Search pgtype.Text `json:"search"`
+}
+
+type ListAllTrendsWithSearchRow struct {
+	ID             string           `json:"id"`
+	Key            string           `json:"key"`
+	Location       string           `json:"location"`
+	Content        string           `json:"content"`
+	LastAccessedAt pgtype.Timestamp `json:"lastAccessedAt"`
+}
+
+func (q *Queries) ListAllTrendsWithSearch(ctx context.Context, arg ListAllTrendsWithSearchParams) ([]ListAllTrendsWithSearchRow, error) {
+	rows, err := q.db.Query(ctx, ListAllTrendsWithSearch, arg.Limit, arg.Offset, arg.Search)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAllTrendsWithSearchRow{}
+	for rows.Next() {
+		var i ListAllTrendsWithSearchRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Key,
+			&i.Location,
+			&i.Content,
+			&i.LastAccessedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const ListCacheByFeature = `-- name: ListCacheByFeature :many

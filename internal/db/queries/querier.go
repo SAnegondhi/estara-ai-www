@@ -31,6 +31,8 @@ type Querier interface {
 	CountAdminAuditLogs(ctx context.Context, arg CountAdminAuditLogsParams) (int64, error)
 	CountAdminAuditLogsByDetailsText(ctx context.Context, arg CountAdminAuditLogsByDetailsTextParams) (int64, error)
 	CountAllCache(ctx context.Context) (int64, error)
+	CountAllTrends(ctx context.Context) (int64, error)
+	CountAllTrendsWithSearch(ctx context.Context, search pgtype.Text) (int64, error)
 	CountAnalysisJobsByUser(ctx context.Context, userid string) (int64, error)
 	CountAuditLogFiltered(ctx context.Context, arg CountAuditLogFilteredParams) (int64, error)
 	CountAuditLogsByUser(ctx context.Context, userid pgtype.Text) (int64, error)
@@ -38,6 +40,7 @@ type Querier interface {
 	CountCacheByUser(ctx context.Context, userid string) (int64, error)
 	CountCacheByUserFeatureActive(ctx context.Context, arg CountCacheByUserFeatureActiveParams) (int64, error)
 	CountCachedPropertiesByCity(ctx context.Context, arg CountCachedPropertiesByCityParams) (int64, error)
+	CountCompletedReports(ctx context.Context) (int64, error)
 	CountContactSubmissions(ctx context.Context) (int64, error)
 	CountContactSubmissionsByStatus(ctx context.Context, status string) (int64, error)
 	CountContactsFiltered(ctx context.Context, arg CountContactsFilteredParams) (int64, error)
@@ -63,12 +66,16 @@ type Querier interface {
 	CountPropertyCache(ctx context.Context) (int64, error)
 	CountRecentEmailVerificationCodes(ctx context.Context, arg CountRecentEmailVerificationCodesParams) (int64, error)
 	CountRecentEmailVerificationCodesLastHour(ctx context.Context, email string) (int64, error)
+	CountReports(ctx context.Context) (int64, error)
+	CountReportsWithSearch(ctx context.Context, search pgtype.Text) (int64, error)
 	CountSearchUsersByEmail(ctx context.Context, email string) (int64, error)
 	CountSearchWhitelistedEmails(ctx context.Context, email string) (int64, error)
 	CountSessionActivitiesByType(ctx context.Context, arg CountSessionActivitiesByTypeParams) (int64, error)
 	CountSessionEvaluations(ctx context.Context, discoverysessionid string) (int64, error)
 	CountSessionProperties(ctx context.Context, discoverysessionid string) (int64, error)
 	CountSnapshotsByEmail(ctx context.Context, email pgtype.Text) (int64, error)
+	// Counts how many reports are stale for a given data source
+	CountStaleReportsBySource(ctx context.Context, arg CountStaleReportsBySourceParams) (int64, error)
 	CountSubscriptionsByStatus(ctx context.Context) (CountSubscriptionsByStatusRow, error)
 	// Admin Subscription Management Queries
 	CountSubscriptionsFiltered(ctx context.Context, arg CountSubscriptionsFilteredParams) (int64, error)
@@ -76,6 +83,8 @@ type Querier interface {
 	CountTermsAcceptances(ctx context.Context) (int64, error)
 	CountTermsAcceptancesByVersion(ctx context.Context, version string) (int64, error)
 	CountTrendsHistory(ctx context.Context, userid string) (int64, error)
+	CountUserAccess(ctx context.Context, userID string) (int64, error)
+	CountUserAccessWithSearch(ctx context.Context, arg CountUserAccessWithSearchParams) (int64, error)
 	CountUserConsents(ctx context.Context) (int64, error)
 	CountUserConsentsByType(ctx context.Context, consenttype interface{}) (int64, error)
 	CountUserDiscoverySessions(ctx context.Context, arg CountUserDiscoverySessionsParams) (int64, error)
@@ -136,6 +145,8 @@ type Querier interface {
 	CreateInsightAccess(ctx context.Context, arg CreateInsightAccessParams) (InsightAccess, error)
 	CreateInvestorReport(ctx context.Context, arg CreateInvestorReportParams) (InvestorReport, error)
 	CreateInvoice(ctx context.Context, arg CreateInvoiceParams) (Invoice, error)
+	// Market Analysis Reports Queries (ADR-087)
+	CreateMarketAnalysisReport(ctx context.Context, arg CreateMarketAnalysisReportParams) (MarketAnalysisReport, error)
 	// Create or update an adjustment for a property/month/type combination
 	CreateOrUpdateAdjustment(ctx context.Context, arg CreateOrUpdateAdjustmentParams) (V2PortfolioAdjustment, error)
 	// Create or update a baseline change for a property/field/effective_date combination
@@ -227,6 +238,8 @@ type Querier interface {
 	DeletePropertyCacheByProvider(ctx context.Context, provider string) (int64, error)
 	// Deletes a specific property from the cache
 	DeletePropertyFromCache(ctx context.Context, cacheKey string) error
+	DeleteReport(ctx context.Context, id string) error
+	DeleteReportByCacheKey(ctx context.Context, cacheKey string) error
 	DeleteScenario(ctx context.Context, id string) error
 	DeleteScenarioByIDAndUser(ctx context.Context, arg DeleteScenarioByIDAndUserParams) error
 	DeleteSessionEvaluations(ctx context.Context, discoverysessionid string) error
@@ -234,6 +247,7 @@ type Querier interface {
 	DeleteSystemCache(ctx context.Context, key string) error
 	DeleteUnverifiedEmailCodesByEmail(ctx context.Context, email string) error
 	DeleteUser(ctx context.Context, id string) error
+	DeleteUserAccess(ctx context.Context, arg DeleteUserAccessParams) error
 	DeleteUserAnalysisPreference(ctx context.Context, arg DeleteUserAnalysisPreferenceParams) error
 	DeleteVendorContract(ctx context.Context, id string) error
 	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) error
@@ -272,6 +286,9 @@ type Querier interface {
 	GetAdminTwoFactorByUserID(ctx context.Context, userid string) (AdminTwoFactor, error)
 	GetAdminUserStats(ctx context.Context) (GetAdminUserStatsRow, error)
 	GetAllReportPacksByUserID(ctx context.Context, userid string) ([]ReportPack, error)
+	// Gets all data source versions (for staleness detection)
+	GetAllVersions(ctx context.Context) ([]DataSourceVersion, error)
+	GetAnalysisCacheByKey(ctx context.Context, key string) (GetAnalysisCacheByKeyRow, error)
 	// Analysis Cache Queries
 	// Table: analysis_cache (schema 002_cache.sql)
 	// These queries supplement existing queries in cache.sql
@@ -306,6 +323,8 @@ type Querier interface {
 	GetCronJobConfigByID(ctx context.Context, id string) (CronJobConfig, error)
 	GetCronJobConfigByName(ctx context.Context, name string) (CronJobConfig, error)
 	GetCronJobRun(ctx context.Context, id string) (CronJobRun, error)
+	// Gets the current version for a specific data source
+	GetCurrentVersion(ctx context.Context, source string) (string, error)
 	// Get decision record by ID only (no user filter) for export operations
 	GetDecisionRecordByID(ctx context.Context, id string) (GetDecisionRecordByIDRow, error)
 	GetDecisionRecordWithEvaluation(ctx context.Context, arg GetDecisionRecordWithEvaluationParams) (GetDecisionRecordWithEvaluationRow, error)
@@ -396,9 +415,14 @@ type Querier interface {
 	GetReceiptByNumber(ctx context.Context, receiptnumber string) (Receipt, error)
 	GetRecentRenewalNotification(ctx context.Context, arg GetRecentRenewalNotificationParams) (RenewalNotification, error)
 	GetReportAnalytics(ctx context.Context) (GetReportAnalyticsRow, error)
+	GetReportByCacheKey(ctx context.Context, cacheKey string) (MarketAnalysisReport, error)
+	GetReportByID(ctx context.Context, id string) (MarketAnalysisReport, error)
 	// ReportPack Queries
 	GetReportPackByID(ctx context.Context, id string) (ReportPack, error)
 	GetReportPacksByUserID(ctx context.Context, userid string) ([]ReportPack, error)
+	GetReportStats(ctx context.Context) (GetReportStatsRow, error)
+	// Gets all data source versions for a specific report (staleness check)
+	GetReportVersions(ctx context.Context, id string) (GetReportVersionsRow, error)
 	GetRetentionCohorts(ctx context.Context) ([]GetRetentionCohortsRow, error)
 	GetRevenueLeakageInvoices(ctx context.Context, createdat pgtype.Timestamp) (GetRevenueLeakageInvoicesRow, error)
 	GetRevenueLeakageRefunds(ctx context.Context, createdat pgtype.Timestamp) (GetRevenueLeakageRefundsRow, error)
@@ -446,6 +470,8 @@ type Querier interface {
 	GetUserByStripeCustomerID(ctx context.Context, stripecustomerid pgtype.Text) (User, error)
 	GetUserConsent(ctx context.Context, arg GetUserConsentParams) (UserConsent, error)
 	GetUserIAPPlatform(ctx context.Context, id string) (pgtype.Text, error)
+	GetUserRecentAccess(ctx context.Context, arg GetUserRecentAccessParams) ([]MarketAnalysisReport, error)
+	GetUserRecentAccessWithSearch(ctx context.Context, arg GetUserRecentAccessWithSearchParams) ([]MarketAnalysisReport, error)
 	GetUserStats(ctx context.Context) (GetUserStatsRow, error)
 	GetUserSubscriptionInfo(ctx context.Context, userid string) (GetUserSubscriptionInfoRow, error)
 	GetUserWithSubscription(ctx context.Context, id string) (GetUserWithSubscriptionRow, error)
@@ -458,6 +484,8 @@ type Querier interface {
 	GetVendorContract(ctx context.Context, vendorid string) (VendorContract, error)
 	GetVendorContractByID(ctx context.Context, id string) (VendorContract, error)
 	GetVendorCostSummary(ctx context.Context, arg GetVendorCostSummaryParams) ([]GetVendorCostSummaryRow, error)
+	// Returns all versions as key-value pairs for easy lookup
+	GetVersionsMap(ctx context.Context) ([]GetVersionsMapRow, error)
 	GetWaitlistByID(ctx context.Context, id string) (GetWaitlistByIDRow, error)
 	GetWaitlistSummary(ctx context.Context) (GetWaitlistSummaryRow, error)
 	GetWebAuthnCredentialByCredentialID(ctx context.Context, credentialID []byte) (WebauthnCredential, error)
@@ -470,6 +498,7 @@ type Querier interface {
 	IncrementEvaluationCount(ctx context.Context, id string) error
 	IncrementGuestSessionSnapshots(ctx context.Context, id string) (GuestSession, error)
 	IncrementInsightAccessUsage(ctx context.Context, id string) (InsightAccess, error)
+	IncrementReportAccessCount(ctx context.Context, cacheKey string) error
 	IncrementReportPackUsage(ctx context.Context, id string) (ReportPack, error)
 	IncrementV2EvaluationQuotaUsage(ctx context.Context, userID string) error
 	// Increment quota usage and return updated values (for batch exports)
@@ -486,6 +515,9 @@ type Querier interface {
 	ListAdminAuditLogs(ctx context.Context, arg ListAdminAuditLogsParams) ([]ListAdminAuditLogsRow, error)
 	ListAdminCredits(ctx context.Context, arg ListAdminCreditsParams) ([]AdminCredit, error)
 	ListAdminSessionsByUser(ctx context.Context, userid string) ([]AdminSession, error)
+	ListAllReports(ctx context.Context, arg ListAllReportsParams) ([]MarketAnalysisReport, error)
+	ListAllTrends(ctx context.Context, arg ListAllTrendsParams) ([]ListAllTrendsRow, error)
+	ListAllTrendsWithSearch(ctx context.Context, arg ListAllTrendsWithSearchParams) ([]ListAllTrendsWithSearchRow, error)
 	// Analysis Jobs Queries
 	ListAnalysisJobsByUser(ctx context.Context, arg ListAnalysisJobsByUserParams) ([]ListAnalysisJobsByUserRow, error)
 	ListAuditLogFiltered(ctx context.Context, arg ListAuditLogFilteredParams) ([]ListAuditLogFilteredRow, error)
@@ -523,10 +555,22 @@ type Querier interface {
 	// V2 Portfolio Properties Queries
 	ListPortfolioProperties(ctx context.Context, userID string) ([]V2PortfolioProperty, error)
 	ListRecentCronJobRuns(ctx context.Context, limit int32) ([]CronJobRun, error)
+	ListRecentReports(ctx context.Context, arg ListRecentReportsParams) ([]MarketAnalysisReport, error)
 	ListRenewalNotificationsBySubscription(ctx context.Context, subscriptionid string) ([]RenewalNotification, error)
+	ListReportsWithSearch(ctx context.Context, arg ListReportsWithSearchParams) ([]MarketAnalysisReport, error)
 	ListSessionActivities(ctx context.Context, discoverysessionid string) ([]DiscoverySessionActivity, error)
 	ListSessionEvaluations(ctx context.Context, discoverysessionid string) ([]DiscoverySessionEvaluation, error)
 	ListSessionProperties(ctx context.Context, discoverysessionid string) ([]DiscoverySessionProperty, error)
+	// Finds reports with outdated Census version, ordered by access count (for proactive refresh)
+	ListStaleReportsByCensus(ctx context.Context, arg ListStaleReportsByCensusParams) ([]ListStaleReportsByCensusRow, error)
+	// Finds reports with outdated FRED version, ordered by access count (for proactive refresh)
+	ListStaleReportsByFRED(ctx context.Context, arg ListStaleReportsByFREDParams) ([]ListStaleReportsByFREDRow, error)
+	// Finds reports with outdated Redfin version, ordered by access count (for proactive refresh)
+	ListStaleReportsByRedfin(ctx context.Context, arg ListStaleReportsByRedfinParams) ([]ListStaleReportsByRedfinRow, error)
+	// Finds reports with outdated ZHVI version, ordered by access count (for proactive refresh)
+	ListStaleReportsByZHVI(ctx context.Context, arg ListStaleReportsByZHVIParams) ([]ListStaleReportsByZHVIRow, error)
+	// Finds reports with outdated ZORI version, ordered by access count (for proactive refresh)
+	ListStaleReportsByZORI(ctx context.Context, arg ListStaleReportsByZORIParams) ([]ListStaleReportsByZORIRow, error)
 	ListSubscriptionsByTier(ctx context.Context, arg ListSubscriptionsByTierParams) ([]Subscription, error)
 	ListSubscriptionsFiltered(ctx context.Context, arg ListSubscriptionsFilteredParams) ([]ListSubscriptionsFilteredRow, error)
 	ListSystemAlertsFiltered(ctx context.Context, arg ListSystemAlertsFilteredParams) ([]ListSystemAlertsFilteredRow, error)
@@ -597,6 +641,8 @@ type Querier interface {
 	ToggleVendorActive(ctx context.Context, arg ToggleVendorActiveParams) error
 	ToggleVendorActiveRows(ctx context.Context, arg ToggleVendorActiveRowsParams) (int64, error)
 	ToggleWhitelistedEmail(ctx context.Context, arg ToggleWhitelistedEmailParams) (ToggleWhitelistedEmailRow, error)
+	// User Access Tracking
+	TrackUserAccess(ctx context.Context, arg TrackUserAccessParams) error
 	UnsuspendUser(ctx context.Context, id string) error
 	UpdateAdminSessionLastActive(ctx context.Context, id string) error
 	UpdateAdminTwoFactorBackupCodes(ctx context.Context, arg UpdateAdminTwoFactorBackupCodesParams) error
@@ -607,6 +653,10 @@ type Querier interface {
 	UpdateContactAdmin(ctx context.Context, arg UpdateContactAdminParams) (UpdateContactAdminRow, error)
 	UpdateContactSubmissionStatus(ctx context.Context, arg UpdateContactSubmissionStatusParams) (UpdateContactSubmissionStatusRow, error)
 	UpdateCronJobLastRun(ctx context.Context, arg UpdateCronJobLastRunParams) error
+	// ADR-087 Phase 7: Data Source Version Tracking Queries
+	// Event-driven refresh based on data source version changes
+	// Updates or inserts a data source version after import completes
+	UpdateDataSourceVersion(ctx context.Context, arg UpdateDataSourceVersionParams) error
 	UpdateDiscoverySession(ctx context.Context, arg UpdateDiscoverySessionParams) (DiscoverySession, error)
 	UpdateDiscoverySessionAccess(ctx context.Context, id string) (DiscoverySession, error)
 	UpdateEarlyAccessInvited(ctx context.Context, id string) (EarlyAccess, error)
@@ -627,6 +677,12 @@ type Querier interface {
 	UpdateRenewalNotificationDelivered(ctx context.Context, id string) error
 	UpdateRenewalNotificationOpened(ctx context.Context, id string) error
 	UpdateReportPackConsumptionHistory(ctx context.Context, arg UpdateReportPackConsumptionHistoryParams) error
+	UpdateReportStatus(ctx context.Context, arg UpdateReportStatusParams) error
+	UpdateReportStatusWithMetadata(ctx context.Context, arg UpdateReportStatusWithMetadataParams) error
+	// Updates report status and captures data source versions (ADR-087 Phase 7)
+	UpdateReportStatusWithVersions(ctx context.Context, arg UpdateReportStatusWithVersionsParams) error
+	// Updates data source versions after selective refresh
+	UpdateReportVersions(ctx context.Context, arg UpdateReportVersionsParams) error
 	UpdateScenario(ctx context.Context, arg UpdateScenarioParams) (Scenario, error)
 	UpdateScenarioResults(ctx context.Context, arg UpdateScenarioResultsParams) error
 	UpdateSessionEvaluationCount(ctx context.Context, discoverysessionid string) error

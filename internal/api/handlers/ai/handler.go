@@ -2508,19 +2508,56 @@ func (h *Handler) QueueAnalysis(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check cache first if not forcing refresh
+	// ADR-087: Normalize location for cache key consistency
+	locationNormalized := strings.ToLower(strings.ReplaceAll(req.Location, " ", "_"))
+	locationNormalized = strings.ReplaceAll(locationNormalized, ",", "")
+	reportCacheKey := fmt.Sprintf("market_analysis:%s", locationNormalized)
+
+	// ADR-087: Check if report exists in database (L2 cache discovery)
 	if !req.ForceRefresh {
-		cacheKey := fmt.Sprintf("analysis:%s", req.CacheKey)
-		cached, err := h.redis.Client.Get(ctx, cacheKey).Bytes()
-		if err == nil && len(cached) > 0 {
-			h.logger.Info("returning cached analysis", "cache_key", req.CacheKey)
-			httputil.JSON(w, http.StatusOK, map[string]interface{}{
-				"success":  true,
-				"cached":   true,
-				"cacheKey": req.CacheKey,
-				"data":     json.RawMessage(cached),
+		existingReport, err := h.store.Q().GetReportByCacheKey(ctx, reportCacheKey)
+		if err == nil && existingReport.Status == "completed" {
+			// Report exists and is completed - increment access count
+			_ = h.store.Q().IncrementReportAccessCount(ctx, reportCacheKey)
+
+			// Track user access (ADR-087)
+			accessID := uuid.New().String()
+			_ = h.store.Q().TrackUserAccess(ctx, queries.TrackUserAccessParams{
+				ID:       accessID,
+				UserID:   user.UserID,
+				ReportID: existingReport.ID,
 			})
-			return
+
+			h.logger.Info("returning existing completed report",
+				"cache_key", reportCacheKey,
+				"report_id", existingReport.ID,
+				"user_id", user.UserID,
+			)
+
+			// Try to get from L1 (Redis) first
+			redisCacheKey := fmt.Sprintf("analysis:%s", req.CacheKey)
+			cached, err := h.redis.Client.Get(ctx, redisCacheKey).Bytes()
+			if err == nil && len(cached) > 0 {
+				httputil.JSON(w, http.StatusOK, map[string]interface{}{
+					"success":  true,
+					"cached":   true,
+					"cacheKey": req.CacheKey,
+					"data":     json.RawMessage(cached),
+				})
+				return
+			}
+
+			// Fallback to L2 (database analysis_cache)
+			dbCache, err := h.store.Q().GetCacheByKey(ctx, req.CacheKey)
+			if err == nil {
+				httputil.JSON(w, http.StatusOK, map[string]interface{}{
+					"success":  true,
+					"cached":   true,
+					"cacheKey": req.CacheKey,
+					"data":     dbCache.Content,
+				})
+				return
+			}
 		}
 	}
 
@@ -2544,6 +2581,28 @@ func (h *Handler) QueueAnalysis(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to enqueue analysis job", "error", err)
 		httputil.InternalError(w, fmt.Errorf("failed to queue job"))
 		return
+	}
+
+	// ADR-087: Create pending report record
+	reportID := uuid.New().String()
+	_, err = h.store.Q().CreateMarketAnalysisReport(ctx, queries.CreateMarketAnalysisReportParams{
+		ID:                 reportID,
+		Location:           req.Location,
+		LocationNormalized: locationNormalized,
+		CacheKey:           reportCacheKey,
+		Status:             "pending",
+	})
+	if err != nil {
+		// Log but don't fail - report tracking is supplementary
+		h.logger.Warn("failed to create report record",
+			"error", err,
+			"cache_key", reportCacheKey,
+		)
+	} else {
+		h.logger.Info("created pending report record",
+			"report_id", reportID,
+			"cache_key", reportCacheKey,
+		)
 	}
 
 	h.logger.Info("market analysis queued",
@@ -2791,7 +2850,7 @@ type AnalysisHistoryItem struct {
 	Synthesis map[string]interface{} `json:"synthesis,omitempty"`
 }
 
-// GetAnalysisHistory returns the user's market analysis history
+// GetAnalysisHistory returns the user's market analysis history (ADR-087)
 func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user := middleware.GetUserFromContext(ctx)
@@ -2805,12 +2864,22 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 	offset := (page - 1) * limit
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
 
-	dbAnalyses, err := h.store.Q().ListMarketAnalysisHistory(ctx, queries.ListMarketAnalysisHistoryParams{
-		UserId: user.UserID,
-		Search: pgtype.Text{String: search, Valid: search != ""},
-		Off:    int32(offset),
-		Lim:    int32(limit),
-	})
+	// ADR-087: Query all reports from market_analysis_reports (shared, not user-filtered)
+	var dbReports []queries.MarketAnalysisReport
+	var err error
+
+	if search != "" {
+		dbReports, err = h.store.Q().ListReportsWithSearch(ctx, queries.ListReportsWithSearchParams{
+			Search: pgtype.Text{String: search, Valid: true},
+			Limit:  int32(limit),
+			Offset: int32(offset),
+		})
+	} else {
+		dbReports, err = h.store.Q().ListAllReports(ctx, queries.ListAllReportsParams{
+			Limit:  int32(limit),
+			Offset: int32(offset),
+		})
+	}
 	if err != nil {
 		h.logger.Error("failed to get analysis history", "error", err)
 		httputil.JSON(w, http.StatusOK, map[string]interface{}{
@@ -2823,55 +2892,66 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	analyses := make([]AnalysisHistoryItem, 0, len(dbAnalyses))
-	for _, dbAnalysis := range dbAnalyses {
+	analyses := make([]AnalysisHistoryItem, 0, len(dbReports))
+	for _, report := range dbReports {
 		item := AnalysisHistoryItem{
-			ID:        dbAnalysis.ID,
-			CacheKey:  dbAnalysis.Key,
-			Location:  dbAnalysis.Location,
-			Status:    "COMPLETED",
-			CreatedAt: dbAnalysis.LastAccessedAt.Time.Format(time.RFC3339),
+			ID:       report.ID,
+			CacheKey: report.CacheKey,
+			Location: report.Location,
+			Status:   report.Status,
 		}
 
-		// Convert JSONB []byte to string
-		content := string(dbAnalysis.Content)
-		fullReport := ""
-		if dbAnalysis.FullReport.Valid {
-			fullReport = dbAnalysis.FullReport.String
+		// Use generated_at if available, otherwise created_at
+		if report.GeneratedAt.Valid {
+			item.CreatedAt = report.GeneratedAt.Time.Format(time.RFC3339)
+		} else {
+			item.CreatedAt = report.CreatedAt.Format(time.RFC3339)
 		}
 
-		// V2 reports store markdown in fullReport; V1 stores it in content
-		reportContent := fullReport
-		if reportContent == "" {
-			reportContent = content
-		}
-		item.HasReport = reportContent != ""
-		item.Preview = extractExecutiveSummary(reportContent)
-
-		// Convert JSONB metricsData
-		if len(dbAnalysis.MetricsData) > 0 {
-			var metrics map[string]interface{}
-			if json.Unmarshal(dbAnalysis.MetricsData, &metrics) == nil {
-				item.Metrics = metrics
+		// ADR-087: Report content is still in analysis_cache
+		// Try to fetch from cache to get preview
+		cachedData, err := h.store.Q().GetAnalysisCacheByKey(ctx, report.CacheKey)
+		if err == nil {
+			content := string(cachedData.Content)
+			fullReport := ""
+			if cachedData.FullReport.Valid {
+				fullReport = cachedData.FullReport.String
 			}
-		}
 
-		// Convert JSONB narrativeData
-		if len(dbAnalysis.NarrativeData) > 0 {
-			var narrative map[string]interface{}
-			if json.Unmarshal(dbAnalysis.NarrativeData, &narrative) == nil {
-				item.Synthesis = narrative
+			reportContent := fullReport
+			if reportContent == "" {
+				reportContent = content
+			}
+			item.HasReport = reportContent != ""
+			item.Preview = extractExecutiveSummary(reportContent)
+
+			// Convert JSONB metricsData
+			if len(cachedData.MetricsData) > 0 {
+				var metrics map[string]interface{}
+				if json.Unmarshal(cachedData.MetricsData, &metrics) == nil {
+					item.Metrics = metrics
+				}
+			}
+
+			// Convert JSONB narrativeData
+			if len(cachedData.NarrativeData) > 0 {
+				var narrative map[string]interface{}
+				if json.Unmarshal(cachedData.NarrativeData, &narrative) == nil {
+					item.Synthesis = narrative
+				}
 			}
 		}
 
 		analyses = append(analyses, item)
 	}
 
-	// Get total count
-	totalCount, _ := h.store.Q().CountMarketAnalysisHistory(ctx, queries.CountMarketAnalysisHistoryParams{
-		UserId: user.UserID,
-		Search: pgtype.Text{String: search, Valid: search != ""},
-	})
+	// Get total count (all reports, not filtered by user)
+	var totalCount int64
+	if search != "" {
+		totalCount, _ = h.store.Q().CountReportsWithSearch(ctx, pgtype.Text{String: search, Valid: true})
+	} else {
+		totalCount, _ = h.store.Q().CountReports(ctx)
+	}
 	total := int(totalCount)
 
 	totalPages := total / limit

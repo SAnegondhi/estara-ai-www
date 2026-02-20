@@ -26,6 +26,36 @@ func (q *Queries) DeleteAnalysisCacheByUserAndKey(ctx context.Context, arg Delet
 	return err
 }
 
+const GetAnalysisCacheByKey = `-- name: GetAnalysisCacheByKey :one
+SELECT content, "metricsData", "narrativeData", "fullReport", "lastAccessedAt"
+FROM analysis_cache
+WHERE key = $1
+  AND "supersededBy" IS NULL
+ORDER BY "lastAccessedAt" DESC
+LIMIT 1
+`
+
+type GetAnalysisCacheByKeyRow struct {
+	Content        string           `json:"content"`
+	MetricsData    []byte           `json:"metricsData"`
+	NarrativeData  []byte           `json:"narrativeData"`
+	FullReport     pgtype.Text      `json:"fullReport"`
+	LastAccessedAt pgtype.Timestamp `json:"lastAccessedAt"`
+}
+
+func (q *Queries) GetAnalysisCacheByKey(ctx context.Context, key string) (GetAnalysisCacheByKeyRow, error) {
+	row := q.db.QueryRow(ctx, GetAnalysisCacheByKey, key)
+	var i GetAnalysisCacheByKeyRow
+	err := row.Scan(
+		&i.Content,
+		&i.MetricsData,
+		&i.NarrativeData,
+		&i.FullReport,
+		&i.LastAccessedAt,
+	)
+	return i, err
+}
+
 const GetAnalysisContext = `-- name: GetAnalysisContext :one
 
 SELECT content, "metricsData", "narrativeData", "lastAccessedAt"

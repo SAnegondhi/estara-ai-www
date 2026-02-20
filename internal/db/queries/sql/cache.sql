@@ -241,6 +241,40 @@ WHERE "userId" = $1
     AND "supersededBy" IS NULL
     AND "expiresAt" > NOW();
 
+-- name: ListAllTrends :many
+SELECT id, key, location, content, "lastAccessedAt"
+FROM analysis_cache
+WHERE feature = 'market_trends'
+    AND "supersededBy" IS NULL
+    AND "expiresAt" > NOW()
+ORDER BY "lastAccessedAt" DESC
+LIMIT $1 OFFSET $2;
+
+-- name: ListAllTrendsWithSearch :many
+SELECT id, key, location, content, "lastAccessedAt"
+FROM analysis_cache
+WHERE feature = 'market_trends'
+    AND "supersededBy" IS NULL
+    AND "expiresAt" > NOW()
+    AND location ILIKE '%' || sqlc.narg('search') || '%'
+ORDER BY "lastAccessedAt" DESC
+LIMIT $1 OFFSET $2;
+
+-- name: CountAllTrends :one
+SELECT COUNT(*)
+FROM analysis_cache
+WHERE feature = 'market_trends'
+    AND "supersededBy" IS NULL
+    AND "expiresAt" > NOW();
+
+-- name: CountAllTrendsWithSearch :one
+SELECT COUNT(*)
+FROM analysis_cache
+WHERE feature = 'market_trends'
+    AND "supersededBy" IS NULL
+    AND "expiresAt" > NOW()
+    AND location ILIKE '%' || sqlc.narg('search') || '%';
+
 -- name: UpsertTrendCache :exec
 INSERT INTO analysis_cache (
     id, key, "userId", location, feature, content, "fullReport",

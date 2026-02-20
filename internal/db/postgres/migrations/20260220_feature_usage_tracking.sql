@@ -20,6 +20,19 @@ ALTER TYPE "AuditEventType" ADD VALUE IF NOT EXISTS 'FEATURE_PASSWORD_CHANGE';
 
 -- Create index for feature usage queries (performance optimization)
 -- This index helps with feature usage analytics and user activity tracking
+-- Note: Using IN clause instead of LIKE to ensure IMMUTABLE predicate
 CREATE INDEX IF NOT EXISTS idx_audit_feature_usage
 ON audit_logs(event, "userId", "createdAt")
-WHERE event::text LIKE 'FEATURE_%';
+WHERE event IN (
+    'FEATURE_DISCOVER_SEARCH',
+    'FEATURE_EVALUATION_VIEW',
+    'FEATURE_DECISION_MEMO',
+    'FEATURE_MARKET_ANALYSIS',
+    'FEATURE_MARKET_TRENDS',
+    'FEATURE_SCENARIO_CREATE',
+    'FEATURE_SCENARIO_UPDATE',
+    'FEATURE_SCENARIO_VIEW',
+    'FEATURE_PORTFOLIO_ADD',
+    'FEATURE_PDF_EXPORT',
+    'FEATURE_PASSWORD_CHANGE'
+);

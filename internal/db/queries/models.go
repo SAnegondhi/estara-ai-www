@@ -340,6 +340,14 @@ type CronJobRun struct {
 	CompletedAt pgtype.Timestamp `json:"completedAt"`
 }
 
+type DataSourceVersion struct {
+	Source      string      `json:"source"`
+	Version     string      `json:"version"`
+	LastUpdated time.Time   `json:"last_updated"`
+	ImportJobID pgtype.Text `json:"import_job_id"`
+	Metadata    []byte      `json:"metadata"`
+}
+
 type DiscoverySession struct {
 	ID                string           `json:"id"`
 	UserId            string           `json:"userId"`
@@ -579,6 +587,28 @@ type Invoice struct {
 	EmailSentAt          pgtype.Timestamp `json:"emailSentAt"`
 	EmailDelivered       bool             `json:"emailDelivered"`
 	UpdatedAt            pgtype.Timestamp `json:"updatedAt"`
+}
+
+type MarketAnalysisReport struct {
+	ID                 string             `json:"id"`
+	Location           string             `json:"location"`
+	LocationNormalized string             `json:"location_normalized"`
+	CacheKey           string             `json:"cache_key"`
+	Status             string             `json:"status"`
+	ErrorMessage       pgtype.Text        `json:"error_message"`
+	GeneratedAt        pgtype.Timestamptz `json:"generated_at"`
+	AccessedCount      int32              `json:"accessed_count"`
+	LastAccessedAt     pgtype.Timestamptz `json:"last_accessed_at"`
+	CreatedAt          time.Time          `json:"created_at"`
+	UpdatedAt          time.Time          `json:"updated_at"`
+	DataFreshnessDate  pgtype.Timestamptz `json:"data_freshness_date"`
+	ReportSizeBytes    pgtype.Int4        `json:"report_size_bytes"`
+	ZhviVersion        pgtype.Text        `json:"zhvi_version"`
+	ZoriVersion        pgtype.Text        `json:"zori_version"`
+	RedfinVersion      pgtype.Text        `json:"redfin_version"`
+	FredVersion        pgtype.Text        `json:"fred_version"`
+	CensusVersion      pgtype.Text        `json:"census_version"`
+	AiContextVersion   pgtype.Text        `json:"ai_context_version"`
 }
 
 type PasswordResetToken struct {
@@ -822,6 +852,13 @@ type UserConsent struct {
 	IpAddress   string           `json:"ipAddress"`
 	UserAgent   string           `json:"userAgent"`
 	Timestamp   pgtype.Timestamp `json:"timestamp"`
+}
+
+type UserMarketAnalysisAccess struct {
+	ID         string    `json:"id"`
+	UserID     string    `json:"user_id"`
+	ReportID   string    `json:"report_id"`
+	AccessedAt time.Time `json:"accessed_at"`
 }
 
 type V2BaselineChange struct {

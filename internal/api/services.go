@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/estara-ai/www/internal/config"
+	dbstore "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/postgres"
 	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
@@ -366,12 +367,19 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 				mainDBPool = cfg.DB.Main
 			}
 
+			// ADR-087: Create Store for report tracking
+			var workerStore *dbstore.Store
+			if cfg.DB != nil {
+				workerStore = dbstore.NewStore(cfg.DB)
+			}
+
 			analysisWorker := workers.NewMarketAnalysisWorker(workers.MarketAnalysisWorkerConfig{
 				Orchestrator: orchestrator,
 				Market:       services.MarketData,
 				Cache:        services.HybridCache,
 				Trends:       services.TrendsService,
 				MainDB:       mainDBPool,
+				Store:        workerStore, // ADR-087: For report tracking
 			})
 			services.JobQueue.RegisterHandler(queue.JobTypeMarketAnalysis, analysisWorker.GetHandler())
 			logger.Info("market analysis worker registered",

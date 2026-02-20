@@ -20,3 +20,11 @@ WHERE id = $1 AND "userId" = $2 AND key LIKE 'investment_plan_%';
 -- name: DeleteAnalysisCacheByUserAndKey :exec
 DELETE FROM analysis_cache
 WHERE "userId" = $1 AND key = $2;
+
+-- name: GetAnalysisCacheByKey :one
+SELECT content, "metricsData", "narrativeData", "fullReport", "lastAccessedAt"
+FROM analysis_cache
+WHERE key = $1
+  AND "supersededBy" IS NULL
+ORDER BY "lastAccessedAt" DESC
+LIMIT 1;
