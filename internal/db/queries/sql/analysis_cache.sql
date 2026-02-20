@@ -28,3 +28,11 @@ WHERE key = $1
   AND "supersededBy" IS NULL
 ORDER BY "lastAccessedAt" DESC
 LIMIT 1;
+
+-- name: BatchGetAnalysisCacheByKeys :many
+-- Batch fetch cache entries for multiple keys (to avoid N+1 queries)
+-- Only fetch fields needed for preview generation (not full metricsData/narrativeData)
+SELECT key, content, "fullReport"
+FROM analysis_cache
+WHERE key = ANY(sqlc.arg('keys')::text[])
+  AND "supersededBy" IS NULL;

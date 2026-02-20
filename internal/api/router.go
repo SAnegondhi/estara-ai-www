@@ -101,7 +101,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		Portfolio:     portfolio.NewHandler(store, cfg),
 		Admin:         admin.NewHandler(store, redis, cfg, authMiddleware),
 		Cron:          cron.NewHandler(store, redis, cfg),
-		Location:      location.NewHandler(store, redis, cfg),
+		Location:      location.NewHandler(store, redis, cfg, svc.GeoLocation),
 		Market:        market.NewHandler(store, cfg),
 		Report:        report.NewHandlerWithEconomics(store, cfg, svc.EconomicsAggregator),
 		Billing:       billing.NewHandler(store, cfg),
@@ -143,8 +143,9 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		handlers.Market.SetHybridCache(svc.HybridCache)
 	}
 	// ADR-075: Wire market data importer into cron and admin handlers
+	// ADR-087 Phase 9: Pass main queries and refresh service for version tracking
 	if mp := store.MarketPool(); mp != nil {
-		imp := importer.NewService(mp)
+		imp := importer.NewService(mp, store.Q(), svc.RefreshService)
 		handlers.Cron.SetImporter(imp)
 		handlers.Admin.SetImporter(imp)
 	}
@@ -315,10 +316,13 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Post("/batch/export", handlers.Discover.ExportBatchEvaluations)
 	})
 
-	// Location API - autocomplete is public, validate requires auth
+	// Location API - autocomplete and detect are public, validate requires auth
 	r.Route("/api/location", func(r chi.Router) {
 		// Autocomplete is public (no auth required) - matches www_v1
 		r.Get("/autocomplete", handlers.Location.Autocomplete)
+
+		// Detect user location from IP (public, for intelligent preloading)
+		r.Get("/detect", handlers.Location.DetectLocation)
 
 		// Validate requires auth
 		r.Group(func(r chi.Router) {
@@ -399,6 +403,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	r.Route("/api/ai/analysis", func(r chi.Router) {
 		r.Use(authMiddleware.Authenticate)
 		r.Use(rateLimiter.Limit)
+		r.Use(middleware.TrackLocationActivity(store)) // ADR-087 Phase 5: Track user activity
 
 		r.Post("/queue", handlers.AI.QueueAnalysis)
 		r.Get("/stream", handlers.AI.StreamAnalysis)
@@ -406,9 +411,18 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Get("/history", handlers.AI.GetAnalysisHistory)      // ADR-073
 		r.Get("/context", handlers.AI.GetAnalysisContext)       // ADR-073
 		r.Get("/report", handlers.AI.GetAnalysisReport)        // ADR-073
+		r.Post("/preload", handlers.AI.PreloadReports)         // ADR-087 Phase 5
 		r.Post("/retry/{jobId}", handlers.AI.RetryAnalysis)
 		r.Post("/cancel/{jobId}", handlers.AI.CancelAnalysis)
 		r.Delete("/{jobId}", handlers.AI.DismissAnalysisJob)    // ADR-073
+	})
+
+	// User activity tracking (ADR-087 Phase 5)
+	r.Route("/api/user/activity", func(r chi.Router) {
+		r.Use(authMiddleware.Authenticate)
+		r.Use(rateLimiter.Limit)
+
+		r.Get("/locations", handlers.AI.GetUserActivity)
 	})
 
 	// Portfolio

@@ -22,7 +22,11 @@ CREATE TABLE market_analysis_reports (
     redfin_version TEXT,
     fred_version TEXT,
     census_version TEXT,
-    ai_context_version TEXT
+    ai_context_version TEXT,
+
+    -- ADR-087 Phase 5: Location coordinates for proximity-based preloading
+    latitude DOUBLE PRECISION,
+    longitude DOUBLE PRECISION
 );
 
 CREATE TABLE user_market_analysis_access (

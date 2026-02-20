@@ -118,7 +118,7 @@ func runStatus() {
 	pool, cleanup := connectMarketDB()
 	defer cleanup()
 
-	svc := importer.NewService(pool)
+	svc := importer.NewService(pool, nil, nil)  // CLI: No main queries or refresh service
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -161,7 +161,7 @@ func runImport(args []string) {
 	pool, cleanup := connectMarketDB()
 	defer cleanup()
 
-	svc := importer.NewService(pool)
+	svc := importer.NewService(pool, nil, nil)  // CLI: No main queries or refresh service
 	ctx := context.Background()
 
 	if *source == "all" {
@@ -230,7 +230,7 @@ func runComputeNational() {
 	pool, cleanup := connectMarketDB()
 	defer cleanup()
 
-	svc := importer.NewService(pool)
+	svc := importer.NewService(pool, nil, nil)  // CLI: No main queries or refresh service
 	ctx := context.Background()
 
 	fmt.Println("Computing national aggregates...")

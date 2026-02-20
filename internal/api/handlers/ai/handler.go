@@ -2892,6 +2892,22 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Batch fetch all cache entries to avoid N+1 queries
+	cacheKeys := make([]string, len(dbReports))
+	for i, report := range dbReports {
+		cacheKeys[i] = report.CacheKey
+	}
+
+	cacheMap := make(map[string]queries.BatchGetAnalysisCacheByKeysRow)
+	if len(cacheKeys) > 0 {
+		cachedItems, err := h.store.Q().BatchGetAnalysisCacheByKeys(ctx, cacheKeys)
+		if err == nil {
+			for _, cached := range cachedItems {
+				cacheMap[cached.Key] = cached
+			}
+		}
+	}
+
 	analyses := make([]AnalysisHistoryItem, 0, len(dbReports))
 	for _, report := range dbReports {
 		item := AnalysisHistoryItem{
@@ -2909,9 +2925,8 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// ADR-087: Report content is still in analysis_cache
-		// Try to fetch from cache to get preview
-		cachedData, err := h.store.Q().GetAnalysisCacheByKey(ctx, report.CacheKey)
-		if err == nil {
+		// Use batch-fetched cache data
+		if cachedData, found := cacheMap[report.CacheKey]; found {
 			content := string(cachedData.Content)
 			fullReport := ""
 			if cachedData.FullReport.Valid {
@@ -2924,22 +2939,7 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 			}
 			item.HasReport = reportContent != ""
 			item.Preview = extractExecutiveSummary(reportContent)
-
-			// Convert JSONB metricsData
-			if len(cachedData.MetricsData) > 0 {
-				var metrics map[string]interface{}
-				if json.Unmarshal(cachedData.MetricsData, &metrics) == nil {
-					item.Metrics = metrics
-				}
-			}
-
-			// Convert JSONB narrativeData
-			if len(cachedData.NarrativeData) > 0 {
-				var narrative map[string]interface{}
-				if json.Unmarshal(cachedData.NarrativeData, &narrative) == nil {
-					item.Synthesis = narrative
-				}
-			}
+			// Note: metrics and synthesis not populated in batch mode for performance
 		}
 
 		analyses = append(analyses, item)

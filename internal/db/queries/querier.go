@@ -17,6 +17,9 @@ type Querier interface {
 	ArchiveDiscoverySession(ctx context.Context, arg ArchiveDiscoverySessionParams) (DiscoverySession, error)
 	AutoArchiveOldSessions(ctx context.Context) error
 	AutoArchiveOldSessionsRows(ctx context.Context) (int64, error)
+	// Batch fetch cache entries for multiple keys (to avoid N+1 queries)
+	// Only fetch fields needed for preview generation (not full metricsData/narrativeData)
+	BatchGetAnalysisCacheByKeys(ctx context.Context, keys []string) ([]BatchGetAnalysisCacheByKeysRow, error)
 	CancelIAPSubscriptions(ctx context.Context, userid string) error
 	CancelInsightAccess(ctx context.Context, id string) (InsightAccess, error)
 	CancelSubscription(ctx context.Context, arg CancelSubscriptionParams) error
@@ -67,6 +70,8 @@ type Querier interface {
 	CountRecentEmailVerificationCodes(ctx context.Context, arg CountRecentEmailVerificationCodesParams) (int64, error)
 	CountRecentEmailVerificationCodesLastHour(ctx context.Context, email string) (int64, error)
 	CountReports(ctx context.Context) (int64, error)
+	// Count reports within radius (km) of a location
+	CountReportsByProximity(ctx context.Context, arg CountReportsByProximityParams) (int64, error)
 	CountReportsWithSearch(ctx context.Context, search pgtype.Text) (int64, error)
 	CountSearchUsersByEmail(ctx context.Context, email string) (int64, error)
 	CountSearchWhitelistedEmails(ctx context.Context, email string) (int64, error)
@@ -85,6 +90,7 @@ type Querier interface {
 	CountTrendsHistory(ctx context.Context, userid string) (int64, error)
 	CountUserAccess(ctx context.Context, userID string) (int64, error)
 	CountUserAccessWithSearch(ctx context.Context, arg CountUserAccessWithSearchParams) (int64, error)
+	CountUserActivityByLocation(ctx context.Context, arg CountUserActivityByLocationParams) (int64, error)
 	CountUserConsents(ctx context.Context) (int64, error)
 	CountUserConsentsByType(ctx context.Context, consenttype interface{}) (int64, error)
 	CountUserDiscoverySessions(ctx context.Context, arg CountUserDiscoverySessionsParams) (int64, error)
@@ -95,6 +101,8 @@ type Querier interface {
 	CountWaitlistFiltered(ctx context.Context, arg CountWaitlistFilteredParams) (int64, error)
 	CountWebAuthnCredentialsByUser(ctx context.Context, userid string) (int64, error)
 	CountWhitelistedEmails(ctx context.Context) (int64, error)
+	// Admin AI Usage Analytics Queries
+	CreateAIUsage(ctx context.Context, arg CreateAIUsageParams) error
 	// Activity Linking Queries
 	CreateActivityLink(ctx context.Context, arg CreateActivityLinkParams) (DiscoverySessionActivity, error)
 	// Admin Audit Log Queries (Unified audit_logs table)
@@ -157,6 +165,8 @@ type Querier interface {
 	CreatePortfolioProperty(ctx context.Context, arg CreatePortfolioPropertyParams) (V2PortfolioProperty, error)
 	// Create a new portfolio snapshot
 	CreatePortfolioSnapshot(ctx context.Context, arg CreatePortfolioSnapshotParams) (V2PortfolioSnapshot, error)
+	// Property Finder Metrics Queries
+	CreatePropertyFinderMetric(ctx context.Context, arg CreatePropertyFinderMetricParams) error
 	CreateReceipt(ctx context.Context, arg CreateReceiptParams) (Receipt, error)
 	// Renewal Notification Queries
 	CreateRenewalNotification(ctx context.Context, arg CreateRenewalNotificationParams) (RenewalNotification, error)
@@ -269,7 +279,6 @@ type Querier interface {
 	GetAIScoringCacheByHash(ctx context.Context, propertiesHash string) (AiScoringCache, error)
 	GetAIUsageByFeature(ctx context.Context) ([]GetAIUsageByFeatureRow, error)
 	GetAIUsageCacheHitRate(ctx context.Context) (GetAIUsageCacheHitRateRow, error)
-	// Admin AI Usage Analytics Queries
 	GetAIUsageStatsAllTime(ctx context.Context) (GetAIUsageStatsAllTimeRow, error)
 	GetAIUsageStatsByType(ctx context.Context) ([]GetAIUsageStatsByTypeRow, error)
 	GetAIUsageStatsThisMonth(ctx context.Context) (GetAIUsageStatsThisMonthRow, error)
@@ -404,6 +413,8 @@ type Querier interface {
 	GetPropertyByProviderAndID(ctx context.Context, arg GetPropertyByProviderAndIDParams) (PropertyCache, error)
 	// Returns cache statistics for monitoring
 	GetPropertyCacheStats(ctx context.Context) (GetPropertyCacheStatsRow, error)
+	GetPropertyFinderStats(ctx context.Context) (GetPropertyFinderStatsRow, error)
+	GetPropertyFinderStatsByProvider(ctx context.Context) ([]GetPropertyFinderStatsByProviderRow, error)
 	// Property Cache Queries
 	// ADR-061: Size-based FIFO cache for individual property reads
 	// Retrieves a single property from cache by its cache key
@@ -472,8 +483,10 @@ type Querier interface {
 	GetUserIAPPlatform(ctx context.Context, id string) (pgtype.Text, error)
 	GetUserRecentAccess(ctx context.Context, arg GetUserRecentAccessParams) ([]MarketAnalysisReport, error)
 	GetUserRecentAccessWithSearch(ctx context.Context, arg GetUserRecentAccessWithSearchParams) ([]MarketAnalysisReport, error)
+	GetUserRecentActivity(ctx context.Context, arg GetUserRecentActivityParams) ([]GetUserRecentActivityRow, error)
 	GetUserStats(ctx context.Context) (GetUserStatsRow, error)
 	GetUserSubscriptionInfo(ctx context.Context, userid string) (GetUserSubscriptionInfoRow, error)
+	GetUserTopLocations(ctx context.Context, arg GetUserTopLocationsParams) ([]GetUserTopLocationsRow, error)
 	GetUserWithSubscription(ctx context.Context, id string) (GetUserWithSubscriptionRow, error)
 	// Used by entitlements service to get user + subscription tier/status/trialEnd
 	GetUserWithSubscriptionEntitlements(ctx context.Context, id string) (GetUserWithSubscriptionEntitlementsRow, error)
@@ -552,11 +565,18 @@ type Querier interface {
 	ListInvoicesByStatus(ctx context.Context, arg ListInvoicesByStatusParams) ([]Invoice, error)
 	ListMarketAnalysisHistory(ctx context.Context, arg ListMarketAnalysisHistoryParams) ([]ListMarketAnalysisHistoryRow, error)
 	ListPendingEarlyAccess(ctx context.Context, limit int32) ([]EarlyAccess, error)
+	// Fetch most accessed reports (popular nationwide)
+	ListPopularReports(ctx context.Context, arg ListPopularReportsParams) ([]MarketAnalysisReport, error)
 	// V2 Portfolio Properties Queries
 	ListPortfolioProperties(ctx context.Context, userID string) ([]V2PortfolioProperty, error)
 	ListRecentCronJobRuns(ctx context.Context, limit int32) ([]CronJobRun, error)
 	ListRecentReports(ctx context.Context, arg ListRecentReportsParams) ([]MarketAnalysisReport, error)
 	ListRenewalNotificationsBySubscription(ctx context.Context, subscriptionid string) ([]RenewalNotification, error)
+	// Fetch reports for an exact location (city, state)
+	ListReportsByLocation(ctx context.Context, arg ListReportsByLocationParams) ([]MarketAnalysisReport, error)
+	// Proximity-Based Queries (ADR-087 Phase 5: Intelligent Preloading)
+	// Fetch reports within radius (km) of a location using Haversine formula
+	ListReportsByProximity(ctx context.Context, arg ListReportsByProximityParams) ([]ListReportsByProximityRow, error)
 	ListReportsWithSearch(ctx context.Context, arg ListReportsWithSearchParams) ([]MarketAnalysisReport, error)
 	ListSessionActivities(ctx context.Context, discoverysessionid string) ([]DiscoverySessionActivity, error)
 	ListSessionEvaluations(ctx context.Context, discoverysessionid string) ([]DiscoverySessionEvaluation, error)
@@ -643,6 +663,8 @@ type Querier interface {
 	ToggleWhitelistedEmail(ctx context.Context, arg ToggleWhitelistedEmailParams) (ToggleWhitelistedEmailRow, error)
 	// User Access Tracking
 	TrackUserAccess(ctx context.Context, arg TrackUserAccessParams) error
+	// User Activity Tracking Queries (ADR-087 Phase 5)
+	TrackUserLocationActivity(ctx context.Context, arg TrackUserLocationActivityParams) error
 	UnsuspendUser(ctx context.Context, id string) error
 	UpdateAdminSessionLastActive(ctx context.Context, id string) error
 	UpdateAdminTwoFactorBackupCodes(ctx context.Context, arg UpdateAdminTwoFactorBackupCodesParams) error
@@ -676,6 +698,8 @@ type Querier interface {
 	UpdatePropertyCacheAccess(ctx context.Context, cacheKey string) error
 	UpdateRenewalNotificationDelivered(ctx context.Context, id string) error
 	UpdateRenewalNotificationOpened(ctx context.Context, id string) error
+	// Update latitude/longitude for a report
+	UpdateReportCoordinates(ctx context.Context, arg UpdateReportCoordinatesParams) error
 	UpdateReportPackConsumptionHistory(ctx context.Context, arg UpdateReportPackConsumptionHistoryParams) error
 	UpdateReportStatus(ctx context.Context, arg UpdateReportStatusParams) error
 	UpdateReportStatusWithMetadata(ctx context.Context, arg UpdateReportStatusWithMetadataParams) error
@@ -731,6 +755,7 @@ type Querier interface {
 	UpsertSystemCache(ctx context.Context, arg UpsertSystemCacheParams) (SystemCache, error)
 	UpsertTrendCache(ctx context.Context, arg UpsertTrendCacheParams) error
 	UpsertUserAnalysisPreference(ctx context.Context, arg UpsertUserAnalysisPreferenceParams) (UserAnalysisPreference, error)
+	UpsertUserLocationPreference(ctx context.Context, arg UpsertUserLocationPreferenceParams) error
 	UpsertV2EvaluationQuota(ctx context.Context, arg UpsertV2EvaluationQuotaParams) (UpsertV2EvaluationQuotaRow, error)
 	UpsertV2EvaluationQuotaWithPeriodReset(ctx context.Context, arg UpsertV2EvaluationQuotaWithPeriodResetParams) error
 	ValidateEvaluationChatSessionOwnership(ctx context.Context, arg ValidateEvaluationChatSessionOwnershipParams) (bool, error)

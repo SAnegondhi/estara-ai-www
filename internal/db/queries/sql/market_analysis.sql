@@ -149,3 +149,69 @@ SELECT
     COUNT(DISTINCT location_normalized) as unique_locations,
     SUM(accessed_count) as total_accesses
 FROM market_analysis_reports;
+
+-- Proximity-Based Queries (ADR-087 Phase 5: Intelligent Preloading)
+
+-- name: ListReportsByProximity :many
+-- Fetch reports within radius (km) of a location using Haversine formula
+SELECT
+    id,
+    location,
+    location_normalized,
+    cache_key,
+    status,
+    generated_at,
+    created_at,
+    accessed_count,
+    (6371 * acos(
+        cos(radians(sqlc.arg('latitude'))) * cos(radians(latitude)) *
+        cos(radians(longitude) - radians(sqlc.arg('longitude'))) +
+        sin(radians(sqlc.arg('latitude'))) * sin(radians(latitude))
+    ))::DOUBLE PRECISION AS distance_km
+FROM market_analysis_reports
+WHERE status = 'completed'
+  AND latitude IS NOT NULL
+  AND longitude IS NOT NULL
+  AND (6371 * acos(
+        cos(radians(sqlc.arg('latitude'))) * cos(radians(latitude)) *
+        cos(radians(longitude) - radians(sqlc.arg('longitude'))) +
+        sin(radians(sqlc.arg('latitude'))) * sin(radians(latitude))
+    )) <= sqlc.arg('radius_km')
+ORDER BY distance_km ASC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: CountReportsByProximity :one
+-- Count reports within radius (km) of a location
+SELECT COUNT(*) FROM market_analysis_reports
+WHERE status = 'completed'
+  AND latitude IS NOT NULL
+  AND longitude IS NOT NULL
+  AND (6371 * acos(
+        cos(radians(sqlc.arg('latitude'))) * cos(radians(latitude)) *
+        cos(radians(longitude) - radians(sqlc.arg('longitude'))) +
+        sin(radians(sqlc.arg('latitude'))) * sin(radians(latitude))
+    )) <= sqlc.arg('radius_km');
+
+-- name: ListReportsByLocation :many
+-- Fetch reports for an exact location (city, state)
+SELECT * FROM market_analysis_reports
+WHERE location_normalized = LOWER(sqlc.arg('location'))
+  AND status = 'completed'
+ORDER BY generated_at DESC
+LIMIT sqlc.arg('limit');
+
+-- name: ListPopularReports :many
+-- Fetch most accessed reports (popular nationwide)
+SELECT * FROM market_analysis_reports
+WHERE status = 'completed'
+  AND accessed_count > 0
+ORDER BY accessed_count DESC, generated_at DESC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: UpdateReportCoordinates :exec
+-- Update latitude/longitude for a report
+UPDATE market_analysis_reports
+SET latitude = sqlc.arg('latitude'),
+    longitude = sqlc.arg('longitude'),
+    updated_at = NOW()
+WHERE cache_key = sqlc.arg('cache_key');

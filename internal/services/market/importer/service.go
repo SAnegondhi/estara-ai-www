@@ -5,6 +5,8 @@ package importer
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -13,21 +15,28 @@ import (
 
 	"github.com/estara-ai/www/internal/db/marketqueries"
 	"github.com/estara-ai/www/internal/db/postgres"
+	"github.com/estara-ai/www/internal/db/queries"
+	"github.com/estara-ai/www/internal/services/market/refresh"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // Service orchestrates market data import operations.
 type Service struct {
-	marketDB *postgres.Pool
-	queries  *marketqueries.Queries
-	logger   *slog.Logger
+	marketDB       *postgres.Pool
+	queries        *marketqueries.Queries
+	mainQueries    *queries.Queries      // For data_source_versions (main DB)
+	refreshService *refresh.Service      // For triggering refresh after import (ADR-087 Phase 9)
+	logger         *slog.Logger
 }
 
 // NewService creates a new importer service.
-func NewService(marketDB *postgres.Pool) *Service {
+func NewService(marketDB *postgres.Pool, mainQueries *queries.Queries, refreshService *refresh.Service) *Service {
 	return &Service{
-		marketDB: marketDB,
-		queries:  marketqueries.New(marketDB),
-		logger:   slog.Default().With("component", "market_importer"),
+		marketDB:       marketDB,
+		queries:        marketqueries.New(marketDB),
+		mainQueries:    mainQueries,
+		refreshService: refreshService,
+		logger:         slog.Default().With("component", "market_importer"),
 	}
 }
 
@@ -174,6 +183,16 @@ func (s *Service) ImportZillowZHVI(ctx context.Context, level string) (*ImportRe
 		"errors", len(result.Errors),
 		"duration", result.Duration,
 	)
+
+	// ADR-087 Phase 9: Update version and trigger refresh
+	if result.RecordsUpserted > 0 {
+		version := time.Now().Format("2006-01")  // "2026-02"
+		if err := s.updateDataSourceVersion(ctx, "zhvi", version, result); err != nil {
+			s.logger.Warn("version update failed", "error", err)
+		}
+		s.triggerProactiveRefresh(ctx, "zhvi", version)
+	}
+
 	return result, nil
 }
 
@@ -265,6 +284,16 @@ func (s *Service) ImportZillowZORI(ctx context.Context, level string) (*ImportRe
 		"upserted", result.RecordsUpserted,
 		"duration", result.Duration,
 	)
+
+	// ADR-087 Phase 9: Update version and trigger refresh
+	if result.RecordsUpserted > 0 {
+		version := time.Now().Format("2006-01")  // "2026-02"
+		if err := s.updateDataSourceVersion(ctx, "zori", version, result); err != nil {
+			s.logger.Warn("version update failed", "error", err)
+		}
+		s.triggerProactiveRefresh(ctx, "zori", version)
+	}
+
 	return result, nil
 }
 
@@ -653,6 +682,16 @@ func (s *Service) ImportRedfinData(ctx context.Context, level string) (*ImportRe
 		"upserted", result.RecordsUpserted,
 		"duration", result.Duration,
 	)
+
+	// ADR-087 Phase 9: Update version and trigger refresh
+	if result.RecordsUpserted > 0 {
+		version := time.Now().Format("2006-01-02")  // "2026-02-21" (Redfin updates weekly)
+		if err := s.updateDataSourceVersion(ctx, "redfin", version, result); err != nil {
+			s.logger.Warn("version update failed", "error", err)
+		}
+		s.triggerProactiveRefresh(ctx, "redfin", version)
+	}
+
 	return result, nil
 }
 
@@ -789,4 +828,85 @@ func (s *Service) buildMetroLookup(ctx context.Context) (map[string]int32, error
 		lookup[key] = m.MetroRegionID
 	}
 	return lookup, nil
+}
+
+// updateDataSourceVersion updates the version tracker after successful import (ADR-087 Phase 9)
+func (s *Service) updateDataSourceVersion(ctx context.Context, source, version string, result *ImportResult) error {
+	if s.mainQueries == nil {
+		s.logger.Warn("mainQueries not available, skipping version update", "source", source)
+		return nil
+	}
+
+	// Generate import job ID
+	importJobID := generateImportJobID()
+
+	// Build metadata
+	metadata := map[string]interface{}{
+		"recordsProcessed": result.RecordsProcessed,
+		"recordsUpserted":  result.RecordsUpserted,
+		"recordsSkipped":   result.RecordsSkipped,
+		"duration":         result.Duration.String(),
+		"level":            result.Level,
+	}
+	if len(result.Errors) > 0 {
+		metadata["errorCount"] = len(result.Errors)
+	}
+
+	err := s.mainQueries.UpdateDataSourceVersion(ctx, queries.UpdateDataSourceVersionParams{
+		Source:      source,
+		Version:     version,
+		ImportJobID: pgtype.Text{String: importJobID, Valid: true},
+		Metadata:    metadata,  // sqlc expects interface{}, will be marshaled to JSONB
+	})
+
+	if err != nil {
+		s.logger.Error("failed to update data source version",
+			"error", err,
+			"source", source,
+			"version", version,
+		)
+		return err
+	}
+
+	s.logger.Info("data source version updated",
+		"source", source,
+		"version", version,
+		"import_job_id", importJobID,
+	)
+
+	return nil
+}
+
+// triggerProactiveRefresh triggers batch refresh of stale reports (ADR-087 Phase 9)
+func (s *Service) triggerProactiveRefresh(ctx context.Context, source, version string) {
+	if s.refreshService == nil {
+		s.logger.Debug("refresh service not available, skipping proactive refresh", "source", source)
+		return
+	}
+
+	reportIDs, err := s.refreshService.ProactiveRefresh(ctx, source, version)
+	if err != nil {
+		s.logger.Error("proactive refresh failed",
+			"error", err,
+			"source", source,
+			"version", version,
+		)
+		return
+	}
+
+	s.logger.Info("proactive refresh triggered",
+		"source", source,
+		"version", version,
+		"report_count", len(reportIDs),
+	)
+
+	// TODO: Queue background refresh jobs for these reports
+	// For now, just log the report IDs that need refresh
+}
+
+// generateImportJobID generates a unique job ID for import tracking
+func generateImportJobID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return "import_" + hex.EncodeToString(b)
 }

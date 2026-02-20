@@ -17,6 +17,8 @@ type Querier interface {
 	GetAllStateZHVI(ctx context.Context) ([]GetAllStateZHVIRow, error)
 	// Get cities where cache has expired
 	GetCitiesNeedingRefresh(ctx context.Context, limit int32) ([]GetCitiesNeedingRefreshRow, error)
+	// Get exact city by name and state for coordinate lookup
+	GetCityByNameAndState(ctx context.Context, arg GetCityByNameAndStateParams) (GetCityByNameAndStateRow, error)
 	// Get total count of cached cities
 	GetCityCount(ctx context.Context) (int64, error)
 	// Get count of cached cities in a state

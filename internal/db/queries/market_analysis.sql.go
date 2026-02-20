@@ -7,6 +7,7 @@ package queries
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -29,6 +30,32 @@ SELECT COUNT(*) FROM market_analysis_reports
 
 func (q *Queries) CountReports(ctx context.Context) (int64, error) {
 	row := q.db.QueryRow(ctx, CountReports)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const CountReportsByProximity = `-- name: CountReportsByProximity :one
+SELECT COUNT(*) FROM market_analysis_reports
+WHERE status = 'completed'
+  AND latitude IS NOT NULL
+  AND longitude IS NOT NULL
+  AND (6371 * acos(
+        cos(radians($1)) * cos(radians(latitude)) *
+        cos(radians(longitude) - radians($2)) +
+        sin(radians($1)) * sin(radians(latitude))
+    )) <= $3
+`
+
+type CountReportsByProximityParams struct {
+	Latitude  float64       `json:"latitude"`
+	Longitude float64       `json:"longitude"`
+	RadiusKm  pgtype.Float8 `json:"radius_km"`
+}
+
+// Count reports within radius (km) of a location
+func (q *Queries) CountReportsByProximity(ctx context.Context, arg CountReportsByProximityParams) (int64, error) {
+	row := q.db.QueryRow(ctx, CountReportsByProximity, arg.Latitude, arg.Longitude, arg.RadiusKm)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -86,7 +113,7 @@ INSERT INTO market_analysis_reports (
 ) VALUES (
     $1, $2, $3, $4, $5, NOW(), NOW()
 )
-RETURNING id, location, location_normalized, cache_key, status, error_message, generated_at, accessed_count, last_accessed_at, created_at, updated_at, data_freshness_date, report_size_bytes, zhvi_version, zori_version, redfin_version, fred_version, census_version, ai_context_version
+RETURNING id, location, location_normalized, cache_key, status, error_message, generated_at, accessed_count, last_accessed_at, created_at, updated_at, data_freshness_date, report_size_bytes, zhvi_version, zori_version, redfin_version, fred_version, census_version, ai_context_version, latitude, longitude
 `
 
 type CreateMarketAnalysisReportParams struct {
@@ -127,6 +154,8 @@ func (q *Queries) CreateMarketAnalysisReport(ctx context.Context, arg CreateMark
 		&i.FredVersion,
 		&i.CensusVersion,
 		&i.AiContextVersion,
+		&i.Latitude,
+		&i.Longitude,
 	)
 	return i, err
 }
@@ -167,7 +196,7 @@ func (q *Queries) DeleteUserAccess(ctx context.Context, arg DeleteUserAccessPara
 }
 
 const GetReportByCacheKey = `-- name: GetReportByCacheKey :one
-SELECT id, location, location_normalized, cache_key, status, error_message, generated_at, accessed_count, last_accessed_at, created_at, updated_at, data_freshness_date, report_size_bytes, zhvi_version, zori_version, redfin_version, fred_version, census_version, ai_context_version FROM market_analysis_reports
+SELECT id, location, location_normalized, cache_key, status, error_message, generated_at, accessed_count, last_accessed_at, created_at, updated_at, data_freshness_date, report_size_bytes, zhvi_version, zori_version, redfin_version, fred_version, census_version, ai_context_version, latitude, longitude FROM market_analysis_reports
 WHERE cache_key = $1
 `
 
@@ -194,12 +223,14 @@ func (q *Queries) GetReportByCacheKey(ctx context.Context, cacheKey string) (Mar
 		&i.FredVersion,
 		&i.CensusVersion,
 		&i.AiContextVersion,
+		&i.Latitude,
+		&i.Longitude,
 	)
 	return i, err
 }
 
 const GetReportByID = `-- name: GetReportByID :one
-SELECT id, location, location_normalized, cache_key, status, error_message, generated_at, accessed_count, last_accessed_at, created_at, updated_at, data_freshness_date, report_size_bytes, zhvi_version, zori_version, redfin_version, fred_version, census_version, ai_context_version FROM market_analysis_reports
+SELECT id, location, location_normalized, cache_key, status, error_message, generated_at, accessed_count, last_accessed_at, created_at, updated_at, data_freshness_date, report_size_bytes, zhvi_version, zori_version, redfin_version, fred_version, census_version, ai_context_version, latitude, longitude FROM market_analysis_reports
 WHERE id = $1
 `
 
@@ -226,6 +257,8 @@ func (q *Queries) GetReportByID(ctx context.Context, id string) (MarketAnalysisR
 		&i.FredVersion,
 		&i.CensusVersion,
 		&i.AiContextVersion,
+		&i.Latitude,
+		&i.Longitude,
 	)
 	return i, err
 }
@@ -266,7 +299,7 @@ func (q *Queries) GetReportStats(ctx context.Context) (GetReportStatsRow, error)
 
 const GetUserRecentAccess = `-- name: GetUserRecentAccess :many
 SELECT
-    mar.id, mar.location, mar.location_normalized, mar.cache_key, mar.status, mar.error_message, mar.generated_at, mar.accessed_count, mar.last_accessed_at, mar.created_at, mar.updated_at, mar.data_freshness_date, mar.report_size_bytes, mar.zhvi_version, mar.zori_version, mar.redfin_version, mar.fred_version, mar.census_version, mar.ai_context_version
+    mar.id, mar.location, mar.location_normalized, mar.cache_key, mar.status, mar.error_message, mar.generated_at, mar.accessed_count, mar.last_accessed_at, mar.created_at, mar.updated_at, mar.data_freshness_date, mar.report_size_bytes, mar.zhvi_version, mar.zori_version, mar.redfin_version, mar.fred_version, mar.census_version, mar.ai_context_version, mar.latitude, mar.longitude
 FROM user_market_analysis_access umaa
 JOIN market_analysis_reports mar ON umaa.report_id = mar.id
 WHERE umaa.user_id = $1
@@ -309,6 +342,8 @@ func (q *Queries) GetUserRecentAccess(ctx context.Context, arg GetUserRecentAcce
 			&i.FredVersion,
 			&i.CensusVersion,
 			&i.AiContextVersion,
+			&i.Latitude,
+			&i.Longitude,
 		); err != nil {
 			return nil, err
 		}
@@ -322,7 +357,7 @@ func (q *Queries) GetUserRecentAccess(ctx context.Context, arg GetUserRecentAcce
 
 const GetUserRecentAccessWithSearch = `-- name: GetUserRecentAccessWithSearch :many
 SELECT
-    mar.id, mar.location, mar.location_normalized, mar.cache_key, mar.status, mar.error_message, mar.generated_at, mar.accessed_count, mar.last_accessed_at, mar.created_at, mar.updated_at, mar.data_freshness_date, mar.report_size_bytes, mar.zhvi_version, mar.zori_version, mar.redfin_version, mar.fred_version, mar.census_version, mar.ai_context_version
+    mar.id, mar.location, mar.location_normalized, mar.cache_key, mar.status, mar.error_message, mar.generated_at, mar.accessed_count, mar.last_accessed_at, mar.created_at, mar.updated_at, mar.data_freshness_date, mar.report_size_bytes, mar.zhvi_version, mar.zori_version, mar.redfin_version, mar.fred_version, mar.census_version, mar.ai_context_version, mar.latitude, mar.longitude
 FROM user_market_analysis_access umaa
 JOIN market_analysis_reports mar ON umaa.report_id = mar.id
 WHERE umaa.user_id = $1
@@ -372,6 +407,8 @@ func (q *Queries) GetUserRecentAccessWithSearch(ctx context.Context, arg GetUser
 			&i.FredVersion,
 			&i.CensusVersion,
 			&i.AiContextVersion,
+			&i.Latitude,
+			&i.Longitude,
 		); err != nil {
 			return nil, err
 		}
@@ -397,7 +434,7 @@ func (q *Queries) IncrementReportAccessCount(ctx context.Context, cacheKey strin
 }
 
 const ListAllReports = `-- name: ListAllReports :many
-SELECT id, location, location_normalized, cache_key, status, error_message, generated_at, accessed_count, last_accessed_at, created_at, updated_at, data_freshness_date, report_size_bytes, zhvi_version, zori_version, redfin_version, fred_version, census_version, ai_context_version FROM market_analysis_reports
+SELECT id, location, location_normalized, cache_key, status, error_message, generated_at, accessed_count, last_accessed_at, created_at, updated_at, data_freshness_date, report_size_bytes, zhvi_version, zori_version, redfin_version, fred_version, census_version, ai_context_version, latitude, longitude FROM market_analysis_reports
 ORDER BY generated_at DESC NULLS LAST
 LIMIT $1 OFFSET $2
 `
@@ -436,6 +473,64 @@ func (q *Queries) ListAllReports(ctx context.Context, arg ListAllReportsParams) 
 			&i.FredVersion,
 			&i.CensusVersion,
 			&i.AiContextVersion,
+			&i.Latitude,
+			&i.Longitude,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListPopularReports = `-- name: ListPopularReports :many
+SELECT id, location, location_normalized, cache_key, status, error_message, generated_at, accessed_count, last_accessed_at, created_at, updated_at, data_freshness_date, report_size_bytes, zhvi_version, zori_version, redfin_version, fred_version, census_version, ai_context_version, latitude, longitude FROM market_analysis_reports
+WHERE status = 'completed'
+  AND accessed_count > 0
+ORDER BY accessed_count DESC, generated_at DESC
+LIMIT $2 OFFSET $1
+`
+
+type ListPopularReportsParams struct {
+	Offset int32 `json:"offset"`
+	Limit  int32 `json:"limit"`
+}
+
+// Fetch most accessed reports (popular nationwide)
+func (q *Queries) ListPopularReports(ctx context.Context, arg ListPopularReportsParams) ([]MarketAnalysisReport, error) {
+	rows, err := q.db.Query(ctx, ListPopularReports, arg.Offset, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MarketAnalysisReport{}
+	for rows.Next() {
+		var i MarketAnalysisReport
+		if err := rows.Scan(
+			&i.ID,
+			&i.Location,
+			&i.LocationNormalized,
+			&i.CacheKey,
+			&i.Status,
+			&i.ErrorMessage,
+			&i.GeneratedAt,
+			&i.AccessedCount,
+			&i.LastAccessedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DataFreshnessDate,
+			&i.ReportSizeBytes,
+			&i.ZhviVersion,
+			&i.ZoriVersion,
+			&i.RedfinVersion,
+			&i.FredVersion,
+			&i.CensusVersion,
+			&i.AiContextVersion,
+			&i.Latitude,
+			&i.Longitude,
 		); err != nil {
 			return nil, err
 		}
@@ -448,7 +543,7 @@ func (q *Queries) ListAllReports(ctx context.Context, arg ListAllReportsParams) 
 }
 
 const ListRecentReports = `-- name: ListRecentReports :many
-SELECT id, location, location_normalized, cache_key, status, error_message, generated_at, accessed_count, last_accessed_at, created_at, updated_at, data_freshness_date, report_size_bytes, zhvi_version, zori_version, redfin_version, fred_version, census_version, ai_context_version FROM market_analysis_reports
+SELECT id, location, location_normalized, cache_key, status, error_message, generated_at, accessed_count, last_accessed_at, created_at, updated_at, data_freshness_date, report_size_bytes, zhvi_version, zori_version, redfin_version, fred_version, census_version, ai_context_version, latitude, longitude FROM market_analysis_reports
 WHERE status = 'completed'
 ORDER BY generated_at DESC
 LIMIT $1 OFFSET $2
@@ -488,6 +583,151 @@ func (q *Queries) ListRecentReports(ctx context.Context, arg ListRecentReportsPa
 			&i.FredVersion,
 			&i.CensusVersion,
 			&i.AiContextVersion,
+			&i.Latitude,
+			&i.Longitude,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListReportsByLocation = `-- name: ListReportsByLocation :many
+SELECT id, location, location_normalized, cache_key, status, error_message, generated_at, accessed_count, last_accessed_at, created_at, updated_at, data_freshness_date, report_size_bytes, zhvi_version, zori_version, redfin_version, fred_version, census_version, ai_context_version, latitude, longitude FROM market_analysis_reports
+WHERE location_normalized = LOWER($1)
+  AND status = 'completed'
+ORDER BY generated_at DESC
+LIMIT $2
+`
+
+type ListReportsByLocationParams struct {
+	Location string `json:"location"`
+	Limit    int32  `json:"limit"`
+}
+
+// Fetch reports for an exact location (city, state)
+func (q *Queries) ListReportsByLocation(ctx context.Context, arg ListReportsByLocationParams) ([]MarketAnalysisReport, error) {
+	rows, err := q.db.Query(ctx, ListReportsByLocation, arg.Location, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MarketAnalysisReport{}
+	for rows.Next() {
+		var i MarketAnalysisReport
+		if err := rows.Scan(
+			&i.ID,
+			&i.Location,
+			&i.LocationNormalized,
+			&i.CacheKey,
+			&i.Status,
+			&i.ErrorMessage,
+			&i.GeneratedAt,
+			&i.AccessedCount,
+			&i.LastAccessedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DataFreshnessDate,
+			&i.ReportSizeBytes,
+			&i.ZhviVersion,
+			&i.ZoriVersion,
+			&i.RedfinVersion,
+			&i.FredVersion,
+			&i.CensusVersion,
+			&i.AiContextVersion,
+			&i.Latitude,
+			&i.Longitude,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListReportsByProximity = `-- name: ListReportsByProximity :many
+
+SELECT
+    id,
+    location,
+    location_normalized,
+    cache_key,
+    status,
+    generated_at,
+    created_at,
+    accessed_count,
+    (6371 * acos(
+        cos(radians($1)) * cos(radians(latitude)) *
+        cos(radians(longitude) - radians($2)) +
+        sin(radians($1)) * sin(radians(latitude))
+    ))::DOUBLE PRECISION AS distance_km
+FROM market_analysis_reports
+WHERE status = 'completed'
+  AND latitude IS NOT NULL
+  AND longitude IS NOT NULL
+  AND (6371 * acos(
+        cos(radians($1)) * cos(radians(latitude)) *
+        cos(radians(longitude) - radians($2)) +
+        sin(radians($1)) * sin(radians(latitude))
+    )) <= $3
+ORDER BY distance_km ASC
+LIMIT $5 OFFSET $4
+`
+
+type ListReportsByProximityParams struct {
+	Latitude  float64       `json:"latitude"`
+	Longitude float64       `json:"longitude"`
+	RadiusKm  pgtype.Float8 `json:"radius_km"`
+	Offset    int32         `json:"offset"`
+	Limit     int32         `json:"limit"`
+}
+
+type ListReportsByProximityRow struct {
+	ID                 string             `json:"id"`
+	Location           string             `json:"location"`
+	LocationNormalized string             `json:"location_normalized"`
+	CacheKey           string             `json:"cache_key"`
+	Status             string             `json:"status"`
+	GeneratedAt        pgtype.Timestamptz `json:"generated_at"`
+	CreatedAt          time.Time          `json:"created_at"`
+	AccessedCount      int32              `json:"accessed_count"`
+	DistanceKm         float64            `json:"distance_km"`
+}
+
+// Proximity-Based Queries (ADR-087 Phase 5: Intelligent Preloading)
+// Fetch reports within radius (km) of a location using Haversine formula
+func (q *Queries) ListReportsByProximity(ctx context.Context, arg ListReportsByProximityParams) ([]ListReportsByProximityRow, error) {
+	rows, err := q.db.Query(ctx, ListReportsByProximity,
+		arg.Latitude,
+		arg.Longitude,
+		arg.RadiusKm,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListReportsByProximityRow{}
+	for rows.Next() {
+		var i ListReportsByProximityRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Location,
+			&i.LocationNormalized,
+			&i.CacheKey,
+			&i.Status,
+			&i.GeneratedAt,
+			&i.CreatedAt,
+			&i.AccessedCount,
+			&i.DistanceKm,
 		); err != nil {
 			return nil, err
 		}
@@ -500,7 +740,7 @@ func (q *Queries) ListRecentReports(ctx context.Context, arg ListRecentReportsPa
 }
 
 const ListReportsWithSearch = `-- name: ListReportsWithSearch :many
-SELECT id, location, location_normalized, cache_key, status, error_message, generated_at, accessed_count, last_accessed_at, created_at, updated_at, data_freshness_date, report_size_bytes, zhvi_version, zori_version, redfin_version, fred_version, census_version, ai_context_version FROM market_analysis_reports
+SELECT id, location, location_normalized, cache_key, status, error_message, generated_at, accessed_count, last_accessed_at, created_at, updated_at, data_freshness_date, report_size_bytes, zhvi_version, zori_version, redfin_version, fred_version, census_version, ai_context_version, latitude, longitude FROM market_analysis_reports
 WHERE location ILIKE '%' || $3 || '%'
 ORDER BY generated_at DESC NULLS LAST
 LIMIT $1 OFFSET $2
@@ -541,6 +781,8 @@ func (q *Queries) ListReportsWithSearch(ctx context.Context, arg ListReportsWith
 			&i.FredVersion,
 			&i.CensusVersion,
 			&i.AiContextVersion,
+			&i.Latitude,
+			&i.Longitude,
 		); err != nil {
 			return nil, err
 		}
@@ -572,6 +814,26 @@ type TrackUserAccessParams struct {
 // User Access Tracking
 func (q *Queries) TrackUserAccess(ctx context.Context, arg TrackUserAccessParams) error {
 	_, err := q.db.Exec(ctx, TrackUserAccess, arg.ID, arg.UserID, arg.ReportID)
+	return err
+}
+
+const UpdateReportCoordinates = `-- name: UpdateReportCoordinates :exec
+UPDATE market_analysis_reports
+SET latitude = $1,
+    longitude = $2,
+    updated_at = NOW()
+WHERE cache_key = $3
+`
+
+type UpdateReportCoordinatesParams struct {
+	Latitude  pgtype.Float8 `json:"latitude"`
+	Longitude pgtype.Float8 `json:"longitude"`
+	CacheKey  string        `json:"cache_key"`
+}
+
+// Update latitude/longitude for a report
+func (q *Queries) UpdateReportCoordinates(ctx context.Context, arg UpdateReportCoordinatesParams) error {
+	_, err := q.db.Exec(ctx, UpdateReportCoordinates, arg.Latitude, arg.Longitude, arg.CacheKey)
 	return err
 }
 

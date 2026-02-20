@@ -11,6 +11,41 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const BatchGetAnalysisCacheByKeys = `-- name: BatchGetAnalysisCacheByKeys :many
+SELECT key, content, "fullReport"
+FROM analysis_cache
+WHERE key = ANY($1::text[])
+  AND "supersededBy" IS NULL
+`
+
+type BatchGetAnalysisCacheByKeysRow struct {
+	Key        string      `json:"key"`
+	Content    string      `json:"content"`
+	FullReport pgtype.Text `json:"fullReport"`
+}
+
+// Batch fetch cache entries for multiple keys (to avoid N+1 queries)
+// Only fetch fields needed for preview generation (not full metricsData/narrativeData)
+func (q *Queries) BatchGetAnalysisCacheByKeys(ctx context.Context, keys []string) ([]BatchGetAnalysisCacheByKeysRow, error) {
+	rows, err := q.db.Query(ctx, BatchGetAnalysisCacheByKeys, keys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BatchGetAnalysisCacheByKeysRow{}
+	for rows.Next() {
+		var i BatchGetAnalysisCacheByKeysRow
+		if err := rows.Scan(&i.Key, &i.Content, &i.FullReport); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const DeleteAnalysisCacheByUserAndKey = `-- name: DeleteAnalysisCacheByUserAndKey :exec
 DELETE FROM analysis_cache
 WHERE "userId" = $1 AND key = $2

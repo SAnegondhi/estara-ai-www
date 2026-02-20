@@ -11,6 +11,53 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const GetCityByNameAndState = `-- name: GetCityByNameAndState :one
+SELECT
+    id,
+    city,
+    state_id,
+    state_name,
+    latitude,
+    longitude,
+    population
+FROM city_states
+WHERE LOWER(city) = LOWER($1)
+  AND state_id = $2
+ORDER BY population DESC
+LIMIT 1
+`
+
+type GetCityByNameAndStateParams struct {
+	City    string `json:"city"`
+	StateID string `json:"state_id"`
+}
+
+type GetCityByNameAndStateRow struct {
+	ID         string  `json:"id"`
+	City       string  `json:"city"`
+	StateID    string  `json:"state_id"`
+	StateName  string  `json:"state_name"`
+	Latitude   float64 `json:"latitude"`
+	Longitude  float64 `json:"longitude"`
+	Population int32   `json:"population"`
+}
+
+// Get exact city by name and state for coordinate lookup
+func (q *Queries) GetCityByNameAndState(ctx context.Context, arg GetCityByNameAndStateParams) (GetCityByNameAndStateRow, error) {
+	row := q.db.QueryRow(ctx, GetCityByNameAndState, arg.City, arg.StateID)
+	var i GetCityByNameAndStateRow
+	err := row.Scan(
+		&i.ID,
+		&i.City,
+		&i.StateID,
+		&i.StateName,
+		&i.Latitude,
+		&i.Longitude,
+		&i.Population,
+	)
+	return i, err
+}
+
 const SearchLocationsByCity = `-- name: SearchLocationsByCity :many
 SELECT
     id,

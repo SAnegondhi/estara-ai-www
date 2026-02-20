@@ -13,25 +13,28 @@ import (
 	"github.com/estara-ai/www/internal/db/marketqueries"
 	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
+	"github.com/estara-ai/www/internal/services/geolocation"
 	"github.com/estara-ai/www/pkg/httputil"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // Handler handles location-related HTTP requests
 type Handler struct {
-	store  *db.Store
-	redis  *redisClient.Client
-	cfg    *config.Config
-	logger *slog.Logger
+	store      *db.Store
+	redis      *redisClient.Client
+	cfg        *config.Config
+	geoService *geolocation.MaxMindService
+	logger     *slog.Logger
 }
 
 // NewHandler creates a new location handler
-func NewHandler(store *db.Store, redis *redisClient.Client, cfg *config.Config) *Handler {
+func NewHandler(store *db.Store, redis *redisClient.Client, cfg *config.Config, geoService *geolocation.MaxMindService) *Handler {
 	return &Handler{
-		store:  store,
-		redis:  redis,
-		cfg:    cfg,
-		logger: slog.Default().With("component", "location_handler"),
+		store:      store,
+		redis:      redis,
+		cfg:        cfg,
+		geoService: geoService,
+		logger:     slog.Default().With("component", "location_handler"),
 	}
 }
 
@@ -364,4 +367,81 @@ func limitSuggestions(suggestions []LocationSuggestion, limit int) []LocationSug
 		return suggestions
 	}
 	return suggestions[:limit]
+}
+
+// LocationDetectionResponse represents the response from IP geolocation
+type LocationDetectionResponse struct {
+	Success  bool                          `json:"success"`
+	Location *geolocation.LocationResult   `json:"location"`
+	Reason   string                        `json:"reason,omitempty"`
+}
+
+// DetectLocation detects user's location based on their IP address
+// GET /api/location/detect
+func (h *Handler) DetectLocation(w http.ResponseWriter, r *http.Request) {
+	// Extract client IP
+	clientIP := extractClientIP(r)
+
+	h.logger.Debug("detecting location from IP", "ip", clientIP)
+
+	// If no geolocation service configured, return null location
+	if h.geoService == nil {
+		httputil.JSON(w, http.StatusOK, LocationDetectionResponse{
+			Success:  true,
+			Location: nil,
+			Reason:   "Geolocation service not configured",
+		})
+		return
+	}
+
+	// Lookup location via MaxMind
+	location, err := h.geoService.LookupIP(clientIP)
+	if err != nil {
+		h.logger.Error("geolocation lookup failed", "error", err, "ip", clientIP)
+		httputil.JSON(w, http.StatusOK, LocationDetectionResponse{
+			Success:  true,
+			Location: nil,
+			Reason:   "Geolocation lookup error",
+		})
+		return
+	}
+
+	// If location is invalid (private IP, unknown, etc.)
+	if !location.IsValid {
+		httputil.JSON(w, http.StatusOK, LocationDetectionResponse{
+			Success:  true,
+			Location: nil,
+			Reason:   "IP geolocation failed or private IP",
+		})
+		return
+	}
+
+	// Return valid location
+	httputil.JSON(w, http.StatusOK, LocationDetectionResponse{
+		Success:  true,
+		Location: location,
+	})
+}
+
+// extractClientIP extracts the real client IP from the request
+// Checks X-Forwarded-For, X-Real-IP, and RemoteAddr in order
+func extractClientIP(r *http.Request) string {
+	// Check X-Forwarded-For (first IP in comma-separated list)
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if idx := strings.Index(xff, ","); idx >= 0 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
+	}
+
+	// Check X-Real-IP
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return strings.TrimSpace(xri)
+	}
+
+	// Fallback to RemoteAddr (strip port)
+	if idx := strings.LastIndex(r.RemoteAddr, ":"); idx >= 0 {
+		return r.RemoteAddr[:idx]
+	}
+	return r.RemoteAddr
 }

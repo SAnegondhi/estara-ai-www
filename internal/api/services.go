@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 
 	"github.com/estara-ai/www/internal/config"
 	dbstore "github.com/estara-ai/www/internal/db"
@@ -15,6 +17,7 @@ import (
 	aicontext "github.com/estara-ai/www/internal/services/ai/context"
 	"github.com/estara-ai/www/internal/services/ai/prompts"
 	"github.com/estara-ai/www/internal/services/cache"
+	"github.com/estara-ai/www/internal/services/geolocation"
 	"github.com/estara-ai/www/internal/services/geospatial"
 	"github.com/estara-ai/www/internal/services/investment/optimization"
 	"github.com/estara-ai/www/internal/services/jobs/queue"
@@ -25,6 +28,7 @@ import (
 	"github.com/estara-ai/www/internal/services/market/census"
 	"github.com/estara-ai/www/internal/services/market/economics"
 	"github.com/estara-ai/www/internal/services/market/fred"
+	"github.com/estara-ai/www/internal/services/market/refresh"
 	"github.com/estara-ai/www/internal/services/market/timeseries"
 	"github.com/estara-ai/www/internal/services/market/trends"
 	"github.com/estara-ai/www/internal/services/property/finder"
@@ -40,6 +44,8 @@ type Services struct {
 	BLSService           *bls.Service         // BLS labor market service (ADR-068 Phase 3)
 	EconomicsAggregator  *economics.Aggregator // Unified economic data aggregator (ADR-068 Phase 4)
 	TrendsService        *trends.Service        // Market trends service (ADR-073)
+	RefreshService       *refresh.Service       // Event-driven refresh service (ADR-087 Phase 8-9)
+	GeoLocation          *geolocation.MaxMindService // IP geolocation service (ADR-087 Phase 5)
 	ChatAgent            *agents.EvaluationChatAgent
 	JobQueue             *queue.Queue
 	WorkerPool           *queue.WorkerPool
@@ -121,6 +127,24 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 			OnAPIError: apiErrorAlert,
 		})
 		logger.Info("anthropic client initialized")
+	}
+
+	// Initialize MaxMind GeoIP service for IP-based location detection
+	// Looks for GeoLite2-City.mmdb in data/geolite2/ directory
+	geoDBPath := filepath.Join("data", "geolite2", "GeoLite2-City.mmdb")
+	if _, err := os.Stat(geoDBPath); err == nil {
+		geoService, err := geolocation.NewMaxMindService(geoDBPath)
+		if err != nil {
+			logger.Warn("failed to initialize geolocation service", "error", err, "path", geoDBPath)
+		} else {
+			services.GeoLocation = geoService
+			logger.Info("geolocation service initialized", "db_path", geoDBPath)
+		}
+	} else {
+		logger.Info("geolocation database not found, IP detection disabled",
+			"path", geoDBPath,
+			"hint", "download GeoLite2-City.mmdb from MaxMind to enable IP geolocation",
+		)
 	}
 
 	// Create job queue (in-memory; Redis is optional backup only)
@@ -281,6 +305,22 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 			Cache: services.HybridCache,
 		})
 		logger.Info("market trends service initialized")
+	}
+
+	// Create refresh service for event-driven refresh (ADR-087 Phase 8-9)
+	if cfg.DB != nil && cfg.DB.Main != nil && services.MarketData != nil && services.EconomicsAggregator != nil && metroReader != nil {
+		mainQueries := queries.New(cfg.DB.Main)
+		services.RefreshService = refresh.NewService(refresh.Config{
+			Queries:         mainQueries,
+			Market:          services.MarketData,
+			Economics:       services.EconomicsAggregator,
+			Metro:           metroReader,
+			ProactiveTopN:   100, // Refresh top 100 reports after data update
+			RateLimit:       10,  // Max 10 concurrent refreshes
+			EnableProactive: true,
+			EnableReactive:  true,
+		})
+		logger.Info("refresh service initialized", "proactive_top_n", 100)
 	}
 
 	// Create evaluation chat agent
@@ -447,5 +487,11 @@ func (s *Services) Close() {
 	}
 	if s.JobQueue != nil {
 		s.JobQueue.Close()
+	}
+	// Close geolocation service
+	if s.GeoLocation != nil {
+		if err := s.GeoLocation.Close(); err != nil {
+			slog.Warn("failed to close geolocation service", "error", err)
+		}
 	}
 }

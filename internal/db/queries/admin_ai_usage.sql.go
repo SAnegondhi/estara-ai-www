@@ -30,6 +30,63 @@ func (q *Queries) CountAIUsageRecords(ctx context.Context, arg CountAIUsageRecor
 	return count, err
 }
 
+const CreateAIUsage = `-- name: CreateAIUsage :exec
+
+INSERT INTO ai_usage (
+    id, "userId", "sessionId", model,
+    "inputTokens", "outputTokens", "totalTokens",
+    "baseInputCost", "outputCost", "totalCost",
+    "requestType", feature, location, "requestId",
+    "processingTime", "updatedAt"
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7,
+    $8, $9, $10,
+    $11, $12, $13, $14,
+    $15, NOW()
+)
+`
+
+type CreateAIUsageParams struct {
+	ID             string         `json:"id"`
+	UserID         string         `json:"user_id"`
+	SessionID      string         `json:"session_id"`
+	Model          string         `json:"model"`
+	InputTokens    int32          `json:"input_tokens"`
+	OutputTokens   int32          `json:"output_tokens"`
+	TotalTokens    int32          `json:"total_tokens"`
+	BaseInputCost  pgtype.Numeric `json:"base_input_cost"`
+	OutputCost     pgtype.Numeric `json:"output_cost"`
+	TotalCost      pgtype.Numeric `json:"total_cost"`
+	RequestType    string         `json:"request_type"`
+	Feature        string         `json:"feature"`
+	Location       pgtype.Text    `json:"location"`
+	RequestID      string         `json:"request_id"`
+	ProcessingTime pgtype.Int4    `json:"processing_time"`
+}
+
+// Admin AI Usage Analytics Queries
+func (q *Queries) CreateAIUsage(ctx context.Context, arg CreateAIUsageParams) error {
+	_, err := q.db.Exec(ctx, CreateAIUsage,
+		arg.ID,
+		arg.UserID,
+		arg.SessionID,
+		arg.Model,
+		arg.InputTokens,
+		arg.OutputTokens,
+		arg.TotalTokens,
+		arg.BaseInputCost,
+		arg.OutputCost,
+		arg.TotalCost,
+		arg.RequestType,
+		arg.Feature,
+		arg.Location,
+		arg.RequestID,
+		arg.ProcessingTime,
+	)
+	return err
+}
+
 const GetAIUsageByFeature = `-- name: GetAIUsageByFeature :many
 SELECT
     feature,
@@ -96,7 +153,6 @@ func (q *Queries) GetAIUsageCacheHitRate(ctx context.Context) (GetAIUsageCacheHi
 }
 
 const GetAIUsageStatsAllTime = `-- name: GetAIUsageStatsAllTime :one
-
 SELECT
     COUNT(*) as total_requests,
     COALESCE(SUM("inputTokens"), 0)::bigint as total_input_tokens,
@@ -112,7 +168,6 @@ type GetAIUsageStatsAllTimeRow struct {
 	TotalCost         interface{} `json:"total_cost"`
 }
 
-// Admin AI Usage Analytics Queries
 func (q *Queries) GetAIUsageStatsAllTime(ctx context.Context) (GetAIUsageStatsAllTimeRow, error) {
 	row := q.db.QueryRow(ctx, GetAIUsageStatsAllTime)
 	var i GetAIUsageStatsAllTimeRow

@@ -609,6 +609,8 @@ type MarketAnalysisReport struct {
 	FredVersion        pgtype.Text        `json:"fred_version"`
 	CensusVersion      pgtype.Text        `json:"census_version"`
 	AiContextVersion   pgtype.Text        `json:"ai_context_version"`
+	Latitude           pgtype.Float8      `json:"latitude"`
+	Longitude          pgtype.Float8      `json:"longitude"`
 }
 
 type PasswordResetToken struct {
@@ -644,6 +646,21 @@ type PropertyCache struct {
 	LastAccessedAt pgtype.Timestamp `json:"last_accessed_at"`
 	// Number of times this cache entry has been read
 	AccessCount int32 `json:"access_count"`
+}
+
+type PropertyFinderMetric struct {
+	ID                 string          `json:"id"`
+	UserID             pgtype.Text     `json:"user_id"`
+	SessionID          pgtype.Text     `json:"session_id"`
+	ProviderUsed       pgtype.Text     `json:"provider_used"`
+	ProvidersAttempted json.RawMessage `json:"providers_attempted"`
+	CacheHit           bool            `json:"cache_hit"`
+	ResultCount        int32           `json:"result_count"`
+	SearchTimeMs       pgtype.Int4     `json:"search_time_ms"`
+	TotalTimeMs        pgtype.Int4     `json:"total_time_ms"`
+	Location           pgtype.Text     `json:"location"`
+	SearchType         pgtype.Text     `json:"search_type"`
+	CreatedAt          time.Time       `json:"created_at"`
 }
 
 type Receipt struct {
@@ -852,6 +869,23 @@ type UserConsent struct {
 	IpAddress   string           `json:"ipAddress"`
 	UserAgent   string           `json:"userAgent"`
 	Timestamp   pgtype.Timestamp `json:"timestamp"`
+}
+
+type UserLocationActivity struct {
+	ID           string    `json:"id"`
+	UserID       string    `json:"user_id"`
+	Location     string    `json:"location"`
+	ActivityType string    `json:"activity_type"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type UserLocationPreference struct {
+	ID           string    `json:"id"`
+	UserID       string    `json:"user_id"`
+	Location     string    `json:"location"`
+	ViewCount    int32     `json:"view_count"`
+	LastViewedAt time.Time `json:"last_viewed_at"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type UserMarketAnalysisAccess struct {

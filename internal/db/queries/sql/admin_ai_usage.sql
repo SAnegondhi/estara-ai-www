@@ -1,5 +1,20 @@
 -- Admin AI Usage Analytics Queries
 
+-- name: CreateAIUsage :exec
+INSERT INTO ai_usage (
+    id, "userId", "sessionId", model,
+    "inputTokens", "outputTokens", "totalTokens",
+    "baseInputCost", "outputCost", "totalCost",
+    "requestType", feature, location, "requestId",
+    "processingTime", "updatedAt"
+) VALUES (
+    @id, @user_id, @session_id, @model,
+    @input_tokens, @output_tokens, @total_tokens,
+    @base_input_cost, @output_cost, @total_cost,
+    @request_type, @feature, @location, @request_id,
+    @processing_time, NOW()
+);
+
 -- name: GetAIUsageStatsAllTime :one
 SELECT
     COUNT(*) as total_requests,
