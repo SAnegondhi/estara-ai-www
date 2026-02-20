@@ -370,6 +370,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		// Trends history & caching
 		r.Post("/generate", handlers.Market.GenerateFullTrends)
 		r.Get("/history", handlers.Market.GetTrendsHistory)
+		r.Get("/report", handlers.Market.GetTrendReport) // Fetch cached trend report by cache key
 		r.Delete("/history/{id}", handlers.Market.DismissTrend)
 	})
 

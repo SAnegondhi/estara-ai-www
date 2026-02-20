@@ -4,6 +4,7 @@ package market
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/estara-ai/www/internal/api/middleware"
@@ -1304,4 +1306,63 @@ func (h *Handler) storeTrendInCache(ctx context.Context, userID, location, cache
 	})
 
 	return err
+}
+
+// GetTrendReport retrieves a cached trend report by cache key
+// Endpoint: GET /api/market-trends/report?key=<cacheKey>
+func (h *Handler) GetTrendReport(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user := middleware.GetUserFromContext(ctx)
+	if user == nil {
+		httputil.Error(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	cacheKey := r.URL.Query().Get("key")
+	if cacheKey == "" {
+		httputil.BadRequest(w, "key query parameter is required")
+		return
+	}
+
+	q := h.store.Q()
+
+	// Fetch cached trend report from analysis_cache table
+	cache, err := q.GetCacheByKey(ctx, cacheKey)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			h.logger.Warn("trend report not found",
+				"key", cacheKey,
+				"user_id", user.UserID,
+			)
+			httputil.NotFound(w, "trend report not found")
+			return
+		}
+		h.logger.Error("failed to get trend report", "error", err, "key", cacheKey)
+		httputil.Error(w, http.StatusInternalServerError, "failed to load trend report")
+		return
+	}
+
+	h.logger.Info("trend report retrieved",
+		"key", cacheKey,
+		"user_id", user.UserID,
+		"creator_user_id", cache.UserId,
+		"location", cache.Location,
+	)
+
+	// Parse the cached content (should be TrendsResult JSON)
+	var trendsResult map[string]interface{}
+	if err := json.Unmarshal([]byte(cache.Content), &trendsResult); err != nil {
+		h.logger.Error("failed to parse trend report content", "error", err, "key", cacheKey)
+		httputil.Error(w, http.StatusInternalServerError, "failed to parse trend report")
+		return
+	}
+
+	// Return the full trends result
+	resp := map[string]interface{}{
+		"success":  true,
+		"location": cache.Location,
+		"data":     trendsResult,
+	}
+
+	httputil.JSON(w, http.StatusOK, resp)
 }
