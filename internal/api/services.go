@@ -20,6 +20,8 @@ import (
 	"github.com/estara-ai/www/internal/services/geolocation"
 	"github.com/estara-ai/www/internal/services/geospatial"
 	"github.com/estara-ai/www/internal/services/investment/optimization"
+	"github.com/estara-ai/www/internal/services/investment/projection"
+	"github.com/estara-ai/www/internal/services/investment/verdict"
 	"github.com/estara-ai/www/internal/services/jobs/queue"
 	"github.com/estara-ai/www/internal/services/jobs/workers"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
@@ -53,6 +55,7 @@ type Services struct {
 	PropertyCache        *cache.PropertyCache // Size-based FIFO cache for property reads (ADR-061)
 	Anthropic            *anthropic.Client
 	MemoService          *memo.Service         // Decision Memo generation (ADR-079)
+	FrontierOptimizer    *optimization.FrontierOptimizer // ADR-088 Phase 9: Interactive workspace
 }
 
 // ServiceConfig holds configuration for creating services
@@ -427,7 +430,37 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 			)
 		}
 
+		// Create FrontierOptimizer for ADR-088 Phase 9 interactive workspace endpoints
+		foLogger := slog.Default().With("component", "frontier_optimizer")
+		services.FrontierOptimizer = optimization.NewFrontierOptimizer(
+			foLogger,
+			optimization.NewMarkowitzCalculator(),
+			projection.NewReinvestmentModeler(foLogger),
+			projection.NewMonteCarloSimulator(foLogger),
+			projection.NewScenarioGenerator(foLogger),
+			verdict.NewGenerator(foLogger),
+		)
+		logger.Info("frontier optimizer initialized (ADR-088 Phase 9)")
+
 		// Create investment planning worker and register with queue
+		// Create Store for saving completed scenarios
+		var investmentStore *dbstore.Store
+		if cfg.DB != nil {
+			investmentStore = dbstore.NewStore(cfg.DB)
+		}
+
+		investmentWorker := workers.NewInvestmentPlanningWorker(workers.InvestmentPlanningWorkerConfig{
+			Optimizer: optimizer,
+			Finder:    services.PropertyFinder,
+			Market:    services.MarketData,
+			Cache:     services.HybridCache,
+			Store:     investmentStore, // For saving completed scenarios to database
+			Client:    services.Anthropic,
+			Redis:     cfg.Redis,
+		})
+		services.JobQueue.RegisterHandler(queue.JobTypeInvestmentPlanning, investmentWorker.GetHandler())
+		logger.Info("investment planning worker registered")
+
 		// Create decision memo service and worker (ADR-079)
 		if services.Anthropic != nil {
 			var memoQueries *queries.Queries
@@ -450,15 +483,6 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 			services.JobQueue.RegisterHandler(queue.JobTypeDecisionMemo, memoWorker.GetHandler())
 			logger.Info("decision memo worker registered")
 		}
-
-		investmentWorker := workers.NewInvestmentPlanningWorker(workers.InvestmentPlanningWorkerConfig{
-			Optimizer: optimizer,
-			Finder:    services.PropertyFinder,
-			Market:    services.MarketData,
-			Cache:     services.HybridCache,
-			Client:    services.Anthropic,
-			Redis:     cfg.Redis,
-		})
 		services.JobQueue.RegisterHandler(queue.JobTypeInvestmentPlanning, investmentWorker.GetHandler())
 		logger.Info("investment planning worker registered")
 

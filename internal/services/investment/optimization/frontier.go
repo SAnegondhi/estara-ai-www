@@ -12,6 +12,11 @@ import (
 	"github.com/estara-ai/www/internal/services/investment/verdict"
 )
 
+// ProgressFunc is called to report progress during frontier generation.
+// phase is 1-based (1=Validation, 2=Candidates, 3=Objectives, 4=Pareto, 5=Reinvestment, 6=MonteCarlo, 7=Scenarios, 8=Verdicts).
+// ADR-088 Phase 9: Used by SSE streaming handler for real-time progress tracking.
+type ProgressFunc func(phase int, totalPhases int, message string)
+
 // FrontierOptimizer generates Pareto-optimal portfolio configurations
 // ADR-088 Phase 3: Multi-objective optimization for efficient frontier
 type FrontierOptimizer struct {
@@ -69,14 +74,24 @@ type PortfolioConfiguration struct {
 	DominatedBy        int // Number of solutions that dominate this
 }
 
-// GenerateFrontier generates 3-5 Pareto-optimal portfolio configurations
-// ADR-088 Phase 3: Multi-objective NSGA-II-inspired algorithm
+// GenerateFrontier generates 3-5 Pareto-optimal portfolio configurations.
+// ADR-088 Phase 3: Multi-objective NSGA-II-inspired algorithm.
+// progress may be nil; when provided it receives 8-phase updates for SSE streaming (Phase 9).
 func (fo *FrontierOptimizer) GenerateFrontier(
 	ctx context.Context,
 	properties []investment.ScoredProperty,
 	profile investment.InvestorProfile,
 	params investment.InvestmentPlanningParams,
+	progress ProgressFunc,
 ) ([]investment.FrontierPoint, error) {
+	const totalPhases = 8
+	reportProgress := func(phase int, msg string) {
+		if progress != nil {
+			progress(phase, totalPhases, msg)
+		}
+	}
+
+	reportProgress(1, "Validating input properties")
 	fo.logger.Info("generating efficient frontier",
 		"totalProperties", len(properties),
 		"minPerConfig", fo.minProperties,
@@ -89,154 +104,33 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 	}
 
 	// Step 1: Generate candidate configurations with varying sizes
+	reportProgress(2, "Generating candidate portfolio configurations")
 	candidates := fo.generateCandidates(properties, profile)
 	fo.logger.Info("generated candidate configurations", "count", len(candidates))
 
 	// Step 2: Evaluate all objectives for each candidate
+	reportProgress(3, "Evaluating multi-objective portfolio metrics")
 	for i := range candidates {
 		fo.evaluateObjectives(&candidates[i], profile)
 	}
 
 	// Step 3: Apply Pareto dominance to find non-dominated solutions
+	reportProgress(4, "Finding Pareto-optimal configurations")
 	nonDominated := fo.findNonDominatedSolutions(candidates)
 	fo.logger.Info("found non-dominated solutions", "count", len(nonDominated))
 
 	// Step 4: Rank by Sharpe ratio and select top configurations
 	frontierConfigs := fo.selectFrontierPoints(nonDominated, fo.numConfigurations)
 
-	// Step 5: Convert to FrontierPoint format
+	// Step 5-8: Convert to FrontierPoint format with financial projections
+	reportProgress(5, "Calculating reinvestment plans")
 	frontierPoints := make([]investment.FrontierPoint, 0, len(frontierConfigs))
 	for i, config := range frontierConfigs {
-		// TODO Phase 4: Add context-aware theses (Phase 2b re-scoring)
-		// TODO Phase 5: Add reinvestment plan (Track A + Track B)
-		// TODO Phase 6: Add simulation results (Monte Carlo)
+		portfolioProps := fo.buildPortfolioProperties(config.Properties)
 
-		properties := make([]investment.PropertyInPortfolio, 0, len(config.Properties))
-		for _, prop := range config.Properties {
-			// Calculate financial metrics for this property
-			downPayment := int(float64(prop.Price) * 0.25) // 25% down
-			loanAmount := prop.Price - downPayment
-			monthlyPayment := fo.calculateMortgagePayment(loanAmount, 7.0, 30) // 7% rate, 30 years
-			monthlyCashFlow := prop.EstimatedRent - monthlyPayment - 500 // $500/mo expenses estimate
-			capRate := float64(prop.EstimatedRent*12) / float64(prop.Price) * 100
-			cashOnCash := float64(monthlyCashFlow*12) / float64(downPayment) * 100
-			dscr := float64(prop.EstimatedRent) / float64(monthlyPayment)
-
-			properties = append(properties, investment.PropertyInPortfolio{
-				Property:        prop,
-				DownPayment:     downPayment,
-				LoanAmount:      loanAmount,
-				MonthlyPayment:  monthlyPayment,
-				MonthlyCashFlow: monthlyCashFlow,
-				CapRate:         capRate,
-				CashOnCash:      cashOnCash,
-				DSCR:            dscr,
-				Score:           0, // TODO Phase 4: Add context-aware score
-			})
-		}
-
-		// ADR-088 Phase 6.2: Two-phase MC + Reinvestment pipeline
-		// Phase 1: Create preliminary reinvestment plan (Track A + Track B threshold)
-		preliminaryPlan, err := fo.reinvestModeler.CalculateReinvestmentPlan(ctx, &investment.FrontierPoint{
-			ConfigIndex: i,
-			Properties:  properties,
-		}, params, nil) // nil mcResults = placeholder Track B values
-		if err != nil {
-			fo.logger.Warn("failed to calculate preliminary reinvestment plan, using nil",
-				"configIndex", i,
-				"error", err,
-			)
-			preliminaryPlan = nil
-		}
-
-		// Phase 2: Run Monte Carlo simulation with preliminary plan
-		var mcResults *investment.SimulationResults
-		if fo.mcSimulator != nil && preliminaryPlan != nil {
-			mcResults, err = fo.mcSimulator.SimulateConfiguration(ctx, &investment.FrontierPoint{
-				ConfigIndex: i,
-				Properties:  properties,
-			}, preliminaryPlan)
-			if err != nil {
-				fo.logger.Warn("Monte Carlo simulation failed, using nil results",
-					"configIndex", i,
-					"error", err,
-				)
-				mcResults = nil
-			}
-		}
-
-		// Phase 3: Update reinvestment plan with MC-derived Track B statistics
-		var reinvestPlan *investment.DualTrackReinvestment
-		if mcResults != nil {
-			reinvestPlan, err = fo.reinvestModeler.CalculateReinvestmentPlan(ctx, &investment.FrontierPoint{
-				ConfigIndex: i,
-				Properties:  properties,
-			}, params, mcResults) // Pass MC results for Track B statistics
-			if err != nil {
-				fo.logger.Warn("failed to update reinvestment plan with MC results, using preliminary",
-					"configIndex", i,
-					"error", err,
-				)
-				reinvestPlan = preliminaryPlan
-			}
-		} else {
-			// No MC results, use preliminary plan
-			reinvestPlan = preliminaryPlan
-		}
-
-		// Phase 4: Generate decision support scenarios (ADR-088 Phase 7)
-		var scenarios *investment.ScenarioSet
-		if fo.scenarioGenerator != nil && mcResults != nil {
-			scenarios, err = fo.scenarioGenerator.GenerateScenarios(ctx, mcResults, &investment.FrontierPoint{
-				ConfigIndex: i,
-				Properties:  properties,
-			})
-			if err != nil {
-				fo.logger.Warn("failed to generate scenarios, using nil",
-					"configIndex", i,
-					"error", err,
-				)
-				scenarios = nil
-			}
-		}
-
-		// Phase 5: Generate decision verdict (ADR-088 Phase 8)
-		var decisionVerdict *investment.DecisionVerdict
-		if fo.verdictGenerator != nil && scenarios != nil {
-			// For now, no wealth target (0 = no target)
-			// Future: extract from profile or request params
-			decisionVerdict, err = fo.verdictGenerator.GenerateVerdict(ctx, &investment.FrontierPoint{
-				ConfigIndex:         i,
-				Properties:          properties,
-				ExpectedReturn:      config.Objectives.ExpectedReturn,
-				PortfolioVolatility: config.Objectives.PortfolioVolatility,
-				SharpeScore:         config.SharpeScore,
-				ConcentrationIndex:  config.Objectives.ConcentrationIndex,
-				Scenarios:           scenarios,
-				ReinvestmentPlan:    reinvestPlan,
-			}, profile, 0) // wealth target = 0 (no target for now)
-			if err != nil {
-				fo.logger.Warn("failed to generate verdict, using nil",
-					"configIndex", i,
-					"error", err,
-				)
-				decisionVerdict = nil
-			}
-		}
-
-		frontierPoints = append(frontierPoints, investment.FrontierPoint{
-			ConfigIndex:         i,
-			Properties:          properties,
-			ExpectedReturn:      config.Objectives.ExpectedReturn,
-			PortfolioVolatility: config.Objectives.PortfolioVolatility,
-			SharpeScore:         config.SharpeScore,
-			ConcentrationIndex:  config.Objectives.ConcentrationIndex,
-			StressTestEquity:    config.Objectives.StressTestEquity,
-			SimulationResults:   mcResults,       // Phase 6: Monte Carlo simulation results
-			ReinvestmentPlan:    reinvestPlan,    // Phase 5+6: Dual-track with MC-updated Track B
-			Scenarios:           scenarios,       // Phase 7: Decision support scenarios
-			DecisionVerdict:     decisionVerdict, // Phase 8: AI recommendation
-		})
+		// Run phases 5-8 (Reinvestment → MC → Scenarios → Verdict)
+		fp := fo.regenerateConfigPhases(ctx, i, portfolioProps, config, profile, params, progress)
+		frontierPoints = append(frontierPoints, fp)
 	}
 
 	fo.logger.Info("frontier generation complete",
@@ -246,6 +140,242 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 	)
 
 	return frontierPoints, nil
+}
+
+// buildPortfolioProperties converts ScoredProperty slice to PropertyInPortfolio.
+// Defaults: 7% mortgage rate, 25% down payment, 30-year term.
+func (fo *FrontierOptimizer) buildPortfolioProperties(
+	scoredProps []investment.Property,
+) []investment.PropertyInPortfolio {
+	mortgageRate := 7.0
+	downPaymentPct := 0.25
+
+	props := make([]investment.PropertyInPortfolio, 0, len(scoredProps))
+	for _, prop := range scoredProps {
+		downPayment := int(float64(prop.Price) * downPaymentPct)
+		loanAmount := prop.Price - downPayment
+		monthlyPayment := fo.calculateMortgagePayment(loanAmount, mortgageRate, 30)
+		monthlyCashFlow := prop.EstimatedRent - monthlyPayment - 500 // $500/mo expenses estimate
+		capRate := float64(prop.EstimatedRent*12) / float64(prop.Price) * 100
+		cashOnCash := float64(monthlyCashFlow*12) / float64(downPayment) * 100
+		dscr := float64(prop.EstimatedRent) / float64(monthlyPayment)
+
+		props = append(props, investment.PropertyInPortfolio{
+			Property:        prop,
+			DownPayment:     downPayment,
+			LoanAmount:      loanAmount,
+			MonthlyPayment:  monthlyPayment,
+			MonthlyCashFlow: monthlyCashFlow,
+			CapRate:         capRate,
+			CashOnCash:      cashOnCash,
+			DSCR:            dscr,
+		})
+	}
+	return props
+}
+
+// regenerateConfigPhases runs phases 5-8 (Reinvestment, Monte Carlo, Scenarios, Verdict) for
+// a single frontier configuration. Extracted to support the /recalculate fast path (Phase 9).
+func (fo *FrontierOptimizer) regenerateConfigPhases(
+	ctx context.Context,
+	configIndex int,
+	properties []investment.PropertyInPortfolio,
+	config PortfolioConfiguration,
+	profile investment.InvestorProfile,
+	params investment.InvestmentPlanningParams,
+	progress ProgressFunc,
+) investment.FrontierPoint {
+	const totalPhases = 8
+
+	// ADR-088 Phase 6.2: Two-phase MC + Reinvestment pipeline
+	// Phase 1: Create preliminary reinvestment plan (Track A + Track B threshold)
+	preliminaryPlan, err := fo.reinvestModeler.CalculateReinvestmentPlan(ctx, &investment.FrontierPoint{
+		ConfigIndex: configIndex,
+		Properties:  properties,
+	}, params, nil) // nil mcResults = placeholder Track B values
+	if err != nil {
+		fo.logger.Warn("failed to calculate preliminary reinvestment plan, using nil",
+			"configIndex", configIndex,
+			"error", err,
+		)
+		preliminaryPlan = nil
+	}
+
+	// Phase 2: Run Monte Carlo simulation with preliminary plan
+	if progress != nil {
+		progress(6, totalPhases, fmt.Sprintf("Running Monte Carlo simulation for config %d", configIndex))
+	}
+	var mcResults *investment.SimulationResults
+	if fo.mcSimulator != nil && preliminaryPlan != nil {
+		mcResults, err = fo.mcSimulator.SimulateConfiguration(ctx, &investment.FrontierPoint{
+			ConfigIndex: configIndex,
+			Properties:  properties,
+		}, preliminaryPlan)
+		if err != nil {
+			fo.logger.Warn("Monte Carlo simulation failed, using nil results",
+				"configIndex", configIndex,
+				"error", err,
+			)
+			mcResults = nil
+		}
+	}
+
+	// Phase 3: Update reinvestment plan with MC-derived Track B statistics
+	var reinvestPlan *investment.DualTrackReinvestment
+	if mcResults != nil {
+		reinvestPlan, err = fo.reinvestModeler.CalculateReinvestmentPlan(ctx, &investment.FrontierPoint{
+			ConfigIndex: configIndex,
+			Properties:  properties,
+		}, params, mcResults) // Pass MC results for Track B statistics
+		if err != nil {
+			fo.logger.Warn("failed to update reinvestment plan with MC results, using preliminary",
+				"configIndex", configIndex,
+				"error", err,
+			)
+			reinvestPlan = preliminaryPlan
+		}
+	} else {
+		reinvestPlan = preliminaryPlan
+	}
+
+	// Phase 4: Generate decision support scenarios (ADR-088 Phase 7)
+	if progress != nil {
+		progress(7, totalPhases, fmt.Sprintf("Generating scenarios for config %d", configIndex))
+	}
+	var scenarios *investment.ScenarioSet
+	if fo.scenarioGenerator != nil && mcResults != nil {
+		scenarios, err = fo.scenarioGenerator.GenerateScenarios(ctx, mcResults, &investment.FrontierPoint{
+			ConfigIndex: configIndex,
+			Properties:  properties,
+		})
+		if err != nil {
+			fo.logger.Warn("failed to generate scenarios, using nil",
+				"configIndex", configIndex,
+				"error", err,
+			)
+			scenarios = nil
+		}
+	}
+
+	// Phase 5: Generate decision verdict (ADR-088 Phase 8)
+	if progress != nil {
+		progress(8, totalPhases, fmt.Sprintf("Generating decision verdict for config %d", configIndex))
+	}
+	var decisionVerdict *investment.DecisionVerdict
+	if fo.verdictGenerator != nil && scenarios != nil {
+		decisionVerdict, err = fo.verdictGenerator.GenerateVerdict(ctx, &investment.FrontierPoint{
+			ConfigIndex:         configIndex,
+			Properties:          properties,
+			ExpectedReturn:      config.Objectives.ExpectedReturn,
+			PortfolioVolatility: config.Objectives.PortfolioVolatility,
+			SharpeScore:         config.SharpeScore,
+			ConcentrationIndex:  config.Objectives.ConcentrationIndex,
+			Scenarios:           scenarios,
+			ReinvestmentPlan:    reinvestPlan,
+		}, profile, 0) // wealth target = 0 (no target for now)
+		if err != nil {
+			fo.logger.Warn("failed to generate verdict, using nil",
+				"configIndex", configIndex,
+				"error", err,
+			)
+			decisionVerdict = nil
+		}
+	}
+
+	return investment.FrontierPoint{
+		ConfigIndex:         configIndex,
+		Properties:          properties,
+		ExpectedReturn:      config.Objectives.ExpectedReturn,
+		PortfolioVolatility: config.Objectives.PortfolioVolatility,
+		SharpeScore:         config.SharpeScore,
+		ConcentrationIndex:  config.Objectives.ConcentrationIndex,
+		StressTestEquity:    config.Objectives.StressTestEquity,
+		SimulationResults:   mcResults,       // Phase 6: Monte Carlo simulation results
+		ReinvestmentPlan:    reinvestPlan,    // Phase 5+6: Dual-track with MC-updated Track B
+		Scenarios:           scenarios,       // Phase 7: Decision support scenarios
+		DecisionVerdict:     decisionVerdict, // Phase 8: AI recommendation
+	}
+}
+
+// Recalculate re-runs phases 5-8 (Reinvestment, MC, Scenarios, Verdict) on existing frontier
+// configurations with updated assumption overrides. This is the fast path for the interactive
+// workspace sliders (ADR-088 Phase 9): skips property selection and Markowitz optimization.
+func (fo *FrontierOptimizer) Recalculate(
+	ctx context.Context,
+	existing []investment.FrontierPoint,
+	profile investment.InvestorProfile,
+	params investment.InvestmentPlanningParams,
+	overrides investment.AssumptionOverrides,
+) ([]investment.FrontierPoint, error) {
+	if len(existing) == 0 {
+		return nil, fmt.Errorf("no frontier configurations provided for recalculation")
+	}
+
+	// Apply assumption overrides to params
+	if overrides.MortgageRate != nil {
+		// Mortgage rate affects property-level financial calculations below
+	}
+
+	results := make([]investment.FrontierPoint, 0, len(existing))
+	for _, fp := range existing {
+		// Rebuild portfolio properties with new mortgage rate (if provided)
+		properties := fp.Properties
+		if overrides.MortgageRate != nil {
+			properties = fo.applyMortgageRateOverride(fp.Properties, *overrides.MortgageRate)
+		}
+
+		// Reconstruct a minimal PortfolioConfiguration from FrontierPoint for regenerateConfigPhases
+		config := PortfolioConfiguration{
+			Objectives: OptimizationObjectives{
+				ExpectedReturn:      fp.ExpectedReturn,
+				PortfolioVolatility: fp.PortfolioVolatility,
+				ConcentrationIndex:  fp.ConcentrationIndex,
+				StressTestEquity:    fp.StressTestEquity,
+			},
+			SharpeScore: fp.SharpeScore,
+		}
+
+		updated := fo.regenerateConfigPhases(ctx, fp.ConfigIndex, properties, config, profile, params, nil)
+		results = append(results, updated)
+	}
+
+	fo.logger.Info("recalculation complete",
+		"configCount", len(results),
+		"mortgageOverride", overrides.MortgageRate,
+		"appreciationOverride", overrides.AppreciationRate,
+		"rentGrowthOverride", overrides.RentGrowthRate,
+	)
+
+	return results, nil
+}
+
+// applyMortgageRateOverride rebuilds PropertyInPortfolio metrics using the new mortgage rate.
+func (fo *FrontierOptimizer) applyMortgageRateOverride(
+	existing []investment.PropertyInPortfolio,
+	mortgageRate float64,
+) []investment.PropertyInPortfolio {
+	updated := make([]investment.PropertyInPortfolio, 0, len(existing))
+	for _, p := range existing {
+		downPayment := p.DownPayment
+		loanAmount := p.LoanAmount
+		monthlyPayment := fo.calculateMortgagePayment(loanAmount, mortgageRate, 30)
+		monthlyCashFlow := p.Property.EstimatedRent - monthlyPayment - 500
+		cashOnCash := float64(monthlyCashFlow*12) / float64(downPayment) * 100
+		dscr := float64(p.Property.EstimatedRent) / float64(monthlyPayment)
+
+		updated = append(updated, investment.PropertyInPortfolio{
+			Property:        p.Property,
+			DownPayment:     downPayment,
+			LoanAmount:      loanAmount,
+			MonthlyPayment:  monthlyPayment,
+			MonthlyCashFlow: monthlyCashFlow,
+			CapRate:         p.CapRate, // Cap rate is independent of mortgage
+			CashOnCash:      cashOnCash,
+			DSCR:            dscr,
+			Score:           p.Score,
+		})
+	}
+	return updated
 }
 
 // generateCandidates creates candidate portfolios with varying property counts

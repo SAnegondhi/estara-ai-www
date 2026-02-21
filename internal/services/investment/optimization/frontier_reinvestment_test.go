@@ -41,7 +41,7 @@ func TestFrontier_ReinvestmentPlan_TrackA(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params)
+	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params, nil)
 
 	if err != nil {
 		t.Fatalf("GenerateFrontier() error = %v", err)
@@ -120,7 +120,7 @@ func TestFrontier_ReinvestmentPlan_NoYearlyBudgets(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params)
+	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params, nil)
 
 	if err != nil {
 		t.Fatalf("GenerateFrontier() error = %v", err)
@@ -186,7 +186,7 @@ func TestFrontier_ReinvestmentPlan_SingleYearBudget(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params)
+	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params, nil)
 
 	if err != nil {
 		t.Fatalf("GenerateFrontier() error = %v", err)

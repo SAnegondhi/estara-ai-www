@@ -94,7 +94,7 @@ func TestGenerateFrontier_WithMonteCarloSimulation(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params)
+	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params, nil)
 
 	if err != nil {
 		t.Fatalf("GenerateFrontier() error = %v", err)
@@ -271,7 +271,7 @@ func TestGenerateFrontier_WithYearlyBudgets(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params)
+	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params, nil)
 
 	if err != nil {
 		t.Fatalf("GenerateFrontier() error = %v", err)

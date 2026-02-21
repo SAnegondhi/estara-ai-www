@@ -30,6 +30,7 @@ import (
 	"github.com/estara-ai/www/internal/services/ai/compliance"
 	"github.com/estara-ai/www/internal/services/ai/prompts"
 	"github.com/estara-ai/www/internal/services/investment/expenses"
+	"github.com/estara-ai/www/internal/services/investment/optimization"
 	"github.com/estara-ai/www/internal/services/jobs/queue"
 	"github.com/estara-ai/www/internal/services/market/economics"
 	"github.com/estara-ai/www/pkg/httputil"
@@ -48,6 +49,8 @@ type Handler struct {
 	// ADR-069: Economic data provider for AI prompts
 	economics     *economics.Aggregator
 	econContext   *prompts.EconomicContextBuilder
+	// ADR-088 Phase 9: Efficient frontier optimizer for interactive workspace
+	frontierOptimizer *optimization.FrontierOptimizer
 }
 
 // NewHandler creates a new AI handler
@@ -73,6 +76,12 @@ func NewHandler(
 	if econ != nil {
 		h.econContext = prompts.NewEconomicContextBuilder(econ)
 	}
+	return h
+}
+
+// WithFrontierOptimizer injects the frontier optimizer for ADR-088 Phase 9 endpoints.
+func (h *Handler) WithFrontierOptimizer(fo *optimization.FrontierOptimizer) *Handler {
+	h.frontierOptimizer = fo
 	return h
 }
 

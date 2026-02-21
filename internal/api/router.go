@@ -97,7 +97,8 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		Auth:          auth.NewHandler(authMiddleware, store, redis, cfg),
 		App:           app.NewHandler(store, cfg),
 		Discover:      discover.NewHandler(store, redis, cfg, svc.PropertyFinder, svc.MarketData),
-		AI:            ai.NewHandler(store, redis, cfg, svc.ChatAgent, svc.JobQueue, svc.EconomicsAggregator),
+		AI: ai.NewHandler(store, redis, cfg, svc.ChatAgent, svc.JobQueue, svc.EconomicsAggregator).
+			WithFrontierOptimizer(svc.FrontierOptimizer), // ADR-088 Phase 9
 		Portfolio:     portfolio.NewHandler(store, cfg),
 		Admin:         admin.NewHandler(store, redis, cfg, authMiddleware),
 		Cron:          cron.NewHandler(store, redis, cfg),
@@ -398,6 +399,18 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Post("/{jobId}/cancel", handlers.AI.CancelInvestmentPlan)
 		r.Delete("/{jobId}", handlers.AI.DeleteInvestmentPlan)
 		r.Get("/{jobId}", handlers.AI.GetInvestmentPlan)
+	})
+
+	// ADR-088 Phase 9: Efficient Frontier Interactive Workspace
+	r.Route("/api/ai/frontier", func(r chi.Router) {
+		r.Use(authMiddleware.Authenticate)
+		r.Use(rateLimiter.Limit)
+
+		// SSE streaming: run full frontier analysis with 8-phase progress
+		r.Post("/analyze", handlers.AI.RunFrontierAnalysis)
+
+		// Fast recalculate: re-run projections with assumption overrides (debounced 500ms)
+		r.Post("/recalculate", handlers.AI.RecalculateFrontier)
 	})
 
 	// Market Analysis

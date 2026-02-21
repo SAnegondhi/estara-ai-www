@@ -207,7 +207,7 @@ func TestGenerateFrontier_Integration(t *testing.T) {
 	params := investment.InvestmentPlanningParams{
 		YearlyBudgets: []investment.YearlyBudget{},
 	}
-	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params)
+	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params, nil)
 
 	if err != nil {
 		t.Fatalf("GenerateFrontier() error = %v", err)
@@ -448,4 +448,158 @@ func TestCalculateStressTestEquity(t *testing.T) {
 			t.Logf("Stress test equity: $%d", stressEquity)
 		})
 	}
+}
+
+// TestRecalculate_MortgageRateOverride verifies that Recalculate re-runs phases 5-8
+// with updated mortgage rate and returns updated PropertyInPortfolio metrics.
+// ADR-088 Phase 9: Interactive Workspace fast recalculate path.
+func TestRecalculate_MortgageRateOverride(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	markowitzCalc := NewMarkowitzCalculator()
+	reinvestModeler := projection.NewReinvestmentModeler(logger)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+
+	// Use the actual mortgage calculator to build consistent test data at 7%
+	loanAmountP1 := 300000 // $400K price, 25% down
+	loanAmountP2 := 285000 // $380K price, 25% down
+	origRate := 7.0
+	origPayP1 := fo.calculateMortgagePayment(loanAmountP1, origRate, 30)
+	origPayP2 := fo.calculateMortgagePayment(loanAmountP2, origRate, 30)
+
+	existing := []investment.FrontierPoint{
+		{
+			ConfigIndex: 0, ExpectedReturn: 9.5, PortfolioVolatility: 4.2,
+			SharpeScore: 1.5, ConcentrationIndex: 0.35, StressTestEquity: 95000,
+			Properties: []investment.PropertyInPortfolio{
+				{
+					Property: investment.Property{
+						ID: "p1", City: "Austin", State: "TX",
+						Price: 400000, EstimatedRent: 2400,
+					},
+					DownPayment: 100000, LoanAmount: loanAmountP1,
+					MonthlyPayment:  origPayP1,
+					MonthlyCashFlow: 2400 - origPayP1 - 500,
+					CapRate:         float64(2400*12) / float64(400000) * 100,
+					CashOnCash:      float64((2400-origPayP1-500)*12) / float64(100000) * 100,
+					DSCR:            float64(2400) / float64(origPayP1),
+				},
+				{
+					Property: investment.Property{
+						ID: "p2", City: "Austin", State: "TX",
+						Price: 380000, EstimatedRent: 2300,
+					},
+					DownPayment: 95000, LoanAmount: loanAmountP2,
+					MonthlyPayment:  origPayP2,
+					MonthlyCashFlow: 2300 - origPayP2 - 500,
+					CapRate:         float64(2300*12) / float64(380000) * 100,
+					CashOnCash:      float64((2300-origPayP2-500)*12) / float64(95000) * 100,
+					DSCR:            float64(2300) / float64(origPayP2),
+				},
+			},
+		},
+	}
+
+	profile := investment.InvestorProfile{
+		Strategy: investment.StrategyCashFlow, RiskTolerance: investment.RiskModerate,
+		AvailableCapital: 500000,
+	}
+
+	// Apply mortgage rate override: 5.5% (lower than original 7%)
+	newRate := 5.5
+	overrides := investment.AssumptionOverrides{MortgageRate: &newRate}
+	newPayP1 := fo.calculateMortgagePayment(loanAmountP1, newRate, 30)
+	newPayP2 := fo.calculateMortgagePayment(loanAmountP2, newRate, 30)
+	t.Logf("Expected: P1 payment $%d→$%d, P2 payment $%d→$%d", origPayP1, newPayP1, origPayP2, newPayP2)
+
+	ctx := context.Background()
+	updated, err := fo.Recalculate(ctx, existing, profile, investment.InvestmentPlanningParams{}, overrides)
+	if err != nil {
+		t.Fatalf("Recalculate() error = %v", err)
+	}
+
+	if len(updated) != len(existing) {
+		t.Fatalf("Recalculate() returned %d configs, want %d", len(updated), len(existing))
+	}
+
+	for configIdx, fp := range updated {
+		for propIdx, prop := range fp.Properties {
+			originalProp := existing[configIdx].Properties[propIdx]
+
+			// Lower rate → lower monthly payment
+			if prop.MonthlyPayment >= originalProp.MonthlyPayment {
+				t.Errorf("Config %d Prop %d: MonthlyPayment not reduced: was $%d, now $%d",
+					configIdx, propIdx, originalProp.MonthlyPayment, prop.MonthlyPayment)
+			}
+
+			// Cap rate should be unchanged (independent of mortgage)
+			if math.Abs(prop.CapRate-originalProp.CapRate) > 0.01 {
+				t.Errorf("Config %d Prop %d: CapRate changed unexpectedly: was %.2f, now %.2f",
+					configIdx, propIdx, originalProp.CapRate, prop.CapRate)
+			}
+
+			t.Logf("Config %d Prop %s: payment $%d→$%d, CoC %.2f%%→%.2f%%",
+				configIdx, prop.Property.ID, originalProp.MonthlyPayment, prop.MonthlyPayment,
+				originalProp.CashOnCash, prop.CashOnCash)
+		}
+	}
+}
+
+// TestRecalculate_EmptyInput verifies Recalculate returns an error for empty input.
+func TestRecalculate_EmptyInput(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	markowitzCalc := NewMarkowitzCalculator()
+	reinvestModeler := projection.NewReinvestmentModeler(logger)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+
+	ctx := context.Background()
+	_, err := fo.Recalculate(ctx, nil, investment.InvestorProfile{}, investment.InvestmentPlanningParams{}, investment.AssumptionOverrides{})
+	if err == nil {
+		t.Error("Recalculate() with empty input: expected error, got nil")
+	}
+}
+
+// TestRecalculate_NoOverrides verifies Recalculate without overrides returns equivalent configs.
+func TestRecalculate_NoOverrides(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	markowitzCalc := NewMarkowitzCalculator()
+	reinvestModeler := projection.NewReinvestmentModeler(logger)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+
+	existing := []investment.FrontierPoint{
+		{
+			ConfigIndex: 0, ExpectedReturn: 9.5,
+			Properties: []investment.PropertyInPortfolio{
+				{Property: investment.Property{ID: "p1", Price: 300000, EstimatedRent: 1800},
+					DownPayment: 75000, LoanAmount: 225000, MonthlyPayment: 1207, MonthlyCashFlow: 93, CapRate: 7.2},
+				{Property: investment.Property{ID: "p2", Price: 280000, EstimatedRent: 1700},
+					DownPayment: 70000, LoanAmount: 210000, MonthlyPayment: 1126, MonthlyCashFlow: 74, CapRate: 7.29},
+				{Property: investment.Property{ID: "p3", Price: 320000, EstimatedRent: 1900},
+					DownPayment: 80000, LoanAmount: 240000, MonthlyPayment: 1287, MonthlyCashFlow: 113, CapRate: 7.13},
+				{Property: investment.Property{ID: "p4", Price: 350000, EstimatedRent: 2100},
+					DownPayment: 87500, LoanAmount: 262500, MonthlyPayment: 1408, MonthlyCashFlow: 192, CapRate: 7.2},
+				{Property: investment.Property{ID: "p5", Price: 310000, EstimatedRent: 1850},
+					DownPayment: 77500, LoanAmount: 232500, MonthlyPayment: 1247, MonthlyCashFlow: 103, CapRate: 7.16},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	updated, err := fo.Recalculate(ctx, existing, investment.InvestorProfile{}, investment.InvestmentPlanningParams{}, investment.AssumptionOverrides{})
+	if err != nil {
+		t.Fatalf("Recalculate() error = %v", err)
+	}
+
+	if len(updated) != 1 {
+		t.Fatalf("Recalculate() returned %d configs, want 1", len(updated))
+	}
+
+	// Config index and core metrics should be preserved
+	if updated[0].ConfigIndex != existing[0].ConfigIndex {
+		t.Errorf("ConfigIndex mismatch: got %d, want %d", updated[0].ConfigIndex, existing[0].ConfigIndex)
+	}
+	if updated[0].ExpectedReturn != existing[0].ExpectedReturn {
+		t.Errorf("ExpectedReturn changed: was %.2f, now %.2f", existing[0].ExpectedReturn, updated[0].ExpectedReturn)
+	}
+
+	t.Logf("Recalculate with no overrides: %d properties preserved", len(updated[0].Properties))
 }

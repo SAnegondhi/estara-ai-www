@@ -695,6 +695,15 @@ type UserFinancialAssumptions struct {
 	TargetCashFlow     int     `json:"targetCashFlow,omitempty"` // User's target monthly cash flow
 }
 
+// AssumptionOverrides holds real-time assumption adjustments for interactive recalculation.
+// ADR-088 Phase 9: Interactive Workspace UI - assumption sliders send these overrides
+// to the /recalculate endpoint (debounced 500ms client-side).
+type AssumptionOverrides struct {
+	MortgageRate     *float64 `json:"mortgageRate,omitempty"`     // Annual interest rate (%) e.g. 7.5
+	AppreciationRate *float64 `json:"appreciationRate,omitempty"` // Annual property appreciation (%) e.g. 3.5
+	RentGrowthRate   *float64 `json:"rentGrowthRate,omitempty"`   // Annual rent growth (%) e.g. 2.8
+}
+
 // ExpandedYearProjection has all metrics needed for detailed display
 // This replaces the minimal YearProjectionData structure
 type ExpandedYearProjection struct {
