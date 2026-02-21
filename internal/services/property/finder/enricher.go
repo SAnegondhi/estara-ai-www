@@ -1,10 +1,12 @@
 package finder
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/estara-ai/www/internal/services/market/correlation"
 	"github.com/estara-ai/www/internal/services/property/providers"
 )
 
@@ -52,14 +54,22 @@ var locationRentMultipliers = map[string]float64{
 
 // InvestmentMetricsEnricher enriches properties with investment metrics
 type InvestmentMetricsEnricher struct {
-	logger *slog.Logger
+	logger            *slog.Logger
+	correlationSvc    *correlation.Service
 }
 
 // NewInvestmentMetricsEnricher creates a new enricher
 func NewInvestmentMetricsEnricher() *InvestmentMetricsEnricher {
 	return &InvestmentMetricsEnricher{
-		logger: slog.Default().With("component", "investment_enricher"),
+		logger:         slog.Default().With("component", "investment_enricher"),
+		correlationSvc: nil, // Will be set by orchestrator if available
 	}
+}
+
+// WithCorrelationService sets the correlation service (for Phase 1 volatility enrichment)
+func (e *InvestmentMetricsEnricher) WithCorrelationService(svc *correlation.Service) *InvestmentMetricsEnricher {
+	e.correlationSvc = svc
+	return e
 }
 
 // EnrichProperties enriches a slice of properties with investment metrics
@@ -142,6 +152,9 @@ func (e *InvestmentMetricsEnricher) EnrichProperty(property providers.Property) 
 
 	// Age-based investment intelligence
 	e.enrichAgeMetrics(&property)
+
+	// ADR-088 Phase 1: Market volatility metrics (for Monte Carlo calibration)
+	e.enrichVolatilityMetrics(&property)
 
 	// Calculate overall investment score (0-100)
 	property.InvestmentScore = e.calculateInvestmentScore(property)
@@ -374,4 +387,36 @@ func roundFloat(val float64, precision int) float64 {
 		ratio *= 10
 	}
 	return float64(int(val*ratio+0.5)) / ratio
+}
+
+// enrichVolatilityMetrics enriches property with market volatility metrics (ADR-088 Phase 1)
+// Adds: AppreciationStdDev, RentGrowthStdDev, HistoricalPeakDrop, MarketType
+func (e *InvestmentMetricsEnricher) enrichVolatilityMetrics(property *providers.Property) {
+	// Skip if no correlation service available
+	if e.correlationSvc == nil {
+		return
+	}
+
+	// Construct market ID from city and state
+	marketID := property.City + ", " + property.State
+	if marketID == ", " {
+		return // Skip if location data missing
+	}
+
+	// Fetch volatility metrics from correlation service
+	ctx := context.Background()
+	metrics, err := e.correlationSvc.GetMarketVolatilityMetrics(ctx, marketID)
+	if err != nil {
+		e.logger.Warn("Failed to fetch volatility metrics",
+			"marketId", marketID,
+			"error", err,
+		)
+		return
+	}
+
+	// Populate property with volatility metrics
+	property.AppreciationStdDev = metrics.AppreciationStdDev
+	property.RentGrowthStdDev = metrics.RentGrowthStdDev
+	property.HistoricalPeakDrop = metrics.HistoricalPeakDrop
+	property.MarketType = metrics.MarketType
 }

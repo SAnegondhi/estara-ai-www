@@ -757,3 +757,115 @@ type ScenarioSummary struct {
 	OptimisticMultiplier  float64 `json:"optimisticMultiplier"`  // e.g., 1.15 for +15%
 	PessimisticMultiplier float64 `json:"pessimisticMultiplier"` // e.g., 0.85 for -15%
 }
+
+// ============================================================================
+// ADR-088: Scenario Planning v2.1 Types (Phase 0)
+// ============================================================================
+
+// PropertyThesis holds AI-generated investment analysis for a property
+type PropertyThesis struct {
+	InvestmentThesis string   `json:"investmentThesis"` // 2-3 sentences summarizing opportunity
+	KeyStrengths     []string `json:"keyStrengths"`     // Exactly 2 strengths
+	KeyRisks         []string `json:"keyRisks"`         // Exactly 2 risks
+	MarketContext    string   `json:"marketContext"`    // 1 sentence on market conditions
+	CapexAlert       *string  `json:"capexAlert"`       // null or warning message if needed
+}
+
+// FrontierPoint represents one configuration on the efficient frontier
+type FrontierPoint struct {
+	ConfigIndex         int                     `json:"configIndex"`         // 0-4 for up to 5 points
+	Properties          []PropertyInPortfolio   `json:"properties"`          // 5-8 properties in this config
+	ExpectedReturn      float64                 `json:"expectedReturn"`      // Annual expected return (%)
+	PortfolioVolatility float64                 `json:"portfolioVolatility"` // Markowitz analytical volatility
+	SharpeScore         float64                 `json:"sharpeScore"`         // Risk-adjusted return score
+	ConcentrationIndex  float64                 `json:"concentrationIndex"`  // Weighted concentration metric
+	StressTestEquity    int                     `json:"stressTestEquity"`    // Final equity under stress scenario
+	SimulationResults   *SimulationResults      `json:"simulationResults"`   // Monte Carlo outcomes
+	ReinvestmentPlan    *DualTrackReinvestment  `json:"reinvestmentPlan"`    // Track A + Track B details
+}
+
+// SimulationResults holds Monte Carlo simulation outcomes
+type SimulationResults struct {
+	Paths           []MonteCarloPath    `json:"paths"`           // All 1,000 paths (full detail)
+	Percentiles     *PercentileOutcomes `json:"percentiles"`     // P10, P25, P50, P75, P90, P95
+	BaseProjection  []YearOutcome       `json:"baseProjection"`  // P50 path (median)
+	UpsideCase      []YearOutcome       `json:"upsideCase"`      // P75 MC (lazy-loaded)
+	StressTest      []YearOutcome       `json:"stressTest"`      // Deterministic stress scenario
+	MonteCarloSeed  int64               `json:"monteCarloSeed"`  // Random seed for reproducibility
+}
+
+// MonteCarloPath represents a single simulation path (1 of 1,000)
+type MonteCarloPath struct {
+	PathIndex       int           `json:"pathIndex"`       // 0-999
+	YearlyOutcomes  []YearOutcome `json:"yearlyOutcomes"`  // Year-by-year results
+	TrackBFiredYear int           `json:"trackBFiredYear"` // Year Track B triggered (0 = never)
+	FinalNetWorth   int           `json:"finalNetWorth"`   // Year 10 net worth
+}
+
+// YearOutcome represents portfolio state for a single year in a simulation path
+type YearOutcome struct {
+	Year                int `json:"year"`                // 1-10
+	PortfolioValue      int `json:"portfolioValue"`      // Total property value
+	Equity              int `json:"equity"`              // Portfolio value - loan balance
+	CumulativeCashFlow  int `json:"cumulativeCashFlow"`  // Cumulative cash flow to date
+	NetWorth            int `json:"netWorth"`            // Equity + cumulative cash flow
+}
+
+// PercentileOutcomes holds percentile distributions across all MC paths
+type PercentileOutcomes struct {
+	P10 []YearOutcome `json:"p10"` // 10th percentile (downside case)
+	P25 []YearOutcome `json:"p25"` // 25th percentile
+	P50 []YearOutcome `json:"p50"` // 50th percentile (median, Base scenario)
+	P75 []YearOutcome `json:"p75"` // 75th percentile (upside)
+	P90 []YearOutcome `json:"p90"` // 90th percentile
+	P95 []YearOutcome `json:"p95"` // 95th percentile (best case)
+}
+
+// DecisionVerdict holds AI-generated recommendation for a scenario
+type DecisionVerdict struct {
+	Recommendation    DecisionRecommendation `json:"recommendation"`    // PROCEED, PAUSE, or REVISE
+	DecisionRationale string                 `json:"decisionRationale"` // 2-3 paragraphs explaining recommendation
+	KeyConditions     []string               `json:"keyConditions"`     // 3-5 conditions for thesis to hold
+	MonitoringSignals []MonitoringSignal     `json:"monitoringSignals"` // 3 leading indicators to track
+	GeneratedAt       string                 `json:"generatedAt"`       // Timestamp (ISO 8601)
+}
+
+// DecisionRecommendation represents the AI's verdict
+type DecisionRecommendation string
+
+const (
+	DecisionProceed DecisionRecommendation = "PROCEED" // Portfolio meets goals, execute plan
+	DecisionPause   DecisionRecommendation = "PAUSE"   // Uncertainty too high, wait for clarity
+	DecisionRevise  DecisionRecommendation = "REVISE"  // Adjust parameters and re-run
+)
+
+// MonitoringSignal represents a leading indicator to track over time
+type MonitoringSignal struct {
+	Indicator     string  `json:"indicator"`     // e.g., "Austin Metro Unemployment Rate"
+	Description   string  `json:"description"`   // Why this metric matters
+	CurrentValue  float64 `json:"currentValue"`  // Current value of indicator
+	WatchLevel    float64 `json:"watchLevel"`    // Informational threshold (no action)
+	WarnLevel     float64 `json:"warnLevel"`     // Review assumptions threshold
+	AlertLevel    float64 `json:"alertLevel"`    // Trigger re-analysis threshold
+	Justification string  `json:"justification"` // Why these thresholds matter
+}
+
+// DualTrackReinvestment holds reinvestment plan details
+type DualTrackReinvestment struct {
+	TrackA TrackAReinvestment `json:"trackA"` // External capital (user-declared budgets)
+	TrackB TrackBReinvestment `json:"trackB"` // Internal cash flow (threshold-triggered)
+}
+
+// TrackAReinvestment holds external capital reinvestment schedule
+type TrackAReinvestment struct {
+	YearlyBudgets []YearlyBudget `json:"yearlyBudgets"` // User-declared budgets by year
+	TotalCapital  int            `json:"totalCapital"`  // Sum of all yearly budgets
+}
+
+// TrackBReinvestment holds internal cash flow reinvestment details
+type TrackBReinvestment struct {
+	Threshold         int     `json:"threshold"`         // Cash flow threshold to trigger acquisition (e.g., $50K)
+	MedianFiredYear   int     `json:"medianFiredYear"`   // Median year Track B fires across MC paths (0 = never)
+	FiredProbability  float64 `json:"firedProbability"`  // % of MC paths where Track B fired
+	ExpectedAcquisitions int  `json:"expectedAcquisitions"` // Expected # of Track B properties
+}

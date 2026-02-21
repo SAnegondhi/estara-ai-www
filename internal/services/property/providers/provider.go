@@ -118,6 +118,12 @@ type Property struct {
 	// Overall Investment Score (0-100)
 	InvestmentScore   int    `json:"investmentScore,omitempty"`
 
+	// ADR-088 Phase 1: Market Volatility Metrics (for Monte Carlo calibration)
+	AppreciationStdDev  float64 `json:"appreciationStdDev,omitempty"` // Annual appreciation volatility (%)
+	RentGrowthStdDev    float64 `json:"rentGrowthStdDev,omitempty"`   // Annual rent growth volatility (%)
+	HistoricalPeakDrop  float64 `json:"historicalPeakDrop,omitempty"` // Worst 12mo return in 20yr window (%)
+	MarketType          string  `json:"marketType,omitempty"`         // stable, moderate, volatile
+
 	// Media
 	Images      []string `json:"images,omitempty"`
 	ListingURL  string   `json:"listingUrl,omitempty"`
