@@ -32,6 +32,7 @@ import (
 	"github.com/estara-ai/www/internal/services/investment/expenses"
 	"github.com/estara-ai/www/internal/services/investment/optimization"
 	"github.com/estara-ai/www/internal/services/jobs/queue"
+	"github.com/estara-ai/www/internal/services/property/finder"
 	"github.com/estara-ai/www/internal/services/market/economics"
 	"github.com/estara-ai/www/pkg/httputil"
 	"github.com/estara-ai/www/pkg/sse"
@@ -51,6 +52,9 @@ type Handler struct {
 	econContext   *prompts.EconomicContextBuilder
 	// ADR-088 Phase 9: Efficient frontier optimizer for interactive workspace
 	frontierOptimizer *optimization.FrontierOptimizer
+	// ADR-088 Phase 12: Full pipeline (discover → score → frontier) for /run endpoint
+	investmentOptimizer *optimization.Service
+	propertyFinder      *finder.Orchestrator
 }
 
 // NewHandler creates a new AI handler
@@ -82,6 +86,18 @@ func NewHandler(
 // WithFrontierOptimizer injects the frontier optimizer for ADR-088 Phase 9 endpoints.
 func (h *Handler) WithFrontierOptimizer(fo *optimization.FrontierOptimizer) *Handler {
 	h.frontierOptimizer = fo
+	return h
+}
+
+// WithInvestmentOptimizer injects the investment optimizer for ADR-088 Phase 12 /run endpoint.
+func (h *Handler) WithInvestmentOptimizer(svc *optimization.Service) *Handler {
+	h.investmentOptimizer = svc
+	return h
+}
+
+// WithPropertyFinder injects the property finder for ADR-088 Phase 12 /run endpoint.
+func (h *Handler) WithPropertyFinder(f *finder.Orchestrator) *Handler {
+	h.propertyFinder = f
 	return h
 }
 

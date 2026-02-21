@@ -1,0 +1,296 @@
+package ai
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/estara-ai/www/internal/api/middleware"
+	"github.com/estara-ai/www/internal/services/investment"
+	"github.com/estara-ai/www/internal/services/investment/optimization"
+	"github.com/estara-ai/www/internal/services/property/providers"
+	"github.com/estara-ai/www/pkg/httputil"
+	"github.com/estara-ai/www/pkg/sse"
+)
+
+// ============================================================
+// ADR-088 Phase 12: Full Pipeline Endpoint — /api/ai/frontier/run
+// ============================================================
+// RunFrontierPipeline accepts investment criteria and orchestrates the full
+// discover → score → frontier pipeline, streaming SSE progress events.
+
+// FrontierRunRequest is the request body for POST /api/ai/frontier/run.
+// It replaces the hardcoded demo data with real user-supplied criteria.
+type FrontierRunRequest struct {
+	// Locations to search (e.g. ["Austin, TX", "Denver, CO"])
+	Locations []string `json:"locations" validate:"required,min=1,max=5"`
+	// Budget: total capital available for down payments
+	Budget int `json:"budget" validate:"required,min=10000"`
+	// MortgageRate: annual rate as a decimal (e.g. 0.075 for 7.5%)
+	MortgageRate float64 `json:"mortgageRate" validate:"required,min=0.01,max=0.3"`
+	// DownPaymentPct: fraction of purchase price (e.g. 0.20 for 20%)
+	DownPaymentPct float64 `json:"downPaymentPct" validate:"required,min=0.05,max=0.5"`
+	// Strategy: "cash-flow", "appreciation", "balanced", "risk-adjusted"
+	Strategy string `json:"strategy" validate:"required"`
+	// RiskTolerance: "conservative", "moderate", "aggressive"
+	RiskTolerance string `json:"riskTolerance" validate:"required"`
+	// ProjectionYears: number of years for Monte Carlo / wealth projection
+	ProjectionYears int `json:"projectionYears" validate:"min=1,max=30"`
+}
+
+// RunFrontierPipeline is the Phase 12 full-pipeline endpoint.
+// It streams SSE progress events across three stages:
+//
+//	Phase 1 (0-30%):  Property discovery (parallel per location)
+//	Phase 2 (30-60%): AI scoring
+//	Phase 3 (60-100%): Frontier generation
+//
+// POST /api/ai/frontier/run
+func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	user := middleware.GetUserFromContext(ctx)
+	if user == nil {
+		httputil.Error(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	if h.investmentOptimizer == nil || h.propertyFinder == nil || h.frontierOptimizer == nil {
+		httputil.Error(w, http.StatusServiceUnavailable, "frontier pipeline not configured")
+		return
+	}
+
+	var req FrontierRunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.BadRequest(w, "invalid request body: "+err.Error())
+		return
+	}
+
+	if err := h.validate.Struct(req); err != nil {
+		httputil.BadRequest(w, "validation failed: "+err.Error())
+		return
+	}
+
+	// Apply defaults
+	if req.ProjectionYears == 0 {
+		req.ProjectionYears = 10
+	}
+
+	// Set up SSE
+	sseWriter, err := sse.NewWriter(w)
+	if err != nil {
+		httputil.Error(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+	heartbeatDone := sseWriter.StartHeartbeat(sse.HeartbeatInterval)
+	defer close(heartbeatDone)
+
+	startTime := time.Now()
+
+	emitProgress := func(pct float64, message string) {
+		_ = sseWriter.WriteEventJSON("progress", sse.ProgressEvent{
+			Progress: pct,
+			Message:  message,
+		})
+	}
+	emitStatus := func(status, message string) {
+		_ = sseWriter.WriteEventJSON("status", map[string]string{
+			"status":  status,
+			"message": message,
+		})
+	}
+
+	emitStatus("running", "Starting frontier pipeline")
+
+	// ----------------------------------------------------------------
+	// Phase 1: Property Discovery (0–30%)
+	// ----------------------------------------------------------------
+	emitProgress(0, fmt.Sprintf("Searching %d location(s)", len(req.Locations)))
+
+	maxPrice := int(float64(req.Budget) / req.DownPaymentPct)
+
+	type searchResult struct {
+		properties []investment.Property
+		err        error
+	}
+
+	resultChan := make(chan searchResult, len(req.Locations))
+	sem := make(chan struct{}, 5)
+	var wg sync.WaitGroup
+
+	for i, loc := range req.Locations {
+		wg.Add(1)
+		go func(idx int, location string) {
+			defer wg.Done()
+
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				resultChan <- searchResult{err: ctx.Err()}
+				return
+			}
+
+			pct := float64(idx)/float64(len(req.Locations)) * 30
+			emitProgress(pct, fmt.Sprintf("Searching %s", location))
+
+			parts := strings.SplitN(location, ",", 2)
+			city := strings.TrimSpace(parts[0])
+			state := ""
+			if len(parts) > 1 {
+				state = strings.TrimSpace(parts[1])
+			}
+
+			resp, searchErr := h.propertyFinder.Search(ctx, providers.SearchParams{
+				City:     city,
+				State:    state,
+				MaxPrice: maxPrice,
+				Limit:    50,
+			})
+			if searchErr != nil {
+				h.logger.Warn("search failed for location",
+					"location", location,
+					"error", searchErr,
+				)
+				resultChan <- searchResult{err: searchErr}
+				return
+			}
+
+			props := make([]investment.Property, 0, len(resp.Properties))
+			for _, r := range resp.Properties {
+				imageURL := ""
+				if len(r.Images) > 0 {
+					imageURL = r.Images[0]
+				}
+				props = append(props, investment.Property{
+					ID:            r.ID,
+					Address:       r.Address,
+					City:          r.City,
+					State:         r.State,
+					ZipCode:       r.ZipCode,
+					Price:         r.Price,
+					Beds:          r.Beds,
+					Baths:         r.Baths,
+					Sqft:          r.Sqft,
+					EstimatedRent: r.EstimatedRent,
+					YearBuilt:     r.YearBuilt,
+					PropertyType:  string(r.PropertyType),
+					ListingURL:    r.ListingURL,
+					ImageURL:      imageURL,
+					DaysOnMarket:  r.DaysOnMarket,
+					Provider:      r.ProviderName,
+					Latitude:      r.Latitude,
+					Longitude:     r.Longitude,
+				})
+			}
+
+			emitProgress(float64(idx+1)/float64(len(req.Locations))*30,
+				fmt.Sprintf("Found %d properties in %s", len(props), location))
+
+			resultChan <- searchResult{properties: props}
+		}(i, loc)
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	allProperties := make([]investment.Property, 0)
+	for res := range resultChan {
+		if res.err == nil {
+			allProperties = append(allProperties, res.properties...)
+		}
+	}
+
+	if len(allProperties) == 0 {
+		_ = sseWriter.WriteEventJSON("error", map[string]string{
+			"error":   "no_properties_found",
+			"message": "No properties found for the given criteria. Try different locations or a higher budget.",
+		})
+		return
+	}
+
+	emitProgress(30, fmt.Sprintf("Found %d properties across all locations", len(allProperties)))
+
+	// ----------------------------------------------------------------
+	// Phase 2: AI Scoring (30–60%)
+	// ----------------------------------------------------------------
+	emitProgress(30, "Scoring properties with AI")
+
+	profile := investment.InvestorProfile{
+		RiskTolerance:    investment.RiskTolerance(req.RiskTolerance),
+		Strategy:         investment.InvestmentStrategy(req.Strategy),
+		AvailableCapital: req.Budget,
+	}
+
+	scoredProperties, err := h.investmentOptimizer.ScoreProperties(
+		ctx,
+		allProperties,
+		profile,
+		nil, // no existing portfolio
+	)
+	if err != nil {
+		h.logger.Error("property scoring failed", "error", err, "userId", user.ID)
+		_ = sseWriter.WriteEventJSON("error", map[string]string{
+			"error":   "scoring_failed",
+			"message": "Property scoring failed: " + err.Error(),
+		})
+		return
+	}
+
+	emitProgress(60, fmt.Sprintf("Scored %d properties", len(scoredProperties)))
+
+	// ----------------------------------------------------------------
+	// Phase 3: Frontier Generation (60–100%)
+	// ----------------------------------------------------------------
+	emitProgress(60, "Running frontier analysis")
+
+	params := investment.InvestmentPlanningParams{
+		Locations:      req.Locations,
+		Budget:         req.Budget,
+		DownPaymentPct: req.DownPaymentPct,
+		Strategy:       investment.InvestmentStrategy(req.Strategy),
+		RiskTolerance:  investment.RiskTolerance(req.RiskTolerance),
+		MaxProperties:  10,
+	}
+
+	// Wrap frontier progress (60–100%)
+	frontierProgress := func(phase int, totalPhases int, message string) {
+		base := 60.0
+		pct := base + (float64(phase)/float64(totalPhases))*40
+		_ = sseWriter.WriteEventJSON("progress", sse.ProgressEvent{
+			Stage:    fmt.Sprintf("frontier_phase_%d", phase),
+			Progress: pct,
+			Message:  message,
+		})
+	}
+
+	frontierPoints, err := h.frontierOptimizer.GenerateFrontier(
+		ctx,
+		scoredProperties,
+		profile,
+		params,
+		optimization.ProgressFunc(frontierProgress),
+	)
+	if err != nil {
+		h.logger.Error("frontier generation failed", "error", err, "userId", user.ID)
+		_ = sseWriter.WriteEventJSON("error", map[string]string{
+			"error":   "frontier_failed",
+			"message": "Frontier generation failed: " + err.Error(),
+		})
+		return
+	}
+
+	// ----------------------------------------------------------------
+	// Complete
+	// ----------------------------------------------------------------
+	_ = sseWriter.WriteEventJSON("complete", FrontierAnalyzeResponse{
+		FrontierPoints: frontierPoints,
+		GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
+		DurationMs:     time.Since(startTime).Milliseconds(),
+	})
+}

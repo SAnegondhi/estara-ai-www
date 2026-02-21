@@ -56,6 +56,7 @@ type Services struct {
 	Anthropic            *anthropic.Client
 	MemoService          *memo.Service         // Decision Memo generation (ADR-079)
 	FrontierOptimizer    *optimization.FrontierOptimizer // ADR-088 Phase 9: Interactive workspace
+	InvestmentOptimizer  *optimization.Service           // ADR-088 Phase 12: Discovery+scoring pipeline for /run
 }
 
 // ServiceConfig holds configuration for creating services
@@ -366,6 +367,9 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 				logger.Warn("optimization service initialized without AI scoring cache (no database)")
 			}
 		}
+
+		// Store optimizer on Services for ADR-088 Phase 12 /run endpoint
+		services.InvestmentOptimizer = optimizer
 
 		// Create market analysis worker and register with queue (ADR-073)
 		// ADR-074: Wire V2 data-driven analysis pipeline
