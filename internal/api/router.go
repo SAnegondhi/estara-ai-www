@@ -411,6 +411,9 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 
 		// Fast recalculate: re-run projections with assumption overrides (debounced 500ms)
 		r.Post("/recalculate", handlers.AI.RecalculateFrontier)
+
+		// ADR-088 Phase 10: Export selected config as PDF decision memo
+		r.Post("/export-pdf", handlers.AI.ExportFrontierPDF)
 	})
 
 	// Market Analysis
