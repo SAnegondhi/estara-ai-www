@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/estara-ai/www/internal/services/investment"
+	"github.com/estara-ai/www/internal/services/investment/projection"
 )
 
 // FrontierOptimizer generates Pareto-optimal portfolio configurations
@@ -15,17 +16,23 @@ import (
 type FrontierOptimizer struct {
 	logger            *slog.Logger
 	markowitzCalc     *MarkowitzCalculator
-	minProperties     int     // Minimum properties per configuration (default: 5)
-	maxProperties     int     // Maximum properties per configuration (default: 8)
-	numConfigurations int     // Number of frontier points to generate (default: 5)
-	riskFreeRate      float64 // Risk-free rate for Sharpe ratio (default: 4.0%)
+	reinvestModeler   *projection.ReinvestmentModeler // ADR-088 Phase 5
+	minProperties     int                              // Minimum properties per configuration (default: 5)
+	maxProperties     int                              // Maximum properties per configuration (default: 8)
+	numConfigurations int                              // Number of frontier points to generate (default: 5)
+	riskFreeRate      float64                          // Risk-free rate for Sharpe ratio (default: 4.0%)
 }
 
 // NewFrontierOptimizer creates a new frontier optimizer
-func NewFrontierOptimizer(logger *slog.Logger, markowitzCalc *MarkowitzCalculator) *FrontierOptimizer {
+func NewFrontierOptimizer(
+	logger *slog.Logger,
+	markowitzCalc *MarkowitzCalculator,
+	reinvestModeler *projection.ReinvestmentModeler,
+) *FrontierOptimizer {
 	return &FrontierOptimizer{
 		logger:            logger,
 		markowitzCalc:     markowitzCalc,
+		reinvestModeler:   reinvestModeler,
 		minProperties:     5,
 		maxProperties:     8,
 		numConfigurations: 5,
@@ -58,6 +65,7 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 	ctx context.Context,
 	properties []investment.ScoredProperty,
 	profile investment.InvestorProfile,
+	params investment.InvestmentPlanningParams,
 ) ([]investment.FrontierPoint, error) {
 	fo.logger.Info("generating efficient frontier",
 		"totalProperties", len(properties),
@@ -117,6 +125,19 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 			})
 		}
 
+		// ADR-088 Phase 5: Calculate dual-track reinvestment plan
+		reinvestPlan, err := fo.reinvestModeler.CalculateReinvestmentPlan(ctx, &investment.FrontierPoint{
+			ConfigIndex: i,
+			Properties:  properties,
+		}, params)
+		if err != nil {
+			fo.logger.Warn("failed to calculate reinvestment plan, using nil",
+				"configIndex", i,
+				"error", err,
+			)
+			reinvestPlan = nil
+		}
+
 		frontierPoints = append(frontierPoints, investment.FrontierPoint{
 			ConfigIndex:         i,
 			Properties:          properties,
@@ -125,8 +146,8 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 			SharpeScore:         config.SharpeScore,
 			ConcentrationIndex:  config.Objectives.ConcentrationIndex,
 			StressTestEquity:    config.Objectives.StressTestEquity,
-			SimulationResults:   nil, // Phase 6: Monte Carlo simulation
-			ReinvestmentPlan:    nil, // Phase 5: Dual-track reinvestment
+			SimulationResults:   nil,       // Phase 6: Monte Carlo simulation
+			ReinvestmentPlan:    reinvestPlan, // Phase 5: Dual-track reinvestment
 		})
 	}
 
