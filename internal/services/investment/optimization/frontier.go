@@ -16,12 +16,13 @@ import (
 type FrontierOptimizer struct {
 	logger            *slog.Logger
 	markowitzCalc     *MarkowitzCalculator
-	reinvestModeler   *projection.ReinvestmentModeler // ADR-088 Phase 5
-	mcSimulator       *projection.MonteCarloSimulator // ADR-088 Phase 6
-	minProperties     int                              // Minimum properties per configuration (default: 5)
-	maxProperties     int                              // Maximum properties per configuration (default: 8)
-	numConfigurations int                              // Number of frontier points to generate (default: 5)
-	riskFreeRate      float64                          // Risk-free rate for Sharpe ratio (default: 4.0%)
+	reinvestModeler   *projection.ReinvestmentModeler   // ADR-088 Phase 5
+	mcSimulator       *projection.MonteCarloSimulator   // ADR-088 Phase 6
+	scenarioGenerator *projection.ScenarioGenerator     // ADR-088 Phase 7
+	minProperties     int                                // Minimum properties per configuration (default: 5)
+	maxProperties     int                                // Maximum properties per configuration (default: 8)
+	numConfigurations int                                // Number of frontier points to generate (default: 5)
+	riskFreeRate      float64                            // Risk-free rate for Sharpe ratio (default: 4.0%)
 }
 
 // NewFrontierOptimizer creates a new frontier optimizer
@@ -30,12 +31,14 @@ func NewFrontierOptimizer(
 	markowitzCalc *MarkowitzCalculator,
 	reinvestModeler *projection.ReinvestmentModeler,
 	mcSimulator *projection.MonteCarloSimulator,
+	scenarioGenerator *projection.ScenarioGenerator,
 ) *FrontierOptimizer {
 	return &FrontierOptimizer{
 		logger:            logger,
 		markowitzCalc:     markowitzCalc,
 		reinvestModeler:   reinvestModeler,
 		mcSimulator:       mcSimulator,
+		scenarioGenerator: scenarioGenerator,
 		minProperties:     5,
 		maxProperties:     8,
 		numConfigurations: 5,
@@ -177,6 +180,22 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 			reinvestPlan = preliminaryPlan
 		}
 
+		// Phase 4: Generate decision support scenarios (ADR-088 Phase 7)
+		var scenarios *investment.ScenarioSet
+		if fo.scenarioGenerator != nil && mcResults != nil {
+			scenarios, err = fo.scenarioGenerator.GenerateScenarios(ctx, mcResults, &investment.FrontierPoint{
+				ConfigIndex: i,
+				Properties:  properties,
+			})
+			if err != nil {
+				fo.logger.Warn("failed to generate scenarios, using nil",
+					"configIndex", i,
+					"error", err,
+				)
+				scenarios = nil
+			}
+		}
+
 		frontierPoints = append(frontierPoints, investment.FrontierPoint{
 			ConfigIndex:         i,
 			Properties:          properties,
@@ -187,6 +206,7 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 			StressTestEquity:    config.Objectives.StressTestEquity,
 			SimulationResults:   mcResults,    // Phase 6: Monte Carlo simulation results
 			ReinvestmentPlan:    reinvestPlan, // Phase 5+6: Dual-track with MC-updated Track B
+			Scenarios:           scenarios,    // Phase 7: Decision support scenarios
 		})
 	}
 

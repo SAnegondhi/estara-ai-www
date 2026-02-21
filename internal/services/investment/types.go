@@ -783,6 +783,7 @@ type FrontierPoint struct {
 	StressTestEquity    int                     `json:"stressTestEquity"`    // Final equity under stress scenario
 	SimulationResults   *SimulationResults      `json:"simulationResults"`   // Monte Carlo outcomes
 	ReinvestmentPlan    *DualTrackReinvestment  `json:"reinvestmentPlan"`    // Track A + Track B details
+	Scenarios           *ScenarioSet            `json:"scenarios,omitempty"` // Decision support scenarios (ADR-088 Phase 7)
 }
 
 // SimulationResults holds Monte Carlo simulation outcomes
@@ -869,4 +870,23 @@ type TrackBReinvestment struct {
 	MedianFiredYear   int     `json:"medianFiredYear"`   // Median year Track B fires across MC paths (0 = never)
 	FiredProbability  float64 `json:"firedProbability"`  // % of MC paths where Track B fired
 	ExpectedAcquisitions int  `json:"expectedAcquisitions"` // Expected # of Track B properties
+}
+
+// ============================================================================
+// Scenario Types (ADR-088 Phase 7)
+// ============================================================================
+
+// ScenarioSet holds the three scenarios for v2.1 decision support
+type ScenarioSet struct {
+	Base   Scenario `json:"base"`   // P50 (median) MC path
+	Upside Scenario `json:"upside"` // P75 MC path
+	Stress Scenario `json:"stress"` // Deterministic worst-case
+}
+
+// Scenario represents a single projection scenario (Base/Upside/Stress)
+type Scenario struct {
+	Name           string        `json:"name"`           // "Base", "Upside", or "Stress"
+	Type           string        `json:"type"`           // "Base", "Upside", or "Stress"
+	YearlyOutcomes []YearOutcome `json:"yearlyOutcomes"` // Year-by-year outcomes
+	FinalNetWorth  int           `json:"finalNetWorth"`  // Year 10 net worth
 }

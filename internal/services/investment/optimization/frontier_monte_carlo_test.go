@@ -16,9 +16,10 @@ func TestGenerateFrontier_WithMonteCarloSimulation(t *testing.T) {
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger)
 	mcSimulator := projection.NewMonteCarloSimulator(logger)
+	scenarioGenerator := projection.NewScenarioGenerator(logger)
 
-	// Create frontier optimizer with MC simulator
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, mcSimulator)
+	// Create frontier optimizer with MC simulator and scenario generator
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, mcSimulator, scenarioGenerator)
 
 	// Create test properties
 	properties := []investment.ScoredProperty{
@@ -141,11 +142,46 @@ func TestGenerateFrontier_WithMonteCarloSimulation(t *testing.T) {
 				i, point.ReinvestmentPlan.TrackB.Threshold)
 		}
 
+		// Verify scenarios are generated (Phase 7)
+		if point.Scenarios == nil {
+			t.Errorf("Config %d: Scenarios is nil, expected Base/Upside/Stress", i)
+			continue
+		}
+
+		// Verify Base scenario (P50 from MC)
+		if point.Scenarios.Base.Name != "Base" {
+			t.Errorf("Config %d: Base scenario name = %s, want 'Base'", i, point.Scenarios.Base.Name)
+		}
+		if len(point.Scenarios.Base.YearlyOutcomes) == 0 {
+			t.Errorf("Config %d: Base scenario has no yearly outcomes", i)
+		}
+
+		// Verify Upside scenario (P75 from MC)
+		if point.Scenarios.Upside.Name != "Upside" {
+			t.Errorf("Config %d: Upside scenario name = %s, want 'Upside'", i, point.Scenarios.Upside.Name)
+		}
+		if len(point.Scenarios.Upside.YearlyOutcomes) == 0 {
+			t.Errorf("Config %d: Upside scenario has no yearly outcomes", i)
+		}
+
+		// Verify Stress scenario (deterministic worst-case)
+		if point.Scenarios.Stress.Name != "Stress" {
+			t.Errorf("Config %d: Stress scenario name = %s, want 'Stress'", i, point.Scenarios.Stress.Name)
+		}
+		if len(point.Scenarios.Stress.YearlyOutcomes) != 10 {
+			t.Errorf("Config %d: Stress scenario should have 10 years, got %d", i, len(point.Scenarios.Stress.YearlyOutcomes))
+		}
+
 		t.Logf("Config %d: MC Paths=%d, P50 Final Net Worth=$%d, Track B Fired Prob=%.2f",
 			i,
 			len(point.SimulationResults.Paths),
 			point.SimulationResults.Percentiles.P50[len(point.SimulationResults.Percentiles.P50)-1].NetWorth,
 			point.ReinvestmentPlan.TrackB.FiredProbability,
+		)
+		t.Logf("  Scenarios: Base Y10=$%d, Upside Y10=$%d, Stress Y10=$%d",
+			point.Scenarios.Base.FinalNetWorth,
+			point.Scenarios.Upside.FinalNetWorth,
+			point.Scenarios.Stress.FinalNetWorth,
 		)
 	}
 }
@@ -156,8 +192,9 @@ func TestGenerateFrontier_WithYearlyBudgets(t *testing.T) {
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger)
 	mcSimulator := projection.NewMonteCarloSimulator(logger)
+	scenarioGenerator := projection.NewScenarioGenerator(logger)
 
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, mcSimulator)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, mcSimulator, scenarioGenerator)
 
 	// Create test properties (need at least 5)
 	properties := []investment.ScoredProperty{
