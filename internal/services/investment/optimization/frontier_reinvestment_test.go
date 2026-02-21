@@ -15,7 +15,7 @@ func TestFrontier_ReinvestmentPlan_TrackA(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
 
 	// Create test properties
 	properties := []investment.ScoredProperty{
@@ -99,7 +99,7 @@ func TestFrontier_ReinvestmentPlan_NoYearlyBudgets(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
 
 	properties := []investment.ScoredProperty{
 		{Property: investment.Property{ID: "p1", City: "Austin", State: "TX", Price: 300000, EstimatedRent: 2000}},
@@ -163,7 +163,7 @@ func TestFrontier_ReinvestmentPlan_SingleYearBudget(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
 
 	properties := []investment.ScoredProperty{
 		{Property: investment.Property{ID: "p1", City: "Austin", State: "TX", Price: 300000, EstimatedRent: 2000}},

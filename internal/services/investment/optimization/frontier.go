@@ -9,6 +9,7 @@ import (
 
 	"github.com/estara-ai/www/internal/services/investment"
 	"github.com/estara-ai/www/internal/services/investment/projection"
+	"github.com/estara-ai/www/internal/services/investment/verdict"
 )
 
 // FrontierOptimizer generates Pareto-optimal portfolio configurations
@@ -19,6 +20,7 @@ type FrontierOptimizer struct {
 	reinvestModeler   *projection.ReinvestmentModeler   // ADR-088 Phase 5
 	mcSimulator       *projection.MonteCarloSimulator   // ADR-088 Phase 6
 	scenarioGenerator *projection.ScenarioGenerator     // ADR-088 Phase 7
+	verdictGenerator  *verdict.Generator                // ADR-088 Phase 8
 	minProperties     int                                // Minimum properties per configuration (default: 5)
 	maxProperties     int                                // Maximum properties per configuration (default: 8)
 	numConfigurations int                                // Number of frontier points to generate (default: 5)
@@ -32,6 +34,7 @@ func NewFrontierOptimizer(
 	reinvestModeler *projection.ReinvestmentModeler,
 	mcSimulator *projection.MonteCarloSimulator,
 	scenarioGenerator *projection.ScenarioGenerator,
+	verdictGenerator *verdict.Generator,
 ) *FrontierOptimizer {
 	return &FrontierOptimizer{
 		logger:            logger,
@@ -39,6 +42,7 @@ func NewFrontierOptimizer(
 		reinvestModeler:   reinvestModeler,
 		mcSimulator:       mcSimulator,
 		scenarioGenerator: scenarioGenerator,
+		verdictGenerator:  verdictGenerator,
 		minProperties:     5,
 		maxProperties:     8,
 		numConfigurations: 5,
@@ -196,6 +200,30 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 			}
 		}
 
+		// Phase 5: Generate decision verdict (ADR-088 Phase 8)
+		var decisionVerdict *investment.DecisionVerdict
+		if fo.verdictGenerator != nil && scenarios != nil {
+			// For now, no wealth target (0 = no target)
+			// Future: extract from profile or request params
+			decisionVerdict, err = fo.verdictGenerator.GenerateVerdict(ctx, &investment.FrontierPoint{
+				ConfigIndex:         i,
+				Properties:          properties,
+				ExpectedReturn:      config.Objectives.ExpectedReturn,
+				PortfolioVolatility: config.Objectives.PortfolioVolatility,
+				SharpeScore:         config.SharpeScore,
+				ConcentrationIndex:  config.Objectives.ConcentrationIndex,
+				Scenarios:           scenarios,
+				ReinvestmentPlan:    reinvestPlan,
+			}, profile, 0) // wealth target = 0 (no target for now)
+			if err != nil {
+				fo.logger.Warn("failed to generate verdict, using nil",
+					"configIndex", i,
+					"error", err,
+				)
+				decisionVerdict = nil
+			}
+		}
+
 		frontierPoints = append(frontierPoints, investment.FrontierPoint{
 			ConfigIndex:         i,
 			Properties:          properties,
@@ -204,9 +232,10 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 			SharpeScore:         config.SharpeScore,
 			ConcentrationIndex:  config.Objectives.ConcentrationIndex,
 			StressTestEquity:    config.Objectives.StressTestEquity,
-			SimulationResults:   mcResults,    // Phase 6: Monte Carlo simulation results
-			ReinvestmentPlan:    reinvestPlan, // Phase 5+6: Dual-track with MC-updated Track B
-			Scenarios:           scenarios,    // Phase 7: Decision support scenarios
+			SimulationResults:   mcResults,       // Phase 6: Monte Carlo simulation results
+			ReinvestmentPlan:    reinvestPlan,    // Phase 5+6: Dual-track with MC-updated Track B
+			Scenarios:           scenarios,       // Phase 7: Decision support scenarios
+			DecisionVerdict:     decisionVerdict, // Phase 8: AI recommendation
 		})
 	}
 

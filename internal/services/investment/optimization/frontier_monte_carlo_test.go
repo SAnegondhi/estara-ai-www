@@ -19,7 +19,7 @@ func TestGenerateFrontier_WithMonteCarloSimulation(t *testing.T) {
 	scenarioGenerator := projection.NewScenarioGenerator(logger)
 
 	// Create frontier optimizer with MC simulator and scenario generator
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, mcSimulator, scenarioGenerator)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, mcSimulator, scenarioGenerator, nil)
 
 	// Create test properties
 	properties := []investment.ScoredProperty{
@@ -194,7 +194,7 @@ func TestGenerateFrontier_WithYearlyBudgets(t *testing.T) {
 	mcSimulator := projection.NewMonteCarloSimulator(logger)
 	scenarioGenerator := projection.NewScenarioGenerator(logger)
 
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, mcSimulator, scenarioGenerator)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, mcSimulator, scenarioGenerator, nil)
 
 	// Create test properties (need at least 5)
 	properties := []investment.ScoredProperty{

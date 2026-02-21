@@ -784,6 +784,7 @@ type FrontierPoint struct {
 	SimulationResults   *SimulationResults      `json:"simulationResults"`   // Monte Carlo outcomes
 	ReinvestmentPlan    *DualTrackReinvestment  `json:"reinvestmentPlan"`    // Track A + Track B details
 	Scenarios           *ScenarioSet            `json:"scenarios,omitempty"` // Decision support scenarios (ADR-088 Phase 7)
+	DecisionVerdict     *DecisionVerdict        `json:"decisionVerdict,omitempty"` // AI recommendation (ADR-088 Phase 8)
 }
 
 // SimulationResults holds Monte Carlo simulation outcomes
