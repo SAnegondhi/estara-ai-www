@@ -93,12 +93,12 @@ func (h *Handler) ListFrontierRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.store.Q().ListFrontierRuns(ctx, queries.ListFrontierRunsParams{
-		UserID: user.ID,
+		UserID: user.UserID,
 		Limit:  limit,
 		Offset: offset,
 	})
 	if err != nil {
-		h.logger.Error("list frontier runs failed", "error", err, "userId", user.ID)
+		h.logger.Error("list frontier runs failed", "error", err, "userId", user.UserID)
 		httputil.Error(w, http.StatusInternalServerError, "failed to list runs")
 		return
 	}
@@ -148,7 +148,7 @@ func (h *Handler) SaveFrontierRun(w http.ResponseWriter, r *http.Request) {
 	id := uuid.New().String()
 	run, err := h.store.Q().InsertFrontierRun(ctx, queries.InsertFrontierRunParams{
 		ID:             id,
-		UserID:         user.ID,
+		UserID:         user.UserID,
 		Name:           name,
 		Locations:      locations,
 		Criteria:       req.Criteria,
@@ -156,7 +156,7 @@ func (h *Handler) SaveFrontierRun(w http.ResponseWriter, r *http.Request) {
 		PropertyCount:  int32(req.PropertyCount),
 	})
 	if err != nil {
-		h.logger.Error("save frontier run failed", "error", err, "userId", user.ID)
+		h.logger.Error("save frontier run failed", "error", err, "userId", user.UserID)
 		httputil.Error(w, http.StatusInternalServerError, "failed to save run")
 		return
 	}
@@ -183,14 +183,14 @@ func (h *Handler) GetFrontierRunByID(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	run, err := h.store.Q().GetFrontierRun(ctx, queries.GetFrontierRunParams{
 		ID:     id,
-		UserID: user.ID,
+		UserID: user.UserID,
 	})
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			httputil.Error(w, http.StatusNotFound, "run not found")
 			return
 		}
-		h.logger.Error("get frontier run failed", "error", err, "userId", user.ID, "runId", id)
+		h.logger.Error("get frontier run failed", "error", err, "userId", user.UserID, "runId", id)
 		httputil.Error(w, http.StatusInternalServerError, "failed to get run")
 		return
 	}
@@ -226,9 +226,9 @@ func (h *Handler) DeleteFrontierRun(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.store.Q().DeleteFrontierRun(ctx, queries.DeleteFrontierRunParams{
 		ID:     id,
-		UserID: user.ID,
+		UserID: user.UserID,
 	}); err != nil {
-		h.logger.Error("delete frontier run failed", "error", err, "userId", user.ID, "runId", id)
+		h.logger.Error("delete frontier run failed", "error", err, "userId", user.UserID, "runId", id)
 		httputil.Error(w, http.StatusInternalServerError, "failed to delete run")
 		return
 	}
@@ -268,7 +268,7 @@ func (h *Handler) EnableShare(w http.ResponseWriter, r *http.Request) {
 
 		tokenErr = h.store.Q().SetFrontierRunShareToken(ctx, queries.SetFrontierRunShareTokenParams{
 			ID:         id,
-			UserID:     user.ID,
+			UserID:     user.UserID,
 			ShareToken: pgtype.Text{String: shareToken, Valid: true},
 		})
 		if tokenErr == nil {
@@ -285,7 +285,7 @@ func (h *Handler) EnableShare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if tokenErr != nil {
-		h.logger.Error("enable share failed", "error", tokenErr, "userId", user.ID, "runId", id)
+		h.logger.Error("enable share failed", "error", tokenErr, "userId", user.UserID, "runId", id)
 		httputil.Error(w, http.StatusInternalServerError, "failed to enable sharing")
 		return
 	}
@@ -309,9 +309,9 @@ func (h *Handler) RevokeShare(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.store.Q().ClearFrontierRunShareToken(ctx, queries.ClearFrontierRunShareTokenParams{
 		ID:     id,
-		UserID: user.ID,
+		UserID: user.UserID,
 	}); err != nil {
-		h.logger.Error("revoke share failed", "error", err, "userId", user.ID, "runId", id)
+		h.logger.Error("revoke share failed", "error", err, "userId", user.UserID, "runId", id)
 		httputil.Error(w, http.StatusInternalServerError, "failed to revoke sharing")
 		return
 	}
