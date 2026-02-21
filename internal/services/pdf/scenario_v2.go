@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/phpdave11/gofpdf"
 
@@ -92,15 +93,17 @@ func (b *ScenarioV2PDFBuilder) Build(ctx context.Context, req ScenarioV2PDFReque
 		markets = "Multi-Market Portfolio"
 	}
 
+	generatedAt := time.Now().UTC().Format("January 2, 2006 at 15:04 UTC")
+
 	// Section 1: Cover
 	AddCoverPage(pdf, page, theme,
 		"Scenario Planning v2.1",
-		fmt.Sprintf("Efficient Frontier Decision Memo — Config %d of %d",
+		fmt.Sprintf("Efficient Frontier Analysis — Config %d of %d",
 			selected.ConfigIndex+1, len(req.FrontierPoints)),
 		markets,
-		"",
+		"AI-Generated Analysis  ·  Decision Support Only  ·  Not Investment Advice\nGenerated: "+generatedAt,
 	)
-	AddHeaderFooter(pdf, page, theme, "Efficient Frontier Decision Memo")
+	AddHeaderFooter(pdf, page, theme, "Frontier Analysis  ·  Not Investment Advice")
 
 	// Section 2: Decision Verdict
 	pdf.AddPage()
@@ -184,11 +187,19 @@ func (b *ScenarioV2PDFBuilder) sectionVerdict(pdf *gofpdf.Fpdf, page PageConfig,
 	pdf.SetFillColor(badgeFill.R, badgeFill.G, badgeFill.B)
 	pdf.Rect(page.MarginLeft, y, contentW, 12, "F")
 	pdf.SetTextColor(255, 255, 255)
-	pdf.SetFont("Helvetica", "B", 13)
-	label := string(dv.Recommendation)
+	pdf.SetFont("Helvetica", "B", 11)
+	label := "ANALYSIS OUTPUT: " + string(dv.Recommendation)
 	labelW := pdf.GetStringWidth(label)
 	pdf.Text((page.Width-labelW)/2, y+8.5, label)
 	y += 16
+
+	// Sub-label: not a recommendation
+	pdf.SetFont("Helvetica", "I", 8)
+	pdf.SetTextColor(theme.Muted.R, theme.Muted.G, theme.Muted.B)
+	subLabel := "This is a model output, not a professional investment recommendation. Consult a licensed advisor before acting."
+	pdf.MultiCell(page.Width-page.MarginLeft-page.MarginRight, 4, subLabel, "", "C", false)
+	pdf.SetXY(page.MarginLeft, pdf.GetY()+2)
+	y = pdf.GetY()
 
 	// Rationale
 	y = AddParagraph(pdf, page, theme, dv.DecisionRationale, y)
@@ -198,7 +209,7 @@ func (b *ScenarioV2PDFBuilder) sectionVerdict(pdf *gofpdf.Fpdf, page PageConfig,
 	if len(dv.KeyConditions) > 0 {
 		pdf.SetFont("Helvetica", "B", 9)
 		pdf.SetTextColor(theme.Text.R, theme.Text.G, theme.Text.B)
-		pdf.Text(page.MarginLeft, y, "Key Conditions for This Thesis:")
+		pdf.Text(page.MarginLeft, y, "Key Assumptions Underlying This Analysis:")
 		y += 5
 		y = AddBulletList(pdf, page, theme, dv.KeyConditions, y)
 	}
@@ -213,11 +224,11 @@ func (b *ScenarioV2PDFBuilder) sectionPortfolioSummary(pdf *gofpdf.Fpdf, page Pa
 	metrics := []MetricItem{
 		{Label: "Configuration", Value: fmt.Sprintf("Config %d", pt.ConfigIndex+1)},
 		{Label: "Properties in Portfolio", Value: fmt.Sprintf("%d", len(pt.Properties))},
-		{Label: "Expected Return (Annual)", Value: fmt.Sprintf("%.2f%%", pt.ExpectedReturn), Highlight: true},
-		{Label: "Portfolio Volatility", Value: fmt.Sprintf("%.2f%%", pt.PortfolioVolatility)},
-		{Label: "Sharpe Score (Risk-Adjusted)", Value: fmt.Sprintf("%.3f", pt.SharpeScore), Highlight: true},
+		{Label: "Modeled Annual Return (Estimated)", Value: fmt.Sprintf("%.2f%%", pt.ExpectedReturn), Highlight: true},
+		{Label: "Portfolio Volatility (Modeled)", Value: fmt.Sprintf("%.2f%%", pt.PortfolioVolatility)},
+		{Label: "Sharpe Score (Risk-Adjusted, Modeled)", Value: fmt.Sprintf("%.3f", pt.SharpeScore), Highlight: true},
 		{Label: "Concentration Index (HHI)", Value: fmt.Sprintf("%.3f", pt.ConcentrationIndex)},
-		{Label: "Stress Test Equity (Year 10)", Value: "$" + formatNum(pt.StressTestEquity), Highlight: true},
+		{Label: "Stress Test Equity — Year 10 (Estimated)", Value: "$" + formatNum(pt.StressTestEquity), Highlight: true},
 		{Label: "Market Exposure", Value: s2marketExposure(pt.Properties)},
 	}
 	return AddMetricsGrid(pdf, page, theme, metrics, y)
@@ -234,10 +245,10 @@ func (b *ScenarioV2PDFBuilder) sectionPropertyDetails(pdf *gofpdf.Fpdf, page Pag
 	cols := []TableColumn{
 		{Header: "Address", Width: addrW, Align: "L"},
 		{Header: "Price", Width: colW, Align: "R"},
-		{Header: "Cap Rate", Width: colW, Align: "R"},
-		{Header: "CoC Ret.", Width: colW, Align: "R"},
-		{Header: "DSCR", Width: colW, Align: "R"},
-		{Header: "CF/mo", Width: colW, Align: "R"},
+		{Header: "Est. Cap Rate", Width: colW, Align: "R"},
+		{Header: "Est. CoC", Width: colW, Align: "R"},
+		{Header: "Est. DSCR", Width: colW, Align: "R"},
+		{Header: "Est. CF/mo", Width: colW, Align: "R"},
 		{Header: "Score", Width: colW, Align: "R"},
 	}
 
@@ -364,7 +375,7 @@ func (b *ScenarioV2PDFBuilder) sectionProbabilityTable(pdf *gofpdf.Fpdf, page Pa
 		{Header: "P25", Width: colW, Align: "R"},
 		{Header: "Median (P50)", Width: colW, Align: "R"},
 		{Header: "P75", Width: colW, Align: "R"},
-		{Header: "P90 (Best)", Width: colW, Align: "R"},
+		{Header: "P90 (Upside)", Width: colW, Align: "R"},
 	}
 
 	p10m := s2yearMap(pct.P10)
@@ -402,9 +413,9 @@ func (b *ScenarioV2PDFBuilder) sectionScenarios(pdf *gofpdf.Fpdf, page PageConfi
 
 	// Final net worth summary
 	metrics := []MetricItem{
-		{Label: "Base Case — Year 10 Net Worth", Value: "$" + formatNum(ss.Base.FinalNetWorth)},
-		{Label: "Upside Case — Year 10 Net Worth", Value: "$" + formatNum(ss.Upside.FinalNetWorth), Highlight: true},
-		{Label: "Stress Case — Year 10 Net Worth", Value: "$" + formatNum(ss.Stress.FinalNetWorth)},
+		{Label: "Base Case — Year 10 Modeled Net Worth", Value: "$" + formatNum(ss.Base.FinalNetWorth), Highlight: true},
+		{Label: "Upside Case — Year 10 Modeled Net Worth", Value: "$" + formatNum(ss.Upside.FinalNetWorth)},
+		{Label: "Stress Case — Year 10 Modeled Net Worth", Value: "$" + formatNum(ss.Stress.FinalNetWorth)},
 	}
 	y = AddMetricsGrid(pdf, page, theme, metrics, y)
 
@@ -462,11 +473,11 @@ func (b *ScenarioV2PDFBuilder) sectionFrontierOverview(pdf *gofpdf.Fpdf, page Pa
 	cols := []TableColumn{
 		{Header: "Config", Width: firstW, Align: "L"},
 		{Header: "Props", Width: colW, Align: "R"},
-		{Header: "Exp. Return", Width: colW, Align: "R"},
+		{Header: "Mod. Return", Width: colW, Align: "R"},
 		{Header: "Volatility", Width: colW, Align: "R"},
 		{Header: "Sharpe", Width: colW, Align: "R"},
 		{Header: "HHI", Width: colW, Align: "R"},
-		{Header: "Stress Equity", Width: colW, Align: "R"},
+		{Header: "Est. Stress Eq.", Width: colW, Align: "R"},
 	}
 
 	rows := make([][]string, len(allPoints))
@@ -493,8 +504,8 @@ func (b *ScenarioV2PDFBuilder) sectionFrontierOverview(pdf *gofpdf.Fpdf, page Pa
 func (b *ScenarioV2PDFBuilder) sectionMonitoringSignals(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, signals []investment.MonitoringSignal, y float64) float64 {
 	y = AddSectionHeading(pdf, page, theme, "Monitoring Signals", y)
 
-	intro := "Track these leading indicators after executing this portfolio configuration. " +
-		"Watch level signals are informational. Warn level prompts assumption review. Alert level requires immediate re-analysis."
+	intro := "Track these leading indicators if you act on this portfolio configuration. " +
+		"Watch level signals are informational. Warn level prompts assumption review. Alert level warrants re-analysis with a licensed advisor."
 	y = AddParagraph(pdf, page, theme, intro, y)
 
 	contentW := page.Width - page.MarginLeft - page.MarginRight
@@ -548,12 +559,15 @@ func (b *ScenarioV2PDFBuilder) sectionDisclaimers(pdf *gofpdf.Fpdf, page PageCon
 	y = AddSectionHeading(pdf, page, theme, "Important Disclaimers", y)
 
 	items := []string{
-		"This report is generated by artificial intelligence and is provided for informational purposes only. It does not constitute investment advice, a recommendation, or an offer to buy or sell any property or security.",
-		"All projections, forecasts, and simulations are illustrative estimates based on historical data, mathematical models, and user-provided assumptions. Actual results will differ materially from projected results.",
-		"Monte Carlo simulations model statistical uncertainty but cannot predict actual market conditions, economic events, local regulatory changes, or property-specific factors that may affect investment outcomes.",
-		"Cap rates, cash-on-cash returns, and other financial metrics shown are estimates. Actual metrics depend on local market conditions, property condition, tenant quality, and management effectiveness.",
-		"Past performance of real estate markets does not guarantee future results. Real estate investing involves significant risk, including loss of principal.",
-		"Consult licensed real estate professionals, financial advisors, and legal counsel before making any investment decisions. Estara AI assumes no liability for decisions made based on this report.",
+		"This report is generated by artificial intelligence and is provided for informational and decision-support purposes only. It does not constitute investment advice, a professional recommendation, or an offer to buy or sell any property or security.",
+		"Estara AI is not a licensed real estate broker, investment advisor, financial planner, or broker-dealer. Nothing in this report should be construed as advice from a licensed professional. Always consult licensed real estate professionals, financial advisors, and legal counsel before making any investment decisions.",
+		"All projections, forecasts, and simulations are illustrative estimates based on third-party market data, mathematical models, and user-provided assumptions. Actual results will differ, potentially materially, from any projected results shown.",
+		"Property financial metrics (cap rate, cash-on-cash return, DSCR, monthly cash flow) are model estimates derived from third-party data sources. They are not verified appraisals, inspections, or audited figures. Actual metrics depend on local market conditions, property condition, tenant quality, vacancy rates, and management effectiveness.",
+		"Monte Carlo simulations model statistical uncertainty using assumed return distributions. They cannot predict actual market conditions, economic shocks, interest rate changes, local regulatory changes, natural disasters, or property-specific factors. The range of outcomes shown does not capture all possible scenarios.",
+		"This analysis does not address tax implications of any investment, including depreciation, capital gains, 1031 exchanges, passive activity rules, or state and local tax obligations. Consult a qualified tax professional before making any investment decision.",
+		"Past performance of real estate markets does not guarantee future results. All investments carry risk, including the potential loss of some or all of the invested principal.",
+		"This report was generated on " + time.Now().UTC().Format("January 2, 2006") + " and reflects data and assumptions current as of that date. Market conditions change. This report may become outdated and should not be relied upon indefinitely.",
+		"Estara AI and its affiliates assume no liability for decisions made in reliance on this report. Use of this report is subject to Estara AI's Terms of Service.",
 	}
 
 	AddBulletList(pdf, page, theme, items, y)

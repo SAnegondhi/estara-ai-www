@@ -59,7 +59,7 @@ func (h *Handler) ExportFrontierPDF(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		h.logger.Error("frontier PDF generation failed",
-			"user_id", user.ID,
+			"user_id", user.UserID,
 			"error", err,
 		)
 		httputil.Error(w, http.StatusInternalServerError, "PDF generation failed: "+err.Error())
@@ -72,7 +72,7 @@ func (h *Handler) ExportFrontierPDF(w http.ResponseWriter, r *http.Request) {
 		ts, req.SelectedConfigIndex+1)
 
 	h.logger.Info("frontier PDF exported",
-		"user_id", user.ID,
+		"user_id", user.UserID,
 		"configs", len(req.FrontierPoints),
 		"selected", req.SelectedConfigIndex,
 		"bytes", len(pdfBytes),
