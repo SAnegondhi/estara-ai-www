@@ -199,16 +199,17 @@ type Property struct {
 
 // ScoredProperty represents a property with AI-generated scores
 type ScoredProperty struct {
-	Property            Property       `json:"property"`
-	OverallScore        float64        `json:"overallScore"`     // 0-100
-	BuyabilityScore     float64        `json:"buyabilityScore"`  // 0-100
-	RentabilityScore    float64        `json:"rentabilityScore"` // 0-100
-	ROIScore            float64        `json:"roiScore"`         // 0-100
-	PortfolioFit        float64        `json:"portfolioFit"`     // 0-100
-	Recommendation      Recommendation `json:"recommendation"`
-	Rationale           string         `json:"rationale"`
-	MarketQualityScore  float64        `json:"marketQualityScore,omitempty"`
-	MarketQualityRating string         `json:"marketQualityRating,omitempty"`
+	Property            Property        `json:"property"`
+	OverallScore        float64         `json:"overallScore"`     // 0-100
+	BuyabilityScore     float64         `json:"buyabilityScore"`  // 0-100
+	RentabilityScore    float64         `json:"rentabilityScore"` // 0-100
+	ROIScore            float64         `json:"roiScore"`         // 0-100
+	PortfolioFit        float64         `json:"portfolioFit"`     // 0-100
+	Recommendation      Recommendation  `json:"recommendation"`
+	Rationale           string          `json:"rationale"`
+	MarketQualityScore  float64         `json:"marketQualityScore,omitempty"`
+	MarketQualityRating string          `json:"marketQualityRating,omitempty"`
+	Thesis              *PropertyThesis `json:"thesis,omitempty"` // ADR-088 Phase 2: Structured thesis
 }
 
 // PortfolioMetrics holds aggregate metrics for the portfolio

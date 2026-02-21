@@ -188,6 +188,7 @@ func (s *Service) Optimize(ctx context.Context, req investment.OptimizationReque
 		req.DownPaymentPct,
 		req.MortgageRate,
 		req.RiskTolerance,
+		req.Strategy,
 		req.MaxProperties,
 	)
 
@@ -523,6 +524,7 @@ func (s *Service) OptimizeMultiYear(ctx context.Context, req investment.MultiYea
 			req.DownPaymentPct,
 			req.MortgageRate,
 			req.RiskTolerance,
+			req.Strategy,
 			0,
 		)
 
@@ -643,6 +645,7 @@ func (s *Service) selectWithTwoStage(
 	downPaymentPct float64,
 	mortgageRate float64,
 	riskTolerance investment.RiskTolerance,
+	strategy investment.InvestmentStrategy,
 	maxProperties int,
 ) ([]investment.PropertyInPortfolio, *investment.ConcentrationMetrics, map[string]bool) {
 	if len(candidates) == 0 {
@@ -654,7 +657,7 @@ func (s *Service) selectWithTwoStage(
 		return []investment.PropertyInPortfolio{}, nil, map[string]bool{}
 	}
 
-	config := BuildOptimizerConfig(budget, riskTolerance)
+	config := BuildOptimizerConfig(budget, riskTolerance, strategy)
 	optResult := OptimizePortfolioTwoStage(optimizable, config)
 	selectedIndices := optResult.SelectedIndices
 
@@ -1180,34 +1183,26 @@ func (s *Service) buildGrowthChart(yearlyPlans []investment.YearlyAcquisitionPla
 }
 
 // buildScoringPrompt constructs the prompt for AI property scoring
+// ADR-088 Phase 2: Context-free prompt using strategy/risk as proxies
 func (s *Service) buildScoringPrompt(
 	properties []investment.Property,
 	profile investment.InvestorProfile,
 	existingPortfolio *investment.ExistingPortfolio,
 ) string {
-	prompt := fmt.Sprintf(`Evaluate these %d properties for a real estate investment portfolio.
+	// ADR-088 Phase 2: Use strategy and risk tolerance as context proxies
+	// Portfolio context will be added in Phase 4 (context-aware re-scoring)
+	prompt := fmt.Sprintf(`Analyze these %d properties for a %s strategy with %s risk tolerance.
 
-INVESTOR PROFILE:
-- Goal: %s
+INVESTMENT CONTEXT:
+- Strategy: %s
 - Risk Tolerance: %s
 - Available Capital: $%d
 - Investment Horizon: %s
 
-`, len(properties), profile.Strategy, profile.RiskTolerance, profile.AvailableCapital, profile.InvestmentHorizon)
+`, len(properties), profile.Strategy, profile.RiskTolerance, profile.Strategy, profile.RiskTolerance, profile.AvailableCapital, profile.InvestmentHorizon)
 
-	// Add existing portfolio context if available
-	if existingPortfolio != nil && len(existingPortfolio.Properties) > 0 {
-		prompt += "EXISTING PORTFOLIO:\n"
-		totalValue := 0
-		totalCashFlow := 0
-		for _, p := range existingPortfolio.Properties {
-			totalValue += p.CurrentValue
-			totalCashFlow += p.MonthlyCashFlow
-		}
-		prompt += fmt.Sprintf("- Properties: %d\n", len(existingPortfolio.Properties))
-		prompt += fmt.Sprintf("- Total Value: $%d\n", totalValue)
-		prompt += fmt.Sprintf("- Monthly Cash Flow: $%d\n\n", totalCashFlow)
-	}
+	// Note: Existing portfolio context intentionally excluded in Phase 2
+	// Phase 4 will add portfolio context for re-scoring selected configurations
 
 	prompt += "CANDIDATE PROPERTIES:\n"
 	for i, p := range properties {
@@ -1223,64 +1218,107 @@ Property %d (ID: %s):
 
 	prompt += `
 
-EVALUATION CRITERIA:
-1. Buyability (0-100): Is this a good deal? Consider price vs value, days on market, seller motivation
-2. Rentability (0-100): Can it be rented profitably? Consider market rent, vacancy rates, property condition
-3. ROI Potential (0-100): Does it meet investor goals? Consider cap rate, cash flow, appreciation potential
-4. Portfolio Fit (0-100): Does it complement or duplicate existing holdings?
+TASK:
+Generate a structured investment thesis for each property. Focus on opportunity, risks, and market conditions.
 
 OUTPUT FORMAT (JSON array):
 [
   {
     "propertyId": "prop_123",
-    "overallScore": 85,
-    "buyabilityScore": 80,
-    "rentabilityScore": 90,
-    "roiScore": 85,
-    "portfolioFit": 85,
-    "recommendation": "STRONG_BUY",
-    "rationale": "Strong rental demand area with below-market price..."
+    "investmentThesis": "Strong cash flow opportunity in stable market with consistent rental demand and below-market entry price.",
+    "keyStrengths": [
+      "Below-market price at $X vs market median $Y",
+      "High rental demand with 95% occupancy rate in area"
+    ],
+    "keyRisks": [
+      "Older property may require $15-20K in deferred maintenance",
+      "Moderate appreciation volatility (3.5%) requires longer hold period"
+    ],
+    "marketContext": "Growing market with stable employment and consistent rent growth.",
+    "capexAlert": null
   }
 ]
 
-Recommendations: STRONG_BUY (score >= 80), BUY (60-79), HOLD (40-59), PASS (< 40)`
+GUIDELINES:
+- investmentThesis: 2-3 sentences summarizing the opportunity
+- keyStrengths: Exactly 2 strengths (be specific with numbers)
+- keyRisks: Exactly 2 risks (be specific about concerns)
+- marketContext: 1 sentence on market conditions
+- capexAlert: Only include if property age/condition suggests significant deferred maintenance (e.g., "Expect $15-20K in roof/HVAC repairs within 3 years")`
 
 	return prompt
 }
 
 // parseScoringResponse parses the AI response into scored properties
 func (s *Service) parseScoringResponse(response string, properties []investment.Property) ([]investment.ScoredProperty, error) {
-	// Find JSON in response
-	start := -1
-	end := -1
-	for i, c := range response {
-		if c == '[' && start == -1 {
-			start = i
+	var jsonStr string
+
+	// Strategy 1: Try to extract from markdown code block (```json ... ```)
+	codeBlockStart := strings.Index(response, "```json")
+	if codeBlockStart != -1 {
+		codeBlockStart += 7 // Skip past "```json\n"
+		codeBlockEnd := strings.Index(response[codeBlockStart:], "```")
+		if codeBlockEnd != -1 {
+			jsonStr = strings.TrimSpace(response[codeBlockStart : codeBlockStart+codeBlockEnd])
 		}
-		if c == ']' {
-			end = i + 1
+	}
+
+	// Strategy 2: Try to extract from plain code block (``` ... ```)
+	if jsonStr == "" {
+		codeBlockStart := strings.Index(response, "```")
+		if codeBlockStart != -1 {
+			codeBlockStart += 3 // Skip past "```"
+			// Skip language identifier if present (e.g., "json\n")
+			if idx := strings.Index(response[codeBlockStart:], "\n"); idx != -1 {
+				codeBlockStart += idx + 1
+			}
+			codeBlockEnd := strings.Index(response[codeBlockStart:], "```")
+			if codeBlockEnd != -1 {
+				jsonStr = strings.TrimSpace(response[codeBlockStart : codeBlockStart+codeBlockEnd])
+			}
 		}
 	}
 
-	if start == -1 || end == -1 {
-		return nil, fmt.Errorf("no JSON array found in response")
+	// Strategy 3: Find raw JSON array in response
+	if jsonStr == "" {
+		start := -1
+		end := -1
+		for i, c := range response {
+			if c == '[' && start == -1 {
+				start = i
+			}
+			if c == ']' {
+				end = i + 1
+			}
+		}
+
+		if start == -1 || end == -1 {
+			return nil, fmt.Errorf("no JSON array found in response (tried markdown, code blocks, and raw JSON)")
+		}
+
+		jsonStr = response[start:end]
 	}
 
-	jsonStr := response[start:end]
-
-	var aiScores []struct {
-		PropertyID       string  `json:"propertyId"`
-		OverallScore     float64 `json:"overallScore"`
-		BuyabilityScore  float64 `json:"buyabilityScore"`
-		RentabilityScore float64 `json:"rentabilityScore"`
-		ROIScore         float64 `json:"roiScore"`
-		PortfolioFit     float64 `json:"portfolioFit"`
-		Recommendation   string  `json:"recommendation"`
-		Rationale        string  `json:"rationale"`
+	// ADR-088 Phase 2: Parse structured thesis response
+	var aiTheses []struct {
+		PropertyID       string   `json:"propertyId"`
+		InvestmentThesis string   `json:"investmentThesis"`
+		KeyStrengths     []string `json:"keyStrengths"`
+		KeyRisks         []string `json:"keyRisks"`
+		MarketContext    string   `json:"marketContext"`
+		CapexAlert       *string  `json:"capexAlert"`
+		// Legacy fields for backward compatibility (optional)
+		OverallScore     float64 `json:"overallScore,omitempty"`
+		BuyabilityScore  float64 `json:"buyabilityScore,omitempty"`
+		RentabilityScore float64 `json:"rentabilityScore,omitempty"`
+		ROIScore         float64 `json:"roiScore,omitempty"`
+		PortfolioFit     float64 `json:"portfolioFit,omitempty"`
+		Recommendation   string  `json:"recommendation,omitempty"`
+		Rationale        string  `json:"rationale,omitempty"`
 	}
 
-	if err := json.Unmarshal([]byte(jsonStr), &aiScores); err != nil {
-		return nil, fmt.Errorf("failed to parse AI scores: %w", err)
+	if err := json.Unmarshal([]byte(jsonStr), &aiTheses); err != nil {
+		return nil, fmt.Errorf("failed to parse AI theses: %w", err)
 	}
 
 	// Map properties by ID for quick lookup
@@ -1289,26 +1327,73 @@ func (s *Service) parseScoringResponse(response string, properties []investment.
 		propMap[p.ID] = p
 	}
 
-	scored := make([]investment.ScoredProperty, 0, len(aiScores))
-	for _, score := range aiScores {
-		prop, ok := propMap[score.PropertyID]
+	scored := make([]investment.ScoredProperty, 0, len(aiTheses))
+	for _, thesis := range aiTheses {
+		prop, ok := propMap[thesis.PropertyID]
 		if !ok {
 			continue
 		}
 
+		// Build structured thesis
+		propertyThesis := &investment.PropertyThesis{
+			InvestmentThesis: thesis.InvestmentThesis,
+			KeyStrengths:     thesis.KeyStrengths,
+			KeyRisks:         thesis.KeyRisks,
+			MarketContext:    thesis.MarketContext,
+			CapexAlert:       thesis.CapexAlert,
+		}
+
+		// Validate thesis has required fields
+		if thesis.InvestmentThesis == "" || len(thesis.KeyStrengths) == 0 || len(thesis.KeyRisks) == 0 {
+			s.logger.Warn("incomplete thesis, using fallback",
+				"propertyId", thesis.PropertyID,
+				"hasThesis", thesis.InvestmentThesis != "",
+				"strengths", len(thesis.KeyStrengths),
+				"risks", len(thesis.KeyRisks),
+			)
+			propertyThesis = nil // Fallback will be triggered
+		}
+
+		// Generate recommendation from thesis (Phase 2: simplified logic)
+		recommendation := s.deriveRecommendationFromThesis(propertyThesis, thesis.Recommendation)
+
 		scored = append(scored, investment.ScoredProperty{
-			Property:         prop,
-			OverallScore:     score.OverallScore,
-			BuyabilityScore:  score.BuyabilityScore,
-			RentabilityScore: score.RentabilityScore,
-			ROIScore:         score.ROIScore,
-			PortfolioFit:     score.PortfolioFit,
-			Recommendation:   investment.Recommendation(score.Recommendation),
-			Rationale:        score.Rationale,
+			Property: prop,
+			// Legacy scores: default to 0 or use provided values
+			OverallScore:     thesis.OverallScore,
+			BuyabilityScore:  thesis.BuyabilityScore,
+			RentabilityScore: thesis.RentabilityScore,
+			ROIScore:         thesis.ROIScore,
+			PortfolioFit:     thesis.PortfolioFit,
+			Recommendation:   recommendation,
+			Rationale:        thesis.Rationale, // Keep for backward compatibility
+			Thesis:           propertyThesis,   // ADR-088 Phase 2: New field
 		})
 	}
 
 	return scored, nil
+}
+
+// deriveRecommendationFromThesis generates a recommendation from thesis
+// ADR-088 Phase 2: Simple heuristic until Phase 3 adds analytical scoring
+func (s *Service) deriveRecommendationFromThesis(thesis *investment.PropertyThesis, explicitRec string) investment.Recommendation {
+	// Use explicit recommendation if provided and valid
+	if explicitRec != "" {
+		rec := investment.Recommendation(explicitRec)
+		if rec == investment.RecommendationStrongBuy || rec == investment.RecommendationBuy || rec == investment.RecommendationHold || rec == investment.RecommendationPass {
+			return rec
+		}
+	}
+
+	// If thesis is nil or incomplete, default to HOLD (needs review)
+	if thesis == nil || thesis.InvestmentThesis == "" {
+		return investment.RecommendationHold
+	}
+
+	// Phase 2: Default to BUY for valid theses
+	// Phase 3 will add analytical scoring (Sharpe ratio, volatility, etc.)
+	// Phase 4 will add portfolio context for refined recommendations
+	return investment.RecommendationBuy
 }
 
 // fallbackScoring provides algorithmic scoring when AI fails
@@ -1376,6 +1461,9 @@ func (s *Service) fallbackScoring(properties []investment.Property, profile inve
 			recommendation = investment.RecommendationHold
 		}
 
+		// ADR-088 Phase 2: Generate fallback thesis
+		fallbackThesis := s.generateFallbackThesis(prop, grossYield, pricePerSqft, profile.Strategy)
+
 		scored = append(scored, investment.ScoredProperty{
 			Property:         prop,
 			OverallScore:     overallScore,
@@ -1385,10 +1473,83 @@ func (s *Service) fallbackScoring(properties []investment.Property, profile inve
 			PortfolioFit:     portfolioFit,
 			Recommendation:   recommendation,
 			Rationale:        fmt.Sprintf("Algorithmic scoring: %.1f%% gross yield, $%.0f/sqft", grossYield, pricePerSqft),
+			Thesis:           fallbackThesis, // ADR-088 Phase 2: Fallback thesis
 		})
 	}
 
 	return scored
+}
+
+// generateFallbackThesis creates a basic thesis when AI scoring fails
+// ADR-088 Phase 2: Fallback for reliability
+func (s *Service) generateFallbackThesis(prop investment.Property, grossYield, pricePerSqft float64, strategy investment.InvestmentStrategy) *investment.PropertyThesis {
+	// Build investment thesis based on metrics
+	thesisText := fmt.Sprintf("Property in %s, %s with %.1f%% gross yield at $%.0f/sqft.",
+		prop.City, prop.State, grossYield, pricePerSqft)
+
+	// Identify strengths
+	strengths := []string{}
+	if grossYield >= 7.0 {
+		strengths = append(strengths, fmt.Sprintf("Strong rental yield of %.1f%% (above market average)", grossYield))
+	} else if prop.EstimatedRent > 0 {
+		strengths = append(strengths, fmt.Sprintf("Rental income potential of $%d/month", prop.EstimatedRent))
+	}
+
+	if prop.DaysOnMarket > 60 {
+		strengths = append(strengths, fmt.Sprintf("Property on market %d days - potential for negotiation", prop.DaysOnMarket))
+	} else if prop.DaysOnMarket > 0 {
+		strengths = append(strengths, fmt.Sprintf("Recent listing (%d days) in active market", prop.DaysOnMarket))
+	}
+
+	// Ensure exactly 2 strengths
+	if len(strengths) == 0 {
+		strengths = []string{
+			fmt.Sprintf("%d bed, %.1f bath property with %d sqft", prop.Beds, prop.Baths, prop.Sqft),
+			fmt.Sprintf("Priced at $%d in %s market", prop.Price, prop.City),
+		}
+	} else if len(strengths) == 1 {
+		strengths = append(strengths, fmt.Sprintf("Located in %s, %s - established market", prop.City, prop.State))
+	}
+
+	// Identify risks
+	risks := []string{}
+	if grossYield < 5.0 {
+		risks = append(risks, "Lower rental yield may require appreciation for returns")
+	}
+
+	if prop.YearBuilt > 0 && prop.YearBuilt < 1980 {
+		age := 2026 - prop.YearBuilt
+		risks = append(risks, fmt.Sprintf("Property age (%d years) may require capital improvements", age))
+	}
+
+	// Ensure exactly 2 risks
+	if len(risks) == 0 {
+		risks = []string{
+			"AI analysis unavailable - manual review recommended",
+			"Market dynamics require further due diligence",
+		}
+	} else if len(risks) == 1 {
+		risks = append(risks, "Additional market research needed for full risk assessment")
+	}
+
+	// Market context
+	marketContext := fmt.Sprintf("%s market with current pricing at $%.0f per square foot", prop.City, pricePerSqft)
+
+	// CapEx alert for older properties
+	var capexAlert *string
+	if prop.YearBuilt > 0 && prop.YearBuilt < 1990 {
+		age := 2026 - prop.YearBuilt
+		alert := fmt.Sprintf("Property is %d years old - budget $10-15K for potential roof/HVAC/plumbing updates", age)
+		capexAlert = &alert
+	}
+
+	return &investment.PropertyThesis{
+		InvestmentThesis: thesisText,
+		KeyStrengths:     strengths[:2], // Exactly 2
+		KeyRisks:         risks[:2],     // Exactly 2
+		MarketContext:    marketContext,
+		CapexAlert:       capexAlert,
+	}
 }
 
 // filterByRecommendation filters to STRONG_BUY and BUY recommendations
@@ -1552,8 +1713,11 @@ func calculateQuickScore(prop investment.Property, profile investment.InvestorPr
 // - No rent estimate: Cannot evaluate
 func filterByDataQuality(properties []investment.Property) []investment.Property {
 	const (
-		minPriceToRent    = 6.0  // Minimum price / annual rent ratio
-		maxImpliedCapRate = 20.0 // Maximum cap rate percentage
+		minPriceToRent    = 6.0   // Minimum price / annual rent ratio (too low = suspicious)
+		maxPriceToRent    = 25.0  // Maximum price / annual rent ratio (too high = poor cash flow)
+		minImpliedCapRate = 3.0   // Minimum cap rate (below 3% = likely bad data or non-investment property)
+		maxImpliedCapRate = 12.0  // Maximum cap rate (above 12% = likely scam/bad data/distressed)
+		maxGrossRentYield = 18.0  // Maximum gross rent yield % (suspiciously high = likely error)
 	)
 
 	filtered := make([]investment.Property, 0, len(properties))
@@ -1578,18 +1742,26 @@ func filterByDataQuality(properties []investment.Property) []investment.Property
 		annualRent := p.EstimatedRent * 12
 		priceToRent := float64(p.Price) / float64(annualRent)
 
-		// Skip if price-to-rent ratio is too low (unrealistic)
-		if priceToRent < minPriceToRent {
+		// Skip if price-to-rent ratio is too low (unrealistic) or too high (poor investment)
+		if priceToRent < minPriceToRent || priceToRent > maxPriceToRent {
 			continue
 		}
 
-		// Calculate implied cap rate (assuming 40% expenses)
-		// NOI = annual rent * 0.95 (vacancy) * 0.65 (expenses) = annual rent * 0.6175
-		noi := float64(annualRent) * 0.6175
+		// Calculate gross rent yield (annual rent / price * 100)
+		grossRentYield := (float64(annualRent) / float64(p.Price)) * 100
+
+		// Skip if gross rent yield is suspiciously high (likely data error)
+		if grossRentYield > maxGrossRentYield {
+			continue
+		}
+
+		// Calculate implied cap rate (assuming 50% operating expenses)
+		// NOI = annual rent * 0.95 (vacancy) * 0.50 (expenses) = annual rent * 0.475
+		noi := float64(annualRent) * 0.475
 		impliedCapRate := (noi / float64(p.Price)) * 100
 
-		// Skip if cap rate is unrealistically high
-		if impliedCapRate > maxImpliedCapRate {
+		// Skip if cap rate is unrealistic (too low or too high)
+		if impliedCapRate < minImpliedCapRate || impliedCapRate > maxImpliedCapRate {
 			continue
 		}
 
