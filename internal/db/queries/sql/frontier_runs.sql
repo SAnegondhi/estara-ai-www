@@ -5,7 +5,7 @@ INSERT INTO frontier_runs (
     id, user_id, name, locations, criteria, frontier_points, property_count
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7
-) RETURNING *;
+) RETURNING id, name, created_at;
 
 -- name: ListFrontierRuns :many
 SELECT id, user_id, name, locations, property_count, share_token, created_at, accessed_at

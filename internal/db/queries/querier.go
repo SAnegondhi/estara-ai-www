@@ -530,7 +530,7 @@ type Querier interface {
 	// Increment quota usage and return updated values (for batch exports)
 	IncrementV2EvaluationQuotaUsageReturning(ctx context.Context, userID string) (IncrementV2EvaluationQuotaUsageReturningRow, error)
 	// ADR-088 Phase 13: Frontier Runs Queries (Saved Analyses)
-	InsertFrontierRun(ctx context.Context, arg InsertFrontierRunParams) (FrontierRun, error)
+	InsertFrontierRun(ctx context.Context, arg InsertFrontierRunParams) (InsertFrontierRunRow, error)
 	InvalidateUserPasswordResetTokens(ctx context.Context, userid string) error
 	InviteWaitlistEntry(ctx context.Context, id string) (InviteWaitlistEntryRow, error)
 	ListAIUsageRecords(ctx context.Context, arg ListAIUsageRecordsParams) ([]ListAIUsageRecordsRow, error)

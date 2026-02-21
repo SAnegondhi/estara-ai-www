@@ -113,7 +113,7 @@ INSERT INTO frontier_runs (
     id, user_id, name, locations, criteria, frontier_points, property_count
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7
-) RETURNING id, user_id, name, locations, criteria, frontier_points, property_count, share_token, created_at, accessed_at
+) RETURNING id, name, created_at
 `
 
 type InsertFrontierRunParams struct {
@@ -126,8 +126,14 @@ type InsertFrontierRunParams struct {
 	PropertyCount  int32           `json:"property_count"`
 }
 
+type InsertFrontierRunRow struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // ADR-088 Phase 13: Frontier Runs Queries (Saved Analyses)
-func (q *Queries) InsertFrontierRun(ctx context.Context, arg InsertFrontierRunParams) (FrontierRun, error) {
+func (q *Queries) InsertFrontierRun(ctx context.Context, arg InsertFrontierRunParams) (InsertFrontierRunRow, error) {
 	row := q.db.QueryRow(ctx, InsertFrontierRun,
 		arg.ID,
 		arg.UserID,
@@ -137,19 +143,8 @@ func (q *Queries) InsertFrontierRun(ctx context.Context, arg InsertFrontierRunPa
 		arg.FrontierPoints,
 		arg.PropertyCount,
 	)
-	var i FrontierRun
-	err := row.Scan(
-		&i.ID,
-		&i.UserID,
-		&i.Name,
-		&i.Locations,
-		&i.Criteria,
-		&i.FrontierPoints,
-		&i.PropertyCount,
-		&i.ShareToken,
-		&i.CreatedAt,
-		&i.AccessedAt,
-	)
+	var i InsertFrontierRunRow
+	err := row.Scan(&i.ID, &i.Name, &i.CreatedAt)
 	return i, err
 }
 

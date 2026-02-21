@@ -41,10 +41,10 @@ import (
 
 // SaveFrontierRunRequest is the body for POST /api/ai/frontier/runs.
 type SaveFrontierRunRequest struct {
-	Name           string                     `json:"name"`
-	Criteria       json.RawMessage            `json:"criteria"`
-	FrontierPoints []investment.FrontierPoint `json:"frontierPoints"`
-	PropertyCount  int                        `json:"propertyCount"`
+	Name           string          `json:"name"`
+	Criteria       json.RawMessage `json:"criteria"`
+	FrontierPoints json.RawMessage `json:"frontierPoints"`
+	PropertyCount  int             `json:"propertyCount"`
 }
 
 // FrontierRunSummaryResponse is a single row in the list response.
@@ -130,7 +130,7 @@ func (h *Handler) SaveFrontierRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.FrontierPoints) == 0 {
+	if len(req.FrontierPoints) == 0 || string(req.FrontierPoints) == "null" {
 		httputil.BadRequest(w, "frontierPoints required")
 		return
 	}
@@ -144,13 +144,7 @@ func (h *Handler) SaveFrontierRun(w http.ResponseWriter, r *http.Request) {
 	// Extract locations from criteria for display / filtering
 	locations := extractLocationsFromCriteria(req.Criteria)
 
-	// Serialize frontier points
-	pointsJSON, err := json.Marshal(req.FrontierPoints)
-	if err != nil {
-		httputil.Error(w, http.StatusInternalServerError, "failed to serialize frontier points")
-		return
-	}
-
+	// frontierPoints arrives as json.RawMessage — pass directly, no decode/re-encode
 	id := uuid.New().String()
 	run, err := h.store.Q().InsertFrontierRun(ctx, queries.InsertFrontierRunParams{
 		ID:             id,
@@ -158,7 +152,7 @@ func (h *Handler) SaveFrontierRun(w http.ResponseWriter, r *http.Request) {
 		Name:           name,
 		Locations:      locations,
 		Criteria:       req.Criteria,
-		FrontierPoints: json.RawMessage(pointsJSON),
+		FrontierPoints: req.FrontierPoints,
 		PropertyCount:  int32(req.PropertyCount),
 	})
 	if err != nil {
