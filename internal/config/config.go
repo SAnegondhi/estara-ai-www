@@ -30,6 +30,16 @@ type Config struct {
 	IAP      IAPConfig
 	WebAuthn WebAuthnConfig
 	OAuth    OAuthConfig
+	Features FeaturesConfig
+}
+
+// FeaturesConfig holds feature flags for phased rollout (ADR-088 Phase 11).
+// All flags default to false — enable via environment variables.
+type FeaturesConfig struct {
+	// ScenarioV2Enabled enables the Scenario Planning v2.1 Efficient Frontier
+	// workspace as the primary /scenarios route. When false, users remain on
+	// the legacy /invest flow. Set SCENARIO_V2_ENABLED=true to enable.
+	ScenarioV2Enabled bool `mapstructure:"SCENARIO_V2_ENABLED"`
 }
 
 // OAuthConfig holds social login provider configuration (ADR-082)
@@ -387,6 +397,11 @@ func Load() (*Config, error) {
 		AppleClientID:  v.GetString("APPLE_CLIENT_ID"),
 	}
 
+	// Feature flags (ADR-088 Phase 11)
+	cfg.Features = FeaturesConfig{
+		ScenarioV2Enabled: v.GetBool("SCENARIO_V2_ENABLED"),
+	}
+
 	// Validate required configuration
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config validation failed: %w", err)
@@ -434,6 +449,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("PROPERTY_FINDER_HASDATA_ENABLED", true)
 	v.SetDefault("PROPERTY_FINDER_PUBLIC_ENABLED", false)
 
+	// Feature flags defaults (ADR-088 Phase 11)
+	v.SetDefault("SCENARIO_V2_ENABLED", false)
+
 	// CORS defaults
 	v.SetDefault("CORS_ALLOW_CREDENTIALS", true)
 
@@ -480,6 +498,7 @@ func (c *Config) Validate() error {
 		"property_priority", c.Property.Priority,
 		"admin_users", len(c.Admin.UserIDs),
 		"stripe_configured", c.Stripe.SecretKey != "",
+		"scenario_v2_enabled", c.Features.ScenarioV2Enabled,
 	)
 
 	if len(errs) > 0 {
