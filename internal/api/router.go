@@ -80,7 +80,8 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 
 	// Create middleware
 	authMiddleware := middleware.NewAuthMiddleware(cfg)
-	rateLimiter := middleware.NewLimiter(ctx, redis, 100, time.Minute) // 100 req/min default
+	rateLimiter := middleware.NewLimiter(ctx, redis, 100, time.Minute)      // 100 req/min default
+	shareRateLimiter := middleware.NewLimiter(ctx, redis, 20, time.Minute) // 20 req/min per IP for public share
 
 	// Apply global middleware
 	r.Use(middleware.Recoverer)
@@ -419,6 +420,20 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 
 		// ADR-088 Phase 12: Full pipeline — discover → score → frontier (SSE)
 		r.Post("/run", handlers.AI.RunFrontierPipeline)
+
+		// ADR-088 Phase 13: Saved analyses CRUD + share token management
+		r.Get("/runs", handlers.AI.ListFrontierRuns)
+		r.Post("/runs", handlers.AI.SaveFrontierRun)
+		r.Get("/runs/{id}", handlers.AI.GetFrontierRunByID)
+		r.Delete("/runs/{id}", handlers.AI.DeleteFrontierRun)
+		r.Post("/runs/{id}/share", handlers.AI.EnableShare)
+		r.Delete("/runs/{id}/share", handlers.AI.RevokeShare)
+	})
+
+	// ADR-088 Phase 13: Public share viewer — no auth, 20 req/min per IP
+	r.Route("/api/share", func(r chi.Router) {
+		r.Use(shareRateLimiter.Limit)
+		r.Get("/{token}", handlers.AI.GetSharedRun)
 	})
 
 	// Market Analysis

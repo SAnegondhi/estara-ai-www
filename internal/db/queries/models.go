@@ -484,6 +484,19 @@ type EvaluationChatSession struct {
 	UpdatedAt         pgtype.Timestamp `json:"updated_at"`
 }
 
+type FrontierRun struct {
+	ID             string             `json:"id"`
+	UserID         string             `json:"user_id"`
+	Name           string             `json:"name"`
+	Locations      []string           `json:"locations"`
+	Criteria       json.RawMessage    `json:"criteria"`
+	FrontierPoints json.RawMessage    `json:"frontier_points"`
+	PropertyCount  int32              `json:"property_count"`
+	ShareToken     pgtype.Text        `json:"share_token"`
+	CreatedAt      time.Time          `json:"created_at"`
+	AccessedAt     pgtype.Timestamptz `json:"accessed_at"`
+}
+
 type GuestSession struct {
 	ID                string           `json:"id"`
 	Token             string           `json:"token"`
@@ -611,6 +624,13 @@ type MarketAnalysisReport struct {
 	AiContextVersion   pgtype.Text        `json:"ai_context_version"`
 	Latitude           pgtype.Float8      `json:"latitude"`
 	Longitude          pgtype.Float8      `json:"longitude"`
+}
+
+type MarketHistory struct {
+	MarketID           string        `json:"market_id"`
+	HistoricalPeakDrop pgtype.Float8 `json:"historical_peak_drop"`
+	LastUpdated        time.Time     `json:"last_updated"`
+	CreatedAt          time.Time     `json:"created_at"`
 }
 
 type PasswordResetToken struct {

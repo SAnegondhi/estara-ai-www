@@ -126,6 +126,13 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 		go func(idx int, location string) {
 			defer wg.Done()
 
+			// ADR-088 Phase 13: Progressive disclosure — emit "searching" before acquiring sem
+			_ = sseWriter.WriteEventJSON("location_status", map[string]interface{}{
+				"location": location,
+				"status":   "searching",
+				"count":    0,
+			})
+
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
@@ -155,6 +162,11 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 					"location", location,
 					"error", searchErr,
 				)
+				_ = sseWriter.WriteEventJSON("location_status", map[string]interface{}{
+					"location": location,
+					"status":   "found",
+					"count":    0,
+				})
 				resultChan <- searchResult{err: searchErr}
 				return
 			}
@@ -190,6 +202,13 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 			emitProgress(float64(idx+1)/float64(len(req.Locations))*30,
 				fmt.Sprintf("Found %d properties in %s", len(props), location))
 
+			// ADR-088 Phase 13: Progressive disclosure — emit "found" after search completes
+			_ = sseWriter.WriteEventJSON("location_status", map[string]interface{}{
+				"location": location,
+				"status":   "found",
+				"count":    len(props),
+			})
+
 			resultChan <- searchResult{properties: props}
 		}(i, loc)
 	}
@@ -217,7 +236,7 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 	emitProgress(30, fmt.Sprintf("Found %d properties across all locations", len(allProperties)))
 
 	// ----------------------------------------------------------------
-	// Phase 2: AI Scoring (30–60%)
+	// Phase 2: AI Scoring (30–60%) — with granular progress ticker
 	// ----------------------------------------------------------------
 	emitProgress(30, "Scoring properties with AI")
 
@@ -227,12 +246,44 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 		AvailableCapital: req.Budget,
 	}
 
+	// Ticker emits incremental progress while ScoreProperties blocks (no callback available).
+	scoringDone := make(chan struct{})
+	var scoringOnce sync.Once
+	stopScoring := func() { scoringOnce.Do(func() { close(scoringDone) }) }
+	defer stopScoring()
+	go func() {
+		scoringMsgs := []string{
+			"Scoring properties with AI",
+			"Analyzing cash flow potential",
+			"Computing risk-adjusted metrics",
+			"Building investment scores",
+		}
+		ticker := time.NewTicker(1500 * time.Millisecond)
+		defer ticker.Stop()
+		pct := 33.0
+		msgIdx := 0
+		for {
+			select {
+			case <-scoringDone:
+				return
+			case <-ticker.C:
+				if pct < 58 {
+					pct += 4
+				}
+				emitProgress(pct, scoringMsgs[msgIdx%len(scoringMsgs)])
+				msgIdx++
+			}
+		}
+	}()
+
 	scoredProperties, err := h.investmentOptimizer.ScoreProperties(
 		ctx,
 		allProperties,
 		profile,
 		nil, // no existing portfolio
 	)
+	stopScoring() // stop ticker before next emitProgress
+
 	if err != nil {
 		h.logger.Error("property scoring failed", "error", err, "userId", user.ID)
 		_ = sseWriter.WriteEventJSON("error", map[string]string{
@@ -245,9 +296,39 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 	emitProgress(60, fmt.Sprintf("Scored %d properties", len(scoredProperties)))
 
 	// ----------------------------------------------------------------
-	// Phase 3: Frontier Generation (60–100%)
+	// Phase 3: Frontier Generation (60–100%) — with granular progress ticker
 	// ----------------------------------------------------------------
 	emitProgress(60, "Running frontier analysis")
+
+	// Ticker covers the gap when the optimizer doesn't call ProgressFunc frequently.
+	frontierDone := make(chan struct{})
+	var frontierOnce sync.Once
+	stopFrontier := func() { frontierOnce.Do(func() { close(frontierDone) }) }
+	defer stopFrontier()
+	go func() {
+		frontierMsgs := []string{
+			"Running frontier analysis",
+			"Computing efficient portfolios",
+			"Optimizing risk-return tradeoffs",
+			"Evaluating portfolio configurations",
+		}
+		ticker := time.NewTicker(2000 * time.Millisecond)
+		defer ticker.Stop()
+		pct := 63.0
+		msgIdx := 0
+		for {
+			select {
+			case <-frontierDone:
+				return
+			case <-ticker.C:
+				if pct < 96 {
+					pct += 5
+				}
+				emitProgress(pct, frontierMsgs[msgIdx%len(frontierMsgs)])
+				msgIdx++
+			}
+		}
+	}()
 
 	params := investment.InvestmentPlanningParams{
 		Locations:      req.Locations,
@@ -276,6 +357,8 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 		params,
 		optimization.ProgressFunc(frontierProgress),
 	)
+	stopFrontier() // stop ticker before final event
+
 	if err != nil {
 		h.logger.Error("frontier generation failed", "error", err, "userId", user.ID)
 		_ = sseWriter.WriteEventJSON("error", map[string]string{

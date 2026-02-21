@@ -23,6 +23,7 @@ type Querier interface {
 	CancelIAPSubscriptions(ctx context.Context, userid string) error
 	CancelInsightAccess(ctx context.Context, id string) (InsightAccess, error)
 	CancelSubscription(ctx context.Context, arg CancelSubscriptionParams) error
+	ClearFrontierRunShareToken(ctx context.Context, arg ClearFrontierRunShareTokenParams) error
 	CompleteCronJobRun(ctx context.Context, arg CompleteCronJobRunParams) (CronJobRun, error)
 	// Returns count of valid (non-expired) cache entries
 	CountAIScoringCache(ctx context.Context) (int64, error)
@@ -55,10 +56,12 @@ type Querier interface {
 	// Evaluation Chat Sessions and Messages Queries
 	CountEvaluationChatSessionsByUser(ctx context.Context, userID string) (int64, error)
 	CountExpiredCache(ctx context.Context) (int64, error)
+	CountFrontierRuns(ctx context.Context, userID string) (int64, error)
 	CountIAPAuditLogs(ctx context.Context) (int64, error)
 	CountInvestmentPlanHistory(ctx context.Context, arg CountInvestmentPlanHistoryParams) (int64, error)
 	CountInvestorReportsFiltered(ctx context.Context, arg CountInvestorReportsFilteredParams) (int64, error)
 	CountMarketAnalysisHistory(ctx context.Context, arg CountMarketAnalysisHistoryParams) (int64, error)
+	CountMarketHistory(ctx context.Context) (int64, error)
 	CountOldAdminAuditLogs(ctx context.Context, cutoffTimestamp pgtype.Timestamp) (int64, error)
 	CountPaidInvoicesAfterDate(ctx context.Context, createdat pgtype.Timestamp) (int64, error)
 	CountPendingEarlyAccess(ctx context.Context) (int64, error)
@@ -235,6 +238,8 @@ type Querier interface {
 	DeleteExpiredSilentLoginSessions(ctx context.Context) error
 	DeleteExpiredSnapshots(ctx context.Context) error
 	DeleteExpiredSystemCache(ctx context.Context) (int64, error)
+	DeleteFrontierRun(ctx context.Context, arg DeleteFrontierRunParams) error
+	DeleteMarketHistory(ctx context.Context, marketID string) error
 	DeleteOldAdminAuditLogs(ctx context.Context, cutoffTimestamp pgtype.Timestamp) (int64, error)
 	DeleteOldAnalysisJobs(ctx context.Context) error
 	DeleteOldCronJobRuns(ctx context.Context, dollar_1 pgtype.Text) error
@@ -355,6 +360,8 @@ type Querier interface {
 	GetEmailVerificationCodeByID(ctx context.Context, id string) (EmailVerificationCode, error)
 	GetEvaluationChatSession(ctx context.Context, arg GetEvaluationChatSessionParams) (EvaluationChatSession, error)
 	GetEvaluationsWithDecisionRecords(ctx context.Context, arg GetEvaluationsWithDecisionRecordsParams) ([]GetEvaluationsWithDecisionRecordsRow, error)
+	GetFrontierRun(ctx context.Context, arg GetFrontierRunParams) (FrontierRun, error)
+	GetFrontierRunByToken(ctx context.Context, shareToken pgtype.Text) (FrontierRun, error)
 	// Guest Sessions
 	GetGuestSessionByID(ctx context.Context, id string) (GuestSession, error)
 	GetGuestSessionByToken(ctx context.Context, token string) (GuestSession, error)
@@ -386,6 +393,9 @@ type Querier interface {
 	GetLatestTermsAcceptance(ctx context.Context, userid string) (TermsAcceptance, error)
 	GetMRRByMonth(ctx context.Context) ([]GetMRRByMonthRow, error)
 	GetMRRByTier(ctx context.Context) ([]GetMRRByTierRow, error)
+	// ADR-088 Phase 1: Market History Queries
+	// CRUD operations for market historical data
+	GetMarketHistory(ctx context.Context, marketID string) (MarketHistory, error)
 	// Admin Accounting Queries
 	GetMonthlyRevenue(ctx context.Context, dollar_1 pgtype.Text) ([]GetMonthlyRevenueRow, error)
 	GetPaidInvoiceCount(ctx context.Context) (int64, error)
@@ -519,6 +529,8 @@ type Querier interface {
 	IncrementV2EvaluationQuotaUsage(ctx context.Context, userID string) error
 	// Increment quota usage and return updated values (for batch exports)
 	IncrementV2EvaluationQuotaUsageReturning(ctx context.Context, userID string) (IncrementV2EvaluationQuotaUsageReturningRow, error)
+	// ADR-088 Phase 13: Frontier Runs Queries (Saved Analyses)
+	InsertFrontierRun(ctx context.Context, arg InsertFrontierRunParams) (FrontierRun, error)
 	InvalidateUserPasswordResetTokens(ctx context.Context, userid string) error
 	InviteWaitlistEntry(ctx context.Context, id string) (InviteWaitlistEntryRow, error)
 	ListAIUsageRecords(ctx context.Context, arg ListAIUsageRecordsParams) ([]ListAIUsageRecordsRow, error)
@@ -561,12 +573,14 @@ type Querier interface {
 	ListEvaluationChatSessionsWithStats(ctx context.Context, arg ListEvaluationChatSessionsWithStatsParams) ([]ListEvaluationChatSessionsWithStatsRow, error)
 	ListExpiringInsightAccess(ctx context.Context, periodenddate pgtype.Timestamp) ([]InsightAccess, error)
 	ListExpiringVendorContracts(ctx context.Context, dollar_1 pgtype.Text) ([]VendorContract, error)
+	ListFrontierRuns(ctx context.Context, arg ListFrontierRunsParams) ([]ListFrontierRunsRow, error)
 	ListIAPAuditLogs(ctx context.Context, arg ListIAPAuditLogsParams) ([]ListIAPAuditLogsRow, error)
 	ListInvestmentPlanHistory(ctx context.Context, arg ListInvestmentPlanHistoryParams) ([]ListInvestmentPlanHistoryRow, error)
 	ListInvestorReportsFiltered(ctx context.Context, arg ListInvestorReportsFilteredParams) ([]ListInvestorReportsFilteredRow, error)
 	ListInvitedEarlyAccess(ctx context.Context, limit int32) ([]EarlyAccess, error)
 	ListInvoicesByStatus(ctx context.Context, arg ListInvoicesByStatusParams) ([]Invoice, error)
 	ListMarketAnalysisHistory(ctx context.Context, arg ListMarketAnalysisHistoryParams) ([]ListMarketAnalysisHistoryRow, error)
+	ListMarketHistory(ctx context.Context) ([]MarketHistory, error)
 	ListPendingEarlyAccess(ctx context.Context, limit int32) ([]EarlyAccess, error)
 	// Fetch most accessed reports (popular nationwide)
 	ListPopularReports(ctx context.Context, arg ListPopularReportsParams) ([]MarketAnalysisReport, error)
@@ -584,6 +598,8 @@ type Querier interface {
 	ListSessionActivities(ctx context.Context, discoverysessionid string) ([]DiscoverySessionActivity, error)
 	ListSessionEvaluations(ctx context.Context, discoverysessionid string) ([]DiscoverySessionEvaluation, error)
 	ListSessionProperties(ctx context.Context, discoverysessionid string) ([]DiscoverySessionProperty, error)
+	// Get markets that haven't been updated in 7+ days
+	ListStaleMarketHistory(ctx context.Context) ([]MarketHistory, error)
 	// Finds reports with outdated Census version, ordered by access count (for proactive refresh)
 	ListStaleReportsByCensus(ctx context.Context, arg ListStaleReportsByCensusParams) ([]ListStaleReportsByCensusRow, error)
 	// Finds reports with outdated FRED version, ordered by access count (for proactive refresh)
@@ -647,12 +663,16 @@ type Querier interface {
 	RevokeAllAdminSessionsForUser(ctx context.Context, userid string) error
 	RevokeUserConsent(ctx context.Context, arg RevokeUserConsentParams) error
 	RevokeWaitlistByEmail(ctx context.Context, email string) error
+	// Investment Planning queries
+	// Save completed investment planning job as a scenario (upsert to handle duplicate keys)
+	SaveInvestmentPlanScenario(ctx context.Context, arg SaveInvestmentPlanScenarioParams) (AnalysisCache, error)
 	SearchAdminAuditLogsByDetailsText(ctx context.Context, arg SearchAdminAuditLogsByDetailsTextParams) ([]SearchAdminAuditLogsByDetailsTextRow, error)
 	SearchAnalysisJobsByUser(ctx context.Context, arg SearchAnalysisJobsByUserParams) ([]SearchAnalysisJobsByUserRow, error)
 	SearchUserScenarios(ctx context.Context, arg SearchUserScenariosParams) ([]Scenario, error)
 	SearchUsersByEmail(ctx context.Context, arg SearchUsersByEmailParams) ([]User, error)
 	SearchWhitelistedEmails(ctx context.Context, arg SearchWhitelistedEmailsParams) ([]SearchWhitelistedEmailsRow, error)
 	SessionExistsByUser(ctx context.Context, arg SessionExistsByUserParams) (bool, error)
+	SetFrontierRunShareToken(ctx context.Context, arg SetFrontierRunShareTokenParams) error
 	// Sets password hash and marks account active (used in password setup flow)
 	SetUserPasswordAndStatus(ctx context.Context, arg SetUserPasswordAndStatusParams) error
 	SoftDeletePortfolioProperty(ctx context.Context, arg SoftDeletePortfolioPropertyParams) error
@@ -664,6 +684,7 @@ type Querier interface {
 	ToggleVendorActive(ctx context.Context, arg ToggleVendorActiveParams) error
 	ToggleVendorActiveRows(ctx context.Context, arg ToggleVendorActiveRowsParams) (int64, error)
 	ToggleWhitelistedEmail(ctx context.Context, arg ToggleWhitelistedEmailParams) (ToggleWhitelistedEmailRow, error)
+	TouchFrontierRun(ctx context.Context, id string) error
 	// User Access Tracking
 	TrackUserAccess(ctx context.Context, arg TrackUserAccessParams) error
 	// User Activity Tracking Queries (ADR-087 Phase 5)
@@ -752,6 +773,7 @@ type Querier interface {
 	UpsertCronJobConfig(ctx context.Context, arg UpsertCronJobConfigParams) (CronJobConfig, error)
 	UpsertInvestmentPlanUsage(ctx context.Context, arg UpsertInvestmentPlanUsageParams) (InvestmentPlanUsage, error)
 	UpsertInvoice(ctx context.Context, arg UpsertInvoiceParams) (Invoice, error)
+	UpsertMarketHistory(ctx context.Context, arg UpsertMarketHistoryParams) error
 	// Inserts or updates a property in the cache
 	UpsertPropertyCache(ctx context.Context, arg UpsertPropertyCacheParams) error
 	UpsertSystemAlert(ctx context.Context, arg UpsertSystemAlertParams) (string, error)
