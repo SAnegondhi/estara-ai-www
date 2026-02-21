@@ -17,6 +17,7 @@ type FrontierOptimizer struct {
 	logger            *slog.Logger
 	markowitzCalc     *MarkowitzCalculator
 	reinvestModeler   *projection.ReinvestmentModeler // ADR-088 Phase 5
+	mcSimulator       *projection.MonteCarloSimulator // ADR-088 Phase 6
 	minProperties     int                              // Minimum properties per configuration (default: 5)
 	maxProperties     int                              // Maximum properties per configuration (default: 8)
 	numConfigurations int                              // Number of frontier points to generate (default: 5)
@@ -28,11 +29,13 @@ func NewFrontierOptimizer(
 	logger *slog.Logger,
 	markowitzCalc *MarkowitzCalculator,
 	reinvestModeler *projection.ReinvestmentModeler,
+	mcSimulator *projection.MonteCarloSimulator,
 ) *FrontierOptimizer {
 	return &FrontierOptimizer{
 		logger:            logger,
 		markowitzCalc:     markowitzCalc,
 		reinvestModeler:   reinvestModeler,
+		mcSimulator:       mcSimulator,
 		minProperties:     5,
 		maxProperties:     8,
 		numConfigurations: 5,
@@ -125,18 +128,53 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 			})
 		}
 
-		// ADR-088 Phase 5: Calculate dual-track reinvestment plan
-		// Phase 6: MC results passed as nil (will be computed later in full pipeline)
-		reinvestPlan, err := fo.reinvestModeler.CalculateReinvestmentPlan(ctx, &investment.FrontierPoint{
+		// ADR-088 Phase 6.2: Two-phase MC + Reinvestment pipeline
+		// Phase 1: Create preliminary reinvestment plan (Track A + Track B threshold)
+		preliminaryPlan, err := fo.reinvestModeler.CalculateReinvestmentPlan(ctx, &investment.FrontierPoint{
 			ConfigIndex: i,
 			Properties:  properties,
 		}, params, nil) // nil mcResults = placeholder Track B values
 		if err != nil {
-			fo.logger.Warn("failed to calculate reinvestment plan, using nil",
+			fo.logger.Warn("failed to calculate preliminary reinvestment plan, using nil",
 				"configIndex", i,
 				"error", err,
 			)
-			reinvestPlan = nil
+			preliminaryPlan = nil
+		}
+
+		// Phase 2: Run Monte Carlo simulation with preliminary plan
+		var mcResults *investment.SimulationResults
+		if fo.mcSimulator != nil && preliminaryPlan != nil {
+			mcResults, err = fo.mcSimulator.SimulateConfiguration(ctx, &investment.FrontierPoint{
+				ConfigIndex: i,
+				Properties:  properties,
+			}, preliminaryPlan)
+			if err != nil {
+				fo.logger.Warn("Monte Carlo simulation failed, using nil results",
+					"configIndex", i,
+					"error", err,
+				)
+				mcResults = nil
+			}
+		}
+
+		// Phase 3: Update reinvestment plan with MC-derived Track B statistics
+		var reinvestPlan *investment.DualTrackReinvestment
+		if mcResults != nil {
+			reinvestPlan, err = fo.reinvestModeler.CalculateReinvestmentPlan(ctx, &investment.FrontierPoint{
+				ConfigIndex: i,
+				Properties:  properties,
+			}, params, mcResults) // Pass MC results for Track B statistics
+			if err != nil {
+				fo.logger.Warn("failed to update reinvestment plan with MC results, using preliminary",
+					"configIndex", i,
+					"error", err,
+				)
+				reinvestPlan = preliminaryPlan
+			}
+		} else {
+			// No MC results, use preliminary plan
+			reinvestPlan = preliminaryPlan
 		}
 
 		frontierPoints = append(frontierPoints, investment.FrontierPoint{
@@ -147,8 +185,8 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 			SharpeScore:         config.SharpeScore,
 			ConcentrationIndex:  config.Objectives.ConcentrationIndex,
 			StressTestEquity:    config.Objectives.StressTestEquity,
-			SimulationResults:   nil,       // Phase 6: Monte Carlo simulation
-			ReinvestmentPlan:    reinvestPlan, // Phase 5: Dual-track reinvestment
+			SimulationResults:   mcResults,    // Phase 6: Monte Carlo simulation results
+			ReinvestmentPlan:    reinvestPlan, // Phase 5+6: Dual-track with MC-updated Track B
 		})
 	}
 
