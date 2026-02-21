@@ -78,9 +78,9 @@ func TestCalculateTrackB_Placeholder(t *testing.T) {
 		},
 	}
 
-	trackB := rm.calculateTrackB(config)
+	trackB := rm.calculateTrackB(config, nil) // nil = no MC results
 
-	// Phase 5: Verify placeholder values
+	// Phase 5: Verify placeholder values (no MC results provided)
 	if trackB.Threshold != 50000 {
 		t.Errorf("Threshold = %d, want 50000", trackB.Threshold)
 	}
@@ -124,7 +124,7 @@ func TestCalculateReinvestmentPlan(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	plan, err := rm.CalculateReinvestmentPlan(ctx, config, params)
+	plan, err := rm.CalculateReinvestmentPlan(ctx, config, params, nil) // nil = no MC results
 
 	if err != nil {
 		t.Fatalf("CalculateReinvestmentPlan() error = %v", err)
@@ -146,6 +146,63 @@ func TestCalculateReinvestmentPlan(t *testing.T) {
 	// Verify Track B (placeholder)
 	if plan.TrackB.Threshold != 50000 {
 		t.Errorf("TrackB.Threshold = %d, want 50000", plan.TrackB.Threshold)
+	}
+}
+
+// TestCalculateTrackB_WithMCResults tests Track B calculation with Monte Carlo results
+func TestCalculateTrackB_WithMCResults(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	rm := NewReinvestmentModeler(logger)
+
+	config := &investment.FrontierPoint{
+		ConfigIndex: 0,
+		Properties: []investment.PropertyInPortfolio{
+			{
+				Property: investment.Property{
+					Price: 400000,
+				},
+			},
+		},
+	}
+
+	// Create mock MC results
+	mcResults := &investment.SimulationResults{
+		Paths: []investment.MonteCarloPath{
+			{PathIndex: 0, TrackBFiredYear: 0},  // Never fired
+			{PathIndex: 1, TrackBFiredYear: 3},  // Fired year 3
+			{PathIndex: 2, TrackBFiredYear: 5},  // Fired year 5
+			{PathIndex: 3, TrackBFiredYear: 4},  // Fired year 4
+			{PathIndex: 4, TrackBFiredYear: 0},  // Never fired
+			{PathIndex: 5, TrackBFiredYear: 6},  // Fired year 6
+			{PathIndex: 6, TrackBFiredYear: 0},  // Never fired
+			{PathIndex: 7, TrackBFiredYear: 4},  // Fired year 4
+			{PathIndex: 8, TrackBFiredYear: 5},  // Fired year 5
+			{PathIndex: 9, TrackBFiredYear: 7},  // Fired year 7
+		},
+	}
+
+	trackB := rm.calculateTrackB(config, mcResults)
+
+	// Verify threshold
+	if trackB.Threshold != 50000 {
+		t.Errorf("Threshold = %d, want 50000", trackB.Threshold)
+	}
+
+	// Verify median fired year: [3, 4, 4, 5, 5, 6, 7] → median = 5
+	expectedMedian := 5
+	if trackB.MedianFiredYear != expectedMedian {
+		t.Errorf("MedianFiredYear = %d, want %d", trackB.MedianFiredYear, expectedMedian)
+	}
+
+	// Verify fired probability: 7/10 = 0.7
+	expectedProb := 0.7
+	if trackB.FiredProbability != expectedProb {
+		t.Errorf("FiredProbability = %.2f, want %.2f", trackB.FiredProbability, expectedProb)
+	}
+
+	// Verify expected acquisitions: At least 1 if any fired
+	if trackB.ExpectedAcquisitions < 1 {
+		t.Errorf("ExpectedAcquisitions = %d, want >= 1", trackB.ExpectedAcquisitions)
 	}
 }
 

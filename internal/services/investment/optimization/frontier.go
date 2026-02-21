@@ -126,10 +126,11 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 		}
 
 		// ADR-088 Phase 5: Calculate dual-track reinvestment plan
+		// Phase 6: MC results passed as nil (will be computed later in full pipeline)
 		reinvestPlan, err := fo.reinvestModeler.CalculateReinvestmentPlan(ctx, &investment.FrontierPoint{
 			ConfigIndex: i,
 			Properties:  properties,
-		}, params)
+		}, params, nil) // nil mcResults = placeholder Track B values
 		if err != nil {
 			fo.logger.Warn("failed to calculate reinvestment plan, using nil",
 				"configIndex", i,

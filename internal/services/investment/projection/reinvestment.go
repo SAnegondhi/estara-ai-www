@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 
 	"github.com/estara-ai/www/internal/services/investment"
 )
@@ -25,22 +26,25 @@ func NewReinvestmentModeler(logger *slog.Logger) *ReinvestmentModeler {
 // CalculateReinvestmentPlan generates dual-track reinvestment plan for a frontier configuration
 // Track A: User-declared yearly budgets (deterministic)
 // Track B: Internal cash flow reinvestment (per-path timing, threshold-based)
+// mcResults: Optional Monte Carlo results for Track B statistics (nil = placeholder values)
 func (rm *ReinvestmentModeler) CalculateReinvestmentPlan(
 	ctx context.Context,
 	config *investment.FrontierPoint,
 	params investment.InvestmentPlanningParams,
+	mcResults *investment.SimulationResults,
 ) (*investment.DualTrackReinvestment, error) {
 	rm.logger.Info("calculating dual-track reinvestment plan",
 		"configIndex", config.ConfigIndex,
 		"yearlyBudgets", len(params.YearlyBudgets),
+		"hasMCResults", mcResults != nil,
 	)
 
 	// Track A: External capital (user-declared budgets)
 	trackA := rm.calculateTrackA(params.YearlyBudgets)
 
 	// Track B: Internal cash flow (threshold-based)
-	// Phase 5: Placeholder until Monte Carlo is implemented (Phase 6)
-	trackB := rm.calculateTrackB(config)
+	// Phase 6: Compute from Monte Carlo results if available
+	trackB := rm.calculateTrackB(config, mcResults)
 
 	plan := &investment.DualTrackReinvestment{
 		TrackA: trackA,
@@ -81,17 +85,78 @@ func (rm *ReinvestmentModeler) calculateTrackA(yearlyBudgets []investment.Yearly
 // calculateTrackB computes internal cash flow reinvestment parameters
 // Track B fires at different times across MC paths (per-path timing)
 // Phase 5: Placeholder implementation until Monte Carlo (Phase 6)
-func (rm *ReinvestmentModeler) calculateTrackB(config *investment.FrontierPoint) investment.TrackBReinvestment {
+func (rm *ReinvestmentModeler) calculateTrackB(
+	config *investment.FrontierPoint,
+	mcResults *investment.SimulationResults,
+) investment.TrackBReinvestment {
 	// Default threshold: $50,000 cumulative cash flow
 	const defaultThreshold = 50000
 
-	// Phase 5 Placeholder: These will be computed by Monte Carlo in Phase 6
-	// For now, return conservative estimates
+	// If no MC results, return conservative placeholder
+	if mcResults == nil || len(mcResults.Paths) == 0 {
+		rm.logger.Warn("no Monte Carlo results available for Track B calculation")
+		return investment.TrackBReinvestment{
+			Threshold:            defaultThreshold,
+			MedianFiredYear:      0,
+			FiredProbability:     0.0,
+			ExpectedAcquisitions: 0,
+		}
+	}
+
+	// Compute Track B statistics from MC paths
+	firedYears := []int{}
+	firedCount := 0
+
+	for _, path := range mcResults.Paths {
+		if path.TrackBFiredYear > 0 {
+			firedYears = append(firedYears, path.TrackBFiredYear)
+			firedCount++
+		}
+	}
+
+	// Calculate median fired year
+	medianFiredYear := 0
+	if len(firedYears) > 0 {
+		// Sort fired years
+		sortedYears := make([]int, len(firedYears))
+		copy(sortedYears, firedYears)
+		sort.Ints(sortedYears)
+
+		// Take median
+		medianIdx := len(sortedYears) / 2
+		if len(sortedYears)%2 == 0 && medianIdx > 0 {
+			// Even number: average of middle two
+			medianFiredYear = (sortedYears[medianIdx-1] + sortedYears[medianIdx]) / 2
+		} else {
+			medianFiredYear = sortedYears[medianIdx]
+		}
+	}
+
+	// Calculate fired probability
+	firedProbability := float64(firedCount) / float64(len(mcResults.Paths))
+
+	// Calculate expected acquisitions (Phase 6.1: simplified model - 1 property per fired path)
+	// Phase 6.2 will track actual cohorts and compute accurate count
+	expectedAcquisitions := 0
+	if firedCount > 0 {
+		expectedAcquisitions = firedCount / len(mcResults.Paths) // Expected properties per path
+		if expectedAcquisitions == 0 {
+			expectedAcquisitions = 1 // At least 1 if any paths fired
+		}
+	}
+
+	rm.logger.Info("Track B statistics computed from Monte Carlo",
+		"medianFiredYear", medianFiredYear,
+		"firedProbability", firedProbability,
+		"firedPaths", firedCount,
+		"totalPaths", len(mcResults.Paths),
+	)
+
 	return investment.TrackBReinvestment{
 		Threshold:            defaultThreshold,
-		MedianFiredYear:      0,  // 0 = unknown/not fired (Phase 6 will compute)
-		FiredProbability:     0.0, // Phase 6 will compute % of paths where Track B fires
-		ExpectedAcquisitions: 0,  // Phase 6 will compute expected # of properties
+		MedianFiredYear:      medianFiredYear,
+		FiredProbability:     firedProbability,
+		ExpectedAcquisitions: expectedAcquisitions,
 	}
 }
 
