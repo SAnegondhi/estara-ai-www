@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/estara-ai/www/internal/api/middleware"
+	queries "github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/investment"
 	"github.com/estara-ai/www/internal/services/investment/optimization"
 	"github.com/estara-ai/www/internal/services/property/providers"
@@ -26,7 +27,7 @@ import (
 // It replaces the hardcoded demo data with real user-supplied criteria.
 type FrontierRunRequest struct {
 	// Locations to search (e.g. ["Austin, TX", "Denver, CO"])
-	Locations []string `json:"locations" validate:"required,min=1,max=5"`
+	Locations []string `json:"locations"`
 	// Budget: total capital available for down payments
 	Budget int `json:"budget" validate:"required,min=10000"`
 	// MortgageRate: annual rate as a decimal (e.g. 0.075 for 7.5%)
@@ -42,6 +43,12 @@ type FrontierRunRequest struct {
 	// ForceRescore: when true, bypasses the AI scoring cache and re-scores properties fresh.
 	// Used by "Re-analyze" to get updated scores without triggering a new property search.
 	ForceRescore bool `json:"forceRescore,omitempty"`
+	// DiscoverySessionID: when set, use properties from this Discovery session instead of auto-discover.
+	DiscoverySessionID string `json:"discoverySessionId,omitempty"`
+	// IncludePortfolio: when true, factor the user's existing portfolio into analysis.
+	IncludePortfolio bool `json:"includePortfolio,omitempty"`
+	// ExistingPortfolio: the user's current portfolio data (populated by frontend).
+	ExistingPortfolio *investment.ExistingPortfolio `json:"existingPortfolio,omitempty"`
 }
 
 // RunFrontierPipeline is the Phase 12 full-pipeline endpoint.
@@ -74,6 +81,12 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.validate.Struct(req); err != nil {
 		httputil.BadRequest(w, "validation failed: "+err.Error())
+		return
+	}
+
+	// Validate property source: either locations or a discovery session ID must be provided
+	if req.DiscoverySessionID == "" && len(req.Locations) == 0 {
+		httputil.BadRequest(w, "either locations or discoverySessionId is required")
 		return
 	}
 
@@ -111,121 +124,199 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 	// ----------------------------------------------------------------
 	// Phase 1: Property Discovery (0–30%)
 	// ----------------------------------------------------------------
-	emitProgress(0, fmt.Sprintf("Searching %d location(s)", len(req.Locations)))
 
-	maxPrice := int(float64(req.Budget) / req.DownPaymentPct)
+	var allProperties []investment.Property
+	var discoveryLocations []string // locations derived from property source
 
-	type searchResult struct {
-		properties []investment.Property
-		err        error
-	}
+	if req.DiscoverySessionID != "" {
+		// ADR-089: Use properties from a Discovery session — skip auto-discover
+		emitProgress(5, "Loading properties from Discovery session")
 
-	resultChan := make(chan searchResult, len(req.Locations))
-	sem := make(chan struct{}, 5)
-	var wg sync.WaitGroup
-
-	for i, loc := range req.Locations {
-		wg.Add(1)
-		go func(idx int, location string) {
-			defer wg.Done()
-
-			// ADR-088 Phase 13: Progressive disclosure — emit "searching" before acquiring sem
-			_ = sseWriter.WriteEventJSON("location_status", map[string]interface{}{
-				"location": location,
-				"status":   "searching",
-				"count":    0,
+		session, sessionErr := h.store.Q().GetDiscoverySessionByUser(ctx, queries.GetDiscoverySessionByUserParams{
+			ID:     req.DiscoverySessionID,
+			UserId: user.UserID,
+		})
+		if sessionErr != nil {
+			_ = sseWriter.WriteEventJSON("error", map[string]string{
+				"error":   "session_not_found",
+				"message": "Discovery session not found or access denied",
 			})
+			return
+		}
 
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				resultChan <- searchResult{err: ctx.Err()}
-				return
+		sessionProps, propsErr := h.store.Q().ListSessionProperties(ctx, session.ID)
+		if propsErr != nil {
+			_ = sseWriter.WriteEventJSON("error", map[string]string{
+				"error":   "session_load_failed",
+				"message": "Failed to load session properties: " + propsErr.Error(),
+			})
+			return
+		}
+
+		allProperties = make([]investment.Property, 0, len(sessionProps))
+		locationSet := make(map[string]struct{})
+		for _, sp := range sessionProps {
+			loc := sp.City + ", " + sp.State
+			locationSet[loc] = struct{}{}
+
+			var lat, lng float64
+			if sp.Latitude.Valid {
+				_ = sp.Latitude.Scan(&lat)
+			}
+			if sp.Longitude.Valid {
+				_ = sp.Longitude.Scan(&lng)
 			}
 
-			pct := float64(idx)/float64(len(req.Locations)) * 30
-			emitProgress(pct, fmt.Sprintf("Searching %s", location))
-
-			parts := strings.SplitN(location, ",", 2)
-			city := strings.TrimSpace(parts[0])
-			state := ""
-			if len(parts) > 1 {
-				state = strings.TrimSpace(parts[1])
+			var estimatedRent int
+			if sp.EstimatedRent.Valid {
+				estimatedRent = int(sp.EstimatedRent.Int32)
 			}
 
-			resp, searchErr := h.propertyFinder.Search(ctx, providers.SearchParams{
-				City:     city,
-				State:    state,
-				MaxPrice: maxPrice,
-				Limit:    50,
+			allProperties = append(allProperties, investment.Property{
+				ID:            sp.ListingId,
+				Address:       sp.Address,
+				City:          sp.City,
+				State:         sp.State,
+				ZipCode:       sp.ZipCode.String,
+				Price:         int(sp.Price),
+				Beds:          int(sp.Beds),
+				EstimatedRent: estimatedRent,
+				YearBuilt:     int(sp.YearBuilt.Int32),
+				PropertyType:  sp.PropertyType.String,
+				ListingURL:    sp.ListingSearchUrl.String,
+				ImageURL:      sp.ImageUrl.String,
+				DaysOnMarket:  int(sp.DaysOnMarket.Int32),
+				Latitude:      lat,
+				Longitude:     lng,
 			})
-			if searchErr != nil {
-				h.logger.Warn("search failed for location",
-					"location", location,
-					"error", searchErr,
-				)
+		}
+
+		for loc := range locationSet {
+			discoveryLocations = append(discoveryLocations, loc)
+		}
+
+		emitProgress(30, fmt.Sprintf("Loaded %d properties from Discovery session", len(allProperties)))
+	} else {
+		// Auto-discover: parallel search across all requested locations
+		emitProgress(0, fmt.Sprintf("Searching %d location(s)", len(req.Locations)))
+		discoveryLocations = req.Locations
+
+		maxPrice := int(float64(req.Budget) / req.DownPaymentPct)
+
+		type searchResult struct {
+			properties []investment.Property
+			err        error
+		}
+
+		resultChan := make(chan searchResult, len(req.Locations))
+		sem := make(chan struct{}, 5)
+		var wg sync.WaitGroup
+
+		for i, loc := range req.Locations {
+			wg.Add(1)
+			go func(idx int, location string) {
+				defer wg.Done()
+
+				// ADR-088 Phase 13: Progressive disclosure — emit "searching" before acquiring sem
+				_ = sseWriter.WriteEventJSON("location_status", map[string]interface{}{
+					"location": location,
+					"status":   "searching",
+					"count":    0,
+				})
+
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }()
+				case <-ctx.Done():
+					resultChan <- searchResult{err: ctx.Err()}
+					return
+				}
+
+				pct := float64(idx)/float64(len(req.Locations)) * 30
+				emitProgress(pct, fmt.Sprintf("Searching %s", location))
+
+				parts := strings.SplitN(location, ",", 2)
+				city := strings.TrimSpace(parts[0])
+				state := ""
+				if len(parts) > 1 {
+					state = strings.TrimSpace(parts[1])
+				}
+
+				resp, searchErr := h.propertyFinder.Search(ctx, providers.SearchParams{
+					City:     city,
+					State:    state,
+					MaxPrice: maxPrice,
+					Limit:    50,
+				})
+				if searchErr != nil {
+					h.logger.Warn("search failed for location",
+						"location", location,
+						"error", searchErr,
+					)
+					_ = sseWriter.WriteEventJSON("location_status", map[string]interface{}{
+						"location": location,
+						"status":   "found",
+						"count":    0,
+					})
+					resultChan <- searchResult{err: searchErr}
+					return
+				}
+
+				props := make([]investment.Property, 0, len(resp.Properties))
+				for _, r := range resp.Properties {
+					imageURL := ""
+					if len(r.Images) > 0 {
+						imageURL = r.Images[0]
+					}
+					props = append(props, investment.Property{
+						ID:            r.ID,
+						Address:       r.Address,
+						City:          r.City,
+						State:         r.State,
+						ZipCode:       r.ZipCode,
+						Price:         r.Price,
+						Beds:          r.Beds,
+						Baths:         r.Baths,
+						Sqft:          r.Sqft,
+						EstimatedRent: r.EstimatedRent,
+						YearBuilt:     r.YearBuilt,
+						PropertyType:  string(r.PropertyType),
+						ListingURL:    r.ListingURL,
+						ImageURL:      imageURL,
+						DaysOnMarket:  r.DaysOnMarket,
+						Provider:      r.ProviderName,
+						Latitude:      r.Latitude,
+						Longitude:     r.Longitude,
+					})
+				}
+
+				emitProgress(float64(idx+1)/float64(len(req.Locations))*30,
+					fmt.Sprintf("Found %d properties in %s", len(props), location))
+
+				// ADR-088 Phase 13: Progressive disclosure — emit "found" after search completes
 				_ = sseWriter.WriteEventJSON("location_status", map[string]interface{}{
 					"location": location,
 					"status":   "found",
-					"count":    0,
+					"count":    len(props),
 				})
-				resultChan <- searchResult{err: searchErr}
-				return
-			}
 
-			props := make([]investment.Property, 0, len(resp.Properties))
-			for _, r := range resp.Properties {
-				imageURL := ""
-				if len(r.Images) > 0 {
-					imageURL = r.Images[0]
-				}
-				props = append(props, investment.Property{
-					ID:            r.ID,
-					Address:       r.Address,
-					City:          r.City,
-					State:         r.State,
-					ZipCode:       r.ZipCode,
-					Price:         r.Price,
-					Beds:          r.Beds,
-					Baths:         r.Baths,
-					Sqft:          r.Sqft,
-					EstimatedRent: r.EstimatedRent,
-					YearBuilt:     r.YearBuilt,
-					PropertyType:  string(r.PropertyType),
-					ListingURL:    r.ListingURL,
-					ImageURL:      imageURL,
-					DaysOnMarket:  r.DaysOnMarket,
-					Provider:      r.ProviderName,
-					Latitude:      r.Latitude,
-					Longitude:     r.Longitude,
-				})
-			}
-
-			emitProgress(float64(idx+1)/float64(len(req.Locations))*30,
-				fmt.Sprintf("Found %d properties in %s", len(props), location))
-
-			// ADR-088 Phase 13: Progressive disclosure — emit "found" after search completes
-			_ = sseWriter.WriteEventJSON("location_status", map[string]interface{}{
-				"location": location,
-				"status":   "found",
-				"count":    len(props),
-			})
-
-			resultChan <- searchResult{properties: props}
-		}(i, loc)
-	}
-
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	allProperties := make([]investment.Property, 0)
-	for res := range resultChan {
-		if res.err == nil {
-			allProperties = append(allProperties, res.properties...)
+				resultChan <- searchResult{properties: props}
+			}(i, loc)
 		}
+
+		go func() {
+			wg.Wait()
+			close(resultChan)
+		}()
+
+		allProperties = make([]investment.Property, 0)
+		for res := range resultChan {
+			if res.err == nil {
+				allProperties = append(allProperties, res.properties...)
+			}
+		}
+
+		emitProgress(30, fmt.Sprintf("Found %d properties across all locations", len(allProperties)))
 	}
 
 	if len(allProperties) == 0 {
@@ -235,8 +326,6 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-
-	emitProgress(30, fmt.Sprintf("Found %d properties across all locations", len(allProperties)))
 
 	// ----------------------------------------------------------------
 	// Phase 2: AI Scoring (30–60%) — with granular progress ticker
@@ -283,7 +372,7 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 		ctx,
 		allProperties,
 		profile,
-		nil, // no existing portfolio
+		req.ExistingPortfolio, // ADR-089: pass portfolio context if provided
 		req.ForceRescore,
 	)
 	stopScoring() // stop ticker before next emitProgress
@@ -335,12 +424,13 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	params := investment.InvestmentPlanningParams{
-		Locations:      req.Locations,
-		Budget:         req.Budget,
-		DownPaymentPct: req.DownPaymentPct,
-		Strategy:       investment.InvestmentStrategy(req.Strategy),
-		RiskTolerance:  investment.RiskTolerance(req.RiskTolerance),
-		MaxProperties:  10,
+		Locations:         discoveryLocations, // ADR-089: use locations from property source
+		Budget:            req.Budget,
+		DownPaymentPct:    req.DownPaymentPct,
+		Strategy:          investment.InvestmentStrategy(req.Strategy),
+		RiskTolerance:     investment.RiskTolerance(req.RiskTolerance),
+		MaxProperties:     10,
+		ExistingPortfolio: req.ExistingPortfolio, // ADR-089: portfolio context
 	}
 
 	// Wrap frontier progress (60–100%)
