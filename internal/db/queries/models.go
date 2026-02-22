@@ -492,6 +492,8 @@ type FrontierRun struct {
 	Criteria       json.RawMessage    `json:"criteria"`
 	FrontierPoints json.RawMessage    `json:"frontier_points"`
 	PropertyCount  int32              `json:"property_count"`
+	Strategy       string             `json:"strategy"`
+	BestSharpe     float64            `json:"best_sharpe"`
 	ShareToken     pgtype.Text        `json:"share_token"`
 	CreatedAt      time.Time          `json:"created_at"`
 	AccessedAt     pgtype.Timestamptz `json:"accessed_at"`

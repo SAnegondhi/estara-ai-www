@@ -2,13 +2,13 @@
 
 -- name: InsertFrontierRun :one
 INSERT INTO frontier_runs (
-    id, user_id, name, locations, criteria, frontier_points, property_count
+    id, user_id, name, locations, criteria, frontier_points, property_count, strategy, best_sharpe
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7
+    $1, $2, $3, $4, $5, $6, $7, $8, $9
 ) RETURNING id, name, created_at;
 
 -- name: ListFrontierRuns :many
-SELECT id, user_id, name, locations, property_count, share_token, created_at, accessed_at
+SELECT id, user_id, name, locations, property_count, strategy, best_sharpe, share_token, created_at, accessed_at
 FROM frontier_runs
 WHERE user_id = $1
 ORDER BY created_at DESC

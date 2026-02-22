@@ -57,7 +57,7 @@ func (q *Queries) DeleteFrontierRun(ctx context.Context, arg DeleteFrontierRunPa
 }
 
 const GetFrontierRun = `-- name: GetFrontierRun :one
-SELECT id, user_id, name, locations, criteria, frontier_points, property_count, share_token, created_at, accessed_at FROM frontier_runs
+SELECT id, user_id, name, locations, criteria, frontier_points, property_count, strategy, best_sharpe, share_token, created_at, accessed_at FROM frontier_runs
 WHERE id = $1 AND user_id = $2
 `
 
@@ -77,6 +77,8 @@ func (q *Queries) GetFrontierRun(ctx context.Context, arg GetFrontierRunParams) 
 		&i.Criteria,
 		&i.FrontierPoints,
 		&i.PropertyCount,
+		&i.Strategy,
+		&i.BestSharpe,
 		&i.ShareToken,
 		&i.CreatedAt,
 		&i.AccessedAt,
@@ -85,7 +87,7 @@ func (q *Queries) GetFrontierRun(ctx context.Context, arg GetFrontierRunParams) 
 }
 
 const GetFrontierRunByToken = `-- name: GetFrontierRunByToken :one
-SELECT id, user_id, name, locations, criteria, frontier_points, property_count, share_token, created_at, accessed_at FROM frontier_runs
+SELECT id, user_id, name, locations, criteria, frontier_points, property_count, strategy, best_sharpe, share_token, created_at, accessed_at FROM frontier_runs
 WHERE share_token = $1
 `
 
@@ -100,6 +102,8 @@ func (q *Queries) GetFrontierRunByToken(ctx context.Context, shareToken pgtype.T
 		&i.Criteria,
 		&i.FrontierPoints,
 		&i.PropertyCount,
+		&i.Strategy,
+		&i.BestSharpe,
 		&i.ShareToken,
 		&i.CreatedAt,
 		&i.AccessedAt,
@@ -110,9 +114,9 @@ func (q *Queries) GetFrontierRunByToken(ctx context.Context, shareToken pgtype.T
 const InsertFrontierRun = `-- name: InsertFrontierRun :one
 
 INSERT INTO frontier_runs (
-    id, user_id, name, locations, criteria, frontier_points, property_count
+    id, user_id, name, locations, criteria, frontier_points, property_count, strategy, best_sharpe
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7
+    $1, $2, $3, $4, $5, $6, $7, $8, $9
 ) RETURNING id, name, created_at
 `
 
@@ -124,6 +128,8 @@ type InsertFrontierRunParams struct {
 	Criteria       json.RawMessage `json:"criteria"`
 	FrontierPoints json.RawMessage `json:"frontier_points"`
 	PropertyCount  int32           `json:"property_count"`
+	Strategy       string          `json:"strategy"`
+	BestSharpe     float64         `json:"best_sharpe"`
 }
 
 type InsertFrontierRunRow struct {
@@ -142,6 +148,8 @@ func (q *Queries) InsertFrontierRun(ctx context.Context, arg InsertFrontierRunPa
 		arg.Criteria,
 		arg.FrontierPoints,
 		arg.PropertyCount,
+		arg.Strategy,
+		arg.BestSharpe,
 	)
 	var i InsertFrontierRunRow
 	err := row.Scan(&i.ID, &i.Name, &i.CreatedAt)
@@ -149,7 +157,7 @@ func (q *Queries) InsertFrontierRun(ctx context.Context, arg InsertFrontierRunPa
 }
 
 const ListFrontierRuns = `-- name: ListFrontierRuns :many
-SELECT id, user_id, name, locations, property_count, share_token, created_at, accessed_at
+SELECT id, user_id, name, locations, property_count, strategy, best_sharpe, share_token, created_at, accessed_at
 FROM frontier_runs
 WHERE user_id = $1
 ORDER BY created_at DESC
@@ -168,6 +176,8 @@ type ListFrontierRunsRow struct {
 	Name          string             `json:"name"`
 	Locations     []string           `json:"locations"`
 	PropertyCount int32              `json:"property_count"`
+	Strategy      string             `json:"strategy"`
+	BestSharpe    float64            `json:"best_sharpe"`
 	ShareToken    pgtype.Text        `json:"share_token"`
 	CreatedAt     time.Time          `json:"created_at"`
 	AccessedAt    pgtype.Timestamptz `json:"accessed_at"`
@@ -188,6 +198,8 @@ func (q *Queries) ListFrontierRuns(ctx context.Context, arg ListFrontierRunsPara
 			&i.Name,
 			&i.Locations,
 			&i.PropertyCount,
+			&i.Strategy,
+			&i.BestSharpe,
 			&i.ShareToken,
 			&i.CreatedAt,
 			&i.AccessedAt,

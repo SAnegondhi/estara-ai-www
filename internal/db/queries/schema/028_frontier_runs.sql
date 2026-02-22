@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS frontier_runs (
     criteria        JSONB NOT NULL,
     frontier_points JSONB NOT NULL,
     property_count  INT NOT NULL DEFAULT 0,
+    strategy        TEXT NOT NULL DEFAULT 'balanced',
+    best_sharpe     FLOAT NOT NULL DEFAULT 0,
     share_token     TEXT UNIQUE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     accessed_at     TIMESTAMPTZ

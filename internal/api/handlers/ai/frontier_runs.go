@@ -45,6 +45,8 @@ type SaveFrontierRunRequest struct {
 	Criteria       json.RawMessage `json:"criteria"`
 	FrontierPoints json.RawMessage `json:"frontierPoints"`
 	PropertyCount  int             `json:"propertyCount"`
+	Strategy       string          `json:"strategy"`
+	BestSharpe     float64         `json:"bestSharpe"`
 }
 
 // FrontierRunSummaryResponse is a single row in the list response.
@@ -53,6 +55,8 @@ type FrontierRunSummaryResponse struct {
 	Name          string   `json:"name"`
 	Locations     []string `json:"locations"`
 	PropertyCount int      `json:"propertyCount"`
+	Strategy      string   `json:"strategy"`
+	BestSharpe    float64  `json:"bestSharpe"`
 	ShareEnabled  bool     `json:"shareEnabled"`
 	ShareURL      string   `json:"shareUrl,omitempty"`
 	CreatedAt     string   `json:"createdAt"`
@@ -145,6 +149,11 @@ func (h *Handler) SaveFrontierRun(w http.ResponseWriter, r *http.Request) {
 	locations := extractLocationsFromCriteria(req.Criteria)
 
 	// frontierPoints arrives as json.RawMessage — pass directly, no decode/re-encode
+	strategy := req.Strategy
+	if strategy == "" {
+		strategy = "balanced"
+	}
+
 	id := uuid.New().String()
 	run, err := h.store.Q().InsertFrontierRun(ctx, queries.InsertFrontierRunParams{
 		ID:             id,
@@ -154,6 +163,8 @@ func (h *Handler) SaveFrontierRun(w http.ResponseWriter, r *http.Request) {
 		Criteria:       req.Criteria,
 		FrontierPoints: req.FrontierPoints,
 		PropertyCount:  int32(req.PropertyCount),
+		Strategy:       strategy,
+		BestSharpe:     req.BestSharpe,
 	})
 	if err != nil {
 		h.logger.Error("save frontier run failed", "error", err, "userId", user.UserID)
@@ -365,6 +376,8 @@ func frontierRunSummaryFromRow(row queries.ListFrontierRunsRow, baseURL string) 
 		Name:          row.Name,
 		Locations:     row.Locations,
 		PropertyCount: int(row.PropertyCount),
+		Strategy:      row.Strategy,
+		BestSharpe:    row.BestSharpe,
 		ShareEnabled:  row.ShareToken.Valid,
 		CreatedAt:     row.CreatedAt.UTC().Format(time.RFC3339),
 	}
