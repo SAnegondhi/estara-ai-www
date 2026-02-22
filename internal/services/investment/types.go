@@ -155,6 +155,9 @@ type PropertyInPortfolio struct {
 
 	// Operating expenses (calculated per property)
 	Expenses *PropertyExpenses `json:"expenses,omitempty"`
+
+	// Thesis: AI-generated investment thesis (ADR-089: surfaced in Decision Memo PDF)
+	Thesis *PropertyThesis `json:"thesis,omitempty"`
 }
 
 // PropertyExpenses holds calculated operating expenses for a property

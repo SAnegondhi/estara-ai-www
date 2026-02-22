@@ -122,17 +122,21 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 	// Step 4: Rank by Sharpe ratio and select top configurations
 	frontierConfigs := fo.selectFrontierPoints(nonDominated, fo.numConfigurations)
 
-	// Build score lookup so PropertyInPortfolio.Score is populated from ScoredProperty.OverallScore.
+	// Build score and thesis lookups so PropertyInPortfolio is fully populated.
 	scoreByID := make(map[string]float64, len(properties))
+	thesisByID := make(map[string]*investment.PropertyThesis, len(properties))
 	for _, sp := range properties {
 		scoreByID[sp.Property.ID] = sp.OverallScore
+		if sp.Thesis != nil {
+			thesisByID[sp.Property.ID] = sp.Thesis
+		}
 	}
 
 	// Step 5-8: Convert to FrontierPoint format with financial projections
 	reportProgress(5, "Calculating reinvestment plans")
 	frontierPoints := make([]investment.FrontierPoint, 0, len(frontierConfigs))
 	for i, config := range frontierConfigs {
-		portfolioProps := fo.buildPortfolioProperties(config.Properties, scoreByID)
+		portfolioProps := fo.buildPortfolioProperties(config.Properties, scoreByID, thesisByID)
 
 		// Run phases 5-8 (Reinvestment → MC → Scenarios → Verdict)
 		fp := fo.regenerateConfigPhases(ctx, i, portfolioProps, config, profile, params, progress)
@@ -149,11 +153,12 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 }
 
 // buildPortfolioProperties converts Property slice to PropertyInPortfolio.
-// scoreByID maps property ID → OverallScore from the original ScoredProperty slice.
+// scoreByID maps property ID → OverallScore; thesisByID maps ID → PropertyThesis.
 // Defaults: 7% mortgage rate, 25% down payment, 30-year term.
 func (fo *FrontierOptimizer) buildPortfolioProperties(
 	scoredProps []investment.Property,
 	scoreByID map[string]float64,
+	thesisByID map[string]*investment.PropertyThesis,
 ) []investment.PropertyInPortfolio {
 	mortgageRate := 7.0
 	downPaymentPct := 0.25
@@ -178,6 +183,7 @@ func (fo *FrontierOptimizer) buildPortfolioProperties(
 			CashOnCash:      cashOnCash,
 			DSCR:            dscr,
 			Score:           scoreByID[prop.ID],
+			Thesis:          thesisByID[prop.ID], // ADR-089: carry thesis through to FrontierPoint
 		})
 	}
 	return props
@@ -382,6 +388,7 @@ func (fo *FrontierOptimizer) applyMortgageRateOverride(
 			CashOnCash:      cashOnCash,
 			DSCR:            dscr,
 			Score:           p.Score,
+			Thesis:          p.Thesis, // preserve thesis through recalculate
 		})
 	}
 	return updated

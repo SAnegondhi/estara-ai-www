@@ -97,13 +97,13 @@ func (b *ScenarioV2PDFBuilder) Build(ctx context.Context, req ScenarioV2PDFReque
 
 	// Section 1: Cover
 	AddCoverPage(pdf, page, theme,
-		"Scenario Planning v2.1",
+		"Decision Memo",
 		fmt.Sprintf("Efficient Frontier Analysis — Config %d of %d",
 			selected.ConfigIndex+1, len(req.FrontierPoints)),
 		markets,
-		"AI-Generated Analysis  ·  Decision Support Only  ·  Not Investment Advice\nGenerated: "+generatedAt,
+		"Estara Insight  ·  AI-Generated Analysis  ·  Decision Support Only  ·  Not Investment Advice\nGenerated: "+generatedAt+"  ·  CONFIDENTIAL",
 	)
-	AddHeaderFooter(pdf, page, theme, "Frontier Analysis  ·  Not Investment Advice")
+	AddHeaderFooter(pdf, page, theme, "Decision Memo  ·  Not Investment Advice")
 
 	// Section 2: Decision Verdict
 	pdf.AddPage()
@@ -269,7 +269,59 @@ func (b *ScenarioV2PDFBuilder) sectionPropertyDetails(pdf *gofpdf.Fpdf, page Pag
 		}
 	}
 
-	return AddTable(pdf, page, theme, cols, rows, y) + 2
+	y = AddTable(pdf, page, theme, cols, rows, y) + 4
+
+	// Per-property thesis summaries (if any property has AI thesis data)
+	for _, prop := range pt.Properties {
+		if prop.Thesis == nil || prop.Thesis.InvestmentThesis == "" {
+			continue
+		}
+
+		y, _ = EnsureSpace(pdf, page, y, 22)
+
+		// Property header
+		addr := prop.Property.Address + ", " + prop.Property.City + ", " + prop.Property.State
+		if len(addr) > 80 {
+			addr = addr[:80] + "…"
+		}
+		pdf.SetFont("Helvetica", "B", 8)
+		pdf.SetTextColor(theme.Primary.R, theme.Primary.G, theme.Primary.B)
+		pdf.Text(page.MarginLeft, y, addr)
+		y += 5
+
+		// Investment thesis
+		pdf.SetFont("Helvetica", "", 8)
+		pdf.SetTextColor(theme.Text.R, theme.Text.G, theme.Text.B)
+		pdf.SetXY(page.MarginLeft, y)
+		pdf.MultiCell(page.Width-page.MarginLeft-page.MarginRight, 4, prop.Thesis.InvestmentThesis, "", "L", false)
+		y = pdf.GetY() + 2
+
+		// Key strengths (up to 2)
+		if len(prop.Thesis.KeyStrengths) > 0 {
+			pdf.SetFont("Helvetica", "I", 7.5)
+			pdf.SetTextColor(theme.Accent.R, theme.Accent.G, theme.Accent.B)
+			maxStrengths := min(2, len(prop.Thesis.KeyStrengths))
+			for _, s := range prop.Thesis.KeyStrengths[:maxStrengths] {
+				y, _ = EnsureSpace(pdf, page, y, 5)
+				pdf.SetXY(page.MarginLeft+3, y)
+				pdf.MultiCell(page.Width-page.MarginLeft-page.MarginRight-3, 3.5, "✓ "+s, "", "L", false)
+				y = pdf.GetY()
+			}
+			y += 2
+		}
+
+		// CapEx alert (if any)
+		if prop.Thesis.CapexAlert != nil && *prop.Thesis.CapexAlert != "" {
+			y, _ = EnsureSpace(pdf, page, y, 7)
+			pdf.SetFont("Helvetica", "I", 7.5)
+			pdf.SetTextColor(theme.Warning.R, theme.Warning.G, theme.Warning.B)
+			pdf.SetXY(page.MarginLeft+3, y)
+			pdf.MultiCell(page.Width-page.MarginLeft-page.MarginRight-3, 3.5, "⚠ "+*prop.Thesis.CapexAlert, "", "L", false)
+			y = pdf.GetY() + 2
+		}
+	}
+
+	return y + 2
 }
 
 // sectionPortfolioMetrics renders reinvestment plan and investor parameters.
