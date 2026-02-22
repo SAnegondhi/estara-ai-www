@@ -109,9 +109,10 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 	fo.logger.Info("generated candidate configurations", "count", len(candidates))
 
 	// Step 2: Evaluate all objectives for each candidate
+	// ADR-089 Phase 5: pass ExistingPortfolio so concentration penalises market overlap with existing holdings
 	reportProgress(3, "Evaluating multi-objective portfolio metrics")
 	for i := range candidates {
-		fo.evaluateObjectives(&candidates[i], profile)
+		fo.evaluateObjectives(&candidates[i], profile, params.ExistingPortfolio)
 	}
 
 	// Step 3: Apply Pareto dominance to find non-dominated solutions
@@ -528,10 +529,13 @@ func (fo *FrontierOptimizer) createConfiguration(
 	}
 }
 
-// evaluateObjectives calculates all 4 objectives for a configuration
+// evaluateObjectives calculates all 4 objectives for a configuration.
+// ADR-089 Phase 5: existingPortfolio is optional; when provided, concentration
+// penalises market overlap with existing holdings.
 func (fo *FrontierOptimizer) evaluateObjectives(
 	config *PortfolioConfiguration,
 	profile investment.InvestorProfile,
+	existingPortfolio *investment.ExistingPortfolio,
 ) {
 	// Objective 1: Expected Return (maximize)
 	config.Objectives.ExpectedReturn = fo.calculateExpectedReturn(config)
@@ -539,8 +543,8 @@ func (fo *FrontierOptimizer) evaluateObjectives(
 	// Objective 2: Portfolio Volatility via Markowitz (minimize)
 	config.Objectives.PortfolioVolatility = fo.calculatePortfolioVolatility(config)
 
-	// Objective 3: Concentration Index (minimize)
-	config.Objectives.ConcentrationIndex = fo.calculateConcentrationIndex(config)
+	// Objective 3: Concentration Index (minimize) — portfolio-aware when holdings provided
+	config.Objectives.ConcentrationIndex = fo.calculateConcentrationIndex(config, existingPortfolio)
 
 	// Objective 4: Stress Test Equity (maximize)
 	config.Objectives.StressTestEquity = fo.calculateStressTestEquity(config, profile)
@@ -655,9 +659,13 @@ func (fo *FrontierOptimizer) buildPlaceholderCorrelationMatrix(n int, properties
 	return matrix
 }
 
-// calculateConcentrationIndex computes weighted concentration metric
-// Combines HHI (market, submarket, type) + spatial concentration
-func (fo *FrontierOptimizer) calculateConcentrationIndex(config *PortfolioConfiguration) float64 {
+// calculateConcentrationIndex computes weighted concentration metric.
+// Combines HHI (market, submarket, type) + spatial concentration + portfolio overlap (ADR-089 Phase 5).
+// existingPortfolio is optional; when nil the formula is unchanged from the original 3-component blend.
+func (fo *FrontierOptimizer) calculateConcentrationIndex(
+	config *PortfolioConfiguration,
+	existingPortfolio *investment.ExistingPortfolio,
+) float64 {
 	// HHI (Herfindahl-Hirschman Index) for market concentration
 	marketHHI := fo.calculateMarketHHI(config)
 
@@ -667,10 +675,57 @@ func (fo *FrontierOptimizer) calculateConcentrationIndex(config *PortfolioConfig
 	// Property type concentration
 	typeHHI := fo.calculateTypeHHI(config)
 
-	// Weighted average: 50% market HHI, 30% spatial, 20% type
-	concentrationIndex := 0.5*marketHHI + 0.3*spatialConc + 0.2*typeHHI
+	if existingPortfolio == nil || len(existingPortfolio.Properties) == 0 {
+		// Original formula: 50% market HHI, 30% spatial, 20% type
+		return 0.5*marketHHI + 0.3*spatialConc + 0.2*typeHHI
+	}
 
-	return concentrationIndex
+	// ADR-089 Phase 5: portfolio overlap — fraction of candidate value in markets
+	// where the user already has holdings. Higher overlap → worse diversification.
+	overlapScore := fo.calculatePortfolioOverlap(config, existingPortfolio)
+
+	// With portfolio context: 40% market HHI, 25% spatial, 15% type, 20% portfolio overlap
+	return 0.40*marketHHI + 0.25*spatialConc + 0.15*typeHHI + 0.20*overlapScore
+}
+
+// calculatePortfolioOverlap returns a [0, 1] score representing how much the candidate
+// configuration's market exposure overlaps with the user's existing holdings.
+// 0 = fully independent markets (ideal diversification), 1 = complete overlap.
+// ADR-089 Phase 5: correlation-aware diversification for frontier multi-objective evaluation.
+func (fo *FrontierOptimizer) calculatePortfolioOverlap(
+	config *PortfolioConfiguration,
+	ep *investment.ExistingPortfolio,
+) float64 {
+	if ep == nil || len(ep.Properties) == 0 {
+		return 0.0
+	}
+
+	// Build set of markets already in the user's portfolio
+	existingMarkets := make(map[string]struct{}, len(ep.Properties))
+	for _, p := range ep.Properties {
+		market := p.City + ", " + p.State
+		existingMarkets[market] = struct{}{}
+	}
+
+	// Total candidate portfolio value
+	totalValue := 0.0
+	for _, prop := range config.Properties {
+		totalValue += float64(prop.Price)
+	}
+	if totalValue == 0 {
+		return 0.0
+	}
+
+	// Fraction of candidate value in overlapping markets
+	overlapValue := 0.0
+	for _, prop := range config.Properties {
+		market := prop.City + ", " + prop.State
+		if _, exists := existingMarkets[market]; exists {
+			overlapValue += float64(prop.Price)
+		}
+	}
+
+	return math.Min(overlapValue/totalValue, 1.0)
 }
 
 // calculateMarketHHI computes Herfindahl-Hirschman Index for markets
