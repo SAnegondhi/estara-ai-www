@@ -21,6 +21,7 @@ type OptimizableProperty struct {
 	RiskScore      float64
 	Latitude       float64
 	Longitude      float64
+	YearBuilt      int // Property age for selection preference
 	OriginalIndex  int
 }
 
@@ -29,12 +30,16 @@ type OptimizerConfig struct {
 	Budget         int
 	RiskCap        float64
 	RiskProfile    investment.RiskTolerance
+	Strategy       investment.InvestmentStrategy
 	AlphaMarket    float64
 	AlphaSubmarket float64
 	AlphaType      float64
 	AlphaGeo       float64
 	EpsilonReturn  float64
 	GeoDecayKm     float64
+	// Diversification controls
+	MaxLocationConcentration float64 // Max % of budget in single location (0.6 = 60%)
+	MinLocations             int     // Minimum number of locations if available
 }
 
 // OptimizeResult captures the two-stage optimizer output.
@@ -76,8 +81,8 @@ var defaultConfigByRisk = map[investment.RiskTolerance]OptimizerConfig{
 	},
 }
 
-// BuildOptimizerConfig builds config using the risk profile defaults.
-func BuildOptimizerConfig(budget int, riskTolerance investment.RiskTolerance) OptimizerConfig {
+// BuildOptimizerConfig builds config using the risk profile and strategy.
+func BuildOptimizerConfig(budget int, riskTolerance investment.RiskTolerance, strategy investment.InvestmentStrategy) OptimizerConfig {
 	defaults, ok := defaultConfigByRisk[riskTolerance]
 	if !ok {
 		defaults = defaultConfigByRisk[investment.RiskModerate]
@@ -89,16 +94,32 @@ func BuildOptimizerConfig(budget int, riskTolerance investment.RiskTolerance) Op
 		investment.RiskAggressive:   8.0,
 	}
 
+	// Set diversification requirements based on risk tolerance
+	maxConcentration := map[investment.RiskTolerance]float64{
+		investment.RiskConservative: 0.40, // Max 40% in one location
+		investment.RiskModerate:     0.50, // Max 50% in one location
+		investment.RiskAggressive:   0.65, // Max 65% in one location
+	}
+
+	minLocations := map[investment.RiskTolerance]int{
+		investment.RiskConservative: 3, // Prefer 3+ locations
+		investment.RiskModerate:     2, // Prefer 2+ locations
+		investment.RiskAggressive:   2, // Prefer 2+ locations
+	}
+
 	return OptimizerConfig{
-		Budget:         budget,
-		RiskCap:        riskCapMap[riskTolerance],
-		RiskProfile:    riskTolerance,
-		AlphaMarket:    defaults.AlphaMarket,
-		AlphaSubmarket: defaults.AlphaSubmarket,
-		AlphaType:      defaults.AlphaType,
-		AlphaGeo:       defaults.AlphaGeo,
-		EpsilonReturn:  defaults.EpsilonReturn,
-		GeoDecayKm:     defaults.GeoDecayKm,
+		Budget:                   budget,
+		RiskCap:                  riskCapMap[riskTolerance],
+		RiskProfile:              riskTolerance,
+		Strategy:                 strategy,
+		AlphaMarket:              defaults.AlphaMarket,
+		AlphaSubmarket:           defaults.AlphaSubmarket,
+		AlphaType:                defaults.AlphaType,
+		AlphaGeo:                 defaults.AlphaGeo,
+		EpsilonReturn:            defaults.EpsilonReturn,
+		GeoDecayKm:               defaults.GeoDecayKm,
+		MaxLocationConcentration: maxConcentration[riskTolerance],
+		MinLocations:             minLocations[riskTolerance],
 	}
 }
 
@@ -148,14 +169,22 @@ func solveStage1(properties []OptimizableProperty, config OptimizerConfig) ([]bo
 	for i := range properties {
 		indices[i] = i
 	}
+
+	// Sort by composite score: expected return + age bonus
 	sort.Slice(indices, func(i, j int) bool {
-		return properties[indices[i]].ExpectedReturn > properties[indices[j]].ExpectedReturn
+		scoreI := calculateSelectionScore(properties[indices[i]])
+		scoreJ := calculateSelectionScore(properties[indices[j]])
+		return scoreI > scoreJ
 	})
 
 	selection := make([]bool, len(properties))
 	remainingBudget := config.Budget
 	remainingRisk := config.RiskCap
 	totalReturn := 0.0
+
+	// Track location diversity during selection
+	locationInvestment := make(map[string]int) // MarketID -> total invested
+	totalInvested := 0
 
 	for _, idx := range indices {
 		prop := properties[idx]
@@ -165,13 +194,71 @@ func solveStage1(properties []OptimizableProperty, config OptimizerConfig) ([]bo
 		if prop.RiskScore > remainingRisk {
 			continue
 		}
+
+		// Check location concentration before adding
+		// If this would exceed MaxLocationConcentration, skip unless it's the only option
+		if totalInvested > 0 && config.MaxLocationConcentration > 0 {
+			projectedInvestment := locationInvestment[prop.MarketID] + prop.Price
+			projectedTotal := totalInvested + prop.Price
+			concentration := float64(projectedInvestment) / float64(projectedTotal)
+
+			if concentration > config.MaxLocationConcentration {
+				// Skip this property if it would over-concentrate in one location
+				// Unless we haven't met minimum location count
+				numLocations := len(locationInvestment)
+				if numLocations >= config.MinLocations {
+					continue
+				}
+			}
+		}
+
 		selection[idx] = true
 		remainingBudget -= prop.Price
 		remainingRisk -= prop.RiskScore
 		totalReturn += prop.ExpectedReturn * float64(prop.Price)
+
+		// Update location tracking
+		locationInvestment[prop.MarketID] += prop.Price
+		totalInvested += prop.Price
 	}
 
 	return selection, totalReturn
+}
+
+// calculateSelectionScore computes a composite score for property selection
+// Considers expected return and property age (newer properties preferred)
+func calculateSelectionScore(prop OptimizableProperty) float64 {
+	baseScore := prop.ExpectedReturn
+
+	// Age bonus: younger properties get a small boost
+	// This breaks ties in favor of newer properties without dominating return
+	if prop.YearBuilt > 0 {
+		currentYear := 2026 // Use current year
+		age := currentYear - prop.YearBuilt
+
+		var ageBonus float64
+		switch {
+		case age < 10:
+			// Very new properties: +1% bonus
+			ageBonus = 0.01
+		case age < 20:
+			// Relatively new: +0.5% bonus
+			ageBonus = 0.005
+		case age < 30:
+			// Neutral: no bonus or penalty
+			ageBonus = 0.0
+		case age < 50:
+			// Older properties: -0.5% penalty
+			ageBonus = -0.005
+		default:
+			// Very old properties: -1% penalty
+			ageBonus = -0.01
+		}
+
+		baseScore += ageBonus
+	}
+
+	return baseScore
 }
 
 func solveStage2(
@@ -449,6 +536,7 @@ func MapToOptimizableProperties(
 			RiskScore:      MapRiskScore(sp.Recommendation, sp.OverallScore),
 			Latitude:       sp.Property.Latitude,
 			Longitude:      sp.Property.Longitude,
+			YearBuilt:      sp.Property.YearBuilt,
 			OriginalIndex:  i,
 		})
 	}

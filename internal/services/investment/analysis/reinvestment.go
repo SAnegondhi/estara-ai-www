@@ -261,6 +261,8 @@ func (m *ReinvestmentModeler) ProjectScenarios(
 	years int,
 	marketLookup map[string]*investment.LocationMarketAnalysis,
 	userAssumptions *investment.UserFinancialAssumptions,
+	yearlyBudgets []investment.YearlyBudget,
+	acquisitionMarket *AcquisitionMarketData,
 ) *investment.ScenarioProjections {
 	if len(properties) == 0 || years <= 0 {
 		return nil
@@ -282,15 +284,27 @@ func (m *ReinvestmentModeler) ProjectScenarios(
 		}
 	}
 
+	// Convert yearlyBudgets slice to map[int]int for projection config
+	budgetMap := make(map[int]int)
+	for _, yb := range yearlyBudgets {
+		budgetMap[yb.Year] = yb.Budget
+	}
+
+	// Enable reinvestment if there are yearly budgets (fresh capital injections)
+	withReinvestment := len(yearlyBudgets) > 0
+
 	baseConfig := ProjectionConfig{
 		Properties:              properties,
 		ProjectionYears:         years,
 		MortgageRate:            mortgageRate,
 		DownPaymentPct:          downPaymentPct,
 		OperatingExpenses:       operatingExpenses,
+		WithReinvestment:        withReinvestment,
+		YearlyBudgets:           budgetMap,
 		GrowthMultiplier:        1.0,
 		IncludeTax:              true,
 		MarketLookup:            marketLookup,
+		AcquisitionMarket:       acquisitionMarket,
 		DefaultAppreciationRate: 3.0,
 		DefaultRentGrowthRate:   2.0,
 	}
@@ -578,11 +592,57 @@ func (m *ReinvestmentModeler) buildAcquisitionCohort(
 	avgPrice int,
 	avgRent int,
 ) propertyCohort {
-	// Appreciate price/rent to acquisition year
+	// Use market data if available, fallback to portfolio averages
+	basePrice := avgPrice
+	baseRent := avgRent
+	targetState := avgState
+	targetCity := avgCity
+
+	if config.AcquisitionMarket != nil {
+		// Prefer market median prices over portfolio averages
+		if config.AcquisitionMarket.MedianHomePrice != nil && *config.AcquisitionMarket.MedianHomePrice > 0 {
+			basePrice = *config.AcquisitionMarket.MedianHomePrice
+		}
+		if config.AcquisitionMarket.MedianRent != nil && *config.AcquisitionMarket.MedianRent > 0 {
+			baseRent = *config.AcquisitionMarket.MedianRent
+		}
+		if config.AcquisitionMarket.TargetState != "" {
+			targetState = config.AcquisitionMarket.TargetState
+		}
+		if config.AcquisitionMarket.TargetCity != "" {
+			targetCity = config.AcquisitionMarket.TargetCity
+		}
+	}
+
+	// Project forward to acquisition year using market rates
 	priceFactor := math.Pow(1+appreciationRate/100, float64(year))
 	rentFactor := math.Pow(1+rentGrowthRate/100, float64(year))
-	appreciatedPrice := int(float64(avgPrice) * priceFactor)
-	appreciatedRent := int(float64(avgRent) * rentFactor)
+	appreciatedPrice := int(float64(basePrice) * priceFactor)
+	appreciatedRent := int(float64(baseRent) * rentFactor)
+
+	// Data quality validation (reject suspicious acquisitions)
+	// Cap rate check: 3-12% range
+	annualRent := float64(appreciatedRent * 12)
+	impliedCapRate := (annualRent * 0.6) / float64(appreciatedPrice) * 100 // Assume 40% expenses
+	if impliedCapRate < 3.0 || impliedCapRate > 12.0 {
+		// If market data yields suspicious metrics, use more conservative portfolio averages
+		appreciatedPrice = int(float64(avgPrice) * priceFactor)
+		appreciatedRent = int(float64(avgRent) * rentFactor)
+	}
+
+	// Gross yield check: should be under 18%
+	grossYield := (float64(appreciatedRent*12) / float64(appreciatedPrice)) * 100
+	if grossYield > 18.0 {
+		appreciatedPrice = int(float64(avgPrice) * priceFactor)
+		appreciatedRent = int(float64(avgRent) * rentFactor)
+	}
+
+	// Price-to-rent ratio check: 6-25 months
+	priceToRent := float64(appreciatedPrice) / float64(appreciatedRent)
+	if priceToRent < 6.0 || priceToRent > 25.0 {
+		appreciatedPrice = int(float64(avgPrice) * priceFactor)
+		appreciatedRent = int(float64(avgRent) * rentFactor)
+	}
 
 	// Financing
 	downPayment := int(float64(appreciatedPrice) * config.DownPaymentPct)
@@ -600,14 +660,21 @@ func (m *ReinvestmentModeler) buildAcquisitionCohort(
 		monthlyMortgage = loanAmount / 360
 	}
 
+	// Property age: prefer newer properties (15 years vs hardcoded 10)
+	estimatedAge := 15
+	if year <= 3 {
+		// Earlier acquisitions can target slightly older properties
+		estimatedAge = 20
+	}
+
 	// Expenses using expense calculator with appreciated values
 	var monthlyValueExpenses, monthlyRentExpenses, monthlyVacancy int
-	if avgState != "" {
+	if targetState != "" {
 		expInput := expenses.PropertyInput{
 			Price:         appreciatedPrice,
-			State:         avgState,
-			City:          avgCity,
-			YearBuilt:     time.Now().Year() - 10, // Assumed typical acquisition age
+			State:         targetState,
+			City:          targetCity,
+			YearBuilt:     time.Now().Year() - estimatedAge,
 			EstimatedRent: appreciatedRent,
 		}
 		if config.AcquisitionMarket != nil && config.AcquisitionMarket.VacancyRate != nil {
@@ -632,9 +699,9 @@ func (m *ReinvestmentModeler) buildAcquisitionCohort(
 	return propertyCohort{
 		acquisitionYear:      year,
 		count:                1,
-		propertyAge:          10, // Assumed typical for acquisitions
-		state:                avgState,
-		city:                 avgCity,
+		propertyAge:          estimatedAge,
+		state:                targetState,
+		city:                 targetCity,
 		purchasePrice:        appreciatedPrice,
 		monthlyRent:          appreciatedRent,
 		loanAmount:           loanAmount,

@@ -400,9 +400,16 @@ func (c *Calculator) CalculateMetrics(properties []investment.PropertyInPortfoli
 		metrics.TotalLoanAmount += p.LoanAmount
 		metrics.MonthlyCashFlow += p.MonthlyCashFlow
 
-		totalCapRate += p.CapRate
-		totalCashOnCash += p.CashOnCash
-		totalDSCR += p.DSCR
+		// Guard against NaN values in aggregation
+		if !math.IsNaN(p.CapRate) && !math.IsInf(p.CapRate, 0) {
+			totalCapRate += p.CapRate
+		}
+		if !math.IsNaN(p.CashOnCash) && !math.IsInf(p.CashOnCash, 0) {
+			totalCashOnCash += p.CashOnCash
+		}
+		if !math.IsNaN(p.DSCR) && !math.IsInf(p.DSCR, 0) {
+			totalDSCR += p.DSCR
+		}
 
 		// Calculate NOI and debt service for portfolio DSCR
 		annualRent := p.Property.EstimatedRent * 12
@@ -417,13 +424,29 @@ func (c *Calculator) CalculateMetrics(properties []investment.PropertyInPortfoli
 
 	// Calculate averages
 	count := float64(len(properties))
-	metrics.AvgCapRate = totalCapRate / count
+	if count > 0 && !math.IsNaN(totalCapRate) && !math.IsInf(totalCapRate, 0) {
+		metrics.AvgCapRate = totalCapRate / count
+		if math.IsNaN(metrics.AvgCapRate) || math.IsInf(metrics.AvgCapRate, 0) {
+			metrics.AvgCapRate = 0
+		}
+	}
+
 	// ADR-063: Use portfolio-wide CoC (total cash flow / total down payment)
 	// This ensures consistency with projection calculations
 	if metrics.TotalDownPayment > 0 {
 		metrics.AvgCashOnCash = (float64(metrics.AnnualCashFlow) / float64(metrics.TotalDownPayment)) * 100
+		// Guard against NaN in result
+		if math.IsNaN(metrics.AvgCashOnCash) || math.IsInf(metrics.AvgCashOnCash, 0) {
+			metrics.AvgCashOnCash = 0
+		}
 	}
-	metrics.AvgDSCR = totalDSCR / count
+
+	if count > 0 && !math.IsNaN(totalDSCR) && !math.IsInf(totalDSCR, 0) {
+		metrics.AvgDSCR = totalDSCR / count
+		if math.IsNaN(metrics.AvgDSCR) || math.IsInf(metrics.AvgDSCR, 0) {
+			metrics.AvgDSCR = 0
+		}
+	}
 
 	// Calculate Expected Annual Return = NOI / Cash Invested (before debt service)
 	// This differs from CoC which is (NOI - Debt Service) / Cash Invested
@@ -466,19 +489,34 @@ func (c *Calculator) CalculateMetrics(properties []investment.PropertyInPortfoli
 		// Calculate standard deviation of CoC returns
 		variance := 0.0
 		for _, p := range properties {
-			diff := p.CashOnCash - metrics.AvgCashOnCash
-			variance += diff * diff
+			// Guard against NaN in variance calculation
+			if !math.IsNaN(p.CashOnCash) && !math.IsInf(p.CashOnCash, 0) &&
+			   !math.IsNaN(metrics.AvgCashOnCash) && !math.IsInf(metrics.AvgCashOnCash, 0) {
+				diff := p.CashOnCash - metrics.AvgCashOnCash
+				variance += diff * diff
+			}
 		}
 		volatility := math.Sqrt(variance / count)
-		if volatility > 0 {
+		if volatility > 0 && !math.IsNaN(metrics.AvgCashOnCash) && !math.IsInf(metrics.AvgCashOnCash, 0) {
 			metrics.SharpeRatio = (metrics.AvgCashOnCash - riskFreeRate) / volatility
-		} else {
+			// Guard against NaN in result
+			if math.IsNaN(metrics.SharpeRatio) || math.IsInf(metrics.SharpeRatio, 0) {
+				metrics.SharpeRatio = 0
+			}
+		} else if !math.IsNaN(metrics.AvgCashOnCash) && !math.IsInf(metrics.AvgCashOnCash, 0) {
 			// No volatility = perfect Sharpe (capped at 3)
 			metrics.SharpeRatio = math.Min(3.0, (metrics.AvgCashOnCash-riskFreeRate)/1.0)
+		} else {
+			metrics.SharpeRatio = 0
 		}
-	} else {
+	} else if !math.IsNaN(metrics.AvgCashOnCash) && !math.IsInf(metrics.AvgCashOnCash, 0) {
 		// Single property - use simplified calculation
 		metrics.SharpeRatio = (metrics.AvgCashOnCash - riskFreeRate) / 10.0 // Assume 10% volatility
+		if math.IsNaN(metrics.SharpeRatio) || math.IsInf(metrics.SharpeRatio, 0) {
+			metrics.SharpeRatio = 0
+		}
+	} else {
+		metrics.SharpeRatio = 0
 	}
 
 	// TotalROI - 5-year projected return
@@ -602,13 +640,19 @@ func (c *Calculator) CalculatePropertyMetricsWithVacancy(
 		monthlyCashFlow := int(annualCashFlow / 12)
 
 		cashOnCash := 0.0
-		if downPayment > 0 {
+		if downPayment > 0 && !math.IsNaN(annualCashFlow) && !math.IsInf(annualCashFlow, 0) {
 			cashOnCash = (annualCashFlow / float64(downPayment)) * 100
+			if math.IsNaN(cashOnCash) || math.IsInf(cashOnCash, 0) {
+				cashOnCash = 0
+			}
 		}
 
 		dscr := 0.0
-		if annualDebtService > 0 {
+		if annualDebtService > 0 && !math.IsNaN(noi) && !math.IsInf(noi, 0) {
 			dscr = noi / annualDebtService
+			if math.IsNaN(dscr) || math.IsInf(dscr, 0) {
+				dscr = 0
+			}
 		}
 
 		return investment.PropertyInPortfolio{
@@ -627,6 +671,11 @@ func (c *Calculator) CalculatePropertyMetricsWithVacancy(
 	// Use calculated NOI from expense calculator
 	noi := opEx.NOI
 
+	// Guard against NaN values from expense calculator
+	if math.IsNaN(noi) || math.IsInf(noi, 0) {
+		noi = 0
+	}
+
 	// Calculate monthly cash flow
 	annualDebtService := monthlyPayment * 12
 	annualCashFlow := noi - annualDebtService
@@ -634,17 +683,27 @@ func (c *Calculator) CalculatePropertyMetricsWithVacancy(
 
 	// Calculate cap rate (from expense calculator is more accurate)
 	capRate := opEx.CapRate
+	if math.IsNaN(capRate) || math.IsInf(capRate, 0) {
+		capRate = 0
+	}
 
 	// Calculate cash on cash return
 	cashOnCash := 0.0
-	if downPayment > 0 {
+	if downPayment > 0 && !math.IsNaN(annualCashFlow) && !math.IsInf(annualCashFlow, 0) {
 		cashOnCash = (annualCashFlow / float64(downPayment)) * 100
+		// Guard against NaN or Inf in final result
+		if math.IsNaN(cashOnCash) || math.IsInf(cashOnCash, 0) {
+			cashOnCash = 0
+		}
 	}
 
 	// Calculate DSCR
 	dscr := 0.0
-	if annualDebtService > 0 {
+	if annualDebtService > 0 && !math.IsNaN(noi) && !math.IsInf(noi, 0) {
 		dscr = noi / annualDebtService
+		if math.IsNaN(dscr) || math.IsInf(dscr, 0) {
+			dscr = 0
+		}
 	}
 
 	// Store calculated expenses for projection transparency
