@@ -154,6 +154,22 @@ func (h *Handler) SaveFrontierRun(w http.ResponseWriter, r *http.Request) {
 		strategy = "balanced"
 	}
 
+	// Server-side fallback: compute best_sharpe from frontier_points JSONB if the
+	// client sends 0 (e.g. old clients or runs saved before best_sharpe was tracked).
+	bestSharpe := req.BestSharpe
+	if bestSharpe == 0 && len(req.FrontierPoints) > 2 {
+		var fps []struct {
+			SharpeScore float64 `json:"sharpeScore"`
+		}
+		if parseErr := json.Unmarshal(req.FrontierPoints, &fps); parseErr == nil {
+			for _, fp := range fps {
+				if fp.SharpeScore > bestSharpe {
+					bestSharpe = fp.SharpeScore
+				}
+			}
+		}
+	}
+
 	id := uuid.New().String()
 	run, err := h.store.Q().InsertFrontierRun(ctx, queries.InsertFrontierRunParams{
 		ID:             id,
@@ -164,7 +180,7 @@ func (h *Handler) SaveFrontierRun(w http.ResponseWriter, r *http.Request) {
 		FrontierPoints: req.FrontierPoints,
 		PropertyCount:  int32(req.PropertyCount),
 		Strategy:       strategy,
-		BestSharpe:     req.BestSharpe,
+		BestSharpe:     bestSharpe,
 	})
 	if err != nil {
 		h.logger.Error("save frontier run failed", "error", err, "userId", user.UserID)
