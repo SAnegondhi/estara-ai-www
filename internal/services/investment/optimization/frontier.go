@@ -122,11 +122,17 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 	// Step 4: Rank by Sharpe ratio and select top configurations
 	frontierConfigs := fo.selectFrontierPoints(nonDominated, fo.numConfigurations)
 
+	// Build score lookup so PropertyInPortfolio.Score is populated from ScoredProperty.OverallScore.
+	scoreByID := make(map[string]float64, len(properties))
+	for _, sp := range properties {
+		scoreByID[sp.Property.ID] = sp.OverallScore
+	}
+
 	// Step 5-8: Convert to FrontierPoint format with financial projections
 	reportProgress(5, "Calculating reinvestment plans")
 	frontierPoints := make([]investment.FrontierPoint, 0, len(frontierConfigs))
 	for i, config := range frontierConfigs {
-		portfolioProps := fo.buildPortfolioProperties(config.Properties)
+		portfolioProps := fo.buildPortfolioProperties(config.Properties, scoreByID)
 
 		// Run phases 5-8 (Reinvestment → MC → Scenarios → Verdict)
 		fp := fo.regenerateConfigPhases(ctx, i, portfolioProps, config, profile, params, progress)
@@ -142,10 +148,12 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 	return frontierPoints, nil
 }
 
-// buildPortfolioProperties converts ScoredProperty slice to PropertyInPortfolio.
+// buildPortfolioProperties converts Property slice to PropertyInPortfolio.
+// scoreByID maps property ID → OverallScore from the original ScoredProperty slice.
 // Defaults: 7% mortgage rate, 25% down payment, 30-year term.
 func (fo *FrontierOptimizer) buildPortfolioProperties(
 	scoredProps []investment.Property,
+	scoreByID map[string]float64,
 ) []investment.PropertyInPortfolio {
 	mortgageRate := 7.0
 	downPaymentPct := 0.25
@@ -169,6 +177,7 @@ func (fo *FrontierOptimizer) buildPortfolioProperties(
 			CapRate:         capRate,
 			CashOnCash:      cashOnCash,
 			DSCR:            dscr,
+			Score:           scoreByID[prop.ID],
 		})
 	}
 	return props

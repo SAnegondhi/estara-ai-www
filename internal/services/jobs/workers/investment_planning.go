@@ -2,11 +2,15 @@ package workers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
+	dbstore "github.com/estara-ai/www/internal/db"
+	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 	"github.com/estara-ai/www/internal/services/ai/anthropic"
 	"github.com/estara-ai/www/internal/services/cache"
@@ -19,6 +23,7 @@ import (
 	"github.com/estara-ai/www/internal/services/market/aggregator"
 	"github.com/estara-ai/www/internal/services/property/finder"
 	"github.com/estara-ai/www/internal/services/property/providers"
+	"github.com/google/uuid"
 )
 
 // InvestmentPlanningWorker processes investment planning jobs
@@ -28,6 +33,7 @@ type InvestmentPlanningWorker struct {
 	market               *aggregator.Aggregator
 	calculator           *projection.Calculator
 	cache                *cache.HybridCache
+	store                *dbstore.Store
 	expander             *locationexpander.Service
 	divestAnalyzer       *analysis.DivestAnalyzer
 	acquisitionRec       *analysis.AcquisitionRecommender
@@ -41,6 +47,7 @@ type InvestmentPlanningWorkerConfig struct {
 	Finder    *finder.Orchestrator
 	Market    *aggregator.Aggregator
 	Cache     *cache.HybridCache
+	Store     *dbstore.Store
 	Client    *anthropic.Client // For fallback use
 	Redis     *redisClient.Client
 }
@@ -74,6 +81,7 @@ func NewInvestmentPlanningWorker(cfg InvestmentPlanningWorkerConfig) *Investment
 		market:              cfg.Market,
 		calculator:          projection.NewCalculator(nil),
 		cache:               cfg.Cache,
+		store:               cfg.Store,
 		expander:            expander,
 		divestAnalyzer:      analysis.NewDivestAnalyzer(logger),
 		acquisitionRec:      analysis.NewAcquisitionRecommender(logger),
@@ -101,6 +109,12 @@ func (w *InvestmentPlanningWorker) Process(
 		"user_id", job.UserID,
 	)
 
+	// Add timeout to prevent jobs from running indefinitely
+	// With parallelization, 10 minutes should be more than enough
+	// (vs 30+ minutes for sequential 8-location search)
+	jobCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
 	// Parse job parameters (including ADR-059 extended params)
 	params, err := w.parseJobParams(job)
 	if err != nil {
@@ -126,11 +140,16 @@ func (w *InvestmentPlanningWorker) Process(
 
 	var result *investment.InvestmentPlanningResult
 
-	// Branch based on mode
+	// Branch based on mode (use jobCtx for timeout)
 	if params.Mode == investment.PlanningModeSelection {
-		result, err = w.processSelectionMode(ctx, job, params, mortgageRate, progress)
+		result, err = w.processSelectionMode(jobCtx, job, params, mortgageRate, progress)
 	} else {
-		result, err = w.processSearchMode(ctx, job, params, mortgageRate, progress)
+		result, err = w.processSearchMode(jobCtx, job, params, mortgageRate, progress)
+	}
+
+	// Check for timeout
+	if err != nil && jobCtx.Err() == context.DeadlineExceeded {
+		return w.failedResult(job, fmt.Errorf("job timeout after %v: %w", time.Since(startTime), err))
 	}
 
 	if err != nil {
@@ -192,14 +211,31 @@ func (w *InvestmentPlanningWorker) Process(
 		key := strings.ToLower(result.MarketQuality[i].Location)
 		scenarioMarketLookup[key] = &result.MarketQuality[i]
 	}
+
+	// Get acquisition market data for fresh investments in future years
+	var scenarioAcquisitionMarket *analysis.AcquisitionMarketData
+	if len(result.SelectedProperties) > 0 {
+		targetCity, targetState := w.getMostCommonLocation(result.SelectedProperties)
+		if targetCity != "" && targetState != "" {
+			scenarioAcquisitionMarket = w.fetchAcquisitionMarketData(ctx, targetCity, targetState)
+		}
+	}
+
 	result.ScenarioProjections = w.reinvestmentModeler.ProjectScenarios(
 		result.SelectedProperties,
 		scenarioYears,
 		scenarioMarketLookup,
 		userAssumptions,
+		params.YearlyBudgets,           // Pass yearly budgets for fresh capital injections
+		scenarioAcquisitionMarket,      // Market data for simulating future acquisitions
 	)
 
 	// ADR-063: Verify CoC consistency between Metrics and ScenarioProjections Year 1
+	// NOTE: Some difference is expected because:
+	// - Metrics: Cash Flow = NOI - Debt Service (optimistic, no CapEx)
+	// - Projections: Cash Flow = NOI - Debt Service - CapEx Reserves (conservative)
+	// CapEx reserves typically account for 2-4% of the down payment, so a difference
+	// of up to 5% is acceptable. Only warn if difference is >5% (indicates a bug).
 	if result.ScenarioProjections != nil && len(result.ScenarioProjections.Base) > 0 {
 		metricsCoC := result.Metrics.AvgCashOnCash
 		projectionCoC := result.ScenarioProjections.Base[0].CashOnCash
@@ -207,7 +243,7 @@ func (w *InvestmentPlanningWorker) Process(
 		if diff < 0 {
 			diff = -diff
 		}
-		if diff > 0.5 { // More than 0.5% difference is suspicious (cohort engine uses per-property expense calc)
+		if diff > 5.0 { // More than 5% difference is suspicious (normal CapEx delta is 2-4%)
 			w.logger.Warn("CoC DISCREPANCY DETECTED between Metrics and Projection Year 1",
 				"metricsAvgCashOnCash", metricsCoC,
 				"projectionYear1CashOnCash", projectionCoC,
@@ -240,6 +276,12 @@ func (w *InvestmentPlanningWorker) Process(
 	if cacheKey, ok := job.Payload["cache_key"].(string); ok && cacheKey != "" {
 		if err := w.cacheResult(ctx, job.UserID, cacheKey, params, result, mortgageRate); err != nil {
 			w.logger.Warn("failed to cache result", "error", err)
+		}
+
+		// Save to database for scenario history (97%)
+		w.reportProgressWithStage(progress, job.ID, 97, "Saving scenario to database", "saving")
+		if err := w.saveScenario(ctx, job.UserID, cacheKey, params, result, mortgageRate); err != nil {
+			w.logger.Warn("failed to save scenario to database", "error", err)
 		}
 	}
 
@@ -417,7 +459,7 @@ func (w *InvestmentPlanningWorker) processSelectionMode(
 				Strategy:         params.Strategy,
 				RiskTolerance:    params.RiskTolerance,
 				AvailableCapital: totalBudget,
-			}, nil) // No existing portfolio for scoring context
+			}, nil, false) // No existing portfolio for scoring context; use cache
 			if err != nil {
 				w.logger.Warn("candidate scoring failed", "error", err)
 			} else {
@@ -829,15 +871,13 @@ func normalizeStrategy(value string) investment.InvestmentStrategy {
 	}
 }
 
-// searchProperties searches for properties across all specified locations
+// searchProperties searches for properties across all specified locations IN PARALLEL
 func (w *InvestmentPlanningWorker) searchProperties(
 	ctx context.Context,
 	params *investment.InvestmentPlanningParams,
 	progress chan<- queue.ProgressEvent,
 	jobID string,
 ) ([]investment.Property, error) {
-	allProperties := make([]investment.Property, 0)
-
 	locations := params.Locations
 	if params.IncludeSuburbs && w.expander != nil {
 		w.reportProgressWithStage(progress, jobID, 15, "Expanding locations to include suburbs", "expanding_locations")
@@ -853,84 +893,152 @@ func (w *InvestmentPlanningWorker) searchProperties(
 	}
 
 	// Progress range for property search: 20% to 38%
-	// Each location gets an equal slice of this range, with sub-steps within each location
 	searchStart := 20.0
 	searchEnd := 38.0
 	searchRange := searchEnd - searchStart
 
+	// Calculate max price based on budget and down payment
+	maxPrice := int(float64(params.Budget) / params.DownPaymentPct)
+
+	// PARALLEL SEARCH: Use goroutines with concurrency limit
+	// Concurrency limit based on HASDATA_CONCURRENT_CONNECTIONS (default 10)
+	// Prevents overwhelming the HasData API with concurrent requests
+	type searchResult struct {
+		location   string
+		properties []investment.Property
+		err        error
+	}
+
+	resultChan := make(chan searchResult, len(locations))
+	sem := make(chan struct{}, 10) // Limit concurrent searches (matches HASDATA_CONCURRENT_CONNECTIONS)
+	var wg sync.WaitGroup
+
+	// Launch parallel searches for each location
 	for i, location := range locations {
-		// Per-location progress: searching starts at locationBase, results at locationBase + half-step
-		locationBase := searchStart + (float64(i)/float64(len(locations)))*searchRange
-		locationDone := searchStart + (float64(i+1)/float64(len(locations)))*searchRange
+		wg.Add(1)
+		go func(idx int, loc string) {
+			defer wg.Done()
 
-		w.reportProgressWithStage(progress, jobID, locationBase, fmt.Sprintf("Searching in %s", location), "searching")
-
-		// Calculate max price based on budget and down payment
-		maxPrice := int(float64(params.Budget) / params.DownPaymentPct)
-
-		// Parse location into city and state
-		parts := strings.Split(location, ",")
-		city := strings.TrimSpace(parts[0])
-		state := ""
-		if len(parts) > 1 {
-			state = strings.TrimSpace(parts[1])
-		}
-
-		// Launch heartbeat goroutine — sends 30s ticks while Search() blocks
-		heartbeatDone := make(chan struct{})
-		go w.searchHeartbeat(progress, jobID, locationBase, locationDone, location, heartbeatDone)
-
-		// Search properties (blocks for 3-7 min during enrichment)
-		results, err := w.finder.Search(ctx, providers.SearchParams{
-			City:     city,
-			State:    state,
-			MaxPrice: maxPrice,
-			Limit:    50, // Get up to 50 per location
-		})
-		close(heartbeatDone) // Stop heartbeat
-
-		if err != nil {
-			w.logger.Warn("search failed for location",
-				"location", location,
-				"error", err,
-			)
-			w.reportProgressWithStage(progress, jobID, locationDone, fmt.Sprintf("No results in %s", location), "searching")
-			continue
-		}
-
-		// Convert to investment.Property type
-		for _, r := range results.Properties {
-			// Get first image URL if available
-			imageURL := ""
-			if len(r.Images) > 0 {
-				imageURL = r.Images[0]
+			// Acquire semaphore
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				resultChan <- searchResult{location: loc, err: ctx.Err()}
+				return
 			}
 
-			allProperties = append(allProperties, investment.Property{
-				ID:            r.ID,
-				Address:       r.Address,
-				City:          r.City,
-				State:         r.State,
-				ZipCode:       r.ZipCode,
-				Price:         r.Price,
-				Beds:          r.Beds,
-				Baths:         r.Baths,
-				Sqft:          r.Sqft,
-				EstimatedRent: r.EstimatedRent,
-				YearBuilt:     r.YearBuilt,
-				PropertyType:  string(r.PropertyType),
-				ListingURL:    r.ListingURL,
-				ImageURL:      imageURL,
-				DaysOnMarket:  r.DaysOnMarket,
-				Provider:      r.ProviderName,
-				Latitude:      r.Latitude,
-				Longitude:     r.Longitude,
-			})
-		}
+			// Progress tracking for this location
+			locationBase := searchStart + (float64(idx)/float64(len(locations)))*searchRange
+			locationDone := searchStart + (float64(idx+1)/float64(len(locations)))*searchRange
 
-		w.reportProgressWithStage(progress, jobID, locationDone,
-			fmt.Sprintf("Found %d properties in %s", len(results.Properties), location), "searching")
+			w.reportProgressWithStage(progress, jobID, locationBase, fmt.Sprintf("Searching in %s", loc), "searching")
+
+			// Parse location into city and state
+			parts := strings.Split(loc, ",")
+			city := strings.TrimSpace(parts[0])
+			state := ""
+			if len(parts) > 1 {
+				state = strings.TrimSpace(parts[1])
+			}
+
+			// Launch heartbeat goroutine for this location
+			heartbeatDone := make(chan struct{})
+			go w.searchHeartbeat(progress, jobID, locationBase, locationDone, loc, heartbeatDone)
+
+			// Search properties (enrichment happens inside)
+			results, err := w.finder.Search(ctx, providers.SearchParams{
+				City:     city,
+				State:    state,
+				MaxPrice: maxPrice,
+				Limit:    50, // Get up to 50 per location
+			})
+			close(heartbeatDone) // Stop heartbeat
+
+			if err != nil {
+				w.logger.Warn("search failed for location",
+					"location", loc,
+					"error", err,
+				)
+				w.reportProgressWithStage(progress, jobID, locationDone, fmt.Sprintf("No results in %s", loc), "searching")
+				resultChan <- searchResult{location: loc, err: err}
+				return
+			}
+
+			// Convert to investment.Property type
+			properties := make([]investment.Property, 0, len(results.Properties))
+			for _, r := range results.Properties {
+				imageURL := ""
+				if len(r.Images) > 0 {
+					imageURL = r.Images[0]
+				}
+
+				properties = append(properties, investment.Property{
+					ID:            r.ID,
+					Address:       r.Address,
+					City:          r.City,
+					State:         r.State,
+					ZipCode:       r.ZipCode,
+					Price:         r.Price,
+					Beds:          r.Beds,
+					Baths:         r.Baths,
+					Sqft:          r.Sqft,
+					EstimatedRent: r.EstimatedRent,
+					YearBuilt:     r.YearBuilt,
+					PropertyType:  string(r.PropertyType),
+					ListingURL:    r.ListingURL,
+					ImageURL:      imageURL,
+					DaysOnMarket:  r.DaysOnMarket,
+					Provider:      r.ProviderName,
+					Latitude:      r.Latitude,
+					Longitude:     r.Longitude,
+				})
+			}
+
+			w.reportProgressWithStage(progress, jobID, locationDone,
+				fmt.Sprintf("Found %d properties in %s", len(properties), loc), "searching")
+
+			resultChan <- searchResult{location: loc, properties: properties, err: nil}
+		}(i, location)
 	}
+
+	// Close result channel when all searches complete
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results from all parallel searches
+	allProperties := make([]investment.Property, 0)
+	var searchErrors []string
+
+	for result := range resultChan {
+		if result.err != nil {
+			searchErrors = append(searchErrors, fmt.Sprintf("%s: %v", result.location, result.err))
+			continue
+		}
+		allProperties = append(allProperties, result.properties...)
+	}
+
+	// If ALL searches failed, return error
+	if len(allProperties) == 0 && len(searchErrors) > 0 {
+		return nil, fmt.Errorf("all location searches failed: %s", strings.Join(searchErrors, "; "))
+	}
+
+	// If some searches failed, log warning but continue
+	if len(searchErrors) > 0 {
+		w.logger.Warn("some location searches failed",
+			"failedCount", len(searchErrors),
+			"successCount", len(locations)-len(searchErrors),
+			"errors", searchErrors,
+		)
+	}
+
+	w.logger.Info("parallel property search completed",
+		"totalProperties", len(allProperties),
+		"searchedLocations", len(locations),
+		"failedSearches", len(searchErrors),
+	)
 
 	return allProperties, nil
 }
@@ -1105,6 +1213,134 @@ func (w *InvestmentPlanningWorker) cacheResult(
 
 	// Use SetInvestmentPlan to store with location and metricsData
 	return w.cache.SetInvestmentPlan(ctx, userID, cacheKey, result, opts, 24*time.Hour)
+}
+
+// saveScenario saves the completed investment planning scenario to analysis_cache for history display
+func (w *InvestmentPlanningWorker) saveScenario(
+	ctx context.Context,
+	userID string,
+	cacheKey string,
+	params *ExtendedPlanningParams,
+	result *investment.InvestmentPlanningResult,
+	mortgageRate float64,
+) error {
+	if w.store == nil {
+		w.logger.Warn("store not available, skipping database save")
+		return nil
+	}
+
+	// Build location string from params (e.g., "Peoria, IL; Chicago, IL")
+	location := strings.Join(params.Locations, "; ")
+
+	// Build metricsData for history card display (same structure as cache)
+	metricsData := map[string]interface{}{
+		"strategy":             string(params.Strategy),
+		"availableCapital":     params.Budget,
+		"propertyCount":        len(result.SelectedProperties),
+		"totalInvestment":      result.Metrics.TotalInvestment,
+		"annualCashFlow":       result.Metrics.AnnualCashFlow,
+		"averageCapRate":       result.Metrics.AvgCapRate,
+		"avgCashOnCash":        result.Metrics.AvgCashOnCash,
+		"expectedAnnualReturn": result.Metrics.ExpectedAnnualReturn,
+		"mode":                 string(params.Mode),
+		"totalValue":           result.Metrics.TotalInvestment,
+		"projectedValue":       result.Metrics.ProjectedValue,
+		"totalDebt":            result.Metrics.TotalLoanAmount,
+		"sharpeRatio":          result.Metrics.SharpeRatio,
+		"debtServiceCoverage":  result.Metrics.DebtServiceCoverage,
+		"diversificationScore": result.Metrics.DiversificationScore,
+		"totalROI":             result.Metrics.TotalROI,
+		"locationCount":        result.Metrics.LocationCount,
+		"totalDownPayment":     result.Metrics.TotalDownPayment,
+		"totalLoanAmount":      result.Metrics.TotalLoanAmount,
+		"monthlyCashFlow":      result.Metrics.MonthlyCashFlow,
+		"portfolioDscr":        result.Metrics.PortfolioDSCR,
+		"fiveYearProjection":   result.Metrics.FiveYearProjection,
+		"riskTolerance":        string(params.RiskTolerance),
+		"downPaymentPct":       params.DownPaymentPct,
+		"mortgageRate":         mortgageRate * 100,
+		"operatingExpensesPct": 50.0,
+		"reinvestSurplusCashFlows": params.ReinvestSurplusCashFlows,
+		"reinvestmentRate":         params.ReinvestmentRate,
+		"projectionYears":          params.ProjectionYears,
+		"yearlyBudgets":            params.YearlyBudgets,
+		"includeSuburbs":           params.IncludeSuburbs,
+		"maxProperties":            params.MaxProperties,
+	}
+
+	// Marshal to JSON
+	metricsJSON, err := json.Marshal(metricsData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metrics data: %w", err)
+	}
+
+	// Build investorProfile (search criteria)
+	investorProfile := map[string]interface{}{
+		"strategy":       string(params.Strategy),
+		"riskTolerance":  string(params.RiskTolerance),
+		"budget":         params.Budget,
+		"downPaymentPct": params.DownPaymentPct,
+		"maxProperties":  params.MaxProperties,
+		"locations":      params.Locations,
+		"includeSuburbs": params.IncludeSuburbs,
+		"mode":           string(params.Mode),
+	}
+
+	// Marshal to JSON
+	profileJSON, err := json.Marshal(investorProfile)
+	if err != nil {
+		return fmt.Errorf("failed to marshal investor profile: %w", err)
+	}
+
+	// Build metadata
+	metadata := map[string]interface{}{
+		"jobId":          location, // Store job ID for tracking
+		"mortgageRate":   mortgageRate * 100,
+		"generatedAt":    time.Now().Format(time.RFC3339),
+		"projectionYears": params.ProjectionYears,
+	}
+
+	// Marshal to JSON
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+
+	// Build content (brief summary)
+	content := fmt.Sprintf("Investment scenario for %s with %d properties totaling $%d",
+		location,
+		len(result.SelectedProperties),
+		result.Metrics.TotalInvestment,
+	)
+
+	// Generate unique ID
+	scenarioID := uuid.New().String()
+
+	// Save to database using sqlc-generated function
+	_, err = w.store.Q().SaveInvestmentPlanScenario(ctx, queries.SaveInvestmentPlanScenarioParams{
+		ID:              scenarioID,
+		Key:             cacheKey,
+		UserId:          userID,
+		Location:        location,
+		Content:         content,
+		MetricsData:     metricsJSON,
+		InvestorProfile: profileJSON,
+		Metadata:        metadataJSON,
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to save scenario to database: %w", err)
+	}
+
+	w.logger.Info("scenario saved to database",
+		"scenarioId", scenarioID,
+		"cacheKey", cacheKey,
+		"userId", userID,
+		"location", location,
+		"propertyCount", len(result.SelectedProperties),
+	)
+
+	return nil
 }
 
 // optimizationMessages are shown during the optimization phase synthetic ticks

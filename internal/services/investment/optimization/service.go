@@ -169,7 +169,7 @@ func (s *Service) Optimize(ctx context.Context, req investment.OptimizationReque
 		Strategy:          req.Strategy,
 		AvailableCapital:  req.Budget,
 		InvestmentHorizon: "5-10 years", // Default
-	}, req.ExistingPortfolio)
+	}, req.ExistingPortfolio, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to score properties: %w", err)
 	}
@@ -273,20 +273,22 @@ func parseLocation(location string) (city, state string) {
 }
 
 // ScoreProperties uses AI to evaluate properties on buyability, rentability, ROI
-// ADR-064: Results are cached for 24 hours to avoid redundant API calls
+// ADR-064: Results are cached for 24 hours to avoid redundant API calls.
+// Pass forceRescore=true to bypass the cache (used by Re-analyze).
 func (s *Service) ScoreProperties(
 	ctx context.Context,
 	properties []investment.Property,
 	profile investment.InvestorProfile,
 	existingPortfolio *investment.ExistingPortfolio,
+	forceRescore bool,
 ) ([]investment.ScoredProperty, error) {
 	if len(properties) == 0 {
 		return []investment.ScoredProperty{}, nil
 	}
 
-	// ADR-064: Check cache first (if database is configured)
+	// ADR-064: Check cache first (if database is configured), unless forceRescore requested.
 	cacheKey := s.buildScoringCacheKey(properties, profile)
-	if s.queries != nil {
+	if !forceRescore && s.queries != nil {
 		if cached, err := s.getScoringFromCache(ctx, cacheKey); err == nil && len(cached) > 0 {
 			s.logger.Info("AI scoring cache hit",
 				"cache_key", cacheKey,
@@ -294,6 +296,12 @@ func (s *Service) ScoreProperties(
 			)
 			return cached, nil
 		}
+	}
+	if forceRescore {
+		s.logger.Info("AI scoring cache bypassed (forceRescore)",
+			"cache_key", cacheKey,
+			"property_count", len(properties),
+		)
 	}
 
 	s.logger.Info("scoring properties with AI (cache miss)",
@@ -497,7 +505,7 @@ func (s *Service) OptimizeMultiYear(ctx context.Context, req investment.MultiYea
 	const maxPropertiesForAI = 100
 	preScoredProperties := preScoreAndLimitProperties(filteredProperties, profile, maxPropertiesForAI, s.logger)
 
-	scoredProperties, err := s.ScoreProperties(ctx, preScoredProperties, profile, req.ExistingPortfolio)
+	scoredProperties, err := s.ScoreProperties(ctx, preScoredProperties, profile, req.ExistingPortfolio, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to score properties: %w", err)
 	}
@@ -1225,6 +1233,10 @@ OUTPUT FORMAT (JSON array):
 [
   {
     "propertyId": "prop_123",
+    "overallScore": 74,
+    "buyabilityScore": 70,
+    "rentabilityScore": 78,
+    "roiScore": 72,
     "investmentThesis": "Strong cash flow opportunity in stable market with consistent rental demand and below-market entry price.",
     "keyStrengths": [
       "Below-market price at $X vs market median $Y",
@@ -1240,6 +1252,10 @@ OUTPUT FORMAT (JSON array):
 ]
 
 GUIDELINES:
+- overallScore: Integer 0-100 summarizing total investment quality for this investor's profile
+- buyabilityScore: Integer 0-100 — deal quality (price vs market, days on market, condition)
+- rentabilityScore: Integer 0-100 — rental demand and yield potential
+- roiScore: Integer 0-100 — cap rate, cash-on-cash, appreciation trajectory
 - investmentThesis: 2-3 sentences summarizing the opportunity
 - keyStrengths: Exactly 2 strengths (be specific with numbers)
 - keyRisks: Exactly 2 risks (be specific about concerns)

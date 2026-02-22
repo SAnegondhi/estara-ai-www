@@ -39,6 +39,9 @@ type FrontierRunRequest struct {
 	RiskTolerance string `json:"riskTolerance" validate:"required"`
 	// ProjectionYears: number of years for Monte Carlo / wealth projection
 	ProjectionYears int `json:"projectionYears" validate:"min=1,max=30"`
+	// ForceRescore: when true, bypasses the AI scoring cache and re-scores properties fresh.
+	// Used by "Re-analyze" to get updated scores without triggering a new property search.
+	ForceRescore bool `json:"forceRescore,omitempty"`
 }
 
 // RunFrontierPipeline is the Phase 12 full-pipeline endpoint.
@@ -281,6 +284,7 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 		allProperties,
 		profile,
 		nil, // no existing portfolio
+		req.ForceRescore,
 	)
 	stopScoring() // stop ticker before next emitProgress
 
