@@ -302,3 +302,24 @@ WHERE key = $1 AND feature = 'market_trends';
 UPDATE analysis_cache
 SET "lastAccessedAt" = NOW(), "accessCount" = "accessCount" + 1
 WHERE "userId" = $1 AND key = $2;
+
+-- Investment Planning queries
+
+-- name: SaveInvestmentPlanScenario :one
+-- Save completed investment planning job as a scenario (upsert to handle duplicate keys)
+INSERT INTO analysis_cache (
+    id, key, "userId", location, feature, content,
+    "metricsData", "investorProfile", metadata,
+    "expiresAt", "createdAt", "lastAccessedAt"
+) VALUES (
+    $1, $2, $3, $4, 'investment_planning', $5,
+    $6, $7, $8,
+    NOW() + INTERVAL '10 years', NOW(), NOW()
+)
+ON CONFLICT (key) DO UPDATE SET
+    content = EXCLUDED.content,
+    "metricsData" = EXCLUDED."metricsData",
+    "investorProfile" = EXCLUDED."investorProfile",
+    metadata = EXCLUDED.metadata,
+    "lastAccessedAt" = NOW()
+RETURNING *;

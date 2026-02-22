@@ -1225,6 +1225,80 @@ func (q *Queries) ListTrendsHistory(ctx context.Context, arg ListTrendsHistoryPa
 	return items, nil
 }
 
+const SaveInvestmentPlanScenario = `-- name: SaveInvestmentPlanScenario :one
+
+INSERT INTO analysis_cache (
+    id, key, "userId", location, feature, content,
+    "metricsData", "investorProfile", metadata,
+    "expiresAt", "createdAt", "lastAccessedAt"
+) VALUES (
+    $1, $2, $3, $4, 'investment_planning', $5,
+    $6, $7, $8,
+    NOW() + INTERVAL '10 years', NOW(), NOW()
+)
+ON CONFLICT (key) DO UPDATE SET
+    content = EXCLUDED.content,
+    "metricsData" = EXCLUDED."metricsData",
+    "investorProfile" = EXCLUDED."investorProfile",
+    metadata = EXCLUDED.metadata,
+    "lastAccessedAt" = NOW()
+RETURNING id, key, "userId", location, feature, prompt, "promptHash", complexity, "investorProfile", "marketData", content, "fullReport", "metricsData", "narrativeData", metadata, "createdAt", "expiresAt", "lastAccessedAt", "accessCount", "supersededBy", "supersededAt", "cacheHits", "generationCost", "savingsGenerated"
+`
+
+type SaveInvestmentPlanScenarioParams struct {
+	ID              string          `json:"id"`
+	Key             string          `json:"key"`
+	UserId          string          `json:"userId"`
+	Location        string          `json:"location"`
+	Content         string          `json:"content"`
+	MetricsData     []byte          `json:"metricsData"`
+	InvestorProfile []byte          `json:"investorProfile"`
+	Metadata        json.RawMessage `json:"metadata"`
+}
+
+// Investment Planning queries
+// Save completed investment planning job as a scenario (upsert to handle duplicate keys)
+func (q *Queries) SaveInvestmentPlanScenario(ctx context.Context, arg SaveInvestmentPlanScenarioParams) (AnalysisCache, error) {
+	row := q.db.QueryRow(ctx, SaveInvestmentPlanScenario,
+		arg.ID,
+		arg.Key,
+		arg.UserId,
+		arg.Location,
+		arg.Content,
+		arg.MetricsData,
+		arg.InvestorProfile,
+		arg.Metadata,
+	)
+	var i AnalysisCache
+	err := row.Scan(
+		&i.ID,
+		&i.Key,
+		&i.UserId,
+		&i.Location,
+		&i.Feature,
+		&i.Prompt,
+		&i.PromptHash,
+		&i.Complexity,
+		&i.InvestorProfile,
+		&i.MarketData,
+		&i.Content,
+		&i.FullReport,
+		&i.MetricsData,
+		&i.NarrativeData,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.LastAccessedAt,
+		&i.AccessCount,
+		&i.SupersededBy,
+		&i.SupersededAt,
+		&i.CacheHits,
+		&i.GenerationCost,
+		&i.SavingsGenerated,
+	)
+	return i, err
+}
+
 const UpdateCacheAccess = `-- name: UpdateCacheAccess :exec
 UPDATE analysis_cache
 SET "lastAccessedAt" = NOW(), "accessCount" = "accessCount" + 1
