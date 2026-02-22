@@ -63,6 +63,7 @@ type ChatEvent struct {
 	Content   interface{} `json:"content,omitempty"`
 	SessionID string      `json:"session_id,omitempty"`
 	Error     string      `json:"error,omitempty"`
+	Usage     *TokenUsage `json:"usage,omitempty"` // populated on "complete" event
 }
 
 // EvaluationChatAgent handles property evaluation chat
@@ -315,9 +316,16 @@ func (a *EvaluationChatAgent) Stream(ctx context.Context, req ChatRequest, event
 	parser := &StreamingBlockParser{}
 	var fullResponse strings.Builder
 	var lastEmittedText string
+	var streamUsage *anthropic.Usage
 
 	for event := range streamEvents {
 		switch event.Type {
+		case "message_delta":
+			// Capture final token usage from Anthropic (sent at end of stream)
+			if event.Usage != nil {
+				streamUsage = event.Usage
+			}
+
 		case "content_block_delta":
 			if event.Delta.Type == "text_delta" {
 				text := event.Delta.Text
@@ -378,15 +386,22 @@ func (a *EvaluationChatAgent) Stream(ctx context.Context, req ChatRequest, event
 		sessionID = generateSessionID()
 	}
 
-	// Send complete event with all parsed blocks
-	sendChatEvent(events, ChatEvent{
+	// Build complete event — include token usage if captured
+	completeEvent := ChatEvent{
 		Type:      "complete",
 		SessionID: sessionID,
 		Content: map[string]interface{}{
 			"content":      filteredResponse,
 			"parsedBlocks": allBlocks,
 		},
-	})
+	}
+	if streamUsage != nil {
+		completeEvent.Usage = &TokenUsage{
+			InputTokens:  streamUsage.InputTokens,
+			OutputTokens: streamUsage.OutputTokens,
+		}
+	}
+	sendChatEvent(events, completeEvent)
 
 	return nil
 }

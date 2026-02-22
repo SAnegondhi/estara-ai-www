@@ -57,6 +57,8 @@ type V2AnalysisResult struct {
 	CacheKey    string    `json:"cache_key,omitempty"`
 	// Data quality from the payload
 	DataCompleteness int `json:"data_completeness"` // percentage
+	// Token usage from Stage 2 (zero when served from cache)
+	Usage anthropic.Usage `json:"usage"`
 }
 
 // DualAgentOrchestrator coordinates metrics and narrative agents
@@ -152,7 +154,7 @@ func (o *DualAgentOrchestrator) AnalyzeV2(ctx context.Context, req AnalysisReque
 	// Stage 2: Single-pass Sonnet analysis (12K max tokens)
 	userPrompt := prompts.BuildAnalysisV2UserPrompt(req.Location, dataPayloadXML, marketContextXML)
 
-	report, err := o.client.CompleteWithMaxTokens(ctx, prompts.AnalysisV2SystemPrompt, userPrompt, v2MaxTokens)
+	report, usage, err := o.client.CompleteWithUsage(ctx, prompts.AnalysisV2SystemPrompt, userPrompt, v2MaxTokens)
 	if err != nil {
 		return nil, fmt.Errorf("stage 2 analysis failed for %s: %w", req.Location, err)
 	}
@@ -169,6 +171,7 @@ func (o *DualAgentOrchestrator) AnalyzeV2(ctx context.Context, req AnalysisReque
 		FromCache:        false,
 		CacheKey:         req.CacheKey,
 		DataCompleteness: completeness,
+		Usage:            usage,
 	}
 
 	// Note: V2 report caching is handled by the worker (using fullReport column in analysis_cache)

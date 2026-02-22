@@ -466,6 +466,39 @@ func (c *Client) SetMaxTokens(maxTokens int) {
 	c.maxTokens = maxTokens
 }
 
+// CompleteWithUsage sends a completion with a per-call max_tokens override and returns token usage.
+// Use this instead of CompleteWithMaxTokens when you need to record AI usage metrics.
+func (c *Client) CompleteWithUsage(ctx context.Context, systemPrompt, userPrompt string, maxTokens int) (string, Usage, error) {
+	req := MessageRequest{
+		Model:     c.model,
+		MaxTokens: maxTokens,
+		System:    systemPrompt,
+		Messages: []Message{
+			{Role: "user", Content: userPrompt},
+		},
+	}
+
+	resp, err := c.sendRequest(ctx, req)
+	if err != nil {
+		return "", Usage{}, err
+	}
+
+	var text strings.Builder
+	for _, block := range resp.Content {
+		if block.Type == "text" {
+			text.WriteString(block.Text)
+		}
+	}
+
+	c.logger.Debug("completion finished",
+		"input_tokens", resp.Usage.InputTokens,
+		"output_tokens", resp.Usage.OutputTokens,
+		"max_tokens", maxTokens,
+	)
+
+	return text.String(), resp.Usage, nil
+}
+
 // CompleteWithMaxTokens sends a completion with a per-call max_tokens override.
 // This is thread-safe (unlike SetMaxTokens) since it doesn't mutate client state.
 func (c *Client) CompleteWithMaxTokens(ctx context.Context, systemPrompt, userPrompt string, maxTokens int) (string, error) {
