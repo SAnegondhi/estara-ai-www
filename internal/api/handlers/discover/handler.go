@@ -1,6 +1,7 @@
 package discover
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
@@ -471,6 +473,9 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 		properties = append(properties, prop)
 	}
 
+	// Record search metrics (fire and forget)
+	go h.recordSearchMetrics(userID, "", criteria.Location, result.Metrics)
+
 	// Create discovery session if user is authenticated
 	var discoverySessionId string
 	if userID != "" && len(properties) > 0 {
@@ -514,6 +519,12 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 // SearchProperties searches for properties based on criteria (GET endpoint)
 func (h *Handler) SearchProperties(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// Get user ID from context (optional auth)
+	var userID string
+	if user := middleware.GetUserFromContext(ctx); user != nil {
+		userID = user.UserID
+	}
 
 	// Parse location parameter
 	location := httputil.GetQueryParam(r, "location", "")
@@ -596,6 +607,9 @@ func (h *Handler) SearchProperties(w http.ResponseWriter, r *http.Request) {
 		httputil.Error(w, http.StatusInternalServerError, "property search failed")
 		return
 	}
+
+	// Record search metrics (fire and forget)
+	go h.recordSearchMetrics(userID, "", location, result.Metrics)
 
 	response := PropertySearchResponse{
 		Success:    true,
@@ -1359,4 +1373,48 @@ func (h *Handler) GetRecords(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httputil.JSON(w, http.StatusOK, response)
+}
+
+// recordSearchMetrics persists property finder search metrics to the database.
+func (h *Handler) recordSearchMetrics(userID, sessionID, location string, metrics finder.SearchMetrics) {
+	if h.store == nil {
+		return
+	}
+
+	providersJSON, err := json.Marshal(metrics.ProvidersAttempted)
+	if err != nil {
+		providersJSON = []byte("[]")
+	}
+
+	toOptText := func(s string) pgtype.Text {
+		if s == "" {
+			return pgtype.Text{Valid: false}
+		}
+		return pgtype.Text{String: s, Valid: true}
+	}
+	toOptInt4 := func(d time.Duration) pgtype.Int4 {
+		if d == 0 {
+			return pgtype.Int4{Valid: false}
+		}
+		return pgtype.Int4{Int32: int32(d.Milliseconds()), Valid: true}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := h.store.Q().CreatePropertyFinderMetric(ctx, queries.CreatePropertyFinderMetricParams{
+		ID:                 uuid.New().String(),
+		UserID:             toOptText(userID),
+		SessionID:          toOptText(sessionID),
+		ProviderUsed:       toOptText(metrics.ProviderUsed),
+		ProvidersAttempted: providersJSON,
+		CacheHit:           metrics.CacheHit,
+		ResultCount:        int32(metrics.ResultCount),
+		SearchTimeMs:       toOptInt4(metrics.SearchTime),
+		TotalTimeMs:        toOptInt4(metrics.TotalTime),
+		Location:           toOptText(location),
+		SearchType:         pgtype.Text{Valid: false},
+	}); err != nil {
+		h.logger.Warn("failed to record search metrics", "error", err)
+	}
 }

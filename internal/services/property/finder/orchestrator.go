@@ -91,6 +91,11 @@ type SearchResponse struct {
 type SearchOptions struct {
 	// AsyncEnrichment if true, returns properties immediately and enriches in background
 	AsyncEnrichment bool
+	// EnrichmentLimit limits the number of properties to enrich (0 = enrich all)
+	// Used to optimize performance when only top N properties will be selected
+	EnrichmentLimit int
+	// SkipEnrichment if true, skips yearBuilt enrichment entirely (cache only)
+	SkipEnrichment bool
 }
 
 // StreamingResult represents a result sent via the streaming channel
@@ -171,6 +176,11 @@ func (o *Orchestrator) GetEnrichmentJobManager() *EnrichmentJobManager {
 
 // Search performs a property search using configured providers
 func (o *Orchestrator) Search(ctx context.Context, params providers.SearchParams) (*SearchResponse, error) {
+	return o.SearchWithOptions(ctx, params, SearchOptions{})
+}
+
+// SearchWithOptions performs a property search with custom options
+func (o *Orchestrator) SearchWithOptions(ctx context.Context, params providers.SearchParams, opts SearchOptions) (*SearchResponse, error) {
 	startTime := time.Now()
 	metrics := SearchMetrics{
 		ProvidersAttempted: make([]string, 0),
@@ -226,7 +236,15 @@ func (o *Orchestrator) Search(ctx context.Context, params providers.SearchParams
 	metrics.TotalTime = time.Since(startTime)
 
 	// Enrich properties with yearBuilt from Property API (if missing)
-	enrichedWithYearBuilt := o.enrichPropertiesWithYearBuilt(ctx, result.Properties)
+	var enrichedWithYearBuilt []providers.Property
+	if opts.SkipEnrichment {
+		// Skip enrichment entirely (cache-only)
+		enrichedWithYearBuilt = result.Properties
+		o.logger.Debug("skipping yearBuilt enrichment (SkipEnrichment=true)")
+	} else {
+		// Enrich with optional limit
+		enrichedWithYearBuilt = o.enrichPropertiesWithYearBuilt(ctx, result.Properties, opts.EnrichmentLimit)
+	}
 
 	// Enrich properties with investment metrics
 	enrichedProperties := o.enricher.EnrichProperties(enrichedWithYearBuilt)
@@ -261,6 +279,7 @@ func (o *Orchestrator) Search(ctx context.Context, params providers.SearchParams
 		"results", len(result.Properties),
 		"total", result.Total,
 		"duration", metrics.TotalTime,
+		"enrichmentLimit", opts.EnrichmentLimit,
 	)
 
 	return response, nil
@@ -1051,7 +1070,8 @@ func (o *Orchestrator) InvalidateCacheByKey(ctx context.Context, cacheKey string
 // enrichPropertiesWithYearBuilt enriches properties missing yearBuilt by calling
 // the HasData Property API. The Listing API no longer returns yearBuilt as of Jan 2026.
 // Uses parallel workers for performance (configured via EnrichmentConcurrency).
-func (o *Orchestrator) enrichPropertiesWithYearBuilt(ctx context.Context, properties []providers.Property) []providers.Property {
+// If limit > 0, only enriches the first N properties (sorted by price descending).
+func (o *Orchestrator) enrichPropertiesWithYearBuilt(ctx context.Context, properties []providers.Property, limit int) []providers.Property {
 	// Find properties missing yearBuilt that have Zillow URLs
 	var propertiesToEnrich []int
 	var skippedNoURL, skippedNonZillow, skippedHasYearBuilt int
@@ -1081,10 +1101,27 @@ func (o *Orchestrator) enrichPropertiesWithYearBuilt(ctx context.Context, proper
 		return properties
 	}
 
+	// OPTIMIZATION: If limit is set, only enrich top N properties by price
+	// This reduces API calls from 328 (8 locations × 41 properties) to ~160 (8 × 20)
+	if limit > 0 && len(propertiesToEnrich) > limit {
+		// Sort propertiesToEnrich by price (descending) to prioritize high-value properties
+		sort.Slice(propertiesToEnrich, func(i, j int) bool {
+			return properties[propertiesToEnrich[i]].Price > properties[propertiesToEnrich[j]].Price
+		})
+		// Keep only top N
+		propertiesToEnrich = propertiesToEnrich[:limit]
+		o.logger.Info("limiting enrichment to top properties by price",
+			"limit", limit,
+			"totalNeededEnrichment", len(propertiesToEnrich)+limit,
+			"willEnrich", len(propertiesToEnrich),
+		)
+	}
+
 	o.logger.Info("enriching properties via Property API",
 		"toEnrich", len(propertiesToEnrich),
 		"total", len(properties),
 		"concurrency", o.enrichmentConcurrency,
+		"limit", limit,
 		"skippedHasYearBuilt", skippedHasYearBuilt,
 		"skippedNoURL", skippedNoURL,
 		"skippedNonZillow", skippedNonZillow,
