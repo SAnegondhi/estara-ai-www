@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	dbstore "github.com/estara-ai/www/internal/db"
@@ -476,6 +477,11 @@ func (w *MarketAnalysisWorker) processV2(
 		return w.failedResult(job, fmt.Errorf("V2 analysis failed: %w", err))
 	}
 
+	// Record AI usage metrics (fire and forget — non-blocking)
+	if !v2Result.FromCache && v2Result.Usage.InputTokens > 0 {
+		go w.recordAIUsage(job.UserID, job.ID, req.Location, v2Result.Usage.InputTokens, v2Result.Usage.OutputTokens)
+	}
+
 	// Step 5: Finalize (90%)
 	w.reportProgress(progress, job.ID, 90, "Finalizing and caching")
 
@@ -704,4 +710,54 @@ func (w *MarketAnalysisWorker) updateReportStatus(
 		"status", status,
 		"has_metadata", dataFreshnessDate != nil,
 	)
+}
+
+// recordAIUsage persists AI token usage for a market analysis V2 call.
+// Pricing: claude-sonnet-4-20250514 — input $3.00/MTok, output $15.00/MTok.
+func (w *MarketAnalysisWorker) recordAIUsage(userID, requestID, location string, inputTokens, outputTokens int) {
+	if w.store == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	const inputPricePerToken = 0.000003  // $3.00 / 1M
+	const outputPricePerToken = 0.000015 // $15.00 / 1M
+
+	baseInputCost := float64(inputTokens) * inputPricePerToken
+	outputCost := float64(outputTokens) * outputPricePerToken
+	totalCost := baseInputCost + outputCost
+
+	toNumeric := func(v float64) pgtype.Numeric {
+		n := pgtype.Numeric{}
+		_ = n.Scan(fmt.Sprintf("%.8f", v))
+		return n
+	}
+
+	loc := pgtype.Text{}
+	if location != "" {
+		loc = pgtype.Text{String: location, Valid: true}
+	}
+
+	err := w.store.Q().CreateAIUsage(ctx, queries.CreateAIUsageParams{
+		ID:             uuid.New().String(),
+		UserID:         userID,
+		SessionID:      requestID,
+		Model:          "claude-sonnet-4-20250514",
+		InputTokens:    int32(inputTokens),
+		OutputTokens:   int32(outputTokens),
+		TotalTokens:    int32(inputTokens + outputTokens),
+		BaseInputCost:  toNumeric(baseInputCost),
+		OutputCost:     toNumeric(outputCost),
+		TotalCost:      toNumeric(totalCost),
+		RequestType:    "analysis",
+		Feature:        "market_analysis_v2",
+		Location:       loc,
+		RequestID:      requestID,
+		ProcessingTime: pgtype.Int4{Valid: false},
+	})
+	if err != nil {
+		w.logger.Warn("failed to record AI usage", "error", err, "user_id", userID)
+	}
 }
