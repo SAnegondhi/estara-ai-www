@@ -129,7 +129,8 @@ func (a *Aggregator) GetMarketData(ctx context.Context, city, state string) (*Ma
 	var snapshot *timeseries.CitySnapshot
 	metroData, err := a.metro.GetMarketData(ctx, city, state)
 	if err != nil {
-		a.logger.Warn("failed to get metro data", "city", city, "state", state, "error", err)
+		// DEBUG level for small cities without Zillow coverage (expected condition)
+		a.logger.Debug("no metro data for city (expected for small cities)", "city", city, "state", state, "error", err)
 	} else {
 		sources = append(sources, SourceData{
 			Source:          "Zillow",
@@ -201,8 +202,9 @@ func (a *Aggregator) GetMarketData(ctx context.Context, city, state string) (*Ma
 	}
 
 	// If no data sources, return nil (ADR-050/076: no AI-fabricated fallback)
+	// This is expected for very small cities without Zillow coverage.
 	if len(sources) == 0 {
-		a.logger.Warn("no market data sources available",
+		a.logger.Debug("no market data sources available (expected for small cities)",
 			"city", city,
 			"state", state,
 		)
