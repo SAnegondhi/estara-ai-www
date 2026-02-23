@@ -367,7 +367,13 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 		// Tier 2 (no cap rate):         cap rate gates off, age 40 yr, price floor 0.3×
 		// Tier 3 (age + price only):    cap rate off, age off, price floor 0.2×
 		// Tier 4 (price floor only):    only a soft price floor at 0.15× — never fully abandoned
-		const minPropertiesForFrontier = 5 // must match FrontierOptimizer.minProperties
+		// minPropertiesForFrontier: hard minimum — FrontierOptimizer refuses below this.
+		// minPoolForDiversity: preferred minimum — ensures the 3 ADR-090 selection pipelines
+		// (Quality, Income, Balanced) draw from meaningfully different subsets. When the pool
+		// is too small, all three cohorts collapse to the same properties, producing near-
+		// identical frontier configurations (see: "frontierPoints:2" from a 6-property pool).
+		const minPropertiesForFrontier = 5
+		const minPoolForDiversity = 12
 		type filterTier struct {
 			label   string
 			filters investment.PropertyFilters
@@ -400,14 +406,23 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 			}},
 		}
 
+		// Walk the ladder seeking the diversity threshold first; keep the last tier that
+		// satisfies the hard minimum as a fallback in case diversity is never reached.
 		var finalFiltered []investment.Property
 		var appliedTier string
 		for _, tier := range ladder {
 			f, _ := investment.ApplyPropertyFiltersWithBenchmarks(allProperties, tier.filters, marketBenchmarks)
-			if len(f) >= minPropertiesForFrontier {
+			if len(f) >= minPoolForDiversity {
+				// Diversity threshold met — use this tier and stop.
 				finalFiltered = f
 				appliedTier = tier.label
 				break
+			}
+			// Below diversity threshold but above hard minimum — keep as fallback and
+			// continue relaxing in hope of reaching a more diverse pool.
+			if len(f) >= minPropertiesForFrontier {
+				finalFiltered = f
+				appliedTier = tier.label
 			}
 		}
 
@@ -422,6 +437,7 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 					"total", len(allProperties)+rejected,
 					"passed", len(allProperties),
 					"min_required", minPropertiesForFrontier,
+					"diversity_target", minPoolForDiversity,
 				)
 				emitProgress(30, fmt.Sprintf("%d properties after relaxed quality gates (%s, %d rejected)", len(allProperties), appliedTier, rejected))
 			}
