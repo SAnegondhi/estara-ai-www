@@ -123,9 +123,11 @@ func applyIncomeFloors(pool []RankedProperty, risk RiskTolerance) []RankedProper
 // GenerateLabel returns a human-readable label for a config based on its type, strategy, and risk.
 // ADR-090 Phase D: exported so tests and downstream packages can assert label correctness directly.
 // ADR-090 Phase E: added "growth" configType (Appreciation strategy only).
+// ADR-091: added "pinned" configType (user-selected evaluations / memos).
 //
 // Label matrix:
 //
+//	pinned   + any                   → "Your Selection"   (ADR-091: user-selected verbatim)
 //	growth   + any                   → "Growth"           (Phase E: price-biased pipeline)
 //	quality  + appreciation          → "Growth"           (when Growth pipeline not active)
 //	quality  + cash-flow             → "Quality-CF"
@@ -137,6 +139,8 @@ func applyIncomeFloors(pool []RankedProperty, risk RiskTolerance) []RankedProper
 //	balanced + any                   → "Balanced"
 func GenerateLabel(configType string, strategy InvestmentStrategy, risk RiskTolerance) string {
 	switch configType {
+	case string(ConfigPinned): // ADR-091: user-selected properties (evaluations / memos)
+		return "Your Selection"
 	case string(ConfigGrowth): // Phase E: price-biased pipeline for Appreciation strategy
 		return "Growth"
 	case string(ConfigQuality):
@@ -415,11 +419,47 @@ func SelectBalancedCohort(
 	}
 }
 
+// SelectPinnedCohort returns all properties whose ID appears in pinnedIDs as a verbatim cohort.
+// ADR-091: user-selected evaluations and memo properties bypass FilterAffordable and ranking
+// algorithms entirely — the user's selection is treated as deliberate intent, not as candidates
+// competing for cohort slots. All pinned properties are included regardless of budget compliance
+// (budget violations should be surfaced as warnings by the frontend/handler, not silent drops).
+func SelectPinnedCohort(
+	props []ScoredProperty,
+	pinnedIDs map[string]bool,
+	strategy InvestmentStrategy,
+	risk RiskTolerance,
+) PropertyCohort {
+	label := GenerateLabel(string(ConfigPinned), strategy, risk)
+	if len(pinnedIDs) == 0 {
+		return PropertyCohort{Label: label, ConfigType: ConfigPinned}
+	}
+	pinned := make([]RankedProperty, 0, len(pinnedIDs))
+	for _, sp := range props {
+		if !pinnedIDs[sp.Property.ID] {
+			continue
+		}
+		// Include verbatim — financial metrics are zero (not filtered through FilterAffordable).
+		// The frontier optimizer handles missing metrics gracefully.
+		pinned = append(pinned, RankedProperty{ScoredProperty: sp})
+	}
+	return PropertyCohort{
+		Properties: pinned,
+		Label:      label,
+		ConfigType: ConfigPinned,
+	}
+}
+
 // BuildCohorts is the Phase 2b entry point for the frontier pipeline.
 // It replaces RankAndSelectProperties. It:
 //   1. Calls FilterAffordable (shared capital filter, no composite ranking).
 //   2. Runs three independent per-config pipelines over the affordable pool.
 //   3. Returns []PropertyCohort — one cohort per config type — for GenerateFrontier.
+//
+// ADR-091: when pinnedIDs is non-empty, Config 0 is a PinnedCohort (user-selected evaluations
+// verbatim), and Configs 1/2 are drawn from the NON-pinned subset of props so the optimizer
+// produces genuinely distinct configurations alongside the user's selection.
+// Pass nil for pinnedIDs for auto-discover and session sources (unchanged behaviour).
 //
 // SelectGrowthCohort ranks the affordable pool by a price-biased formula designed for
 // investors whose primary objective is capital appreciation.
@@ -466,8 +506,11 @@ func SelectGrowthCohort(pool []RankedProperty, strategy InvestmentStrategy, risk
 // ADR-090: Per-config property selection pipelines.
 // ADR-090 Phase E: when strategy == StrategyAppreciation, SelectGrowthCohort replaces
 // SelectQualityCohort so the frontier receives a price-biased config instead of an AI-score config.
+// ADR-091: when pinnedIDs is non-empty, Config 0 = user selection verbatim (PinnedCohort);
+// Configs 1/2 drawn from non-pinned props only. Pass nil for auto-discover / session sources.
 func BuildCohorts(
 	props []ScoredProperty,
+	pinnedIDs map[string]bool,
 	strategy InvestmentStrategy,
 	risk RiskTolerance,
 	budget int,
@@ -476,6 +519,34 @@ func BuildCohorts(
 ) []PropertyCohort {
 	const cohortSize = 15
 
+	// ADR-091: pinned path — Config 0 = user selection, Configs 1/2 = optimizer over pool-only props.
+	if len(pinnedIDs) > 0 {
+		pinned := SelectPinnedCohort(props, pinnedIDs, strategy, risk)
+		if len(pinned.Properties) == 0 {
+			// None of the pinned IDs were found in props — fall through to normal path.
+			goto normalPath
+		}
+
+		// Configs 1/2 draw from NON-pinned props so they are genuinely distinct from Config 0.
+		poolProps := make([]ScoredProperty, 0, len(props)-len(pinnedIDs))
+		for _, sp := range props {
+			if !pinnedIDs[sp.Property.ID] {
+				poolProps = append(poolProps, sp)
+			}
+		}
+
+		affordable := FilterAffordable(poolProps, budget, downPaymentPct, mortgageRate)
+		if len(affordable) == 0 {
+			// No pool properties — return pinned cohort only.
+			return []PropertyCohort{pinned}
+		}
+
+		income   := SelectIncomeCohort(affordable, strategy, risk, cohortSize)
+		balanced := SelectBalancedCohort(affordable, pinned, income, strategy, risk, cohortSize)
+		return []PropertyCohort{pinned, income, balanced}
+	}
+
+normalPath:
 	affordable := FilterAffordable(props, budget, downPaymentPct, mortgageRate)
 	if len(affordable) == 0 {
 		return nil

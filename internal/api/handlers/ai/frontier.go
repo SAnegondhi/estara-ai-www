@@ -1,12 +1,14 @@
 package ai
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/estara-ai/www/internal/api/middleware"
+	queries "github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/investment"
 	"github.com/estara-ai/www/internal/services/investment/optimization"
 	"github.com/estara-ai/www/pkg/httputil"
@@ -21,9 +23,17 @@ import (
 // It accepts pre-scored properties and runs the full frontier generation pipeline
 // with real-time SSE progress updates.
 type FrontierAnalyzeRequest struct {
-	ScoredProperties []investment.ScoredProperty        `json:"scoredProperties" validate:"required,min=5"`
+	ScoredProperties []investment.ScoredProperty        `json:"scoredProperties" validate:"required,min=1"`
 	Profile          investment.InvestorProfile          `json:"profile"          validate:"required"`
 	Params           investment.InvestmentPlanningParams `json:"params"           validate:"required"`
+	// ADR-091: Pinned cohort semantics for user-selected property sources.
+	// PinnedPropertyIDs holds the IDs of evaluated / memo properties that must appear verbatim
+	// as Config 0 ("Your Selection"), bypassing FilterAffordable and ranking algorithms.
+	PinnedPropertyIDs []string `json:"pinnedPropertyIds,omitempty"`
+	// DiscoverySeedSessionID: when set, the backend fetches this session's property pool and
+	// appends it (de-duplicated) to ScoredProperties so Configs 1/2 can draw from a wider pool
+	// than just the user's selected evaluations.
+	DiscoverySeedSessionID string `json:"discoverySeedSessionId,omitempty"`
 }
 
 // FrontierRecalculateRequest is the request body for POST /api/ai/frontier/recalculate.
@@ -118,7 +128,21 @@ func (h *Handler) RunFrontierAnalysis(w http.ResponseWriter, r *http.Request) {
 	if mortgageRate == 0 {
 		mortgageRate = 0.075
 	}
-	cohorts := investment.BuildCohorts(req.ScoredProperties, req.Profile.Strategy, req.Profile.RiskTolerance, budget, mortgageRate, dpPct)
+	// ADR-091: build pinnedIDs set from request (evaluations/memos path).
+	pinnedIDs := make(map[string]bool, len(req.PinnedPropertyIDs))
+	for _, id := range req.PinnedPropertyIDs {
+		pinnedIDs[id] = true
+	}
+
+	// ADR-091: if a discovery seed session is specified, fetch its full property pool and
+	// merge (de-duplicated) into the scored properties so Configs 1/2 can draw from a wider
+	// pool than just the user's pinned evaluations.
+	allProps := req.ScoredProperties
+	if req.DiscoverySeedSessionID != "" && h.store != nil {
+		allProps = h.mergeDiscoverySeedPool(ctx, req.DiscoverySeedSessionID, user.UserID, req.ScoredProperties)
+	}
+
+	cohorts := investment.BuildCohorts(allProps, pinnedIDs, req.Profile.Strategy, req.Profile.RiskTolerance, budget, mortgageRate, dpPct)
 	if len(cohorts) == 0 {
 		_ = sseWriter.WriteError("no affordable properties found for the given budget")
 		return
@@ -218,4 +242,85 @@ func (h *Handler) RecalculateFrontier(w http.ResponseWriter, r *http.Request) {
 		DurationMs:     duration.Milliseconds(),
 		Assumptions:    req.Assumptions,
 	})
+}
+
+// mergeDiscoverySeedPool fetches the full property list from a discovery session and merges
+// it (de-duplicated by property ID) into existing to produce a wider candidate pool.
+// ADR-091: used by RunFrontierAnalysis when DiscoverySeedSessionID is set, so that Configs 1/2
+// can draw from properties beyond the user's pinned evaluations.
+// On any error the original existing slice is returned unchanged (graceful degradation).
+func (h *Handler) mergeDiscoverySeedPool(ctx context.Context, sessionID, userID string, existing []investment.ScoredProperty) []investment.ScoredProperty {
+	session, err := h.store.Q().GetDiscoverySessionByUser(ctx, queries.GetDiscoverySessionByUserParams{
+		ID:     sessionID,
+		UserId: userID,
+	})
+	if err != nil {
+		h.logger.Warn("seed session not found or access denied",
+			"sessionId", sessionID,
+			"userId", userID,
+			"error", err,
+		)
+		return existing
+	}
+
+	sessionProps, err := h.store.Q().ListSessionProperties(ctx, session.ID)
+	if err != nil || len(sessionProps) == 0 {
+		return existing
+	}
+
+	// Build a set of property IDs already in existing to avoid duplicates.
+	seen := make(map[string]bool, len(existing))
+	for _, sp := range existing {
+		seen[sp.Property.ID] = true
+	}
+
+	merged := make([]investment.ScoredProperty, len(existing), len(existing)+len(sessionProps))
+	copy(merged, existing)
+
+	for _, sp := range sessionProps {
+		if seen[sp.ListingId] {
+			continue
+		}
+		seen[sp.ListingId] = true
+
+		var lat, lng float64
+		if sp.Latitude.Valid {
+			_ = sp.Latitude.Scan(&lat)
+		}
+		if sp.Longitude.Valid {
+			_ = sp.Longitude.Scan(&lng)
+		}
+
+		var estimatedRent int
+		if sp.EstimatedRent.Valid {
+			estimatedRent = int(sp.EstimatedRent.Int32)
+		}
+
+		merged = append(merged, investment.ScoredProperty{
+			Property: investment.Property{
+				ID:           sp.ListingId,
+				Address:      sp.Address,
+				City:         sp.City,
+				State:        sp.State,
+				ZipCode:      sp.ZipCode.String,
+				Price:        int(sp.Price),
+				Beds:         int(sp.Beds),
+				EstimatedRent: estimatedRent,
+				YearBuilt:    int(sp.YearBuilt.Int32),
+				PropertyType: sp.PropertyType.String,
+				ImageURL:     sp.ImageUrl.String,
+				Latitude:     lat,
+				Longitude:    lng,
+			},
+			OverallScore: 50, // pool-only; will be re-scored by ScoreProperties in the caller
+		})
+	}
+
+	h.logger.Info("merged discovery seed pool",
+		"sessionId", sessionID,
+		"existingCount", len(existing),
+		"poolCount", len(sessionProps),
+		"mergedCount", len(merged),
+	)
+	return merged
 }

@@ -132,6 +132,7 @@ func TestBuildCohorts_DistinctPropertySets(t *testing.T) {
 
 	cohorts := investment.BuildCohorts(
 		props,
+		nil,
 		investment.StrategyBalanced,
 		investment.RiskModerate,
 		2_000_000,
@@ -315,7 +316,7 @@ func TestBuildCohorts_LabelsSensitiveToStrategyAndRisk(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		cohorts := investment.BuildCohorts(props, tc.strategy, tc.risk, 2_000_000, testMortgageRate, testDownPayment)
+		cohorts := investment.BuildCohorts(props, nil, tc.strategy, tc.risk, 2_000_000, testMortgageRate, testDownPayment)
 		if len(cohorts) < 3 {
 			t.Errorf("strategy=%v risk=%v: expected 3 cohorts, got %d", tc.strategy, tc.risk, len(cohorts))
 			continue
@@ -358,7 +359,7 @@ func TestFrontier_DistinctMetrics(t *testing.T) {
 		DownPaymentPct: testDownPayment,
 	}
 
-	cohorts := investment.BuildCohorts(props, profile.Strategy, profile.RiskTolerance, profile.AvailableCapital, testMortgageRate, testDownPayment)
+	cohorts := investment.BuildCohorts(props, nil, profile.Strategy, profile.RiskTolerance, profile.AvailableCapital, testMortgageRate, testDownPayment)
 	if len(cohorts) == 0 {
 		t.Fatal("BuildCohorts returned empty")
 	}
@@ -422,7 +423,7 @@ func TestFrontier_StrategyInfluencesExpectedReturn(t *testing.T) {
 			RiskTolerance:    investment.RiskModerate,
 			AvailableCapital: 2_000_000,
 		}
-		cohorts := investment.BuildCohorts(props, strategy, investment.RiskModerate, 2_000_000, testMortgageRate, testDownPayment)
+		cohorts := investment.BuildCohorts(props, nil, strategy, investment.RiskModerate, 2_000_000, testMortgageRate, testDownPayment)
 		fps, err := fo.GenerateFrontier(context.Background(), cohorts, profile, params, nil)
 		if err != nil {
 			t.Fatalf("GenerateFrontier(%v) error: %v", strategy, err)
@@ -484,7 +485,7 @@ func TestFrontier_RecalculateMaintainsRelativeOrdering(t *testing.T) {
 	}
 	params := investment.InvestmentPlanningParams{MortgageRate: testMortgageRate, DownPaymentPct: testDownPayment}
 
-	cohorts := investment.BuildCohorts(props, profile.Strategy, profile.RiskTolerance, profile.AvailableCapital, testMortgageRate, testDownPayment)
+	cohorts := investment.BuildCohorts(props, nil, profile.Strategy, profile.RiskTolerance, profile.AvailableCapital, testMortgageRate, testDownPayment)
 	originalFPs, err := fo.GenerateFrontier(context.Background(), cohorts, profile, params, nil)
 	if err != nil {
 		t.Fatalf("GenerateFrontier error: %v", err)
@@ -606,7 +607,7 @@ func TestFrontier_LabelFlowToFrontierPoint(t *testing.T) {
 		DownPaymentPct: testDownPayment,
 	}
 
-	cohorts := investment.BuildCohorts(props, profile.Strategy, profile.RiskTolerance, profile.AvailableCapital, testMortgageRate, testDownPayment)
+	cohorts := investment.BuildCohorts(props, nil, profile.Strategy, profile.RiskTolerance, profile.AvailableCapital, testMortgageRate, testDownPayment)
 	// Build expected label set from cohorts (before frontier reduces to 5)
 	expectedLabels := make(map[string]struct{}, len(cohorts))
 	for _, c := range cohorts {
@@ -646,7 +647,7 @@ func TestBuildCohorts_AppreciationUsesGrowthCohort(t *testing.T) {
 	const budget = 2_000_000
 
 	// Appreciation strategy → primary cohort should be "Growth" with ConfigType "growth"
-	apprCohorts := investment.BuildCohorts(props, investment.StrategyAppreciation, investment.RiskModerate, budget, testMortgageRate, testDownPayment)
+	apprCohorts := investment.BuildCohorts(props, nil, investment.StrategyAppreciation, investment.RiskModerate, budget, testMortgageRate, testDownPayment)
 	if len(apprCohorts) < 3 {
 		t.Fatalf("Appreciation: expected ≥3 cohorts, got %d", len(apprCohorts))
 	}
@@ -664,7 +665,7 @@ func TestBuildCohorts_AppreciationUsesGrowthCohort(t *testing.T) {
 	for _, strat := range []investment.InvestmentStrategy{
 		investment.StrategyBalanced, investment.StrategyCashFlow, investment.StrategyRiskAdjusted,
 	} {
-		cohorts := investment.BuildCohorts(props, strat, investment.RiskModerate, budget, testMortgageRate, testDownPayment)
+		cohorts := investment.BuildCohorts(props, nil, strat, investment.RiskModerate, budget, testMortgageRate, testDownPayment)
 		if len(cohorts) < 1 {
 			continue
 		}
@@ -680,7 +681,7 @@ func TestBuildCohorts_AppreciationUsesGrowthCohort(t *testing.T) {
 // with equivalent AI scores. The price component (40%) should dominate when prices differ.
 func TestSelectGrowthCohort_PriceBiasedRanking(t *testing.T) {
 	props := buildDiverseProperties()
-	cohorts := investment.BuildCohorts(props, investment.StrategyAppreciation, investment.RiskModerate, 2_000_000, testMortgageRate, testDownPayment)
+	cohorts := investment.BuildCohorts(props, nil, investment.StrategyAppreciation, investment.RiskModerate, 2_000_000, testMortgageRate, testDownPayment)
 	if len(cohorts) == 0 {
 		t.Fatal("BuildCohorts returned empty for Appreciation strategy")
 	}
@@ -714,7 +715,7 @@ func TestSelectGrowthCohort_PriceBiasedRanking(t *testing.T) {
 // ADR-090 Phase E, Criterion 9.
 func TestGrowthIncomeJaccard(t *testing.T) {
 	props := buildDiverseProperties()
-	cohorts := investment.BuildCohorts(props, investment.StrategyAppreciation, investment.RiskModerate, 2_000_000, testMortgageRate, testDownPayment)
+	cohorts := investment.BuildCohorts(props, nil, investment.StrategyAppreciation, investment.RiskModerate, 2_000_000, testMortgageRate, testDownPayment)
 	if len(cohorts) < 2 {
 		t.Fatalf("expected ≥2 cohorts, got %d", len(cohorts))
 	}

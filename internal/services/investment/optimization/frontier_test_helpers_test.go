@@ -16,7 +16,7 @@ func testBuildCohorts(
 	if budget <= 0 {
 		budget = 5_000_000
 	}
-	cohorts := investment.BuildCohorts(props, strategy, risk, budget, 0.075, 0.20)
+	cohorts := investment.BuildCohorts(props, nil, strategy, risk, budget, 0.075, 0.20)
 	// If BuildCohorts returns nil (all unaffordable even at 5M), return a minimal fallback
 	// so tests that care about the frontier output still exercise the optimizer.
 	if len(cohorts) == 0 {

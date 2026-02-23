@@ -363,7 +363,8 @@ const (
 	ConfigQuality  ConfigType = "quality"
 	ConfigIncome   ConfigType = "income"
 	ConfigBalanced ConfigType = "balanced"
-	ConfigGrowth   ConfigType = "growth" // Phase E: price-biased, Appreciation strategy only
+	ConfigGrowth   ConfigType = "growth"  // Phase E: price-biased, Appreciation strategy only
+	ConfigPinned   ConfigType = "pinned"  // ADR-091: user-selected properties verbatim (evaluations/memos)
 )
 
 // PropertyCohort is the output of one per-config property selection pipeline.
@@ -371,10 +372,11 @@ const (
 // pipeline's primary ranking axis, a human-readable Label (e.g. "Quality", "Income",
 // "Balanced"), and a ConfigType identifier used by the frontier optimizer to build candidates.
 // ADR-090: Per-config property selection pipelines.
+// ADR-091: ConfigPinned holds user-selected properties verbatim (no ranking filter applied).
 type PropertyCohort struct {
 	Properties []RankedProperty
-	Label      string     // e.g. "Quality", "Income", "Balanced", "Defensive Income", "Growth"
-	ConfigType ConfigType // see ConfigQuality, ConfigIncome, ConfigBalanced, ConfigGrowth
+	Label      string     // e.g. "Quality", "Income", "Balanced", "Defensive Income", "Growth", "Your Selection"
+	ConfigType ConfigType // see ConfigQuality, ConfigIncome, ConfigBalanced, ConfigGrowth, ConfigPinned
 }
 
 // PortfolioMetrics holds aggregate metrics for the portfolio

@@ -507,6 +507,7 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 	// ----------------------------------------------------------------
 	cohorts := investment.BuildCohorts(
 		scoredProperties,
+		nil, // auto-discover path: no pinned cohort (ADR-091)
 		investment.InvestmentStrategy(req.Strategy),
 		investment.RiskTolerance(req.RiskTolerance),
 		req.Budget,
