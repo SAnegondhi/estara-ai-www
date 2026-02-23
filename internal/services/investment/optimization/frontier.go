@@ -126,8 +126,13 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 	// ADR-090: profile.Strategy and profile.RiskTolerance feed into expected-return weights
 	// and risk-adjusted Sharpe calculation.
 	reportProgress(3, "Evaluating multi-objective portfolio metrics")
+	// Use market-data-derived appreciation rate when available; fall back to 4.0% default.
+	appreciationRate := 4.0
+	if params.MarketAppreciationRate > 0 {
+		appreciationRate = params.MarketAppreciationRate
+	}
 	for i := range candidates {
-		fo.evaluateObjectives(&candidates[i], profile, params.ExistingPortfolio, 4.0) // 4% default appreciation — Phase 6 will use market data
+		fo.evaluateObjectives(&candidates[i], profile, params.ExistingPortfolio, appreciationRate)
 	}
 
 	// Step 3: Apply Pareto dominance to find non-dominated solutions.

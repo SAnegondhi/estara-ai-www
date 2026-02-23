@@ -170,6 +170,9 @@ type InvestmentPlanningParams struct {
 	IncludeSuburbs    bool               `json:"includeSuburbs"`
 	YearlyBudgets     []YearlyBudget     `json:"yearlyBudgets,omitempty"`
 	ExistingPortfolio *ExistingPortfolio `json:"existingPortfolio,omitempty"`
+	// MarketAppreciationRate is the portfolio-weighted average YoY price appreciation (%)
+	// derived from city_market_cache, computed in frontier_run.go. Zero falls back to 4%.
+	MarketAppreciationRate float64 `json:"marketAppreciationRate,omitempty"`
 }
 
 // YearlyBudget represents budget allocation for a specific year in multi-year planning

@@ -52,6 +52,9 @@ type MarketFilterBenchmark struct {
 	// FMRByBeds holds HUD Fair Market Rent by bedroom count [0BR, 1BR, 2BR, 3BR, 4BR].
 	// Non-zero entries are preferred over ZORI for per-property rent estimation.
 	FMRByBeds [5]float64 // HUD FMR indexed by bedrooms (0=studio, 4=4BR)
+	// AppreciationRate is the market's historical YoY price appreciation (%), sourced from
+	// city_market_cache.price_yoy_change. Zero means no data available.
+	AppreciationRate float64 // Market YoY price appreciation (%)
 }
 
 // DefaultPropertyFiltersForStrategy returns quality-gate criteria tuned to the investor's

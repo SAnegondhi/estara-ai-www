@@ -114,8 +114,9 @@ func (vg *Generator) determineRecommendation(
 		}
 	}
 
-	// Rule 3: If Sharpe ratio is very low (<0.5), recommend REVISE
-	if config.SharpeScore < 0.5 {
+	// Rule 3: If Sharpe ratio is very low (<0.25), recommend REVISE.
+	// Real estate Sharpe ratios of 0.25–0.60 are healthy; equity-market thresholds (0.5+) are too strict.
+	if config.SharpeScore < 0.25 {
 		vg.logger.Info("REVISE: Poor risk-adjusted returns",
 			"sharpeScore", config.SharpeScore,
 		)

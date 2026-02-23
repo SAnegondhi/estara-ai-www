@@ -137,6 +137,7 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 
 	var allProperties []investment.Property
 	var discoveryLocations []string // locations derived from property source
+	var marketApprRate float64      // portfolio-weighted average market appreciation (%)
 	useAutoDiscover := req.DiscoverySessionID == ""
 
 	if req.DiscoverySessionID != "" {
@@ -357,6 +358,30 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 		// These provide authoritative CapRate and MedianRent so the cap-rate gate fires
 		// even when the property listing doesn't include EstimatedRent.
 		marketBenchmarks := h.buildMarketBenchmarks(ctx, allProperties)
+
+		// Derive portfolio-level appreciation rate from market benchmarks.
+		// Average YoY price appreciation across all cities; clamp to [1.5%, 8.0%].
+		// marketApprRate stays 0 if no data available — GenerateFrontier falls back to 4.0%.
+		{
+			var sum float64
+			var n int
+			for _, b := range marketBenchmarks {
+				if b.HasData && b.AppreciationRate > 0 {
+					sum += b.AppreciationRate
+					n++
+				}
+			}
+			if n > 0 {
+				avg := sum / float64(n)
+				if avg < 1.5 {
+					avg = 1.5
+				} else if avg > 8.0 {
+					avg = 8.0
+				}
+				marketApprRate = avg
+				h.logger.Debug("market appreciation rate from data", "rate_pct", avg, "cities", n)
+			}
+		}
 
 		// Apply quality gates with a graduated relaxation ladder.
 		// When the filtered pool is too small for frontier generation (< minPropertiesForFrontier),
@@ -582,14 +607,15 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	params := investment.InvestmentPlanningParams{
-		Locations:         discoveryLocations, // ADR-089: use locations from property source
-		Budget:            req.Budget,
-		DownPaymentPct:    req.DownPaymentPct,
-		MortgageRate:      req.MortgageRate,      // ADR-089 Phase 3: pass actual mortgage rate
-		Strategy:          investment.InvestmentStrategy(req.Strategy),
-		RiskTolerance:     investment.RiskTolerance(req.RiskTolerance),
-		MaxProperties:     10,
-		ExistingPortfolio: req.ExistingPortfolio, // ADR-089: portfolio context
+		Locations:              discoveryLocations, // ADR-089: use locations from property source
+		Budget:                 req.Budget,
+		DownPaymentPct:         req.DownPaymentPct,
+		MortgageRate:           req.MortgageRate, // ADR-089 Phase 3: pass actual mortgage rate
+		Strategy:               investment.InvestmentStrategy(req.Strategy),
+		RiskTolerance:          investment.RiskTolerance(req.RiskTolerance),
+		MaxProperties:          10,
+		ExistingPortfolio:      req.ExistingPortfolio, // ADR-089: portfolio context
+		MarketAppreciationRate: marketApprRate,        // market-data-driven, 0 = use default
 	}
 
 	// Wrap frontier progress (60–100%)
@@ -667,13 +693,14 @@ func (h *Handler) buildMarketBenchmarks(ctx context.Context, props []investment.
 		}
 
 		bench := investment.MarketFilterBenchmark{
-			MedianPrice: float64(mkt.MedianHomePrice),
-			MedianRent:  float64(mkt.MedianRent),
-			CapRate:     mkt.CapRate,
-			HasData:     true,
+			MedianPrice:      float64(mkt.MedianHomePrice),
+			MedianRent:       float64(mkt.MedianRent),
+			CapRate:          mkt.CapRate,
+			AppreciationRate: mkt.YearOverYearPct, // fallback: aggregator YoY
+			HasData:          true,
 		}
 
-		// Enrich with HUD FMR by bedroom count for size-adjusted rent estimation.
+		// Enrich with HUD FMR and city-level appreciation from CitySnapshot.
 		// GetCitySnapshot reads city_market_cache which is already cached at the DB level.
 		if h.metroReader != nil {
 			if snap, snapErr := h.metroReader.GetCitySnapshot(ctx, city, state); snapErr == nil && snap != nil {
@@ -683,6 +710,10 @@ func (h *Handler) buildMarketBenchmarks(ctx context.Context, props []investment.
 					snap.HudFMR2BR,
 					snap.HudFMR3BR,
 					snap.HudFMR4BR,
+				}
+				// Prefer city-level PriceYoyChange over aggregator YoY when available.
+				if snap.PriceYoyChange != 0 {
+					bench.AppreciationRate = snap.PriceYoyChange
 				}
 			}
 		}
