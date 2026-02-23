@@ -434,9 +434,17 @@ SELECT
     e.maintenance_cost, e.property_tax, e.insurance, e.hoa_fees,
     e.appreciation_rate, e.scenarios, e.sensitivity_data,
     e.status::text, e.created_at, e.updated_at,
-    d.id AS decision_record_id, d.memo_content, d.pdf_url, d.exported_at
+    d.id AS decision_record_id, d.memo_content, d.pdf_url, d.exported_at,
+    COALESCE(dse.discovery_session_id, '') AS discovery_session_id
 FROM v2_evaluations e
 LEFT JOIN v2_decision_records d ON d.evaluation_id = e.id
+LEFT JOIN LATERAL (
+    SELECT "discoverySessionId" AS discovery_session_id
+    FROM discovery_session_evaluations
+    WHERE "propertyId" = e.property_id
+    ORDER BY "createdAt" DESC
+    LIMIT 1
+) dse ON true
 WHERE e.user_id = $1
 ORDER BY e.created_at DESC
 LIMIT $3 OFFSET $2
@@ -449,36 +457,39 @@ type GetEvaluationsWithDecisionRecordsParams struct {
 }
 
 type GetEvaluationsWithDecisionRecordsRow struct {
-	ID               string           `json:"id"`
-	UserID           string           `json:"user_id"`
-	PropertyID       string           `json:"property_id"`
-	PropertyAddress  string           `json:"property_address"`
-	PropertyCity     string           `json:"property_city"`
-	PropertyState    string           `json:"property_state"`
-	PropertyZip      pgtype.Text      `json:"property_zip"`
-	PropertyDetails  []byte           `json:"property_details"`
-	PurchasePrice    float64          `json:"purchase_price"`
-	DownPaymentPct   float64          `json:"down_payment_pct"`
-	InterestRate     float64          `json:"interest_rate"`
-	LoanTermYears    int32            `json:"loan_term_years"`
-	MonthlyRent      float64          `json:"monthly_rent"`
-	VacancyRatePct   float64          `json:"vacancy_rate_pct"`
-	MaintenanceCost  float64          `json:"maintenance_cost"`
-	PropertyTax      float64          `json:"property_tax"`
-	Insurance        float64          `json:"insurance"`
-	HoaFees          pgtype.Float8    `json:"hoa_fees"`
-	AppreciationRate float64          `json:"appreciation_rate"`
-	Scenarios        []byte           `json:"scenarios"`
-	SensitivityData  []byte           `json:"sensitivity_data"`
-	EStatus          string           `json:"e_status"`
-	CreatedAt        pgtype.Timestamp `json:"created_at"`
-	UpdatedAt        pgtype.Timestamp `json:"updated_at"`
-	DecisionRecordID pgtype.Text      `json:"decision_record_id"`
-	MemoContent      []byte           `json:"memo_content"`
-	PdfUrl           pgtype.Text      `json:"pdf_url"`
-	ExportedAt       pgtype.Timestamp `json:"exported_at"`
+	ID                 string           `json:"id"`
+	UserID             string           `json:"user_id"`
+	PropertyID         string           `json:"property_id"`
+	PropertyAddress    string           `json:"property_address"`
+	PropertyCity       string           `json:"property_city"`
+	PropertyState      string           `json:"property_state"`
+	PropertyZip        pgtype.Text      `json:"property_zip"`
+	PropertyDetails    []byte           `json:"property_details"`
+	PurchasePrice      float64          `json:"purchase_price"`
+	DownPaymentPct     float64          `json:"down_payment_pct"`
+	InterestRate       float64          `json:"interest_rate"`
+	LoanTermYears      int32            `json:"loan_term_years"`
+	MonthlyRent        float64          `json:"monthly_rent"`
+	VacancyRatePct     float64          `json:"vacancy_rate_pct"`
+	MaintenanceCost    float64          `json:"maintenance_cost"`
+	PropertyTax        float64          `json:"property_tax"`
+	Insurance          float64          `json:"insurance"`
+	HoaFees            pgtype.Float8    `json:"hoa_fees"`
+	AppreciationRate   float64          `json:"appreciation_rate"`
+	Scenarios          []byte           `json:"scenarios"`
+	SensitivityData    []byte           `json:"sensitivity_data"`
+	EStatus            string           `json:"e_status"`
+	CreatedAt          pgtype.Timestamp `json:"created_at"`
+	UpdatedAt          pgtype.Timestamp `json:"updated_at"`
+	DecisionRecordID   pgtype.Text      `json:"decision_record_id"`
+	MemoContent        []byte           `json:"memo_content"`
+	PdfUrl             pgtype.Text      `json:"pdf_url"`
+	ExportedAt         pgtype.Timestamp `json:"exported_at"`
+	DiscoverySessionID string           `json:"discovery_session_id"`
 }
 
+// ADR-091 Phase 4: LATERAL JOIN surfaces the most-recent discovery session that
+// contains this property, so the frontend can populate discoverySeedSessionId.
 func (q *Queries) GetEvaluationsWithDecisionRecords(ctx context.Context, arg GetEvaluationsWithDecisionRecordsParams) ([]GetEvaluationsWithDecisionRecordsRow, error) {
 	rows, err := q.db.Query(ctx, GetEvaluationsWithDecisionRecords, arg.UserID, arg.Offset, arg.Limit)
 	if err != nil {
@@ -517,6 +528,7 @@ func (q *Queries) GetEvaluationsWithDecisionRecords(ctx context.Context, arg Get
 			&i.MemoContent,
 			&i.PdfUrl,
 			&i.ExportedAt,
+			&i.DiscoverySessionID,
 		); err != nil {
 			return nil, err
 		}

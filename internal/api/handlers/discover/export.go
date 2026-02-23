@@ -522,6 +522,20 @@ func getInt(data map[string]interface{}, key string) int {
 	return 0
 }
 
+func getString(data map[string]interface{}, key string) string {
+	if data == nil {
+		return ""
+	}
+	val, ok := data[key]
+	if !ok || val == nil {
+		return ""
+	}
+	if s, ok := val.(string); ok {
+		return s
+	}
+	return ""
+}
+
 func getFloat(data map[string]interface{}, key string) float64 {
 	if data == nil {
 		return 0

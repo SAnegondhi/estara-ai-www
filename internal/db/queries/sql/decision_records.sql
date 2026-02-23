@@ -47,6 +47,8 @@ JOIN v2_evaluations e ON r.evaluation_id = e.id
 WHERE r.id = $1;
 
 -- name: GetEvaluationsWithDecisionRecords :many
+-- ADR-091 Phase 4: LATERAL JOIN surfaces the most-recent discovery session that
+-- contains this property, so the frontend can populate discoverySeedSessionId.
 SELECT
     e.id, e.user_id, e.property_id, e.property_address, e.property_city,
     e.property_state, e.property_zip, e.property_details,
@@ -55,9 +57,17 @@ SELECT
     e.maintenance_cost, e.property_tax, e.insurance, e.hoa_fees,
     e.appreciation_rate, e.scenarios, e.sensitivity_data,
     e.status::text, e.created_at, e.updated_at,
-    d.id AS decision_record_id, d.memo_content, d.pdf_url, d.exported_at
+    d.id AS decision_record_id, d.memo_content, d.pdf_url, d.exported_at,
+    COALESCE(dse.discovery_session_id, '') AS discovery_session_id
 FROM v2_evaluations e
 LEFT JOIN v2_decision_records d ON d.evaluation_id = e.id
+LEFT JOIN LATERAL (
+    SELECT "discoverySessionId" AS discovery_session_id
+    FROM discovery_session_evaluations
+    WHERE "propertyId" = e.property_id
+    ORDER BY "createdAt" DESC
+    LIMIT 1
+) dse ON true
 WHERE e.user_id = $1
 ORDER BY e.created_at DESC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');

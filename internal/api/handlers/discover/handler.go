@@ -1376,18 +1376,27 @@ func (h *Handler) GetRecords(w http.ResponseWriter, r *http.Request) {
 }
 
 // EvaluationListItem is a compact view of a v2_evaluation for use in property pickers.
+// ADR-091 Phase 4: added full property fields (extracted from property_details JSONB)
+// and discoverySessionId (from LATERAL JOIN on discovery_session_evaluations).
 type EvaluationListItem struct {
-	ID               string  `json:"id"`
-	PropertyID       string  `json:"propertyId"`
-	Address          string  `json:"address"`
-	City             string  `json:"city"`
-	State            string  `json:"state"`
-	ZipCode          *string `json:"zipCode,omitempty"`
-	PurchasePrice    float64 `json:"purchasePrice"`
-	MonthlyRent      float64 `json:"monthlyRent"`
-	HasDecisionMemo  bool    `json:"hasDecisionMemo"`
-	DecisionRecordID *string `json:"decisionRecordId,omitempty"`
-	CreatedAt        string  `json:"createdAt"`
+	ID                  string  `json:"id"`
+	PropertyID          string  `json:"propertyId"`
+	Address             string  `json:"address"`
+	City                string  `json:"city"`
+	State               string  `json:"state"`
+	ZipCode             *string `json:"zipCode,omitempty"`
+	PurchasePrice       float64 `json:"purchasePrice"`
+	MonthlyRent         float64 `json:"monthlyRent"`
+	HasDecisionMemo     bool    `json:"hasDecisionMemo"`
+	DecisionRecordID    *string `json:"decisionRecordId,omitempty"`
+	CreatedAt           string  `json:"createdAt"`
+	// Full property detail fields extracted from property_details JSONB
+	Beds                int     `json:"beds,omitempty"`
+	Baths               float64 `json:"baths,omitempty"`
+	Sqft                int     `json:"sqft,omitempty"`
+	PropertyType        string  `json:"propertyType,omitempty"`
+	// Discovery session that originally surfaced this property (empty if unknown)
+	DiscoverySessionID  string  `json:"discoverySessionId,omitempty"`
 }
 
 type EvaluationListResponse struct {
@@ -1447,6 +1456,20 @@ func (h *Handler) ListEvaluations(w http.ResponseWriter, r *http.Request) {
 		if row.DecisionRecordID.Valid {
 			item.HasDecisionMemo = true
 			item.DecisionRecordID = &row.DecisionRecordID.String
+		}
+		// ADR-091 Phase 4: extract full property details from JSONB
+		if len(row.PropertyDetails) > 0 {
+			var details map[string]interface{}
+			if err := json.Unmarshal(row.PropertyDetails, &details); err == nil {
+				item.Beds = getInt(details, "beds")
+				item.Baths = getFloat(details, "baths")
+				item.Sqft = getInt(details, "sqft")
+				item.PropertyType = getString(details, "propertyType")
+			}
+		}
+		// ADR-091 Phase 4: discovery session that sourced this property
+		if row.DiscoverySessionID != "" {
+			item.DiscoverySessionID = row.DiscoverySessionID
 		}
 		items = append(items, item)
 	}
