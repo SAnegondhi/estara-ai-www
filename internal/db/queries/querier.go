@@ -359,6 +359,8 @@ type Querier interface {
 	GetEmailVerificationCode(ctx context.Context, arg GetEmailVerificationCodeParams) (EmailVerificationCode, error)
 	GetEmailVerificationCodeByID(ctx context.Context, id string) (EmailVerificationCode, error)
 	GetEvaluationChatSession(ctx context.Context, arg GetEvaluationChatSessionParams) (EvaluationChatSession, error)
+	// ADR-091 Phase 4: LATERAL JOIN surfaces the most-recent discovery session that
+	// contains this property, so the frontend can populate discoverySeedSessionId.
 	GetEvaluationsWithDecisionRecords(ctx context.Context, arg GetEvaluationsWithDecisionRecordsParams) ([]GetEvaluationsWithDecisionRecordsRow, error)
 	GetFrontierRun(ctx context.Context, arg GetFrontierRunParams) (FrontierRun, error)
 	GetFrontierRunByToken(ctx context.Context, shareToken pgtype.Text) (FrontierRun, error)

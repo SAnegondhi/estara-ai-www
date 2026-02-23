@@ -50,8 +50,8 @@ func (h *Handler) ExportFrontierPDF(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build PDF
-	builder := pdf.NewScenarioV2PDFBuilder(h.logger)
-	pdfBytes, err := builder.Build(ctx, pdf.ScenarioV2PDFRequest{
+	builder := pdf.NewFrontierPDFBuilder(h.logger)
+	pdfBytes, err := builder.Build(ctx, pdf.FrontierPDFRequest{
 		FrontierPoints:      req.FrontierPoints,
 		SelectedConfigIndex: req.SelectedConfigIndex,
 		Profile:             req.Profile,

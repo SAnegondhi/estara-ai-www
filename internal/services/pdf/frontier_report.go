@@ -1,6 +1,6 @@
 package pdf
 
-// ADR-088 Phase 10: Scenario Planning v2.1 PDF Export
+// ADR-088 Phase 10 / ADR-092: Frontier Decision Analysis PDF Export
 //
 // Builds a multi-section "Efficient Frontier Decision Memo" PDF using the same
 // DefaultTheme, typography, and layout helpers as the Investment Decision Memo
@@ -31,8 +31,8 @@ import (
 	"github.com/estara-ai/www/internal/services/investment"
 )
 
-// ScenarioV2PDFRequest is the input to ScenarioV2PDFBuilder.Build.
-type ScenarioV2PDFRequest struct {
+// FrontierPDFRequest is the input to FrontierPDFBuilder.Build.
+type FrontierPDFRequest struct {
 	// All frontier points — needed for the frontier scatter overview section.
 	FrontierPoints []investment.FrontierPoint `json:"frontierPoints"`
 
@@ -46,18 +46,18 @@ type ScenarioV2PDFRequest struct {
 	Profile investment.InvestorProfile `json:"profile"`
 }
 
-// ScenarioV2PDFBuilder generates the Efficient Frontier Decision Memo PDF.
-type ScenarioV2PDFBuilder struct {
+// FrontierPDFBuilder generates the Efficient Frontier Decision Memo PDF.
+type FrontierPDFBuilder struct {
 	charts *QuickChartClient
 	logger *slog.Logger
 }
 
-// NewScenarioV2PDFBuilder returns a new builder. Pass nil logger to use slog default.
-func NewScenarioV2PDFBuilder(logger *slog.Logger) *ScenarioV2PDFBuilder {
+// NewFrontierPDFBuilder returns a new builder. Pass nil logger to use slog default.
+func NewFrontierPDFBuilder(logger *slog.Logger) *FrontierPDFBuilder {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &ScenarioV2PDFBuilder{
+	return &FrontierPDFBuilder{
 		charts: NewQuickChartClient(),
 		logger: logger,
 	}
@@ -68,7 +68,7 @@ func NewScenarioV2PDFBuilder(logger *slog.Logger) *ScenarioV2PDFBuilder {
 // Layout mirrors the WorkspaceLayout screen — frontier overview first, then
 // full property details for EVERY configuration, then deep-dive analytics
 // (Monte Carlo, scenarios, verdict, reinvestment, signals) for the selected config.
-func (b *ScenarioV2PDFBuilder) Build(ctx context.Context, req ScenarioV2PDFRequest) ([]byte, error) {
+func (b *FrontierPDFBuilder) Build(ctx context.Context, req FrontierPDFRequest) ([]byte, error) {
 	if len(req.FrontierPoints) == 0 {
 		return nil, fmt.Errorf("no frontier points provided")
 	}
@@ -84,7 +84,7 @@ func (b *ScenarioV2PDFBuilder) Build(ctx context.Context, req ScenarioV2PDFReque
 	charts, err := GenerateFrontierCharts(ctx, b.charts, req.FrontierPoints, selected)
 	if err != nil {
 		b.logger.Warn("frontier chart generation error (continuing without charts)", "error", err)
-		charts = &ScenarioV2Charts{}
+		charts = &FrontierCharts{}
 	}
 
 	// ── PDF document setup ────────────────────────────────────────────────────
@@ -168,7 +168,7 @@ func (b *ScenarioV2PDFBuilder) Build(ctx context.Context, req ScenarioV2PDFReque
 // ─────────────────────────────────────────────────────────────────────────────
 
 // sectionVerdict renders the PROCEED / PAUSE / REVISE decision block.
-func (b *ScenarioV2PDFBuilder) sectionVerdict(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, y float64) float64 {
+func (b *FrontierPDFBuilder) sectionVerdict(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, y float64) float64 {
 	y = AddSectionHeading(pdf, page, theme, "Decision Verdict", y)
 
 	if pt.DecisionVerdict == nil {
@@ -228,7 +228,7 @@ func (b *ScenarioV2PDFBuilder) sectionVerdict(pdf *gofpdf.Fpdf, page PageConfig,
 
 // sectionConfigDetail renders a full configuration block: metrics + property table + theses.
 // Shown for EVERY frontier point so the reader can compare all options side by side.
-func (b *ScenarioV2PDFBuilder) sectionConfigDetail(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, selected *investment.FrontierPoint, y float64) float64 {
+func (b *FrontierPDFBuilder) sectionConfigDetail(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, selected *investment.FrontierPoint, y float64) float64 {
 	label := fmt.Sprintf("Configuration %d", pt.ConfigIndex+1)
 	if selected != nil && pt.ConfigIndex == selected.ConfigIndex {
 		label += " (Selected)"
@@ -254,7 +254,7 @@ func (b *ScenarioV2PDFBuilder) sectionConfigDetail(pdf *gofpdf.Fpdf, page PageCo
 }
 
 // sectionPropertyDetails renders a compact summary table + per-property detail rows.
-func (b *ScenarioV2PDFBuilder) sectionPropertyDetails(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, y float64) float64 {
+func (b *FrontierPDFBuilder) sectionPropertyDetails(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, y float64) float64 {
 	y = AddSectionHeading(pdf, page, theme, "Property Details", y)
 
 	contentW := page.Width - page.MarginLeft - page.MarginRight
@@ -348,7 +348,7 @@ func (b *ScenarioV2PDFBuilder) sectionPropertyDetails(pdf *gofpdf.Fpdf, page Pag
 }
 
 // sectionPortfolioMetrics renders reinvestment plan and investor parameters.
-func (b *ScenarioV2PDFBuilder) sectionPortfolioMetrics(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, params investment.InvestmentPlanningParams, profile investment.InvestorProfile, y float64) float64 {
+func (b *FrontierPDFBuilder) sectionPortfolioMetrics(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, params investment.InvestmentPlanningParams, profile investment.InvestorProfile, y float64) float64 {
 	y = AddSectionHeading(pdf, page, theme, "Portfolio Metrics & Reinvestment Plan", y)
 
 	// Investor parameters line — use profile fields (always populated) for strategy/risk
@@ -417,7 +417,7 @@ func (b *ScenarioV2PDFBuilder) sectionPortfolioMetrics(pdf *gofpdf.Fpdf, page Pa
 }
 
 // sectionProbabilityFan embeds the fan chart image + summary table.
-func (b *ScenarioV2PDFBuilder) sectionProbabilityFan(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, chartBase64 string, y float64) float64 {
+func (b *FrontierPDFBuilder) sectionProbabilityFan(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, chartBase64 string, y float64) float64 {
 	y = AddSectionHeading(pdf, page, theme, "Monte Carlo Probability Fan - Net Worth Projection", y)
 
 	imgW := page.Width - page.MarginLeft - page.MarginRight
@@ -439,7 +439,7 @@ func (b *ScenarioV2PDFBuilder) sectionProbabilityFan(pdf *gofpdf.Fpdf, page Page
 }
 
 // sectionProbabilityTable renders P10/P25/P50/P75/P90 net worth for key years.
-func (b *ScenarioV2PDFBuilder) sectionProbabilityTable(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, y float64) float64 {
+func (b *FrontierPDFBuilder) sectionProbabilityTable(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, y float64) float64 {
 	pct := pt.SimulationResults.Percentiles
 	if pct == nil {
 		return y
@@ -486,7 +486,7 @@ func (b *ScenarioV2PDFBuilder) sectionProbabilityTable(pdf *gofpdf.Fpdf, page Pa
 }
 
 // sectionScenarios renders the Base / Upside / Stress year-by-year comparison.
-func (b *ScenarioV2PDFBuilder) sectionScenarios(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, y float64) float64 {
+func (b *FrontierPDFBuilder) sectionScenarios(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, y float64) float64 {
 	y = AddSectionHeading(pdf, page, theme, "Scenario Comparison - Base / Upside / Stress", y)
 
 	ss := pt.Scenarios
@@ -535,7 +535,7 @@ func (b *ScenarioV2PDFBuilder) sectionScenarios(pdf *gofpdf.Fpdf, page PageConfi
 }
 
 // sectionFrontierOverview renders scatter chart + comparison table for all configs.
-func (b *ScenarioV2PDFBuilder) sectionFrontierOverview(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, allPoints []investment.FrontierPoint, selected *investment.FrontierPoint, scatterBase64 string, y float64) float64 {
+func (b *FrontierPDFBuilder) sectionFrontierOverview(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, allPoints []investment.FrontierPoint, selected *investment.FrontierPoint, scatterBase64 string, y float64) float64 {
 	y = AddSectionHeading(pdf, page, theme, "Efficient Frontier Overview - All Configurations", y)
 
 	if scatterBase64 != "" {
@@ -584,7 +584,7 @@ func (b *ScenarioV2PDFBuilder) sectionFrontierOverview(pdf *gofpdf.Fpdf, page Pa
 }
 
 // sectionMonitoringSignals renders the monitoring indicator threshold table.
-func (b *ScenarioV2PDFBuilder) sectionMonitoringSignals(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, signals []investment.MonitoringSignal, y float64) float64 {
+func (b *FrontierPDFBuilder) sectionMonitoringSignals(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, signals []investment.MonitoringSignal, y float64) float64 {
 	y = AddSectionHeading(pdf, page, theme, "Monitoring Signals", y)
 
 	intro := "Track these leading indicators if you act on this portfolio configuration. " +
@@ -636,7 +636,7 @@ func (b *ScenarioV2PDFBuilder) sectionMonitoringSignals(pdf *gofpdf.Fpdf, page P
 }
 
 // sectionDisclaimers adds the standard disclaimer page.
-func (b *ScenarioV2PDFBuilder) sectionDisclaimers(pdf *gofpdf.Fpdf, page PageConfig, theme Theme) {
+func (b *FrontierPDFBuilder) sectionDisclaimers(pdf *gofpdf.Fpdf, page PageConfig, theme Theme) {
 	pdf.AddPage()
 	y := page.MarginTop
 	y = AddSectionHeading(pdf, page, theme, "Important Disclaimers", y)

@@ -7,8 +7,8 @@ import (
 	"github.com/estara-ai/www/internal/services/investment"
 )
 
-// ScenarioV2Charts holds pre-rendered chart images for the frontier PDF.
-type ScenarioV2Charts struct {
+// FrontierCharts holds pre-rendered chart images for the frontier PDF.
+type FrontierCharts struct {
 	ProbabilityFan string // base64 PNG — Monte Carlo fan (P10/P25/P50/P75/P90)
 	FrontierPlot   string // base64 PNG — frontier scatter plot (all configs)
 }
@@ -21,12 +21,12 @@ func GenerateFrontierCharts(
 	client *QuickChartClient,
 	allPoints []investment.FrontierPoint,
 	selected *investment.FrontierPoint,
-) (*ScenarioV2Charts, error) {
+) (*FrontierCharts, error) {
 	if client == nil {
 		client = NewQuickChartClient()
 	}
 
-	charts := &ScenarioV2Charts{}
+	charts := &FrontierCharts{}
 
 	// ── Probability Fan ───────────────────────────────────────────────────────
 	if selected != nil &&
