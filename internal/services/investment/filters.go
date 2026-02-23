@@ -55,6 +55,9 @@ type MarketFilterBenchmark struct {
 	// AppreciationRate is the market's historical YoY price appreciation (%), sourced from
 	// city_market_cache.price_yoy_change. Zero means no data available.
 	AppreciationRate float64 // Market YoY price appreciation (%)
+	// MarketVolatility is estimated price volatility (%) derived from historical price movement.
+	// Computed as abs(PriceYoyChange)*0.6 + 2.5, clamped to [2%, 10%].
+	MarketVolatility float64 // Estimated annual price volatility (%)
 }
 
 // DefaultPropertyFiltersForStrategy returns quality-gate criteria tuned to the investor's

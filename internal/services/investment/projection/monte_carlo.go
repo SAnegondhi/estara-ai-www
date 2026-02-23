@@ -17,10 +17,12 @@ import (
 // MonteCarloSimulator runs probabilistic projections across 1,000 paths
 // ADR-088 Phase 6: Monte Carlo engine with correlated market shocks
 type MonteCarloSimulator struct {
-	logger         *slog.Logger
-	numPaths       int     // Default: 1,000 paths
-	projectionYears int     // Default: 10 years
-	rng            *rand.Rand
+	logger               *slog.Logger
+	numPaths             int     // Default: 1,000 paths
+	projectionYears      int     // Default: 10 years
+	rng                  *rand.Rand
+	baseAppreciationRate float64 // Market-data-driven appreciation rate (%)
+	baseRentGrowthRate   float64 // Market-data-driven rent growth rate (%)
 }
 
 // NewMonteCarloSimulator creates a new Monte Carlo simulator
@@ -29,10 +31,23 @@ func NewMonteCarloSimulator(logger *slog.Logger) *MonteCarloSimulator {
 	seed := time.Now().UnixNano()
 
 	return &MonteCarloSimulator{
-		logger:         logger,
-		numPaths:       1000, // 1,000 paths as per ADR-088
-		projectionYears: 10,   // 10-year projection horizon
-		rng:            rand.New(rand.NewSource(seed)),
+		logger:               logger,
+		numPaths:             1000, // 1,000 paths as per ADR-088
+		projectionYears:      10,   // 10-year projection horizon
+		rng:                  rand.New(rand.NewSource(seed)),
+		baseAppreciationRate: 4.0, // fallback default
+		baseRentGrowthRate:   3.0, // fallback default
+	}
+}
+
+// SetMarketRates configures data-driven appreciation and rent growth rates for simulation.
+// Called by the frontier pipeline before SimulateConfiguration when market data is available.
+func (mcs *MonteCarloSimulator) SetMarketRates(appreciationRate, rentGrowthRate float64) {
+	if appreciationRate > 0 {
+		mcs.baseAppreciationRate = appreciationRate
+	}
+	if rentGrowthRate > 0 {
+		mcs.baseRentGrowthRate = rentGrowthRate
 	}
 }
 
@@ -138,7 +153,7 @@ func (mcs *MonteCarloSimulator) simulatePath(
 		for i, prop := range config.Properties {
 			// Log-normal appreciation shock
 			appreciationRate := mcs.sampleLogNormal(
-				0.04,  // μ = 4% baseline appreciation
+				mcs.baseAppreciationRate/100, // convert percent to decimal
 				shocks[i*2], // Use correlated shock
 			)
 			propAppreciation := int(float64(prop.Property.Price) * appreciationRate)
@@ -151,7 +166,7 @@ func (mcs *MonteCarloSimulator) simulatePath(
 				avgShock += shocks[si]
 			}
 			avgShock /= float64(len(shocks) / 2)
-			existingAppreciationRate := mcs.sampleLogNormal(0.04, avgShock)
+			existingAppreciationRate := mcs.sampleLogNormal(mcs.baseAppreciationRate/100, avgShock)
 			yearAppreciation += int(float64(existingPortfolioValue) * existingAppreciationRate)
 			existingPortfolioValue = int(float64(existingPortfolioValue) * (1 + existingAppreciationRate))
 		}
@@ -161,10 +176,10 @@ func (mcs *MonteCarloSimulator) simulatePath(
 		yearRent := 0
 		for i, prop := range config.Properties {
 			rentGrowthRate := mcs.sampleLogNormal(
-				0.03,  // μ = 3% baseline rent growth
+				mcs.baseRentGrowthRate/100, // convert percent to decimal
 				shocks[i*2+1], // Use correlated shock (rent follows appreciation)
 			)
-			currentRent := int(float64(prop.Property.EstimatedRent) * math.Pow(1.03, float64(year-1)))
+			currentRent := int(float64(prop.Property.EstimatedRent) * math.Pow(1+mcs.baseRentGrowthRate/100, float64(year-1)))
 			yearRent += int(float64(currentRent) * (1 + rentGrowthRate)) * 12
 		}
 

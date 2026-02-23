@@ -438,6 +438,10 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 
 		// Create FrontierOptimizer for ADR-088 Phase 9 interactive workspace endpoints
 		foLogger := slog.Default().With("component", "frontier_optimizer")
+		var foCorrelationAnalyzer *optimization.CorrelationAnalyzer
+		if metroReader != nil {
+			foCorrelationAnalyzer = optimization.NewCorrelationAnalyzer(metroReader)
+		}
 		services.FrontierOptimizer = optimization.NewFrontierOptimizer(
 			foLogger,
 			optimization.NewMarkowitzCalculator(),
@@ -445,6 +449,8 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 			projection.NewMonteCarloSimulator(foLogger),
 			projection.NewScenarioGenerator(foLogger),
 			verdict.NewGenerator(foLogger),
+			foCorrelationAnalyzer,
+			services.FREDService,
 		)
 		logger.Info("frontier optimizer initialized (ADR-088 Phase 9)")
 

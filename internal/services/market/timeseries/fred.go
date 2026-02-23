@@ -27,6 +27,7 @@ const (
 	SeriesHomeownerVacancy = "RHVRUSQ156N"   // Homeowner Vacancy Rate (national, quarterly)
 	SeriesBuildingPermits  = "PERMIT"        // New Private Housing Units Authorized (national, monthly, thousands)
 	SeriesHousingStarts    = "HOUST"         // Housing Starts (national, monthly, thousands)
+	SeriesTBill3Month  = "DGS3MO" // 3-Month Treasury Constant Maturity Rate (risk-free proxy)
 
 	// Cache settings - FRED data doesn't change frequently
 	// 7-day TTL to avoid rate limits and IP blocks (matches www_v1 implementation)
@@ -326,6 +327,11 @@ func (c *FREDClient) GetBuildingPermits(ctx context.Context) (float64, time.Time
 // GetHousingStarts returns the latest national housing starts (thousands of units, annualized)
 func (c *FREDClient) GetHousingStarts(ctx context.Context) (float64, time.Time, error) {
 	return c.getLatestValue(ctx, SeriesHousingStarts)
+}
+
+// GetTBillRate returns the latest 3-month Treasury bill rate (risk-free rate proxy).
+func (c *FREDClient) GetTBillRate(ctx context.Context) (float64, time.Time, error) {
+	return c.getLatestValue(ctx, SeriesTBill3Month)
 }
 
 // IsConfigured returns true if the client has an API key

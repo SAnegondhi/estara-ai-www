@@ -718,6 +718,20 @@ func (h *Handler) buildMarketBenchmarks(ctx context.Context, props []investment.
 			}
 		}
 
+		// Estimate market volatility from price movement data.
+		// abs(YoY) x 0.6 + 2.5 gives a data-driven volatility estimate; clamp to [2, 10]%.
+		apprAbs := bench.AppreciationRate
+		if apprAbs < 0 {
+			apprAbs = -apprAbs
+		}
+		vol := apprAbs*0.6 + 2.5
+		if vol < 2.0 {
+			vol = 2.0
+		} else if vol > 10.0 {
+			vol = 10.0
+		}
+		bench.MarketVolatility = vol
+
 		result[key] = bench
 	}
 

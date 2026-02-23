@@ -93,8 +93,20 @@ func (rm *ReinvestmentModeler) calculateTrackB(
 	config *investment.FrontierPoint,
 	mcResults *investment.SimulationResults,
 ) investment.TrackBReinvestment {
-	// Default threshold: $50,000 cumulative cash flow
-	const defaultThreshold = 50000
+	// Derive threshold from typical down payment on next acquisition.
+	// Use median price from first property's market x downPaymentPct.
+	// Falls back to $50K if insufficient data.
+	defaultThreshold := 50000
+	if config != nil && len(config.Properties) > 0 {
+		medianPrice := config.Properties[0].Property.Price
+		if medianPrice > 0 {
+			downPct := 0.20 // typical down payment
+			derived := int(float64(medianPrice) * downPct)
+			if derived > 20000 { // sanity: at least $20K
+				defaultThreshold = derived
+			}
+		}
+	}
 
 	// If no MC results, return conservative placeholder
 	if mcResults == nil || len(mcResults.Paths) == 0 {

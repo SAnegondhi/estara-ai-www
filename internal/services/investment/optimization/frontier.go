@@ -6,10 +6,12 @@ import (
 	"log/slog"
 	"math"
 	"sort"
+	"time"
 
 	"github.com/estara-ai/www/internal/services/investment"
 	"github.com/estara-ai/www/internal/services/investment/projection"
 	"github.com/estara-ai/www/internal/services/investment/verdict"
+	"github.com/estara-ai/www/internal/services/market/fred"
 )
 
 // ProgressFunc is called to report progress during frontier generation.
@@ -29,7 +31,9 @@ type FrontierOptimizer struct {
 	minProperties     int                                // Minimum properties per configuration (default: 5)
 	maxProperties     int                                // Maximum properties per configuration (default: 8)
 	numConfigurations int                                // Number of frontier points to generate (default: 5)
-	riskFreeRate      float64                            // Risk-free rate for Sharpe ratio (default: 4.0%)
+	riskFreeRate         float64                          // Risk-free rate for Sharpe ratio (default: 4.0%)
+	fredService          *fred.Service
+	correlationAnalyzer  *CorrelationAnalyzer // computes real Pearson correlations
 }
 
 // NewFrontierOptimizer creates a new frontier optimizer
@@ -40,18 +44,22 @@ func NewFrontierOptimizer(
 	mcSimulator *projection.MonteCarloSimulator,
 	scenarioGenerator *projection.ScenarioGenerator,
 	verdictGenerator *verdict.Generator,
+	correlationAnalyzer *CorrelationAnalyzer,
+	fredService *fred.Service,
 ) *FrontierOptimizer {
 	return &FrontierOptimizer{
-		logger:            logger,
-		markowitzCalc:     markowitzCalc,
-		reinvestModeler:   reinvestModeler,
-		mcSimulator:       mcSimulator,
-		scenarioGenerator: scenarioGenerator,
-		verdictGenerator:  verdictGenerator,
-		minProperties:     5,
-		maxProperties:     8,
-		numConfigurations: 5,
-		riskFreeRate:      4.0, // 4% default risk-free rate
+		logger:              logger,
+		markowitzCalc:       markowitzCalc,
+		reinvestModeler:     reinvestModeler,
+		mcSimulator:         mcSimulator,
+		scenarioGenerator:   scenarioGenerator,
+		verdictGenerator:    verdictGenerator,
+		minProperties:       5,
+		maxProperties:       8,
+		numConfigurations:   5,
+		riskFreeRate:        4.0, // fallback if FRED unavailable
+		correlationAnalyzer: correlationAnalyzer,
+		fredService:         fredService,
 	}
 }
 
@@ -131,8 +139,32 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 	if params.MarketAppreciationRate > 0 {
 		appreciationRate = params.MarketAppreciationRate
 	}
+
+	// Pre-compute risk-free rate from FRED (live T-bill rate).
+	// Falls back to struct default (4.0%) when FRED unavailable.
+	liveRiskFreeRate := fo.riskFreeRate
+	if fo.fredService != nil {
+		if rates, err := fo.fredService.GetAllRates(ctx); err == nil && rates != nil && rates.TBillRate > 0 {
+			liveRiskFreeRate = rates.TBillRate
+			fo.logger.Debug("using live FRED T-bill rate", "rate_pct", liveRiskFreeRate)
+		}
+	}
+
+	// Pre-compute pairwise market correlations from ZHVI/ZORI data.
+	// Build a lookup map: "City1, State1|City2, State2" -> correlation coefficient.
+	// Falls back to hardcoded 0.7/0.3 when analyzer unavailable or data insufficient.
+	pairCorrelations := fo.computePairCorrelations(ctx, params.Locations)
+
+	// Configure MC simulator with market-data-driven rates.
+	// RentGrowth defaults to appreciation x 0.6 (rent tends to grow slower than prices).
+	rentGrowthRate := appreciationRate * 0.6
+	if rentGrowthRate < 1.5 {
+		rentGrowthRate = 1.5
+	}
+	fo.mcSimulator.SetMarketRates(appreciationRate, rentGrowthRate)
+
 	for i := range candidates {
-		fo.evaluateObjectives(&candidates[i], profile, params.ExistingPortfolio, appreciationRate)
+		fo.evaluateObjectives(&candidates[i], profile, params, appreciationRate, liveRiskFreeRate, pairCorrelations)
 	}
 
 	// Step 3: Apply Pareto dominance to find non-dominated solutions.
@@ -410,7 +442,15 @@ func (fo *FrontierOptimizer) Recalculate(
 		// (a condensed summary), not *ExistingPortfolio (full type). The concentration index
 		// change from a mortgage-rate override is negligible so omitting portfolio context here
 		// is correct — the original Pareto geometry is preserved.
-		fo.evaluateObjectives(&config, profile, nil, appreciationRate)
+		// Fetch live T-bill rate for Recalculate path.
+		recalcRFR := fo.riskFreeRate
+		if fo.fredService != nil {
+			if rates, err := fo.fredService.GetAllRates(ctx); err == nil && rates != nil && rates.TBillRate > 0 {
+				recalcRFR = rates.TBillRate
+			}
+		}
+		recalcCorrelations := fo.computePairCorrelations(ctx, params.Locations)
+		fo.evaluateObjectives(&config, profile, params, appreciationRate, recalcRFR, recalcCorrelations)
 
 		updated := fo.regenerateConfigPhases(ctx, fp.ConfigIndex, properties, config, profile, params, fp.ExistingPortfolio, nil)
 		results = append(results, updated)
@@ -531,28 +571,38 @@ func (fo *FrontierOptimizer) createConfigFromCohort(
 func (fo *FrontierOptimizer) evaluateObjectives(
 	config *PortfolioConfiguration,
 	profile investment.InvestorProfile,
-	existingPortfolio *investment.ExistingPortfolio,
+	params investment.InvestmentPlanningParams,
 	appreciationRate float64,
+	riskFreeRate float64,
+	pairCorrelations map[string]float64,
 ) {
 	// Objective 1: Expected Return — strategy-aware blend of income and appreciation.
 	config.Objectives.ExpectedReturn = fo.calculateExpectedReturn(config, profile.Strategy, appreciationRate)
 
 	// Objective 2: Portfolio Volatility via Markowitz (minimize).
-	config.Objectives.PortfolioVolatility = fo.calculatePortfolioVolatility(config)
+	config.Objectives.PortfolioVolatility = fo.calculatePortfolioVolatility(config, pairCorrelations)
 
 	// Objective 3: Concentration Index (minimize) — portfolio-aware when holdings provided.
-	config.Objectives.ConcentrationIndex = fo.calculateConcentrationIndex(config, existingPortfolio)
+	config.Objectives.ConcentrationIndex = fo.calculateConcentrationIndex(config, params.ExistingPortfolio)
 
 	// Objective 4: Stress Test Equity (maximize).
-	config.Objectives.StressTestEquity = fo.calculateStressTestEquity(config, profile)
+	config.Objectives.StressTestEquity = fo.calculateStressTestEquity(config, profile, params)
 
-	// Risk-adjusted Sharpe ratio: risk-free rate and volatility multiplier vary by risk tolerance.
-	// Conservative: higher hurdle (4.5%) + amplified vol penalty (×1.3) → harder to achieve good Sharpe.
-	// Aggressive:   lower hurdle (3.0%) + reduced vol penalty (×0.7)  → rewards return-seeking configs.
-	riskFreeRate    := fo.riskFreeRateForRisk(profile.RiskTolerance)
-	volMultiplier   := fo.volatilityMultiplierForRisk(profile.RiskTolerance)
-	excessReturn    := config.Objectives.ExpectedReturn - riskFreeRate
-	adjustedVol     := config.Objectives.PortfolioVolatility * volMultiplier
+	// Risk-adjusted Sharpe: adjust the live rate by risk tolerance tier.
+	// Conservative adds 0.5% hurdle; Aggressive subtracts 1.0%.
+	adjustedRFR := riskFreeRate
+	switch profile.RiskTolerance {
+	case investment.RiskConservative:
+		adjustedRFR += 0.5
+	case investment.RiskAggressive:
+		adjustedRFR -= 1.0
+		if adjustedRFR < 1.0 {
+			adjustedRFR = 1.0
+		}
+	}
+	volMultiplier := fo.volatilityMultiplierForRisk(profile.RiskTolerance)
+	excessReturn  := config.Objectives.ExpectedReturn - adjustedRFR
+	adjustedVol   := config.Objectives.PortfolioVolatility * volMultiplier
 	if adjustedVol > 0 {
 		config.SharpeScore = excessReturn / adjustedVol
 	} else {
@@ -617,7 +667,7 @@ func (fo *FrontierOptimizer) calculateExpectedReturn(config *PortfolioConfigurat
 
 // calculatePortfolioVolatility uses Markowitz analytical formula
 // σ² = Σᵢ Σⱼ wᵢ wⱼ σᵢ σⱼ ρᵢⱼ
-func (fo *FrontierOptimizer) calculatePortfolioVolatility(config *PortfolioConfiguration) float64 {
+func (fo *FrontierOptimizer) calculatePortfolioVolatility(config *PortfolioConfiguration, pairCorrelations map[string]float64) float64 {
 	n := len(config.Properties)
 	if n == 0 {
 		return 0.0
@@ -632,7 +682,7 @@ func (fo *FrontierOptimizer) calculatePortfolioVolatility(config *PortfolioConfi
 	}
 
 	// Build correlation matrix (placeholder - Phase 6 will use actual correlations)
-	correlationMatrix := fo.buildPlaceholderCorrelationMatrix(n, config.Properties)
+	correlationMatrix := fo.buildCorrelationMatrix(n, config.Properties, pairCorrelations)
 
 	// Use Markowitz calculator from Phase 0
 	variance := fo.markowitzCalc.CalculatePortfolioVariance(config.Weights, volatilities, correlationMatrix)
@@ -669,28 +719,33 @@ func (fo *FrontierOptimizer) estimatePropertyVolatility(prop investment.Property
 	return baseVol
 }
 
-// buildPlaceholderCorrelationMatrix creates a correlation matrix
-func (fo *FrontierOptimizer) buildPlaceholderCorrelationMatrix(n int, properties []investment.Property) [][]float64 {
-	// Phase 3: Placeholder correlation matrix
-	// Phase 6: Will use actual correlation service from Phase 1
-
+// buildCorrelationMatrix creates a correlation matrix using real Pearson correlations where available.
+func (fo *FrontierOptimizer) buildCorrelationMatrix(n int, properties []investment.Property, pairCorrelations map[string]float64) [][]float64 {
 	matrix := make([][]float64, n)
 	for i := 0; i < n; i++ {
 		matrix[i] = make([]float64, n)
 		for j := 0; j < n; j++ {
 			if i == j {
-				matrix[i][j] = 1.0 // Self-correlation = 1
+				matrix[i][j] = 1.0
+				continue
+			}
+			marketI := properties[i].City + ", " + properties[i].State
+			marketJ := properties[j].City + ", " + properties[j].State
+			if marketI == marketJ {
+				matrix[i][j] = 0.7 // same-market fallback (will be overridden by real data if available)
 			} else {
-				// Same market = higher correlation
-				if properties[i].City == properties[j].City {
-					matrix[i][j] = 0.7 // High correlation within same market
-				} else {
-					matrix[i][j] = 0.3 // Low correlation across markets
+				matrix[i][j] = 0.3 // cross-market fallback
+			}
+			// Override with real Pearson correlation if available
+			key := marketI + "|" + marketJ
+			if corr, ok := pairCorrelations[key]; ok {
+				// Clamp to valid [-1, 1] and handle NaN
+				if corr >= -1.0 && corr <= 1.0 {
+					matrix[i][j] = corr
 				}
 			}
 		}
 	}
-
 	return matrix
 }
 
@@ -880,30 +935,43 @@ func (fo *FrontierOptimizer) calculateTypeHHI(config *PortfolioConfiguration) fl
 func (fo *FrontierOptimizer) calculateStressTestEquity(
 	config *PortfolioConfiguration,
 	profile investment.InvestorProfile,
+	params investment.InvestmentPlanningParams,
 ) int {
-	// Phase 3: Simple stress test calculation
-	// Phase 6: Will use Monte Carlo stress paths
-
 	totalEquity := 0
 	for i, prop := range config.Properties {
-		// Assume 25% down payment
-		downPayment := int(float64(prop.Price) * 0.25)
+		downPaymentPct := params.DownPaymentPct
+		if downPaymentPct <= 0 || downPaymentPct > 1 {
+			downPaymentPct = 0.25 // fallback
+		}
+		downPayment := int(float64(prop.Price) * downPaymentPct)
 		loanAmount := prop.Price - downPayment
 
 		// Stress scenario: 20% value drop, 10% rent drop, held for 10 years
 		stressedValue := int(float64(prop.Price) * 0.80)
 		stressedRent := int(float64(prop.EstimatedRent) * 0.90)
 
-		// Mortgage payment (7% rate, 30 years)
-		monthlyPayment := fo.calculateMortgagePayment(loanAmount, 7.0, 30)
+		mortgageRate := params.MortgageRate * 100 // params stores as decimal (0.07), function expects percent (7.0)
+		if mortgageRate <= 0 || mortgageRate > 20 {
+			mortgageRate = 7.0 // fallback
+		}
+		monthlyPayment := fo.calculateMortgagePayment(loanAmount, mortgageRate, 30)
 
-		// Cash flow under stress
-		monthlyExpenses := 500 // Estimate
+		// Age-adjusted expense estimate: ~1.2% of property value annually (industry standard)
+		// Divided by 12 for monthly. Property age adds ~0.02% per year above 10 years.
+		propAge := 0
+		if prop.YearBuilt > 0 {
+			propAge = time.Now().Year() - prop.YearBuilt
+		}
+		expenseRatePct := 1.2 + math.Max(0, float64(propAge-10))*0.02
+		monthlyExpenses := int(float64(prop.Price) * expenseRatePct / 100 / 12)
+		if monthlyExpenses < 200 {
+			monthlyExpenses = 200
+		}
 		stressedCashFlow := stressedRent - monthlyPayment - monthlyExpenses
 
 		// Equity after 10 years
 		yearsHeld := 10
-		principalPaid := fo.calculatePrincipalPaid(loanAmount, 7.0, 30, yearsHeld)
+		principalPaid := fo.calculatePrincipalPaid(loanAmount, mortgageRate, 30, yearsHeld)
 		remainingLoan := loanAmount - principalPaid
 
 		// Cumulative cash flow (if positive)
@@ -1145,4 +1213,26 @@ func (fo *FrontierOptimizer) avgVolatility(points []investment.FrontierPoint) fl
 		sum += p.PortfolioVolatility
 	}
 	return sum / float64(len(points))
+}
+
+// computePairCorrelations fetches pairwise Pearson correlations between markets using
+// the CorrelationAnalyzer. Returns a lookup map "market1|market2" -> correlation.
+// Returns an empty map (falls back to hardcoded values) when analyzer unavailable.
+func (fo *FrontierOptimizer) computePairCorrelations(ctx context.Context, locations []string) map[string]float64 {
+	result := make(map[string]float64)
+	if fo.correlationAnalyzer == nil || len(locations) < 2 {
+		return result
+	}
+	cr := fo.correlationAnalyzer.CalculateCorrelations(ctx, locations)
+	if cr == nil {
+		return result
+	}
+	for _, mc := range cr.Correlations {
+		// Store both orderings so lookup is order-independent.
+		key1 := mc.Market1 + "|" + mc.Market2
+		key2 := mc.Market2 + "|" + mc.Market1
+		result[key1] = mc.Correlation
+		result[key2] = mc.Correlation
+	}
+	return result
 }

@@ -49,6 +49,10 @@ type EconomicRates struct {
 	UnemploymentRate     float64   `json:"unemploymentRate"`
 	UnemploymentRateDate time.Time `json:"unemploymentRateDate"`
 
+	// Treasury bill rate (risk-free proxy for Sharpe calculations)
+	TBillRate     float64   `json:"tBillRate"`
+	TBillRateDate time.Time `json:"tBillRateDate"`
+
 	// Inflation
 	InflationRate     float64   `json:"inflationRate"`
 	InflationRateDate time.Time `json:"inflationRateDate"`
@@ -225,6 +229,15 @@ func (s *Service) refreshRates(ctx context.Context) (*EconomicRates, error) {
 	} else {
 		rates.UnemploymentRate = unemployment
 		rates.UnemploymentRateDate = unemploymentDate
+	}
+
+	// Fetch 3-month T-bill rate (risk-free rate proxy for Sharpe calculations)
+	tbill, tbillDate, err := s.client.GetTBillRate(ctx)
+	if err != nil {
+		s.logger.Warn("failed to fetch T-bill rate", "error", err)
+	} else {
+		rates.TBillRate = tbill
+		rates.TBillRateDate = tbillDate
 	}
 
 	// Fetch inflation rate
