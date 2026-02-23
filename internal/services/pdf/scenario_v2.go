@@ -64,6 +64,10 @@ func NewScenarioV2PDFBuilder(logger *slog.Logger) *ScenarioV2PDFBuilder {
 }
 
 // Build generates the PDF and returns the raw bytes.
+//
+// Layout mirrors the WorkspaceLayout screen — frontier overview first, then
+// full property details for EVERY configuration, then deep-dive analytics
+// (Monte Carlo, scenarios, verdict, reinvestment, signals) for the selected config.
 func (b *ScenarioV2PDFBuilder) Build(ctx context.Context, req ScenarioV2PDFRequest) ([]byte, error) {
 	if len(req.FrontierPoints) == 0 {
 		return nil, fmt.Errorf("no frontier points provided")
@@ -88,41 +92,46 @@ func (b *ScenarioV2PDFBuilder) Build(ctx context.Context, req ScenarioV2PDFReque
 	page := LetterPage
 	theme := DefaultTheme
 
-	markets := strings.Join(req.Params.Locations, " · ")
+	markets := strings.Join(req.Params.Locations, " - ")
 	if markets == "" {
 		markets = "Multi-Market Portfolio"
 	}
 
-	generatedAt := time.Now().UTC().Format("January 2, 2006 at 15:04 UTC")
-
 	// Section 1: Cover
 	AddCoverPage(pdf, page, theme,
-		"Decision Memo",
-		fmt.Sprintf("Efficient Frontier Analysis — Config %d of %d",
-			selected.ConfigIndex+1, len(req.FrontierPoints)),
-		markets,
-		"Estara Insight  ·  AI-Generated Analysis  ·  Decision Support Only  ·  Not Investment Advice\nGenerated: "+generatedAt+"  ·  CONFIDENTIAL",
+		"Frontier Analysis Report",
+		fmt.Sprintf("%d configurations | %d properties analyzed",
+			len(req.FrontierPoints), s2totalProperties(req.FrontierPoints)),
+		sanitizeForPDF(markets),
+		"Estara Insight | AI-Generated Analysis | Decision Support Only | Not Investment Advice | CONFIDENTIAL",
 	)
-	AddHeaderFooter(pdf, page, theme, "Decision Memo  ·  Not Investment Advice")
+	AddHeaderFooter(pdf, page, theme, "Frontier Analysis Report - Not Investment Advice")
 
-	// Section 2: Decision Verdict
+	// Section 2: Efficient Frontier Overview (mirrors the Frontier tab on screen)
 	pdf.AddPage()
 	y := page.MarginTop
+	y = b.sectionFrontierOverview(pdf, page, theme, req.FrontierPoints, selected, charts.FrontierPlot, y)
+
+	// Section 3–N: Full configuration details for EVERY frontier point
+	// (mirrors clicking each config in the Portfolio tab)
+	for i := range req.FrontierPoints {
+		pt := &req.FrontierPoints[i]
+		y, _ = EnsureSpace(pdf, page, y, 50)
+		y = b.sectionConfigDetail(pdf, page, theme, pt, selected, y)
+	}
+
+	// ── Selected configuration deep-dive analytics ────────────────────────────
+	// These sections mirror the remaining tabs visible on screen for the selected config.
+
+	// Decision Verdict (Verdict tab)
+	y, _ = EnsureSpace(pdf, page, y, 50)
 	y = b.sectionVerdict(pdf, page, theme, selected, y)
 
-	// Section 3: Portfolio Configuration Summary
-	y, _ = EnsureSpace(pdf, page, y, 40)
-	y = b.sectionPortfolioSummary(pdf, page, theme, selected, y)
-
-	// Section 4: Property Details
-	y, _ = EnsureSpace(pdf, page, y, 40)
-	y = b.sectionPropertyDetails(pdf, page, theme, selected, y)
-
-	// Section 5: Portfolio Metrics & Reinvestment Plan
+	// Portfolio Metrics & Reinvestment Plan (supplements Portfolio tab)
 	y, _ = EnsureSpace(pdf, page, y, 50)
-	y = b.sectionPortfolioMetrics(pdf, page, theme, selected, req.Params, y)
+	y = b.sectionPortfolioMetrics(pdf, page, theme, selected, req.Params, req.Profile, y)
 
-	// Section 6: Probability Fan Chart
+	// Monte Carlo Probability Fan (Monte Carlo tab)
 	if charts.ProbabilityFan != "" {
 		y, _ = EnsureSpace(pdf, page, y, 110)
 		y = b.sectionProbabilityFan(pdf, page, theme, selected, charts.ProbabilityFan, y)
@@ -131,23 +140,19 @@ func (b *ScenarioV2PDFBuilder) Build(ctx context.Context, req ScenarioV2PDFReque
 		y = b.sectionProbabilityTable(pdf, page, theme, selected, y)
 	}
 
-	// Section 7: Scenario Comparison
+	// Scenario Comparison — Base / Upside / Stress (Scenarios tab)
 	if selected.Scenarios != nil {
 		y, _ = EnsureSpace(pdf, page, y, 50)
 		y = b.sectionScenarios(pdf, page, theme, selected, y)
 	}
 
-	// Section 8: Frontier Overview
-	y, _ = EnsureSpace(pdf, page, y, 80)
-	y = b.sectionFrontierOverview(pdf, page, theme, req.FrontierPoints, selected, charts.FrontierPlot, y)
-
-	// Section 9: Monitoring Signals
+	// Monitoring Signals (Verdict tab sidebar)
 	if selected.DecisionVerdict != nil && len(selected.DecisionVerdict.MonitoringSignals) > 0 {
 		y, _ = EnsureSpace(pdf, page, y, 50)
 		b.sectionMonitoringSignals(pdf, page, theme, selected.DecisionVerdict.MonitoringSignals, y)
 	}
 
-	// Section 10: Disclaimers
+	// Disclaimers
 	b.sectionDisclaimers(pdf, page, theme)
 
 	// ── Output ────────────────────────────────────────────────────────────────
@@ -202,36 +207,50 @@ func (b *ScenarioV2PDFBuilder) sectionVerdict(pdf *gofpdf.Fpdf, page PageConfig,
 	y = pdf.GetY()
 
 	// Rationale
-	y = AddParagraph(pdf, page, theme, dv.DecisionRationale, y)
+	y = AddParagraph(pdf, page, theme, sanitizeForPDF(dv.DecisionRationale), y)
 	y += 3
 
 	// Key conditions
 	if len(dv.KeyConditions) > 0 {
+		sanitized := make([]string, len(dv.KeyConditions))
+		for i, c := range dv.KeyConditions {
+			sanitized[i] = sanitizeForPDF(c)
+		}
 		pdf.SetFont("Helvetica", "B", 9)
 		pdf.SetTextColor(theme.Text.R, theme.Text.G, theme.Text.B)
 		pdf.Text(page.MarginLeft, y, "Key Assumptions Underlying This Analysis:")
 		y += 5
-		y = AddBulletList(pdf, page, theme, dv.KeyConditions, y)
+		y = AddBulletList(pdf, page, theme, sanitized, y)
 	}
 
 	return y + 2
 }
 
-// sectionPortfolioSummary renders a metrics grid for the selected config.
-func (b *ScenarioV2PDFBuilder) sectionPortfolioSummary(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, y float64) float64 {
-	y = AddSectionHeading(pdf, page, theme, "Selected Configuration Summary", y)
+// sectionConfigDetail renders a full configuration block: metrics + property table + theses.
+// Shown for EVERY frontier point so the reader can compare all options side by side.
+func (b *ScenarioV2PDFBuilder) sectionConfigDetail(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, selected *investment.FrontierPoint, y float64) float64 {
+	label := fmt.Sprintf("Configuration %d", pt.ConfigIndex+1)
+	if selected != nil && pt.ConfigIndex == selected.ConfigIndex {
+		label += " (Selected)"
+	}
+	y = AddSectionHeading(pdf, page, theme, label, y)
 
 	metrics := []MetricItem{
-		{Label: "Configuration", Value: fmt.Sprintf("Config %d", pt.ConfigIndex+1)},
 		{Label: "Properties in Portfolio", Value: fmt.Sprintf("%d", len(pt.Properties))},
 		{Label: "Modeled Annual Return (Estimated)", Value: fmt.Sprintf("%.2f%%", pt.ExpectedReturn), Highlight: true},
 		{Label: "Portfolio Volatility (Modeled)", Value: fmt.Sprintf("%.2f%%", pt.PortfolioVolatility)},
 		{Label: "Sharpe Score (Risk-Adjusted, Modeled)", Value: fmt.Sprintf("%.3f", pt.SharpeScore), Highlight: true},
 		{Label: "Concentration Index (HHI)", Value: fmt.Sprintf("%.3f", pt.ConcentrationIndex)},
-		{Label: "Stress Test Equity — Year 10 (Estimated)", Value: "$" + formatNum(pt.StressTestEquity), Highlight: true},
+		{Label: "Stress Test Equity - Year 10 (Estimated)", Value: "$" + formatNum(pt.StressTestEquity)},
 		{Label: "Market Exposure", Value: s2marketExposure(pt.Properties)},
 	}
-	return AddMetricsGrid(pdf, page, theme, metrics, y)
+	y = AddMetricsGrid(pdf, page, theme, metrics, y)
+	y += 2
+
+	// Property details
+	y, _ = EnsureSpace(pdf, page, y, 20)
+	y = b.sectionPropertyDetails(pdf, page, theme, pt, y)
+	return y
 }
 
 // sectionPropertyDetails renders a compact summary table + per-property detail rows.
@@ -256,7 +275,11 @@ func (b *ScenarioV2PDFBuilder) sectionPropertyDetails(pdf *gofpdf.Fpdf, page Pag
 	for i, prop := range pt.Properties {
 		addr := prop.Property.Address
 		if len(addr) > 24 {
-			addr = addr[:24] + "…"
+			addr = addr[:24] + "..."
+		}
+		scoreStr := fmt.Sprintf("%.0f", prop.Score)
+		if prop.Score == 0 {
+			scoreStr = "N/A"
 		}
 		rows[i] = []string{
 			addr,
@@ -265,7 +288,7 @@ func (b *ScenarioV2PDFBuilder) sectionPropertyDetails(pdf *gofpdf.Fpdf, page Pag
 			fmt.Sprintf("%.2f%%", prop.CashOnCash),
 			fmt.Sprintf("%.2f", prop.DSCR),
 			"$" + formatNum(prop.MonthlyCashFlow),
-			fmt.Sprintf("%.0f", prop.Score),
+			scoreStr,
 		}
 	}
 
@@ -282,7 +305,7 @@ func (b *ScenarioV2PDFBuilder) sectionPropertyDetails(pdf *gofpdf.Fpdf, page Pag
 		// Property header
 		addr := prop.Property.Address + ", " + prop.Property.City + ", " + prop.Property.State
 		if len(addr) > 80 {
-			addr = addr[:80] + "…"
+			addr = addr[:80] + "..."
 		}
 		pdf.SetFont("Helvetica", "B", 8)
 		pdf.SetTextColor(theme.Primary.R, theme.Primary.G, theme.Primary.B)
@@ -293,7 +316,7 @@ func (b *ScenarioV2PDFBuilder) sectionPropertyDetails(pdf *gofpdf.Fpdf, page Pag
 		pdf.SetFont("Helvetica", "", 8)
 		pdf.SetTextColor(theme.Text.R, theme.Text.G, theme.Text.B)
 		pdf.SetXY(page.MarginLeft, y)
-		pdf.MultiCell(page.Width-page.MarginLeft-page.MarginRight, 4, prop.Thesis.InvestmentThesis, "", "L", false)
+		pdf.MultiCell(page.Width-page.MarginLeft-page.MarginRight, 4, sanitizeForPDF(prop.Thesis.InvestmentThesis), "", "L", false)
 		y = pdf.GetY() + 2
 
 		// Key strengths (up to 2)
@@ -304,7 +327,7 @@ func (b *ScenarioV2PDFBuilder) sectionPropertyDetails(pdf *gofpdf.Fpdf, page Pag
 			for _, s := range prop.Thesis.KeyStrengths[:maxStrengths] {
 				y, _ = EnsureSpace(pdf, page, y, 5)
 				pdf.SetXY(page.MarginLeft+3, y)
-				pdf.MultiCell(page.Width-page.MarginLeft-page.MarginRight-3, 3.5, "✓ "+s, "", "L", false)
+				pdf.MultiCell(page.Width-page.MarginLeft-page.MarginRight-3, 3.5, "[+] "+s, "", "L", false)
 				y = pdf.GetY()
 			}
 			y += 2
@@ -316,7 +339,7 @@ func (b *ScenarioV2PDFBuilder) sectionPropertyDetails(pdf *gofpdf.Fpdf, page Pag
 			pdf.SetFont("Helvetica", "I", 7.5)
 			pdf.SetTextColor(theme.Warning.R, theme.Warning.G, theme.Warning.B)
 			pdf.SetXY(page.MarginLeft+3, y)
-			pdf.MultiCell(page.Width-page.MarginLeft-page.MarginRight-3, 3.5, "⚠ "+*prop.Thesis.CapexAlert, "", "L", false)
+			pdf.MultiCell(page.Width-page.MarginLeft-page.MarginRight-3, 3.5, "[!] "+*prop.Thesis.CapexAlert, "", "L", false)
 			y = pdf.GetY() + 2
 		}
 	}
@@ -325,12 +348,20 @@ func (b *ScenarioV2PDFBuilder) sectionPropertyDetails(pdf *gofpdf.Fpdf, page Pag
 }
 
 // sectionPortfolioMetrics renders reinvestment plan and investor parameters.
-func (b *ScenarioV2PDFBuilder) sectionPortfolioMetrics(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, params investment.InvestmentPlanningParams, y float64) float64 {
+func (b *ScenarioV2PDFBuilder) sectionPortfolioMetrics(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, params investment.InvestmentPlanningParams, profile investment.InvestorProfile, y float64) float64 {
 	y = AddSectionHeading(pdf, page, theme, "Portfolio Metrics & Reinvestment Plan", y)
 
-	// Investor parameters line
-	profileLine := fmt.Sprintf("Strategy: %s  ·  Risk: %s  ·  Budget: $%s  ·  Down Payment: %.0f%%",
-		params.Strategy, params.RiskTolerance, formatNum(params.Budget), params.DownPaymentPct)
+	// Investor parameters line — use profile fields (always populated) for strategy/risk
+	strategy := string(profile.Strategy)
+	if strategy == "" {
+		strategy = string(params.Strategy)
+	}
+	riskTol := string(profile.RiskTolerance)
+	if riskTol == "" {
+		riskTol = string(params.RiskTolerance)
+	}
+	profileLine := fmt.Sprintf("Strategy: %s  |  Risk: %s  |  Budget: $%s  |  Down Payment: %.0f%%",
+		strategy, riskTol, formatNum(params.Budget), params.DownPaymentPct*100)
 	y = AddParagraph(pdf, page, theme, profileLine, y)
 
 	if pt.ReinvestmentPlan == nil {
@@ -344,7 +375,7 @@ func (b *ScenarioV2PDFBuilder) sectionPortfolioMetrics(pdf *gofpdf.Fpdf, page Pa
 		y += 4
 		pdf.SetFont("Helvetica", "B", 9)
 		pdf.SetTextColor(theme.Text.R, theme.Text.G, theme.Text.B)
-		pdf.Text(page.MarginLeft, y, "Track A — External Capital Schedule")
+		pdf.Text(page.MarginLeft, y, "Track A - External Capital Schedule")
 		y += 6
 
 		contentW := page.Width - page.MarginLeft - page.MarginRight
@@ -357,7 +388,7 @@ func (b *ScenarioV2PDFBuilder) sectionPortfolioMetrics(pdf *gofpdf.Fpdf, page Pa
 		for i, yb := range rp.TrackA.YearlyBudgets {
 			locs := strings.Join(yb.Locations, ", ")
 			if locs == "" {
-				locs = "—"
+				locs = "--"
 			}
 			trackARows[i] = []string{
 				fmt.Sprintf("%d", yb.Year),
@@ -373,7 +404,7 @@ func (b *ScenarioV2PDFBuilder) sectionPortfolioMetrics(pdf *gofpdf.Fpdf, page Pa
 	y += 2
 	pdf.SetFont("Helvetica", "B", 9)
 	pdf.SetTextColor(theme.Text.R, theme.Text.G, theme.Text.B)
-	pdf.Text(page.MarginLeft, y, "Track B — Internal Cash Flow Reinvestment")
+	pdf.Text(page.MarginLeft, y, "Track B - Internal Cash Flow Reinvestment")
 	y += 6
 
 	trackBMetrics := []MetricItem{
@@ -387,7 +418,7 @@ func (b *ScenarioV2PDFBuilder) sectionPortfolioMetrics(pdf *gofpdf.Fpdf, page Pa
 
 // sectionProbabilityFan embeds the fan chart image + summary table.
 func (b *ScenarioV2PDFBuilder) sectionProbabilityFan(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, chartBase64 string, y float64) float64 {
-	y = AddSectionHeading(pdf, page, theme, "Monte Carlo Probability Fan — Net Worth Projection", y)
+	y = AddSectionHeading(pdf, page, theme, "Monte Carlo Probability Fan - Net Worth Projection", y)
 
 	imgW := page.Width - page.MarginLeft - page.MarginRight
 	imgH := 90.0
@@ -456,7 +487,7 @@ func (b *ScenarioV2PDFBuilder) sectionProbabilityTable(pdf *gofpdf.Fpdf, page Pa
 
 // sectionScenarios renders the Base / Upside / Stress year-by-year comparison.
 func (b *ScenarioV2PDFBuilder) sectionScenarios(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, pt *investment.FrontierPoint, y float64) float64 {
-	y = AddSectionHeading(pdf, page, theme, "Scenario Comparison — Base / Upside / Stress", y)
+	y = AddSectionHeading(pdf, page, theme, "Scenario Comparison - Base / Upside / Stress", y)
 
 	ss := pt.Scenarios
 	if ss == nil {
@@ -465,9 +496,9 @@ func (b *ScenarioV2PDFBuilder) sectionScenarios(pdf *gofpdf.Fpdf, page PageConfi
 
 	// Final net worth summary
 	metrics := []MetricItem{
-		{Label: "Base Case — Year 10 Modeled Net Worth", Value: "$" + formatNum(ss.Base.FinalNetWorth), Highlight: true},
-		{Label: "Upside Case — Year 10 Modeled Net Worth", Value: "$" + formatNum(ss.Upside.FinalNetWorth)},
-		{Label: "Stress Case — Year 10 Modeled Net Worth", Value: "$" + formatNum(ss.Stress.FinalNetWorth)},
+		{Label: "Base Case - Year 10 Modeled Net Worth", Value: "$" + formatNum(ss.Base.FinalNetWorth), Highlight: true},
+		{Label: "Upside Case - Year 10 Modeled Net Worth", Value: "$" + formatNum(ss.Upside.FinalNetWorth)},
+		{Label: "Stress Case - Year 10 Modeled Net Worth", Value: "$" + formatNum(ss.Stress.FinalNetWorth)},
 	}
 	y = AddMetricsGrid(pdf, page, theme, metrics, y)
 
@@ -505,7 +536,7 @@ func (b *ScenarioV2PDFBuilder) sectionScenarios(pdf *gofpdf.Fpdf, page PageConfi
 
 // sectionFrontierOverview renders scatter chart + comparison table for all configs.
 func (b *ScenarioV2PDFBuilder) sectionFrontierOverview(pdf *gofpdf.Fpdf, page PageConfig, theme Theme, allPoints []investment.FrontierPoint, selected *investment.FrontierPoint, scatterBase64 string, y float64) float64 {
-	y = AddSectionHeading(pdf, page, theme, "Efficient Frontier Overview — All Configurations", y)
+	y = AddSectionHeading(pdf, page, theme, "Efficient Frontier Overview - All Configurations", y)
 
 	if scatterBase64 != "" {
 		imgW := page.Width - page.MarginLeft - page.MarginRight
@@ -592,7 +623,7 @@ func (b *ScenarioV2PDFBuilder) sectionMonitoringSignals(pdf *gofpdf.Fpdf, page P
 		if s.Justification == "" {
 			continue
 		}
-		note := fmt.Sprintf("• %s: %s", s.Indicator, s.Justification)
+		note := fmt.Sprintf("- %s: %s", s.Indicator, s.Justification)
 		lines := pdf.SplitLines([]byte(note), contentW)
 		for _, line := range lines {
 			y, _ = EnsureSpace(pdf, page, y, 4)
@@ -629,6 +660,19 @@ func (b *ScenarioV2PDFBuilder) sectionDisclaimers(pdf *gofpdf.Fpdf, page PageCon
 // Internal helpers — prefixed s2 to avoid collision with decision_memo helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+// s2totalProperties returns the total unique property count across all configs.
+// Used for cover page subtitle.
+func s2totalProperties(pts []investment.FrontierPoint) int {
+	// Use the config with the most properties as the representative count.
+	max := 0
+	for _, pt := range pts {
+		if len(pt.Properties) > max {
+			max = len(pt.Properties)
+		}
+	}
+	return max
+}
+
 // s2yearLabel returns "Never" for 0, else "Year N".
 func s2yearLabel(year int) string {
 	if year == 0 {
@@ -649,9 +693,9 @@ func s2marketExposure(props []investment.PropertyInPortfolio) string {
 		}
 	}
 	if len(markets) == 0 {
-		return "—"
+		return "--"
 	}
-	return strings.Join(markets, " · ")
+	return strings.Join(markets, " - ")
 }
 
 // s2yearMap indexes YearOutcome net worth by year for fast lookup.
@@ -664,7 +708,24 @@ func s2yearMap(outcomes []investment.YearOutcome) map[int]int {
 }
 
 // s2signalStatus derives OK / WATCH / WARN / ALERT from current vs thresholds.
+// Direction is inferred from threshold ordering:
+//   - AlertLevel < WatchLevel → "lower is bad" (e.g. cap rate, HPI index, expected return)
+//   - AlertLevel > WatchLevel → "higher is bad" (e.g. unemployment rate, vacancy)
 func s2signalStatus(s investment.MonitoringSignal) string {
+	if s.AlertLevel < s.WatchLevel {
+		// Lower values are worse: ALERT when current drops below AlertLevel
+		switch {
+		case s.CurrentValue <= s.AlertLevel:
+			return "ALERT"
+		case s.CurrentValue <= s.WarnLevel:
+			return "WARN"
+		case s.CurrentValue <= s.WatchLevel:
+			return "WATCH"
+		default:
+			return "OK"
+		}
+	}
+	// Higher values are worse: ALERT when current rises above AlertLevel
 	switch {
 	case s.CurrentValue >= s.AlertLevel:
 		return "ALERT"

@@ -327,6 +327,25 @@ func (s *Service) ScoreProperties(
 			"error", err,
 		)
 		scored = s.fallbackScoring(properties, profile)
+	} else if len(scored) < len(properties) {
+		// AI response covered fewer properties than submitted (ID mismatch, truncation, or omission).
+		// Fill in missing properties with fallback scoring so they aren't silently dropped.
+		covered := make(map[string]struct{}, len(scored))
+		for _, sp := range scored {
+			covered[sp.Property.ID] = struct{}{}
+		}
+		var missing []investment.Property
+		for _, p := range properties {
+			if _, ok := covered[p.ID]; !ok {
+				missing = append(missing, p)
+			}
+		}
+		s.logger.Warn("AI scoring missed properties, filling with fallback",
+			"total", len(properties),
+			"ai_scored", len(scored),
+			"fallback_count", len(missing),
+		)
+		scored = append(scored, s.fallbackScoring(missing, profile)...)
 	}
 
 	// ADR-064: Cache the result (if database is configured)
@@ -1197,8 +1216,7 @@ func (s *Service) buildScoringPrompt(
 	profile investment.InvestorProfile,
 	existingPortfolio *investment.ExistingPortfolio,
 ) string {
-	// ADR-088 Phase 2: Use strategy and risk tolerance as context proxies
-	// Portfolio context will be added in Phase 4 (context-aware re-scoring)
+	// ADR-089 Phase 3: Include existing portfolio context when provided
 	prompt := fmt.Sprintf(`Analyze these %d properties for a %s strategy with %s risk tolerance.
 
 INVESTMENT CONTEXT:
@@ -1209,8 +1227,15 @@ INVESTMENT CONTEXT:
 
 `, len(properties), profile.Strategy, profile.RiskTolerance, profile.Strategy, profile.RiskTolerance, profile.AvailableCapital, profile.InvestmentHorizon)
 
-	// Note: Existing portfolio context intentionally excluded in Phase 2
-	// Phase 4 will add portfolio context for re-scoring selected configurations
+	// ADR-089 Phase 3: Inject existing portfolio for context-aware scoring
+	if existingPortfolio != nil && len(existingPortfolio.Properties) > 0 {
+		prompt += fmt.Sprintf("EXISTING PORTFOLIO (%d properties):\n", len(existingPortfolio.Properties))
+		for _, p := range existingPortfolio.Properties {
+			prompt += fmt.Sprintf("- %s, %s: $%.0f value, $%.0f/mo rent, cap rate %.1f%%\n",
+				p.City, p.State, p.CurrentValue, p.MonthlyRent, p.CapRate)
+		}
+		prompt += "\nWhen scoring, consider diversification relative to existing holdings above. Penalise properties in already-concentrated markets.\n\n"
+	}
 
 	prompt += "CANDIDATE PROPERTIES:\n"
 	for i, p := range properties {

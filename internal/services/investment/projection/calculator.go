@@ -794,8 +794,8 @@ func (c *Calculator) CalculateCombinedMetrics(
 
 		// Combined metrics
 		CombinedPropertyCount:  existing.PropertyCount + newMetrics.PropertyCount,
-		CombinedTotalValue:     existing.TotalValue + newMetrics.TotalInvestment,
-		CombinedAnnualCashFlow: existing.AnnualCashFlow + newMetrics.AnnualCashFlow,
+		CombinedTotalValue:     existing.TotalValue + float64(newMetrics.TotalInvestment),
+		CombinedAnnualCashFlow: existing.AnnualCashFlow + float64(newMetrics.AnnualCashFlow),
 	}
 
 	// Calculate improvements

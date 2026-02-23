@@ -14,7 +14,7 @@ import (
 func TestFrontier_ReinvestmentPlan_TrackA(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
-	reinvestModeler := projection.NewReinvestmentModeler(logger)
+	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
 	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
 
 	// Create test properties
@@ -41,7 +41,8 @@ func TestFrontier_ReinvestmentPlan_TrackA(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params, nil)
+	cohorts := testBuildCohorts(properties, profile.Strategy, profile.RiskTolerance, 0)
+	frontierPoints, err := fo.GenerateFrontier(ctx, cohorts, profile, params, nil)
 
 	if err != nil {
 		t.Fatalf("GenerateFrontier() error = %v", err)
@@ -98,7 +99,7 @@ func TestFrontier_ReinvestmentPlan_TrackA(t *testing.T) {
 func TestFrontier_ReinvestmentPlan_NoYearlyBudgets(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
-	reinvestModeler := projection.NewReinvestmentModeler(logger)
+	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
 	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
 
 	properties := []investment.ScoredProperty{
@@ -120,7 +121,8 @@ func TestFrontier_ReinvestmentPlan_NoYearlyBudgets(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params, nil)
+	cohorts := testBuildCohorts(properties, profile.Strategy, profile.RiskTolerance, 0)
+	frontierPoints, err := fo.GenerateFrontier(ctx, cohorts, profile, params, nil)
 
 	if err != nil {
 		t.Fatalf("GenerateFrontier() error = %v", err)
@@ -162,7 +164,7 @@ func TestFrontier_ReinvestmentPlan_NoYearlyBudgets(t *testing.T) {
 func TestFrontier_ReinvestmentPlan_SingleYearBudget(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
-	reinvestModeler := projection.NewReinvestmentModeler(logger)
+	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
 	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
 
 	properties := []investment.ScoredProperty{
@@ -186,7 +188,8 @@ func TestFrontier_ReinvestmentPlan_SingleYearBudget(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params, nil)
+	cohorts := testBuildCohorts(properties, profile.Strategy, profile.RiskTolerance, 0)
+	frontierPoints, err := fo.GenerateFrontier(ctx, cohorts, profile, params, nil)
 
 	if err != nil {
 		t.Fatalf("GenerateFrontier() error = %v", err)

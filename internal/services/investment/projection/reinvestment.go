@@ -5,21 +5,25 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 
 	"github.com/estara-ai/www/internal/services/investment"
+	"github.com/estara-ai/www/internal/services/market/timeseries"
 )
 
 // ReinvestmentModeler calculates dual-track reinvestment plans for frontier configurations
 // ADR-088 Phase 5: Track A (external capital) + Track B (internal cash flow)
 type ReinvestmentModeler struct {
-	logger *slog.Logger
-	// TODO Phase 5: Add market data service for acquisition pricing
+	logger      *slog.Logger
+	metroReader *timeseries.MetroReader // nil = no market data available
 }
 
-// NewReinvestmentModeler creates a new reinvestment calculator
-func NewReinvestmentModeler(logger *slog.Logger) *ReinvestmentModeler {
+// NewReinvestmentModeler creates a new reinvestment calculator.
+// metroReader is optional — when provided, Track A/B acquisitions use real market median prices.
+func NewReinvestmentModeler(logger *slog.Logger, metroReader *timeseries.MetroReader) *ReinvestmentModeler {
 	return &ReinvestmentModeler{
-		logger: logger,
+		logger:      logger,
+		metroReader: metroReader,
 	}
 }
 
@@ -163,41 +167,54 @@ func (rm *ReinvestmentModeler) calculateTrackB(
 // AcquisitionPricer provides market-based pricing for simulated property acquisitions
 // ADR-088 Phase 5: Market median pricing for both Track A and Track B acquisitions
 type AcquisitionPricer struct {
-	logger *slog.Logger
-	// TODO Phase 5: Add market data service for median price/rent lookups
+	logger      *slog.Logger
+	metroReader *timeseries.MetroReader // nil = fall back to market-based estimates
 }
 
-// NewAcquisitionPricer creates a new acquisition pricer
-func NewAcquisitionPricer(logger *slog.Logger) *AcquisitionPricer {
+// NewAcquisitionPricer creates a new acquisition pricer.
+// metroReader is optional — when provided, real city_market_cache data is used.
+func NewAcquisitionPricer(logger *slog.Logger, metroReader *timeseries.MetroReader) *AcquisitionPricer {
 	return &AcquisitionPricer{
-		logger: logger,
+		logger:      logger,
+		metroReader: metroReader,
 	}
 }
 
-// GetMarketMedianPrice returns median home price for a market
-// Used for Track A (deterministic) pricing
+// GetMarketMedianPrice returns median home price for a market.
+// Uses real city_market_cache data when MetroReader is available;
+// falls back to a conservative national estimate ($425K) otherwise.
 func (ap *AcquisitionPricer) GetMarketMedianPrice(ctx context.Context, city, state string) (int, error) {
-	// TODO Phase 5: Query market data service for median price
-	// For now, return placeholder
-	ap.logger.Warn("using placeholder median price",
-		"city", city,
-		"state", state,
-		"reason", "market data service not yet integrated",
-	)
-	return 400000, nil // Placeholder: $400K median
+	if ap.metroReader != nil && city != "" && state != "" {
+		snapshot, err := ap.metroReader.GetCitySnapshot(ctx, city, state)
+		if err == nil && snapshot.MedianHomePrice > 0 {
+			return int(snapshot.MedianHomePrice), nil
+		}
+		// Snapshot not found or zero — fall through to estimate
+		ap.logger.Warn("city market data unavailable, using national estimate",
+			"city", city,
+			"state", state,
+		)
+	}
+	// National median estimate (US Census / NAR 2025 data)
+	return 425000, nil
 }
 
-// GetMarketMedianRent returns median monthly rent for a market
-// Used for Track A (deterministic) pricing
+// GetMarketMedianRent returns median monthly rent for a market.
+// Uses real city_market_cache data when MetroReader is available;
+// falls back to a conservative national estimate ($1,987) otherwise.
 func (ap *AcquisitionPricer) GetMarketMedianRent(ctx context.Context, city, state string) (int, error) {
-	// TODO Phase 5: Query market data service for median rent
-	// For now, return placeholder
-	ap.logger.Warn("using placeholder median rent",
-		"city", city,
-		"state", state,
-		"reason", "market data service not yet integrated",
-	)
-	return 2500, nil // Placeholder: $2,500/mo median rent
+	if ap.metroReader != nil && city != "" && state != "" {
+		snapshot, err := ap.metroReader.GetCitySnapshot(ctx, city, state)
+		if err == nil && snapshot.MedianRent > 0 {
+			return int(snapshot.MedianRent), nil
+		}
+		ap.logger.Warn("city rent data unavailable, using national estimate",
+			"city", city,
+			"state", state,
+		)
+	}
+	// National median rent estimate (Zillow ZORI 2025)
+	return 1987, nil
 }
 
 // EstimatePropertyAge returns estimated property age for acquisition year
@@ -231,10 +248,9 @@ func (rm *ReinvestmentModeler) CreateCohort(
 	pricer *AcquisitionPricer,
 	primaryMarket string, // "City, State" format
 ) (*PropertyCohort, error) {
-	// TODO Phase 5: Parse primaryMarket to extract city/state
-	// For now, use placeholder values
-	city := "Austin"
-	state := "TX"
+	// Parse "City, State" → city, state
+	city, state := parseCityState(primaryMarket)
+
 
 	// Get market median pricing
 	medianPrice, err := pricer.GetMarketMedianPrice(ctx, city, state)
@@ -328,4 +344,14 @@ func (ps *PathState) CheckTrackBThreshold(threshold int) (bool, int) {
 func (ps *PathState) AddTrackBCohort(cohort PropertyCohort) {
 	ps.TrackBCohorts = append(ps.TrackBCohorts, cohort)
 	ps.TrackBFiredYear = cohort.Year
+}
+
+// parseCityState parses a "City, State" string into its components.
+// Returns empty strings if the input cannot be split.
+func parseCityState(location string) (city, state string) {
+	parts := strings.SplitN(location, ",", 2)
+	if len(parts) == 2 {
+		return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	}
+	return strings.TrimSpace(location), ""
 }

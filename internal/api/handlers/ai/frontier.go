@@ -108,10 +108,26 @@ func (h *Handler) RunFrontierAnalysis(w http.ResponseWriter, r *http.Request) {
 		"message": "Starting frontier analysis",
 	})
 
+	// Build per-config property cohorts from the scored properties
+	budget := req.Profile.AvailableCapital
+	dpPct := req.Params.DownPaymentPct
+	if dpPct == 0 {
+		dpPct = 0.20
+	}
+	mortgageRate := req.Params.MortgageRate
+	if mortgageRate == 0 {
+		mortgageRate = 0.075
+	}
+	cohorts := investment.BuildCohorts(req.ScoredProperties, req.Profile.Strategy, req.Profile.RiskTolerance, budget, mortgageRate, dpPct)
+	if len(cohorts) == 0 {
+		_ = sseWriter.WriteError("no affordable properties found for the given budget")
+		return
+	}
+
 	// Run frontier generation
 	frontierPoints, err := h.frontierOptimizer.GenerateFrontier(
 		ctx,
-		req.ScoredProperties,
+		cohorts,
 		req.Profile,
 		req.Params,
 		optimization.ProgressFunc(progress),

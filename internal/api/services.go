@@ -57,6 +57,7 @@ type Services struct {
 	MemoService          *memo.Service         // Decision Memo generation (ADR-079)
 	FrontierOptimizer    *optimization.FrontierOptimizer // ADR-088 Phase 9: Interactive workspace
 	InvestmentOptimizer  *optimization.Service           // ADR-088 Phase 12: Discovery+scoring pipeline for /run
+	MetroReader          *timeseries.MetroReader         // City snapshot + HUD FMR data
 }
 
 // ServiceConfig holds configuration for creating services
@@ -225,6 +226,7 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 	// Initialize MetroReader if market DB is configured
 	if cfg.DB != nil && cfg.DB.Market != nil {
 		metroReader = timeseries.NewMetroReader(cfg.DB.Market)
+		services.MetroReader = metroReader
 		logger.Info("metro reader initialized")
 	}
 
@@ -439,7 +441,7 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 		services.FrontierOptimizer = optimization.NewFrontierOptimizer(
 			foLogger,
 			optimization.NewMarkowitzCalculator(),
-			projection.NewReinvestmentModeler(foLogger),
+			projection.NewReinvestmentModeler(foLogger, metroReader),
 			projection.NewMonteCarloSimulator(foLogger),
 			projection.NewScenarioGenerator(foLogger),
 			verdict.NewGenerator(foLogger),

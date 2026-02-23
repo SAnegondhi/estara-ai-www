@@ -19,6 +19,11 @@ const (
 	defaultMaxTokens   = 4096
 	defaultTimeout     = 120 * time.Second
 	anthropicVersion   = "2023-06-01"
+
+	// Retry configuration for transient errors (overloaded, rate limit)
+	maxRetries      = 4
+	retryBaseDelay  = 5 * time.Second
+	retryMaxDelay   = 60 * time.Second
 )
 
 // Client is an Anthropic API client
@@ -52,6 +57,16 @@ func (e APIErrorInfo) IsAuthError() bool {
 // IsRateLimitError returns true if this is a rate limit error
 func (e APIErrorInfo) IsRateLimitError() bool {
 	return e.StatusCode == 429
+}
+
+// IsOverloadedError returns true if the API is temporarily overloaded (HTTP 529)
+func (e APIErrorInfo) IsOverloadedError() bool {
+	return e.ErrorType == "overloaded_error" || e.StatusCode == 529
+}
+
+// IsRetryable returns true for transient errors that warrant a retry
+func (e APIErrorInfo) IsRetryable() bool {
+	return e.IsOverloadedError() || e.IsRateLimitError()
 }
 
 // ClientConfig holds configuration for the Anthropic client
@@ -284,49 +299,83 @@ func (c *Client) StreamWithMessages(ctx context.Context, systemPrompt string, me
 	return c.streamRequest(ctx, req)
 }
 
-// sendRequest sends a non-streaming request
+// sendRequest sends a non-streaming request with exponential backoff retry
+// for transient errors (overloaded_error, rate limit).
 func (c *Client) sendRequest(ctx context.Context, req MessageRequest) (*MessageResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/messages", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
+	var lastErr error
+	delay := retryBaseDelay
 
-	c.setHeaders(httpReq)
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		var apiErr struct {
-			Error APIError `json:"error"`
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			c.logger.Info("retrying Anthropic request after transient error",
+				"attempt", attempt,
+				"delay", delay,
+				"last_error", lastErr,
+			)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+			// Exponential backoff with cap
+			delay *= 2
+			if delay > retryMaxDelay {
+				delay = retryMaxDelay
+			}
 		}
-		if err := json.Unmarshal(respBody, &apiErr); err == nil {
-			c.notifyAPIError(resp.StatusCode, apiErr.Error.Type, apiErr.Error.Message)
-			return nil, fmt.Errorf("API error (%s): %s", apiErr.Error.Type, apiErr.Error.Message)
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/messages", bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
-		c.notifyAPIError(resp.StatusCode, "unknown", string(respBody))
-		return nil, fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(respBody))
+		c.setHeaders(httpReq)
+
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			lastErr = fmt.Errorf("request failed: %w", err)
+			continue // network error — always retry
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response: %w", err)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			var apiErr struct {
+				Error APIError `json:"error"`
+			}
+			if jsonErr := json.Unmarshal(respBody, &apiErr); jsonErr == nil {
+				info := APIErrorInfo{StatusCode: resp.StatusCode, ErrorType: apiErr.Error.Type, Message: apiErr.Error.Message}
+				if info.IsBillingError() || info.IsAuthError() || info.IsRateLimitError() {
+					c.notifyAPIError(resp.StatusCode, apiErr.Error.Type, apiErr.Error.Message)
+				}
+				if info.IsRetryable() {
+					lastErr = fmt.Errorf("API error (%s): %s", apiErr.Error.Type, apiErr.Error.Message)
+					continue
+				}
+				return nil, fmt.Errorf("API error (%s): %s", apiErr.Error.Type, apiErr.Error.Message)
+			}
+			c.notifyAPIError(resp.StatusCode, "unknown", string(respBody))
+			return nil, fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(respBody))
+		}
+
+		var msgResp MessageResponse
+		if err := json.Unmarshal(respBody, &msgResp); err != nil {
+			return nil, fmt.Errorf("failed to parse response: %w", err)
+		}
+
+		return &msgResp, nil
 	}
 
-	var msgResp MessageResponse
-	if err := json.Unmarshal(respBody, &msgResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	return &msgResp, nil
+	return nil, fmt.Errorf("request failed after %d attempts: %w", maxRetries+1, lastErr)
 }
 
 // streamRequest sends a streaming request

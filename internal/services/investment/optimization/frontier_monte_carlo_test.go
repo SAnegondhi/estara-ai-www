@@ -14,7 +14,7 @@ import (
 func TestGenerateFrontier_WithMonteCarloSimulation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
-	reinvestModeler := projection.NewReinvestmentModeler(logger)
+	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
 	mcSimulator := projection.NewMonteCarloSimulator(logger)
 	scenarioGenerator := projection.NewScenarioGenerator(logger)
 
@@ -94,7 +94,8 @@ func TestGenerateFrontier_WithMonteCarloSimulation(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params, nil)
+	cohorts := testBuildCohorts(properties, profile.Strategy, profile.RiskTolerance, profile.AvailableCapital)
+	frontierPoints, err := fo.GenerateFrontier(ctx, cohorts, profile, params, nil)
 
 	if err != nil {
 		t.Fatalf("GenerateFrontier() error = %v", err)
@@ -190,7 +191,7 @@ func TestGenerateFrontier_WithMonteCarloSimulation(t *testing.T) {
 func TestGenerateFrontier_WithYearlyBudgets(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
-	reinvestModeler := projection.NewReinvestmentModeler(logger)
+	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
 	mcSimulator := projection.NewMonteCarloSimulator(logger)
 	scenarioGenerator := projection.NewScenarioGenerator(logger)
 
@@ -271,7 +272,8 @@ func TestGenerateFrontier_WithYearlyBudgets(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	frontierPoints, err := fo.GenerateFrontier(ctx, properties, profile, params, nil)
+	cohorts := testBuildCohorts(properties, profile.Strategy, profile.RiskTolerance, profile.AvailableCapital)
+	frontierPoints, err := fo.GenerateFrontier(ctx, cohorts, profile, params, nil)
 
 	if err != nil {
 		t.Fatalf("GenerateFrontier() error = %v", err)

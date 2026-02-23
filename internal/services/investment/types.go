@@ -1,5 +1,130 @@
 package investment
 
+import "time"
+
+// CapRateExpenseRatio is the baseline operating-expense ratio for a ~6–10 year old property.
+// Matches the pre-computed market cap rate stored in city_market_cache (40% expense ratio).
+const CapRateExpenseRatio = 0.40
+
+// expenseRatioForAge returns the operating-expense ratio for a property built in yearBuilt.
+// Older properties carry higher maintenance, CapEx reserves, and vacancy risk.
+//
+//	Age  0– 5 yr: 37 % (new — low maintenance, warranty period)
+//	Age  6–10 yr: 40 % (standard baseline — matches city_market_cache CapRate)
+//	Age 11–20 yr: 44 % (aging HVAC, roof, appliances approaching end-of-life)
+//	Age 21–30 yr: 48 % (major systems likely due; elevated CapEx reserves)
+//	Age   30+ yr: 52 % (full-cycle replacement risk; higher vacancy sensitivity)
+// ExpenseRatioForAge is the exported form of expenseRatioForAge for use by sub-packages.
+func ExpenseRatioForAge(yearBuilt int) float64 { return expenseRatioForAge(yearBuilt) }
+
+func expenseRatioForAge(yearBuilt int) float64 {
+	if yearBuilt <= 0 {
+		return CapRateExpenseRatio
+	}
+	age := time.Now().Year() - yearBuilt
+	switch {
+	case age <= 5:
+		return 0.37
+	case age <= 10:
+		return 0.40
+	case age <= 20:
+		return 0.44
+	case age <= 30:
+		return 0.48
+	default:
+		return 0.52
+	}
+}
+
+// CapRatePct computes the net cap rate (%) from monthly rent, purchase price, and year built.
+// Applies an age-adjusted expense ratio so older properties reflect higher operating costs.
+// Returns 0 when rent or price is zero.
+func CapRatePct(monthlyRent, price, yearBuilt int) float64 {
+	if monthlyRent <= 0 || price <= 0 {
+		return 0
+	}
+	noi := float64(monthlyRent*12) * (1 - expenseRatioForAge(yearBuilt))
+	return (noi / float64(price)) * 100
+}
+
+// ScoringWeights holds the composite score weights for RankAndSelectProperties.
+// All weights must sum to 1.0. DSCRHigherIsBetter flips the DSCR direction:
+// true  = higher DSCR is better (conservative/cash-flow: debt coverage cushion preferred)
+// false = lower DSCR is better (aggressive/appreciation: leverage efficiency preferred)
+type ScoringWeights struct {
+	CapRate            float64
+	CashOnCash         float64
+	DSCR               float64
+	BudgetUtilization  float64
+	DSCRHigherIsBetter bool
+}
+
+// WeightsForStrategy returns composite score weights tuned to the given investment
+// strategy and risk tolerance.
+//
+// The budget utilization weight is intentionally kept small across all strategies —
+// it serves the frontier optimizer's portfolio coverage constraint, not investor goals.
+func WeightsForStrategy(strategy InvestmentStrategy, risk RiskTolerance) ScoringWeights {
+	var w ScoringWeights
+
+	switch strategy {
+	case StrategyCashFlow:
+		// Cash flow first: maximise income and coverage, minimise leverage risk.
+		w = ScoringWeights{
+			CapRate:            0.20,
+			CashOnCash:         0.45,
+			DSCR:               0.30,
+			BudgetUtilization:  0.05,
+			DSCRHigherIsBetter: true, // cushion matters — higher DSCR = more comfortable
+		}
+
+	case StrategyAppreciation:
+		// Appreciation investors tolerate low or negative current yield in exchange for
+		// price growth; budget capacity matters more for portfolio leverage.
+		// DSCR direction is inverted (more leverage = better for this strategy).
+		w = ScoringWeights{
+			CapRate:            0.30,
+			CashOnCash:         0.20,
+			DSCR:               0.10,
+			BudgetUtilization:  0.40,
+			DSCRHigherIsBetter: false,
+		}
+
+	case StrategyRiskAdjusted:
+		// Risk-adjusted: prioritise DSCR safety and stable income over raw yield.
+		w = ScoringWeights{
+			CapRate:            0.28,
+			CashOnCash:         0.30,
+			DSCR:               0.35,
+			BudgetUtilization:  0.07,
+			DSCRHigherIsBetter: true,
+		}
+
+	default: // StrategyBalanced and any future unrecognised values
+		w = ScoringWeights{
+			CapRate:            0.36,
+			CashOnCash:         0.32,
+			DSCR:               0.22,
+			BudgetUtilization:  0.10,
+			DSCRHigherIsBetter: false,
+		}
+	}
+
+	// Risk modifier: shift weight toward DSCR safety (conservative) or toward cap rate
+	// yield (aggressive). Applied as an additive delta after the strategy baseline.
+	switch risk {
+	case RiskConservative:
+		w.DSCR += 0.05
+		w.CapRate -= 0.05
+		w.DSCRHigherIsBetter = true // always prefer cushion for conservative investors
+	case RiskAggressive:
+		w.CapRate += 0.05
+		w.DSCR -= 0.05
+	}
+
+	return w
+}
+
 // InvestmentStrategy represents the investment approach
 type InvestmentStrategy string
 
@@ -38,6 +163,7 @@ type InvestmentPlanningParams struct {
 	Locations         []string           `json:"locations"`
 	Budget            int                `json:"budget"`
 	DownPaymentPct    float64            `json:"downPaymentPct"`
+	MortgageRate      float64            `json:"mortgageRate"`      // ADR-089 Phase 3: actual rate from user
 	Strategy          InvestmentStrategy `json:"strategy"`
 	RiskTolerance     RiskTolerance      `json:"riskTolerance"`
 	MaxProperties     int                `json:"maxProperties"`
@@ -64,11 +190,11 @@ type ExistingProperty struct {
 	Address         string  `json:"address"`
 	City            string  `json:"city"`
 	State           string  `json:"state"`
-	CurrentValue    int     `json:"currentValue"`
-	MonthlyRent     int     `json:"monthlyRent"`
-	MortgageBalance int     `json:"mortgageBalance"`
-	Equity          int     `json:"equity"`
-	MonthlyCashFlow int     `json:"monthlyCashFlow"`
+	CurrentValue    float64 `json:"currentValue"`
+	MonthlyRent     float64 `json:"monthlyRent"`
+	MortgageBalance float64 `json:"mortgageBalance"`
+	Equity          float64 `json:"equity"`
+	MonthlyCashFlow float64 `json:"monthlyCashFlow"`
 	CapRate         float64 `json:"capRate,omitempty"`
 }
 
@@ -215,6 +341,42 @@ type ScoredProperty struct {
 	Thesis              *PropertyThesis `json:"thesis,omitempty"` // ADR-088 Phase 2: Structured thesis
 }
 
+// RankedProperty carries precomputed investment metrics alongside the AI-scored property.
+// It is the output of FilterAffordable and the input to all per-config pipeline selectors.
+// Carrying metrics here avoids recomputing EffectiveCapRate, DSCR, and CashOnCash in the
+// frontier optimizer.
+// ADR-090: Per-config property selection pipelines.
+type RankedProperty struct {
+	ScoredProperty
+	EffectiveCapRate float64 // Age-adjusted NOI / price (%)
+	DSCR             float64 // Net Operating Income / Annual Debt Service
+	CashOnCash       float64 // Annual cash flow / cash invested (%)
+	DownPayment      float64 // Required down payment ($)
+	MonthlyPayment   float64 // Monthly mortgage payment ($)
+}
+
+// ConfigType identifies the ranking philosophy of a PropertyCohort.
+// ADR-090: named type for compile-time safety. Phase E adds "growth".
+type ConfigType string
+
+const (
+	ConfigQuality  ConfigType = "quality"
+	ConfigIncome   ConfigType = "income"
+	ConfigBalanced ConfigType = "balanced"
+	ConfigGrowth   ConfigType = "growth" // Phase E: price-biased, Appreciation strategy only
+)
+
+// PropertyCohort is the output of one per-config property selection pipeline.
+// Each cohort carries an already-ranked slice of RankedProperty items ordered by the
+// pipeline's primary ranking axis, a human-readable Label (e.g. "Quality", "Income",
+// "Balanced"), and a ConfigType identifier used by the frontier optimizer to build candidates.
+// ADR-090: Per-config property selection pipelines.
+type PropertyCohort struct {
+	Properties []RankedProperty
+	Label      string     // e.g. "Quality", "Income", "Balanced", "Defensive Income", "Growth"
+	ConfigType ConfigType // see ConfigQuality, ConfigIncome, ConfigBalanced, ConfigGrowth
+}
+
 // PortfolioMetrics holds aggregate metrics for the portfolio
 type PortfolioMetrics struct {
 	PropertyCount        int     `json:"propertyCount"`
@@ -298,11 +460,11 @@ type YearlyProjection struct {
 // ExistingPortfolioSummary summarizes the user's existing portfolio
 type ExistingPortfolioSummary struct {
 	PropertyCount   int      `json:"propertyCount"`
-	TotalValue      int      `json:"totalValue"`
-	TotalEquity     int      `json:"totalEquity"`
-	TotalDebt       int      `json:"totalDebt"`
-	AnnualCashFlow  int      `json:"annualCashFlow"`
-	MonthlyCashFlow int      `json:"monthlyCashFlow"`
+	TotalValue      float64  `json:"totalValue"`
+	TotalEquity     float64  `json:"totalEquity"`
+	TotalDebt       float64  `json:"totalDebt"`
+	AnnualCashFlow  float64  `json:"annualCashFlow"`
+	MonthlyCashFlow float64  `json:"monthlyCashFlow"`
 	Locations       []string `json:"locations"`
 	AvgCapRate      float64  `json:"avgCapRate"`
 }
@@ -310,18 +472,18 @@ type ExistingPortfolioSummary struct {
 // CombinedPortfolioMetrics shows before/after comparison
 type CombinedPortfolioMetrics struct {
 	// Before (existing)
-	ExistingPropertyCount  int `json:"existingPropertyCount"`
-	ExistingTotalValue     int `json:"existingTotalValue"`
-	ExistingAnnualCashFlow int `json:"existingAnnualCashFlow"`
+	ExistingPropertyCount  int     `json:"existingPropertyCount"`
+	ExistingTotalValue     float64 `json:"existingTotalValue"`
+	ExistingAnnualCashFlow float64 `json:"existingAnnualCashFlow"`
 
 	// After (existing + new)
-	CombinedPropertyCount  int `json:"combinedPropertyCount"`
-	CombinedTotalValue     int `json:"combinedTotalValue"`
-	CombinedAnnualCashFlow int `json:"combinedAnnualCashFlow"`
+	CombinedPropertyCount  int     `json:"combinedPropertyCount"`
+	CombinedTotalValue     float64 `json:"combinedTotalValue"`
+	CombinedAnnualCashFlow float64 `json:"combinedAnnualCashFlow"`
 
 	// Improvement
-	ValueIncrease              int     `json:"valueIncrease"`
-	CashFlowIncrease           int     `json:"cashFlowIncrease"`
+	ValueIncrease              float64 `json:"valueIncrease"`
+	CashFlowIncrease           float64 `json:"cashFlowIncrease"`
 	DiversificationImprovement float64 `json:"diversificationImprovement"`
 }
 
@@ -786,17 +948,19 @@ type PropertyThesis struct {
 
 // FrontierPoint represents one configuration on the efficient frontier
 type FrontierPoint struct {
-	ConfigIndex         int                     `json:"configIndex"`         // 0-4 for up to 5 points
-	Properties          []PropertyInPortfolio   `json:"properties"`          // 5-8 properties in this config
-	ExpectedReturn      float64                 `json:"expectedReturn"`      // Annual expected return (%)
-	PortfolioVolatility float64                 `json:"portfolioVolatility"` // Markowitz analytical volatility
-	SharpeScore         float64                 `json:"sharpeScore"`         // Risk-adjusted return score
-	ConcentrationIndex  float64                 `json:"concentrationIndex"`  // Weighted concentration metric
-	StressTestEquity    int                     `json:"stressTestEquity"`    // Final equity under stress scenario
-	SimulationResults   *SimulationResults      `json:"simulationResults"`   // Monte Carlo outcomes
-	ReinvestmentPlan    *DualTrackReinvestment  `json:"reinvestmentPlan"`    // Track A + Track B details
-	Scenarios           *ScenarioSet            `json:"scenarios,omitempty"` // Decision support scenarios (ADR-088 Phase 7)
-	DecisionVerdict     *DecisionVerdict        `json:"decisionVerdict,omitempty"` // AI recommendation (ADR-088 Phase 8)
+	ConfigIndex         int                       `json:"configIndex"`         // 0-4 for up to 5 points
+	Label               string                    `json:"label"`               // e.g. "Quality", "Income", "Balanced"
+	Properties          []PropertyInPortfolio     `json:"properties"`          // 5-8 properties in this config
+	ExpectedReturn      float64                   `json:"expectedReturn"`      // Annual expected return (%)
+	PortfolioVolatility float64                   `json:"portfolioVolatility"` // Markowitz analytical volatility
+	SharpeScore         float64                   `json:"sharpeScore"`         // Risk-adjusted return score
+	ConcentrationIndex  float64                   `json:"concentrationIndex"`  // Weighted concentration metric
+	StressTestEquity    int                       `json:"stressTestEquity"`    // Final equity under stress scenario
+	SimulationResults   *SimulationResults        `json:"simulationResults"`   // Monte Carlo outcomes
+	ReinvestmentPlan    *DualTrackReinvestment    `json:"reinvestmentPlan"`    // Track A + Track B details
+	Scenarios           *ScenarioSet              `json:"scenarios,omitempty"` // Decision support scenarios (ADR-088 Phase 7)
+	DecisionVerdict     *DecisionVerdict          `json:"decisionVerdict,omitempty"` // AI recommendation (ADR-088 Phase 8)
+	ExistingPortfolio   *ExistingPortfolioSummary `json:"existingPortfolio,omitempty"` // ADR-089 Phase 3: portfolio context summary
 }
 
 // SimulationResults holds Monte Carlo simulation outcomes

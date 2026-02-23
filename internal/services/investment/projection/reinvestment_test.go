@@ -11,7 +11,7 @@ import (
 
 func TestCalculateTrackA(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	rm := NewReinvestmentModeler(logger)
+	rm := NewReinvestmentModeler(logger, nil)
 
 	tests := []struct {
 		name           string
@@ -62,7 +62,7 @@ func TestCalculateTrackA(t *testing.T) {
 
 func TestCalculateTrackB_Placeholder(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	rm := NewReinvestmentModeler(logger)
+	rm := NewReinvestmentModeler(logger, nil)
 
 	config := &investment.FrontierPoint{
 		ConfigIndex: 0,
@@ -100,7 +100,7 @@ func TestCalculateTrackB_Placeholder(t *testing.T) {
 
 func TestCalculateReinvestmentPlan(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	rm := NewReinvestmentModeler(logger)
+	rm := NewReinvestmentModeler(logger, nil)
 
 	config := &investment.FrontierPoint{
 		ConfigIndex: 0,
@@ -152,7 +152,7 @@ func TestCalculateReinvestmentPlan(t *testing.T) {
 // TestCalculateTrackB_WithMCResults tests Track B calculation with Monte Carlo results
 func TestCalculateTrackB_WithMCResults(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	rm := NewReinvestmentModeler(logger)
+	rm := NewReinvestmentModeler(logger, nil)
 
 	config := &investment.FrontierPoint{
 		ConfigIndex: 0,
@@ -208,7 +208,7 @@ func TestCalculateTrackB_WithMCResults(t *testing.T) {
 
 func TestEstimatePropertyAge(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	pricer := NewAcquisitionPricer(logger)
+	pricer := NewAcquisitionPricer(logger, nil)
 
 	tests := []struct {
 		name            string
@@ -251,8 +251,8 @@ func TestEstimatePropertyAge(t *testing.T) {
 
 func TestCreateCohort(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	rm := NewReinvestmentModeler(logger)
-	pricer := NewAcquisitionPricer(logger)
+	rm := NewReinvestmentModeler(logger, nil)
+	pricer := NewAcquisitionPricer(logger, nil)
 
 	ctx := context.Background()
 
@@ -267,13 +267,13 @@ func TestCreateCohort(t *testing.T) {
 			name:                  "sufficient budget for multiple properties",
 			year:                  2,
 			budget:                300000, // $300K budget
-			expectedPropertyCount: 3,      // At $400K median, 20% down = $80K per property
+			expectedPropertyCount: 3,      // At $425K median, 20% down = $85K per property; 300K/85K = 3
 			shouldError:           false,
 		},
 		{
 			name:                  "minimal budget for one property",
 			year:                  3,
-			budget:                80000,  // Exactly 1 property
+			budget:                85000,  // At $425K median, 20% down = $85K for 1 property
 			expectedPropertyCount: 1,
 			shouldError:           false,
 		},
@@ -325,13 +325,13 @@ func TestCreateCohort(t *testing.T) {
 				t.Errorf("Track = %s, want A", cohort.Track)
 			}
 
-			// Verify median price/rent (placeholders)
-			if cohort.MedianPrice != 400000 {
-				t.Errorf("MedianPrice = %d, want 400000 (placeholder)", cohort.MedianPrice)
+			// Verify median price/rent (national fallback: $425K price, $1987 rent per US NAR 2025 data)
+			if cohort.MedianPrice != 425000 {
+				t.Errorf("MedianPrice = %d, want 425000 (national fallback)", cohort.MedianPrice)
 			}
 
-			if cohort.MedianRent != 2500 {
-				t.Errorf("MedianRent = %d, want 2500 (placeholder)", cohort.MedianRent)
+			if cohort.MedianRent != 1987 {
+				t.Errorf("MedianRent = %d, want 1987 (national fallback)", cohort.MedianRent)
 			}
 
 			// Verify property age

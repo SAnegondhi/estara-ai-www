@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -49,6 +50,15 @@ type FrontierRunRequest struct {
 	IncludePortfolio bool `json:"includePortfolio,omitempty"`
 	// ExistingPortfolio: the user's current portfolio data (populated by frontend).
 	ExistingPortfolio *investment.ExistingPortfolio `json:"existingPortfolio,omitempty"`
+	// Filters: property quality-gate criteria applied after auto-discovery.
+	// Only used when DiscoverySessionID is empty. Nil means use defaults.
+	Filters *investment.PropertyFilters `json:"filters,omitempty"`
+	// MinBeds: minimum number of bedrooms (passed to property search API). 0 = no minimum.
+	MinBeds int `json:"minBeds,omitempty"`
+	// MinBaths: minimum number of bathrooms (passed to property search API). 0 = no minimum.
+	MinBaths float64 `json:"minBaths,omitempty"`
+	// MinPrice: absolute minimum listing price in dollars. 0 = no minimum.
+	MinPrice int `json:"minPrice,omitempty"`
 }
 
 // RunFrontierPipeline is the Phase 12 full-pipeline endpoint.
@@ -127,6 +137,7 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 
 	var allProperties []investment.Property
 	var discoveryLocations []string // locations derived from property source
+	useAutoDiscover := req.DiscoverySessionID == ""
 
 	if req.DiscoverySessionID != "" {
 		// ADR-089: Use properties from a Discovery session — skip auto-discover
@@ -153,50 +164,61 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		allProperties = make([]investment.Property, 0, len(sessionProps))
-		locationSet := make(map[string]struct{})
-		for _, sp := range sessionProps {
-			loc := sp.City + ", " + sp.State
-			locationSet[loc] = struct{}{}
-
-			var lat, lng float64
-			if sp.Latitude.Valid {
-				_ = sp.Latitude.Scan(&lat)
+		if len(sessionProps) == 0 {
+			// No detailed properties stored — fallback to auto-discover using session location
+			if session.Location != "" {
+				emitProgress(5, fmt.Sprintf("No stored properties found, auto-discovering %s", session.Location))
+				req.Locations = []string{session.Location}
 			}
-			if sp.Longitude.Valid {
-				_ = sp.Longitude.Scan(&lng)
+			useAutoDiscover = true
+		} else {
+			allProperties = make([]investment.Property, 0, len(sessionProps))
+			locationSet := make(map[string]struct{})
+			for _, sp := range sessionProps {
+				loc := sp.City + ", " + sp.State
+				locationSet[loc] = struct{}{}
+
+				var lat, lng float64
+				if sp.Latitude.Valid {
+					_ = sp.Latitude.Scan(&lat)
+				}
+				if sp.Longitude.Valid {
+					_ = sp.Longitude.Scan(&lng)
+				}
+
+				var estimatedRent int
+				if sp.EstimatedRent.Valid {
+					estimatedRent = int(sp.EstimatedRent.Int32)
+				}
+
+				allProperties = append(allProperties, investment.Property{
+					ID:            sp.ListingId,
+					Address:       sp.Address,
+					City:          sp.City,
+					State:         sp.State,
+					ZipCode:       sp.ZipCode.String,
+					Price:         int(sp.Price),
+					Beds:          int(sp.Beds),
+					EstimatedRent: estimatedRent,
+					YearBuilt:     int(sp.YearBuilt.Int32),
+					PropertyType:  sp.PropertyType.String,
+					ListingURL:    sp.ListingSearchUrl.String,
+					ImageURL:      sp.ImageUrl.String,
+					DaysOnMarket:  int(sp.DaysOnMarket.Int32),
+					Latitude:      lat,
+					Longitude:     lng,
+				})
 			}
 
-			var estimatedRent int
-			if sp.EstimatedRent.Valid {
-				estimatedRent = int(sp.EstimatedRent.Int32)
+			for loc := range locationSet {
+				discoveryLocations = append(discoveryLocations, loc)
 			}
 
-			allProperties = append(allProperties, investment.Property{
-				ID:            sp.ListingId,
-				Address:       sp.Address,
-				City:          sp.City,
-				State:         sp.State,
-				ZipCode:       sp.ZipCode.String,
-				Price:         int(sp.Price),
-				Beds:          int(sp.Beds),
-				EstimatedRent: estimatedRent,
-				YearBuilt:     int(sp.YearBuilt.Int32),
-				PropertyType:  sp.PropertyType.String,
-				ListingURL:    sp.ListingSearchUrl.String,
-				ImageURL:      sp.ImageUrl.String,
-				DaysOnMarket:  int(sp.DaysOnMarket.Int32),
-				Latitude:      lat,
-				Longitude:     lng,
-			})
+			emitProgress(30, fmt.Sprintf("Loaded %d properties from Discovery session", len(allProperties)))
 		}
+	}
 
-		for loc := range locationSet {
-			discoveryLocations = append(discoveryLocations, loc)
-		}
-
-		emitProgress(30, fmt.Sprintf("Loaded %d properties from Discovery session", len(allProperties)))
-	} else {
+	if useAutoDiscover {
 		// Auto-discover: parallel search across all requested locations
 		emitProgress(0, fmt.Sprintf("Searching %d location(s)", len(req.Locations)))
 		discoveryLocations = req.Locations
@@ -245,7 +267,10 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 				resp, searchErr := h.propertyFinder.Search(ctx, providers.SearchParams{
 					City:     city,
 					State:    state,
+					MinPrice: req.MinPrice,
 					MaxPrice: maxPrice,
+					MinBeds:  req.MinBeds,
+					MinBaths: req.MinBaths,
 					Limit:    50,
 				})
 				if searchErr != nil {
@@ -317,6 +342,92 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 		}
 
 		emitProgress(30, fmt.Sprintf("Found %d properties across all locations", len(allProperties)))
+
+		// Apply quality filters (auto-discover only).
+		// Use strategy- and risk-tuned defaults unless the caller supplies explicit overrides.
+		filters := investment.DefaultPropertyFiltersForStrategy(
+			investment.InvestmentStrategy(req.Strategy),
+			investment.RiskTolerance(req.RiskTolerance),
+		)
+		if req.Filters != nil {
+			filters = *req.Filters
+		}
+
+		// Fetch market benchmarks (L0/L1/L2 cached) — one lookup per unique city.
+		// These provide authoritative CapRate and MedianRent so the cap-rate gate fires
+		// even when the property listing doesn't include EstimatedRent.
+		marketBenchmarks := h.buildMarketBenchmarks(ctx, allProperties)
+
+		// Apply quality gates with a graduated relaxation ladder.
+		// When the filtered pool is too small for frontier generation (< minPropertiesForFrontier),
+		// successive tiers drop one constraint at a time rather than abandoning all gates.
+		//
+		// Tier 0 (user / default):     full gates as configured
+		// Tier 1 (wider band):          cap rate ±2×, age 30 yr, price floor 0.4×
+		// Tier 2 (no cap rate):         cap rate gates off, age 40 yr, price floor 0.3×
+		// Tier 3 (age + price only):    cap rate off, age off, price floor 0.2×
+		// Tier 4 (price floor only):    only a soft price floor at 0.15× — never fully abandoned
+		const minPropertiesForFrontier = 5 // must match FrontierOptimizer.minProperties
+		type filterTier struct {
+			label   string
+			filters investment.PropertyFilters
+		}
+		ladder := []filterTier{
+			{"full", filters},
+			{"wider cap-rate band", investment.PropertyFilters{
+				MaxCapRateMultiplier: 2.0,
+				MinCapRateMultiplier: 0.5,
+				MinPriceMultiplier:   0.4,
+				MaxPropertyAgeYears:  30,
+			}},
+			{"cap-rate gates off", investment.PropertyFilters{
+				MaxCapRateMultiplier: 0,
+				MinCapRateMultiplier: 0,
+				MinPriceMultiplier:   0.3,
+				MaxPropertyAgeYears:  40,
+			}},
+			{"age gate off", investment.PropertyFilters{
+				MaxCapRateMultiplier: 0,
+				MinCapRateMultiplier: 0,
+				MinPriceMultiplier:   0.2,
+				MaxPropertyAgeYears:  0,
+			}},
+			{"price floor only", investment.PropertyFilters{
+				MaxCapRateMultiplier: 0,
+				MinCapRateMultiplier: 0,
+				MinPriceMultiplier:   0.15,
+				MaxPropertyAgeYears:  0,
+			}},
+		}
+
+		var finalFiltered []investment.Property
+		var appliedTier string
+		for _, tier := range ladder {
+			f, _ := investment.ApplyPropertyFiltersWithBenchmarks(allProperties, tier.filters, marketBenchmarks)
+			if len(f) >= minPropertiesForFrontier {
+				finalFiltered = f
+				appliedTier = tier.label
+				break
+			}
+		}
+
+		if len(finalFiltered) >= minPropertiesForFrontier {
+			rejected := len(allProperties) - len(finalFiltered)
+			allProperties = finalFiltered
+			if appliedTier == "full" {
+				emitProgress(30, fmt.Sprintf("%d properties passed quality gates (%d rejected)", len(allProperties), rejected))
+			} else {
+				h.logger.Warn("quality gates relaxed to meet minimum pool size",
+					"tier", appliedTier,
+					"total", len(allProperties)+rejected,
+					"passed", len(allProperties),
+					"min_required", minPropertiesForFrontier,
+				)
+				emitProgress(30, fmt.Sprintf("%d properties after relaxed quality gates (%s, %d rejected)", len(allProperties), appliedTier, rejected))
+			}
+		}
+		// If no tier yields enough properties, proceed with the full unfiltered pool.
+		// This is the last resort — something is better than a hard failure.
 	}
 
 	if len(allProperties) == 0 {
@@ -389,9 +500,39 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 	emitProgress(60, fmt.Sprintf("Scored %d properties", len(scoredProperties)))
 
 	// ----------------------------------------------------------------
+	// Phase 2b: Build per-config property cohorts (ADR-090).
+	// FilterAffordable removes individually unaffordable properties, then
+	// three independent pipelines (Quality, Income, Balanced) each rank
+	// the affordable pool by their own criteria and produce distinct cohorts.
+	// ----------------------------------------------------------------
+	cohorts := investment.BuildCohorts(
+		scoredProperties,
+		investment.InvestmentStrategy(req.Strategy),
+		investment.RiskTolerance(req.RiskTolerance),
+		req.Budget,
+		req.MortgageRate,
+		req.DownPaymentPct,
+	)
+	if len(cohorts) == 0 {
+		// All properties are individually unaffordable — surface a clear error.
+		_ = sseWriter.WriteEventJSON("error", map[string]string{
+			"error":   "budget_insufficient",
+			"message": "No properties fit within your capital budget. Try increasing your budget or down payment percentage.",
+		})
+		return
+	}
+	// Log cohort sizes for observability.
+	for _, c := range cohorts {
+		h.logger.Info("built property cohort",
+			"label", c.Label,
+			"size", len(c.Properties),
+		)
+	}
+
+	// ----------------------------------------------------------------
 	// Phase 3: Frontier Generation (60–100%) — with granular progress ticker
 	// ----------------------------------------------------------------
-	emitProgress(60, "Running frontier analysis")
+	emitProgress(62, "Running frontier analysis")
 
 	// Ticker covers the gap when the optimizer doesn't call ProgressFunc frequently.
 	frontierDone := make(chan struct{})
@@ -427,6 +568,7 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 		Locations:         discoveryLocations, // ADR-089: use locations from property source
 		Budget:            req.Budget,
 		DownPaymentPct:    req.DownPaymentPct,
+		MortgageRate:      req.MortgageRate,      // ADR-089 Phase 3: pass actual mortgage rate
 		Strategy:          investment.InvestmentStrategy(req.Strategy),
 		RiskTolerance:     investment.RiskTolerance(req.RiskTolerance),
 		MaxProperties:     10,
@@ -446,7 +588,7 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 
 	frontierPoints, err := h.frontierOptimizer.GenerateFrontier(
 		ctx,
-		scoredProperties,
+		cohorts,
 		profile,
 		params,
 		optimization.ProgressFunc(frontierProgress),
@@ -470,4 +612,66 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 		GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
 		DurationMs:     time.Since(startTime).Milliseconds(),
 	})
+}
+
+// buildMarketBenchmarks fetches per-location market benchmarks (L0/L1/L2 cached)
+// for every unique city in the property pool. One aggregator call per unique city.
+// Also fetches HUD FMR by bedroom count via MetroReader when available.
+// Returns an empty map (no-op) when h.marketData is nil.
+func (h *Handler) buildMarketBenchmarks(ctx context.Context, props []investment.Property) map[string]investment.MarketFilterBenchmark {
+	result := make(map[string]investment.MarketFilterBenchmark)
+	if h.marketData == nil {
+		return result
+	}
+
+	// Collect unique city|state keys
+	seen := make(map[string]struct{})
+	for _, p := range props {
+		key := p.City + "|" + p.State
+		seen[key] = struct{}{}
+	}
+
+	for key := range seen {
+		parts := strings.SplitN(key, "|", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		city, state := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		if city == "" || state == "" {
+			continue
+		}
+
+		mkt, err := h.marketData.GetMarketData(ctx, city, state)
+		if err != nil || mkt == nil {
+			h.logger.Debug("market benchmark unavailable, using pool fallback",
+				"city", city, "state", state, "err", err)
+			result[key] = investment.MarketFilterBenchmark{HasData: false}
+			continue
+		}
+
+		bench := investment.MarketFilterBenchmark{
+			MedianPrice: float64(mkt.MedianHomePrice),
+			MedianRent:  float64(mkt.MedianRent),
+			CapRate:     mkt.CapRate,
+			HasData:     true,
+		}
+
+		// Enrich with HUD FMR by bedroom count for size-adjusted rent estimation.
+		// GetCitySnapshot reads city_market_cache which is already cached at the DB level.
+		if h.metroReader != nil {
+			if snap, snapErr := h.metroReader.GetCitySnapshot(ctx, city, state); snapErr == nil && snap != nil {
+				bench.FMRByBeds = [5]float64{
+					snap.HudFMR0BR,
+					snap.HudFMR1BR,
+					snap.HudFMR2BR,
+					snap.HudFMR3BR,
+					snap.HudFMR4BR,
+				}
+			}
+		}
+
+		result[key] = bench
+	}
+
+	return result
 }

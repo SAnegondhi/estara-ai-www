@@ -1375,6 +1375,94 @@ func (h *Handler) GetRecords(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusOK, response)
 }
 
+// EvaluationListItem is a compact view of a v2_evaluation for use in property pickers.
+type EvaluationListItem struct {
+	ID               string  `json:"id"`
+	PropertyID       string  `json:"propertyId"`
+	Address          string  `json:"address"`
+	City             string  `json:"city"`
+	State            string  `json:"state"`
+	ZipCode          *string `json:"zipCode,omitempty"`
+	PurchasePrice    float64 `json:"purchasePrice"`
+	MonthlyRent      float64 `json:"monthlyRent"`
+	HasDecisionMemo  bool    `json:"hasDecisionMemo"`
+	DecisionRecordID *string `json:"decisionRecordId,omitempty"`
+	CreatedAt        string  `json:"createdAt"`
+}
+
+type EvaluationListResponse struct {
+	Success     bool                 `json:"success"`
+	Evaluations []EvaluationListItem `json:"evaluations"`
+	Pagination  RecordsPagination    `json:"pagination"`
+}
+
+// ListEvaluations handles GET /api/v2/evaluate/list
+// Returns the user's v2_evaluations with a flag indicating whether a decision memo exists.
+func (h *Handler) ListEvaluations(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	user := middleware.GetUserFromContext(ctx)
+	if user == nil {
+		httputil.Error(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	uid := user.UserID
+
+	limit := httputil.GetQueryParamInt(r, "limit", 50)
+	if limit > 200 {
+		limit = 200
+	}
+	offset := httputil.GetQueryParamInt(r, "offset", 0)
+
+	rows, err := h.store.Q().GetEvaluationsWithDecisionRecords(ctx, queries.GetEvaluationsWithDecisionRecordsParams{
+		UserID: uid,
+		Limit:  int32(limit),
+		Offset: int32(offset),
+	})
+	if err != nil {
+		h.logger.Error("failed to list evaluations", "error", err, "userId", uid)
+		httputil.JSON(w, http.StatusOK, EvaluationListResponse{
+			Success:     true,
+			Evaluations: []EvaluationListItem{},
+			Pagination:  RecordsPagination{Total: 0, Limit: limit, Offset: offset},
+		})
+		return
+	}
+
+	items := make([]EvaluationListItem, 0, len(rows))
+	for _, row := range rows {
+		item := EvaluationListItem{
+			ID:            row.ID,
+			PropertyID:    row.PropertyID,
+			Address:       row.PropertyAddress,
+			City:          row.PropertyCity,
+			State:         row.PropertyState,
+			PurchasePrice: row.PurchasePrice,
+			MonthlyRent:   row.MonthlyRent,
+			CreatedAt:     row.CreatedAt.Time.Format(time.RFC3339),
+		}
+		if row.PropertyZip.Valid {
+			item.ZipCode = &row.PropertyZip.String
+		}
+		if row.DecisionRecordID.Valid {
+			item.HasDecisionMemo = true
+			item.DecisionRecordID = &row.DecisionRecordID.String
+		}
+		items = append(items, item)
+	}
+
+	httputil.JSON(w, http.StatusOK, EvaluationListResponse{
+		Success:     true,
+		Evaluations: items,
+		Pagination: RecordsPagination{
+			Total:   len(items), // approximate — use count query if needed
+			Limit:   limit,
+			Offset:  offset,
+			HasMore: len(items) == limit,
+		},
+	})
+}
+
 // recordSearchMetrics persists property finder search metrics to the database.
 func (h *Handler) recordSearchMetrics(userID, sessionID, location string, metrics finder.SearchMetrics) {
 	if h.store == nil {

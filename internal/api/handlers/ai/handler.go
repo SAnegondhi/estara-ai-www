@@ -33,7 +33,9 @@ import (
 	"github.com/estara-ai/www/internal/services/investment/optimization"
 	"github.com/estara-ai/www/internal/services/jobs/queue"
 	"github.com/estara-ai/www/internal/services/property/finder"
+	"github.com/estara-ai/www/internal/services/market/aggregator"
 	"github.com/estara-ai/www/internal/services/market/economics"
+	"github.com/estara-ai/www/internal/services/market/timeseries"
 	"github.com/estara-ai/www/pkg/httputil"
 	"github.com/estara-ai/www/pkg/sse"
 )
@@ -55,6 +57,10 @@ type Handler struct {
 	// ADR-088 Phase 12: Full pipeline (discover → score → frontier) for /run endpoint
 	investmentOptimizer *optimization.Service
 	propertyFinder      *finder.Orchestrator
+	// Market data aggregator (L0/L1/L2 caching) — used for quality-gate benchmarks
+	marketData *aggregator.Aggregator
+	// MetroReader provides city snapshots including HUD FMR by bedroom count
+	metroReader *timeseries.MetroReader
 }
 
 // NewHandler creates a new AI handler
@@ -98,6 +104,18 @@ func (h *Handler) WithInvestmentOptimizer(svc *optimization.Service) *Handler {
 // WithPropertyFinder injects the property finder for ADR-088 Phase 12 /run endpoint.
 func (h *Handler) WithPropertyFinder(f *finder.Orchestrator) *Handler {
 	h.propertyFinder = f
+	return h
+}
+
+// WithMarketData injects the market data aggregator (L0/L1/L2 caching) for quality-gate benchmarks.
+func (h *Handler) WithMarketData(md *aggregator.Aggregator) *Handler {
+	h.marketData = md
+	return h
+}
+
+// WithMetroReader injects the metro reader for HUD FMR by bedroom count in quality-gate benchmarks.
+func (h *Handler) WithMetroReader(mr *timeseries.MetroReader) *Handler {
+	h.metroReader = mr
 	return h
 }
 

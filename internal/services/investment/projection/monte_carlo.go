@@ -105,12 +105,24 @@ func (mcs *MonteCarloSimulator) simulatePath(
 
 	yearlyOutcomes := make([]investment.YearOutcome, mcs.projectionYears)
 
-	// Initialize portfolio state
+	// Initialize portfolio state from new frontier properties
 	portfolioValue := 0
 	totalLoanBalance := 0
 	for _, prop := range config.Properties {
 		portfolioValue += prop.Property.Price
 		totalLoanBalance += prop.LoanAmount
+	}
+
+	// Add existing portfolio as starting baseline (ADR-089: combined portfolio projections)
+	// Existing equity and ongoing cash flows are included so projections show the full picture.
+	existingPortfolioValue := 0   // appreciates each year alongside new properties
+	existingAnnualCashFlow := 0   // existing net cash flow added to each year's cash flow
+	if config.ExistingPortfolio != nil {
+		existingPortfolioValue = int(config.ExistingPortfolio.TotalValue)
+		existingLoanBalance := int(config.ExistingPortfolio.TotalDebt)
+		existingAnnualCashFlow = int(config.ExistingPortfolio.AnnualCashFlow)
+		portfolioValue += existingPortfolioValue
+		totalLoanBalance += existingLoanBalance
 	}
 
 	cumulativeCashFlow := 0
@@ -121,7 +133,7 @@ func (mcs *MonteCarloSimulator) simulatePath(
 		// Generate correlated market shocks for this year
 		shocks := mcs.generateCorrelatedShocks(cholesky, len(config.Properties))
 
-		// Apply market shocks to property values
+		// Apply market shocks to new property values
 		yearAppreciation := 0
 		for i, prop := range config.Properties {
 			// Log-normal appreciation shock
@@ -131,6 +143,17 @@ func (mcs *MonteCarloSimulator) simulatePath(
 			)
 			propAppreciation := int(float64(prop.Property.Price) * appreciationRate)
 			yearAppreciation += propAppreciation
+		}
+		// Apply average appreciation shock to existing portfolio (same market-level movement)
+		if existingPortfolioValue > 0 && len(shocks) > 0 {
+			avgShock := 0.0
+			for si := 0; si < len(shocks); si += 2 {
+				avgShock += shocks[si]
+			}
+			avgShock /= float64(len(shocks) / 2)
+			existingAppreciationRate := mcs.sampleLogNormal(0.04, avgShock)
+			yearAppreciation += int(float64(existingPortfolioValue) * existingAppreciationRate)
+			existingPortfolioValue = int(float64(existingPortfolioValue) * (1 + existingAppreciationRate))
 		}
 		portfolioValue += yearAppreciation
 
@@ -160,8 +183,8 @@ func (mcs *MonteCarloSimulator) simulatePath(
 		}
 		totalLoanBalance -= principalPaid
 
-		// Net cash flow for the year
-		yearCashFlow := yearRent - yearExpenses - yearMortgagePayment
+		// Net cash flow for the year (new properties + existing portfolio baseline)
+		yearCashFlow := yearRent - yearExpenses - yearMortgagePayment + existingAnnualCashFlow
 		cumulativeCashFlow += yearCashFlow
 
 		// Track cumulative cash for Track B threshold detection

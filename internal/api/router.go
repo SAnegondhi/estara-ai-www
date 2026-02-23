@@ -101,7 +101,9 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		AI: ai.NewHandler(store, redis, cfg, svc.ChatAgent, svc.JobQueue, svc.EconomicsAggregator).
 			WithFrontierOptimizer(svc.FrontierOptimizer).          // ADR-088 Phase 9
 			WithInvestmentOptimizer(svc.InvestmentOptimizer).      // ADR-088 Phase 12
-			WithPropertyFinder(svc.PropertyFinder),                // ADR-088 Phase 12
+			WithPropertyFinder(svc.PropertyFinder).                // ADR-088 Phase 12
+			WithMarketData(svc.MarketData).                        // Quality-gate market benchmarks
+			WithMetroReader(svc.MetroReader),                      // HUD FMR by bedroom count
 		Portfolio:     portfolio.NewHandler(store, cfg),
 		Admin:         admin.NewHandler(store, redis, cfg, authMiddleware),
 		Cron:          cron.NewHandler(store, redis, cfg),
@@ -316,6 +318,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	r.Route("/api/v2/evaluate", func(r chi.Router) {
 		r.Use(authMiddleware.Authenticate)
 		r.Use(rateLimiter.Limit)
+		r.Get("/list", handlers.Discover.ListEvaluations)
 		r.Post("/batch", handlers.Discover.BatchEvaluate)
 		r.Post("/batch/export", handlers.Discover.ExportBatchEvaluations)
 	})

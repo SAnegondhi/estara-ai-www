@@ -72,14 +72,17 @@ type PortfolioConfiguration struct {
 	Rank               int
 	DominationCount    int // Number of solutions this dominates
 	DominatedBy        int // Number of solutions that dominate this
+	Label              string // "Quality", "Income", or "Balanced" — set by createConfiguration
 }
 
 // GenerateFrontier generates 3-5 Pareto-optimal portfolio configurations.
 // ADR-088 Phase 3: Multi-objective NSGA-II-inspired algorithm.
+// ADR-090: accepts []PropertyCohort from BuildCohorts; each cohort drives a distinct
+// set of candidate configurations so frontier points are meaningfully differentiated.
 // progress may be nil; when provided it receives 8-phase updates for SSE streaming (Phase 9).
 func (fo *FrontierOptimizer) GenerateFrontier(
 	ctx context.Context,
-	properties []investment.ScoredProperty,
+	cohorts []investment.PropertyCohort,
 	profile investment.InvestorProfile,
 	params investment.InvestmentPlanningParams,
 	progress ProgressFunc,
@@ -92,55 +95,78 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 	}
 
 	reportProgress(1, "Validating input properties")
+
+	// Validate: at least one cohort must have enough properties for a minimum portfolio.
+	maxCohortSize := 0
+	for _, c := range cohorts {
+		if len(c.Properties) > maxCohortSize {
+			maxCohortSize = len(c.Properties)
+		}
+	}
+	if maxCohortSize < fo.minProperties {
+		return nil, fmt.Errorf("insufficient properties: need at least %d per cohort, largest has %d", fo.minProperties, maxCohortSize)
+	}
+
 	fo.logger.Info("generating efficient frontier",
-		"totalProperties", len(properties),
+		"cohorts", len(cohorts),
+		"maxCohortSize", maxCohortSize,
 		"minPerConfig", fo.minProperties,
 		"maxPerConfig", fo.maxProperties,
 		"targetConfigs", fo.numConfigurations,
 	)
 
-	if len(properties) < fo.minProperties {
-		return nil, fmt.Errorf("insufficient properties: need at least %d, got %d", fo.minProperties, len(properties))
-	}
-
-	// Step 1: Generate candidate configurations with varying sizes
+	// Step 1: Generate candidate configurations from each cohort at varying sizes.
+	// ADR-090: each cohort's pre-ranked properties produce size variants (5-8 props).
 	reportProgress(2, "Generating candidate portfolio configurations")
-	candidates := fo.generateCandidates(properties, profile)
+	candidates := fo.generateCandidatesFromCohorts(cohorts)
 	fo.logger.Info("generated candidate configurations", "count", len(candidates))
 
-	// Step 2: Evaluate all objectives for each candidate
-	// ADR-089 Phase 5: pass ExistingPortfolio so concentration penalises market overlap with existing holdings
+	// Step 2: Evaluate all objectives for each candidate.
+	// ADR-089 Phase 5: pass ExistingPortfolio so concentration penalises market overlap.
+	// ADR-090: profile.Strategy and profile.RiskTolerance feed into expected-return weights
+	// and risk-adjusted Sharpe calculation.
 	reportProgress(3, "Evaluating multi-objective portfolio metrics")
 	for i := range candidates {
-		fo.evaluateObjectives(&candidates[i], profile, params.ExistingPortfolio)
+		fo.evaluateObjectives(&candidates[i], profile, params.ExistingPortfolio, 4.0) // 4% default appreciation — Phase 6 will use market data
 	}
 
-	// Step 3: Apply Pareto dominance to find non-dominated solutions
+	// Step 3: Apply Pareto dominance to find non-dominated solutions.
 	reportProgress(4, "Finding Pareto-optimal configurations")
 	nonDominated := fo.findNonDominatedSolutions(candidates)
 	fo.logger.Info("found non-dominated solutions", "count", len(nonDominated))
 
-	// Step 4: Rank by Sharpe ratio and select top configurations
+	// Step 4: Rank by Sharpe ratio and select top configurations.
 	frontierConfigs := fo.selectFrontierPoints(nonDominated, fo.numConfigurations)
 
-	// Build score and thesis lookups so PropertyInPortfolio is fully populated.
-	scoreByID := make(map[string]float64, len(properties))
-	thesisByID := make(map[string]*investment.PropertyThesis, len(properties))
-	for _, sp := range properties {
-		scoreByID[sp.Property.ID] = sp.OverallScore
-		if sp.Thesis != nil {
-			thesisByID[sp.Property.ID] = sp.Thesis
+	// Build score and thesis lookups from all cohorts so PropertyInPortfolio is fully populated.
+	scoreByID := make(map[string]float64)
+	thesisByID := make(map[string]*investment.PropertyThesis)
+	for _, cohort := range cohorts {
+		for _, rp := range cohort.Properties {
+			scoreByID[rp.Property.ID] = rp.OverallScore
+			if rp.Thesis != nil {
+				thesisByID[rp.Property.ID] = rp.Thesis
+			}
 		}
+	}
+
+	// Compute existing portfolio summary once (shared across all frontier points)
+	// ADR-089 Phase 3: attach to each FrontierPoint so the frontend can display portfolio context
+	var existingPortfolioSummary *investment.ExistingPortfolioSummary
+	if params.ExistingPortfolio != nil && len(params.ExistingPortfolio.Properties) > 0 {
+		existingPortfolioSummary = fo.summarizeExistingPortfolio(params.ExistingPortfolio)
 	}
 
 	// Step 5-8: Convert to FrontierPoint format with financial projections
 	reportProgress(5, "Calculating reinvestment plans")
 	frontierPoints := make([]investment.FrontierPoint, 0, len(frontierConfigs))
 	for i, config := range frontierConfigs {
-		portfolioProps := fo.buildPortfolioProperties(config.Properties, scoreByID, thesisByID)
+		portfolioProps := fo.buildPortfolioProperties(config.Properties, scoreByID, thesisByID, params)
 
 		// Run phases 5-8 (Reinvestment → MC → Scenarios → Verdict)
-		fp := fo.regenerateConfigPhases(ctx, i, portfolioProps, config, profile, params, progress)
+		// Pass existingPortfolioSummary so MC and scenario projections include existing holdings
+		fp := fo.regenerateConfigPhases(ctx, i, portfolioProps, config, profile, params, existingPortfolioSummary, progress)
+		fp.ExistingPortfolio = existingPortfolioSummary // ADR-089 Phase 3
 		frontierPoints = append(frontierPoints, fp)
 	}
 
@@ -155,24 +181,38 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 
 // buildPortfolioProperties converts Property slice to PropertyInPortfolio.
 // scoreByID maps property ID → OverallScore; thesisByID maps ID → PropertyThesis.
-// Defaults: 7% mortgage rate, 25% down payment, 30-year term.
+// Uses mortgage rate and down payment from params; falls back to 7% / 25% if zero.
 func (fo *FrontierOptimizer) buildPortfolioProperties(
 	scoredProps []investment.Property,
 	scoreByID map[string]float64,
 	thesisByID map[string]*investment.PropertyThesis,
+	params investment.InvestmentPlanningParams,
 ) []investment.PropertyInPortfolio {
-	mortgageRate := 7.0
-	downPaymentPct := 0.25
+	mortgageRate := params.MortgageRate * 100 // params stores as decimal (e.g. 0.075), need %
+	if mortgageRate <= 0 {
+		mortgageRate = 7.0 // fallback
+	}
+	downPaymentPct := params.DownPaymentPct
+	if downPaymentPct <= 0 {
+		downPaymentPct = 0.25 // fallback
+	}
 
 	props := make([]investment.PropertyInPortfolio, 0, len(scoredProps))
 	for _, prop := range scoredProps {
 		downPayment := int(float64(prop.Price) * downPaymentPct)
 		loanAmount := prop.Price - downPayment
 		monthlyPayment := fo.calculateMortgagePayment(loanAmount, mortgageRate, 30)
-		monthlyCashFlow := prop.EstimatedRent - monthlyPayment - 500 // $500/mo expenses estimate
-		capRate := float64(prop.EstimatedRent*12) / float64(prop.Price) * 100
+		// Age-adjusted NOI: apply expense ratio that incorporates CapEx reserves.
+		expRatio := investment.ExpenseRatioForAge(prop.YearBuilt)
+		monthlyNOI := int(float64(prop.EstimatedRent) * (1 - expRatio))
+		monthlyCashFlow := monthlyNOI - monthlyPayment
+		capRate := investment.CapRatePct(prop.EstimatedRent, prop.Price, prop.YearBuilt)
 		cashOnCash := float64(monthlyCashFlow*12) / float64(downPayment) * 100
-		dscr := float64(prop.EstimatedRent) / float64(monthlyPayment)
+		// DSCR = NOI / Debt Service (correct formula uses NOI, not gross rent)
+		dscr := 0.0
+		if monthlyPayment > 0 {
+			dscr = float64(monthlyNOI) / float64(monthlyPayment)
+		}
 
 		props = append(props, investment.PropertyInPortfolio{
 			Property:        prop,
@@ -199,16 +239,22 @@ func (fo *FrontierOptimizer) regenerateConfigPhases(
 	config PortfolioConfiguration,
 	profile investment.InvestorProfile,
 	params investment.InvestmentPlanningParams,
+	existingPortfolio *investment.ExistingPortfolioSummary,
 	progress ProgressFunc,
 ) investment.FrontierPoint {
 	const totalPhases = 8
 
+	// configPoint is the shared FrontierPoint passed to MC / scenario / verdict.
+	// Populate ExistingPortfolio now so all downstream phases see the combined portfolio.
+	configPoint := &investment.FrontierPoint{
+		ConfigIndex:       configIndex,
+		Properties:        properties,
+		ExistingPortfolio: existingPortfolio,
+	}
+
 	// ADR-088 Phase 6.2: Two-phase MC + Reinvestment pipeline
 	// Phase 1: Create preliminary reinvestment plan (Track A + Track B threshold)
-	preliminaryPlan, err := fo.reinvestModeler.CalculateReinvestmentPlan(ctx, &investment.FrontierPoint{
-		ConfigIndex: configIndex,
-		Properties:  properties,
-	}, params, nil) // nil mcResults = placeholder Track B values
+	preliminaryPlan, err := fo.reinvestModeler.CalculateReinvestmentPlan(ctx, configPoint, params, nil) // nil mcResults = placeholder Track B values
 	if err != nil {
 		fo.logger.Warn("failed to calculate preliminary reinvestment plan, using nil",
 			"configIndex", configIndex,
@@ -223,10 +269,7 @@ func (fo *FrontierOptimizer) regenerateConfigPhases(
 	}
 	var mcResults *investment.SimulationResults
 	if fo.mcSimulator != nil && preliminaryPlan != nil {
-		mcResults, err = fo.mcSimulator.SimulateConfiguration(ctx, &investment.FrontierPoint{
-			ConfigIndex: configIndex,
-			Properties:  properties,
-		}, preliminaryPlan)
+		mcResults, err = fo.mcSimulator.SimulateConfiguration(ctx, configPoint, preliminaryPlan)
 		if err != nil {
 			fo.logger.Warn("Monte Carlo simulation failed, using nil results",
 				"configIndex", configIndex,
@@ -239,10 +282,7 @@ func (fo *FrontierOptimizer) regenerateConfigPhases(
 	// Phase 3: Update reinvestment plan with MC-derived Track B statistics
 	var reinvestPlan *investment.DualTrackReinvestment
 	if mcResults != nil {
-		reinvestPlan, err = fo.reinvestModeler.CalculateReinvestmentPlan(ctx, &investment.FrontierPoint{
-			ConfigIndex: configIndex,
-			Properties:  properties,
-		}, params, mcResults) // Pass MC results for Track B statistics
+		reinvestPlan, err = fo.reinvestModeler.CalculateReinvestmentPlan(ctx, configPoint, params, mcResults) // Pass MC results for Track B statistics
 		if err != nil {
 			fo.logger.Warn("failed to update reinvestment plan with MC results, using preliminary",
 				"configIndex", configIndex,
@@ -260,10 +300,7 @@ func (fo *FrontierOptimizer) regenerateConfigPhases(
 	}
 	var scenarios *investment.ScenarioSet
 	if fo.scenarioGenerator != nil && mcResults != nil {
-		scenarios, err = fo.scenarioGenerator.GenerateScenarios(ctx, mcResults, &investment.FrontierPoint{
-			ConfigIndex: configIndex,
-			Properties:  properties,
-		})
+		scenarios, err = fo.scenarioGenerator.GenerateScenarios(ctx, mcResults, configPoint)
 		if err != nil {
 			fo.logger.Warn("failed to generate scenarios, using nil",
 				"configIndex", configIndex,
@@ -279,16 +316,14 @@ func (fo *FrontierOptimizer) regenerateConfigPhases(
 	}
 	var decisionVerdict *investment.DecisionVerdict
 	if fo.verdictGenerator != nil && scenarios != nil {
-		decisionVerdict, err = fo.verdictGenerator.GenerateVerdict(ctx, &investment.FrontierPoint{
-			ConfigIndex:         configIndex,
-			Properties:          properties,
-			ExpectedReturn:      config.Objectives.ExpectedReturn,
-			PortfolioVolatility: config.Objectives.PortfolioVolatility,
-			SharpeScore:         config.SharpeScore,
-			ConcentrationIndex:  config.Objectives.ConcentrationIndex,
-			Scenarios:           scenarios,
-			ReinvestmentPlan:    reinvestPlan,
-		}, profile, 0) // wealth target = 0 (no target for now)
+		// Populate verdict config with full context (scenarios, objectives, existing portfolio)
+		configPoint.ExpectedReturn = config.Objectives.ExpectedReturn
+		configPoint.PortfolioVolatility = config.Objectives.PortfolioVolatility
+		configPoint.SharpeScore = config.SharpeScore
+		configPoint.ConcentrationIndex = config.Objectives.ConcentrationIndex
+		configPoint.Scenarios = scenarios
+		configPoint.ReinvestmentPlan = reinvestPlan
+		decisionVerdict, err = fo.verdictGenerator.GenerateVerdict(ctx, configPoint, profile, 0) // wealth target = 0 (no target for now)
 		if err != nil {
 			fo.logger.Warn("failed to generate verdict, using nil",
 				"configIndex", configIndex,
@@ -300,6 +335,7 @@ func (fo *FrontierOptimizer) regenerateConfigPhases(
 
 	return investment.FrontierPoint{
 		ConfigIndex:         configIndex,
+		Label:               config.Label,
 		Properties:          properties,
 		ExpectedReturn:      config.Objectives.ExpectedReturn,
 		PortfolioVolatility: config.Objectives.PortfolioVolatility,
@@ -316,6 +352,8 @@ func (fo *FrontierOptimizer) regenerateConfigPhases(
 // Recalculate re-runs phases 5-8 (Reinvestment, MC, Scenarios, Verdict) on existing frontier
 // configurations with updated assumption overrides. This is the fast path for the interactive
 // workspace sliders (ADR-088 Phase 9): skips property selection and Markowitz optimization.
+// Phase C: re-evaluates Markowitz objectives so ExpectedReturn/Sharpe/Volatility reflect the
+// new assumptions (appreciation rate override, recalculated NOI from mortgage rate override).
 func (fo *FrontierOptimizer) Recalculate(
 	ctx context.Context,
 	existing []investment.FrontierPoint,
@@ -327,31 +365,49 @@ func (fo *FrontierOptimizer) Recalculate(
 		return nil, fmt.Errorf("no frontier configurations provided for recalculation")
 	}
 
-	// Apply assumption overrides to params
-	if overrides.MortgageRate != nil {
-		// Mortgage rate affects property-level financial calculations below
+	// Determine effective appreciation rate for objective re-evaluation.
+	appreciationRate := 4.0 // default (matches GenerateFrontier)
+	if overrides.AppreciationRate != nil {
+		appreciationRate = *overrides.AppreciationRate
 	}
 
 	results := make([]investment.FrontierPoint, 0, len(existing))
 	for _, fp := range existing {
-		// Rebuild portfolio properties with new mortgage rate (if provided)
+		// Rebuild portfolio properties with new mortgage rate (if provided).
+		// Phase C: applyMortgageRateOverride now uses proper NOI formula.
 		properties := fp.Properties
 		if overrides.MortgageRate != nil {
 			properties = fo.applyMortgageRateOverride(fp.Properties, *overrides.MortgageRate)
 		}
 
-		// Reconstruct a minimal PortfolioConfiguration from FrontierPoint for regenerateConfigPhases
+		// Reconstruct PortfolioConfiguration with actual Properties and Weights so
+		// evaluateObjectives can re-compute Markowitz metrics from scratch.
+		rawProps := make([]investment.Property, len(properties))
+		totalValue := 0
+		for i, pip := range properties {
+			rawProps[i] = pip.Property
+			totalValue += pip.Property.Price
+		}
+		weights := make([]float64, len(rawProps))
+		for i, p := range rawProps {
+			if totalValue > 0 {
+				weights[i] = float64(p.Price) / float64(totalValue)
+			}
+		}
 		config := PortfolioConfiguration{
-			Objectives: OptimizationObjectives{
-				ExpectedReturn:      fp.ExpectedReturn,
-				PortfolioVolatility: fp.PortfolioVolatility,
-				ConcentrationIndex:  fp.ConcentrationIndex,
-				StressTestEquity:    fp.StressTestEquity,
-			},
-			SharpeScore: fp.SharpeScore,
+			Properties: rawProps,
+			Weights:    weights,
+			Label:      fp.Label,
 		}
 
-		updated := fo.regenerateConfigPhases(ctx, fp.ConfigIndex, properties, config, profile, params, nil)
+		// Re-evaluate Markowitz objectives with the updated property set and appreciation rate.
+		// Pass nil for existingPortfolio: fp.ExistingPortfolio is *ExistingPortfolioSummary
+		// (a condensed summary), not *ExistingPortfolio (full type). The concentration index
+		// change from a mortgage-rate override is negligible so omitting portfolio context here
+		// is correct — the original Pareto geometry is preserved.
+		fo.evaluateObjectives(&config, profile, nil, appreciationRate)
+
+		updated := fo.regenerateConfigPhases(ctx, fp.ConfigIndex, properties, config, profile, params, fp.ExistingPortfolio, nil)
 		results = append(results, updated)
 	}
 
@@ -366,6 +422,7 @@ func (fo *FrontierOptimizer) Recalculate(
 }
 
 // applyMortgageRateOverride rebuilds PropertyInPortfolio metrics using the new mortgage rate.
+// Phase C: uses expense-ratio NOI formula matching buildPortfolioProperties (no flat $500 estimate).
 func (fo *FrontierOptimizer) applyMortgageRateOverride(
 	existing []investment.PropertyInPortfolio,
 	mortgageRate float64,
@@ -375,9 +432,19 @@ func (fo *FrontierOptimizer) applyMortgageRateOverride(
 		downPayment := p.DownPayment
 		loanAmount := p.LoanAmount
 		monthlyPayment := fo.calculateMortgagePayment(loanAmount, mortgageRate, 30)
-		monthlyCashFlow := p.Property.EstimatedRent - monthlyPayment - 500
-		cashOnCash := float64(monthlyCashFlow*12) / float64(downPayment) * 100
-		dscr := float64(p.Property.EstimatedRent) / float64(monthlyPayment)
+		// Age-adjusted NOI: consistent with buildPortfolioProperties
+		expRatio := investment.ExpenseRatioForAge(p.Property.YearBuilt)
+		monthlyNOI := int(float64(p.Property.EstimatedRent) * (1 - expRatio))
+		monthlyCashFlow := monthlyNOI - monthlyPayment
+		cashOnCash := 0.0
+		if downPayment > 0 {
+			cashOnCash = float64(monthlyCashFlow*12) / float64(downPayment) * 100
+		}
+		// DSCR uses NOI (not gross rent) — consistent with buildPortfolioProperties
+		dscr := 0.0
+		if monthlyPayment > 0 {
+			dscr = float64(monthlyNOI) / float64(monthlyPayment)
+		}
 
 		updated = append(updated, investment.PropertyInPortfolio{
 			Property:        p.Property,
@@ -389,194 +456,157 @@ func (fo *FrontierOptimizer) applyMortgageRateOverride(
 			CashOnCash:      cashOnCash,
 			DSCR:            dscr,
 			Score:           p.Score,
-			Thesis:          p.Thesis, // preserve thesis through recalculate
+			Thesis:          p.Thesis,
 		})
 	}
 	return updated
 }
 
-// generateCandidates creates candidate portfolios with varying property counts
-func (fo *FrontierOptimizer) generateCandidates(
-	properties []investment.ScoredProperty,
-	profile investment.InvestorProfile,
+// generateCandidatesFromCohorts creates candidate portfolio configurations from pre-ranked
+// property cohorts. Each cohort produces size variants (minProperties to maxProperties).
+// ADR-090: replaces generateCandidates; per-cohort ranking is done in BuildCohorts.
+func (fo *FrontierOptimizer) generateCandidatesFromCohorts(
+	cohorts []investment.PropertyCohort,
 ) []PortfolioConfiguration {
-	candidates := []PortfolioConfiguration{}
-
-	// Generate configurations of varying sizes (5-8 properties)
-	for size := fo.minProperties; size <= fo.maxProperties && size <= len(properties); size++ {
-		// Create multiple configurations per size for diversity
-		numPerSize := 3 // Generate 3 configurations per size
-		for i := 0; i < numPerSize; i++ {
-			config := fo.createConfiguration(properties, size, i, profile)
+	candidates := make([]PortfolioConfiguration, 0, len(cohorts)*(fo.maxProperties-fo.minProperties+1))
+	for _, cohort := range cohorts {
+		for size := fo.minProperties; size <= fo.maxProperties && size <= len(cohort.Properties); size++ {
+			config := fo.createConfigFromCohort(cohort, size)
 			candidates = append(candidates, config)
 		}
 	}
-
 	return candidates
 }
 
-// createConfiguration creates a single portfolio configuration
-func (fo *FrontierOptimizer) createConfiguration(
-	properties []investment.ScoredProperty,
+// createConfigFromCohort builds a single PortfolioConfiguration by taking the top-N
+// properties from an already-ranked PropertyCohort. The cohort label is preserved.
+// ADR-090: replaces createConfiguration; no re-ranking happens here.
+func (fo *FrontierOptimizer) createConfigFromCohort(
+	cohort investment.PropertyCohort,
 	size int,
-	variant int,
-	profile investment.InvestorProfile,
 ) PortfolioConfiguration {
-	// Strategy for property selection:
-	// Variant 0: Top-ranked properties (highest scores)
-	// Variant 1: Diversified selection (spread across markets)
-	// Variant 2: Risk-balanced selection (mix of volatilities)
-
-	selectedProps := make([]investment.Property, 0, size)
-	weights := make([]float64, 0, size)
-
-	switch variant {
-	case 0:
-		// Top-ranked: Select highest-scoring properties
-		sorted := make([]investment.ScoredProperty, len(properties))
-		copy(sorted, properties)
-		sort.Slice(sorted, func(i, j int) bool {
-			return sorted[i].OverallScore > sorted[j].OverallScore
-		})
-		for i := 0; i < size && i < len(sorted); i++ {
-			selectedProps = append(selectedProps, sorted[i].Property)
-		}
-
-	case 1:
-		// Diversified: Spread across different markets
-		marketMap := make(map[string][]investment.ScoredProperty)
-		for _, p := range properties {
-			key := p.Property.City + ", " + p.Property.State
-			marketMap[key] = append(marketMap[key], p)
-		}
-
-		// Take one property from each market (up to size)
-		count := 0
-		for _, props := range marketMap {
-			if count >= size {
-				break
-			}
-			// Take highest-scoring property from this market
-			if len(props) > 0 {
-				best := props[0]
-				for _, p := range props {
-					if p.OverallScore > best.OverallScore {
-						best = p
-					}
-				}
-				selectedProps = append(selectedProps, best.Property)
-				count++
-			}
-		}
-
-		// Fill remaining slots with top-ranked properties if needed
-		if count < size {
-			sorted := make([]investment.ScoredProperty, len(properties))
-			copy(sorted, properties)
-			sort.Slice(sorted, func(i, j int) bool {
-				return sorted[i].OverallScore > sorted[j].OverallScore
-			})
-			for i := 0; count < size && i < len(sorted); i++ {
-				// Skip if already selected
-				alreadySelected := false
-				for _, sp := range selectedProps {
-					if sp.ID == sorted[i].Property.ID {
-						alreadySelected = true
-						break
-					}
-				}
-				if !alreadySelected {
-					selectedProps = append(selectedProps, sorted[i].Property)
-					count++
-				}
-			}
-		}
-
-	case 2:
-		// Risk-balanced: Mix of high and low volatility
-		// For Phase 3, use estimated volatility based on market type
-		sorted := make([]investment.ScoredProperty, len(properties))
-		copy(sorted, properties)
-		sort.Slice(sorted, func(i, j int) bool {
-			return sorted[i].OverallScore > sorted[j].OverallScore
-		})
-
-		// Take top properties, ensuring mix of different score ranges
-		step := len(sorted) / size
-		if step < 1 {
-			step = 1
-		}
-		for i := 0; i < size && i*step < len(sorted); i++ {
-			selectedProps = append(selectedProps, sorted[i*step].Property)
-		}
+	n := size
+	if n > len(cohort.Properties) {
+		n = len(cohort.Properties)
+	}
+	if n == 0 {
+		return PortfolioConfiguration{Label: cohort.Label}
 	}
 
-	// Calculate equal weights (simple approach for Phase 3)
-	// Phase 4 will use optimized weights based on portfolio context
+	selectedProps := make([]investment.Property, n)
+	for i := range n {
+		selectedProps[i] = cohort.Properties[i].Property
+	}
+
+	// Value-weighted portfolio weights.
 	totalValue := 0
 	for _, p := range selectedProps {
 		totalValue += p.Price
 	}
-
-	for _, p := range selectedProps {
-		weight := float64(p.Price) / float64(totalValue)
-		weights = append(weights, weight)
+	weights := make([]float64, n)
+	for i, p := range selectedProps {
+		if totalValue > 0 {
+			weights[i] = float64(p.Price) / float64(totalValue)
+		}
 	}
 
 	return PortfolioConfiguration{
 		Properties: selectedProps,
 		Weights:    weights,
+		Label:      cohort.Label,
 	}
 }
 
 // evaluateObjectives calculates all 4 objectives for a configuration.
 // ADR-089 Phase 5: existingPortfolio is optional; when provided, concentration
 // penalises market overlap with existing holdings.
+// ADR-090: profile.Strategy and profile.RiskTolerance feed into expected-return blending
+// and risk-adjusted Sharpe ratio (risk-free rate + volatility multiplier per risk level).
+// Phase C: appreciationRate is explicit so Recalculate can override the default 4.0%.
 func (fo *FrontierOptimizer) evaluateObjectives(
 	config *PortfolioConfiguration,
 	profile investment.InvestorProfile,
 	existingPortfolio *investment.ExistingPortfolio,
+	appreciationRate float64,
 ) {
-	// Objective 1: Expected Return (maximize)
-	config.Objectives.ExpectedReturn = fo.calculateExpectedReturn(config)
+	// Objective 1: Expected Return — strategy-aware blend of income and appreciation.
+	config.Objectives.ExpectedReturn = fo.calculateExpectedReturn(config, profile.Strategy, appreciationRate)
 
-	// Objective 2: Portfolio Volatility via Markowitz (minimize)
+	// Objective 2: Portfolio Volatility via Markowitz (minimize).
 	config.Objectives.PortfolioVolatility = fo.calculatePortfolioVolatility(config)
 
-	// Objective 3: Concentration Index (minimize) — portfolio-aware when holdings provided
+	// Objective 3: Concentration Index (minimize) — portfolio-aware when holdings provided.
 	config.Objectives.ConcentrationIndex = fo.calculateConcentrationIndex(config, existingPortfolio)
 
-	// Objective 4: Stress Test Equity (maximize)
+	// Objective 4: Stress Test Equity (maximize).
 	config.Objectives.StressTestEquity = fo.calculateStressTestEquity(config, profile)
 
-	// Calculate Sharpe Ratio for ranking
-	excessReturn := config.Objectives.ExpectedReturn - fo.riskFreeRate
-	if config.Objectives.PortfolioVolatility > 0 {
-		config.SharpeScore = excessReturn / config.Objectives.PortfolioVolatility
+	// Risk-adjusted Sharpe ratio: risk-free rate and volatility multiplier vary by risk tolerance.
+	// Conservative: higher hurdle (4.5%) + amplified vol penalty (×1.3) → harder to achieve good Sharpe.
+	// Aggressive:   lower hurdle (3.0%) + reduced vol penalty (×0.7)  → rewards return-seeking configs.
+	riskFreeRate    := fo.riskFreeRateForRisk(profile.RiskTolerance)
+	volMultiplier   := fo.volatilityMultiplierForRisk(profile.RiskTolerance)
+	excessReturn    := config.Objectives.ExpectedReturn - riskFreeRate
+	adjustedVol     := config.Objectives.PortfolioVolatility * volMultiplier
+	if adjustedVol > 0 {
+		config.SharpeScore = excessReturn / adjustedVol
 	} else {
 		config.SharpeScore = 0
 	}
 }
 
-// calculateExpectedReturn estimates annual expected return
-func (fo *FrontierOptimizer) calculateExpectedReturn(config *PortfolioConfiguration) float64 {
-	// Phase 3: Simple weighted average of cap rates + appreciation estimate
-	// Phase 6: Will use Monte Carlo expected value
+// riskFreeRateForRisk returns the Sharpe hurdle rate for the given risk tolerance.
+// ADR-090: conservative investors use a higher hurdle (4.5%) so only genuinely strong
+// risk-adjusted returns clear the bar; aggressive investors use 3.0%.
+func (fo *FrontierOptimizer) riskFreeRateForRisk(risk investment.RiskTolerance) float64 {
+	switch risk {
+	case investment.RiskConservative:
+		return 4.5
+	case investment.RiskAggressive:
+		return 3.0
+	default:
+		return fo.riskFreeRate // 4.0% default (Moderate)
+	}
+}
+
+// volatilityMultiplierForRisk scales the Sharpe denominator (portfolio volatility)
+// to amplify or reduce the risk penalty based on investor risk tolerance.
+// ADR-090: Conservative ×1.3 (penalises volatility more), Aggressive ×0.7 (rewards return-seeking).
+func (fo *FrontierOptimizer) volatilityMultiplierForRisk(risk investment.RiskTolerance) float64 {
+	switch risk {
+	case investment.RiskConservative:
+		return 1.3
+	case investment.RiskAggressive:
+		return 0.7
+	default:
+		return 1.0
+	}
+}
+
+// calculateExpectedReturn estimates annual expected return using a strategy-dependent
+// blend of income (cap rate) and appreciation components.
+// ADR-090: cash-flow investors weight income higher (70%); appreciation investors weight
+// price growth higher (70%). Balanced/risk-adjusted use a 50/40-60 split.
+// Phase C: appreciationRate is explicit (default 4.0) so Recalculate can thread overrides through.
+func (fo *FrontierOptimizer) calculateExpectedReturn(config *PortfolioConfiguration, strategy investment.InvestmentStrategy, appreciationRate float64) float64 {
+	var apprWeight, incomeWeight float64
+	switch strategy {
+	case investment.StrategyCashFlow:
+		apprWeight, incomeWeight = 0.30, 0.70
+	case investment.StrategyAppreciation:
+		apprWeight, incomeWeight = 0.70, 0.30
+	case investment.StrategyRiskAdjusted:
+		apprWeight, incomeWeight = 0.40, 0.60
+	default: // Balanced
+		apprWeight, incomeWeight = 0.50, 0.50
+	}
 
 	totalReturn := 0.0
 	for i, prop := range config.Properties {
-		// Cap rate (rental yield)
-		capRate := 0.0
-		if prop.EstimatedRent > 0 && prop.Price > 0 {
-			capRate = float64(prop.EstimatedRent*12) / float64(prop.Price) * 100
-		}
-
-		// Appreciation estimate (placeholder - Phase 6 will use market data)
-		appreciation := 4.0 // 4% default appreciation
-
-		totalReturn += (capRate + appreciation) * config.Weights[i]
+		capRate := investment.CapRatePct(prop.EstimatedRent, prop.Price, prop.YearBuilt)
+		propertyReturn := apprWeight*appreciationRate + incomeWeight*capRate
+		totalReturn += propertyReturn * config.Weights[i]
 	}
-
 	return totalReturn
 }
 
@@ -987,7 +1017,11 @@ func (fo *FrontierOptimizer) dominates(a, b *PortfolioConfiguration) bool {
 	return allBetterOrEqual && atLeastOneStrictlyBetter
 }
 
-// selectFrontierPoints selects top N configurations by Sharpe ratio
+// selectFrontierPoints selects up to N configurations by Sharpe ratio, preferring
+// metrically distinct configurations. Near-duplicates (within 0.05 Sharpe and 0.05%
+// return) are skipped in favour of the next-best distinct config. If there are fewer
+// than N distinct configs, the remainder is backfilled with the best near-duplicates
+// so the caller always gets as many points as the pool allows.
 func (fo *FrontierOptimizer) selectFrontierPoints(
 	nonDominated []PortfolioConfiguration,
 	count int,
@@ -997,12 +1031,50 @@ func (fo *FrontierOptimizer) selectFrontierPoints(
 		return nonDominated[i].SharpeScore > nonDominated[j].SharpeScore
 	})
 
-	// Take top N
-	if len(nonDominated) > count {
-		return nonDominated[:count]
+	const epsilon = 0.05 // configs within 0.05 Sharpe AND 0.05% return are near-identical
+
+	// Pass 1: collect metrically distinct configurations.
+	selected := make([]PortfolioConfiguration, 0, count)
+	for _, c := range nonDominated {
+		if len(selected) >= count {
+			break
+		}
+		duplicate := false
+		for _, s := range selected {
+			if math.Abs(c.SharpeScore-s.SharpeScore) < epsilon &&
+				math.Abs(c.Objectives.ExpectedReturn-s.Objectives.ExpectedReturn) < epsilon {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			selected = append(selected, c)
+		}
 	}
 
-	return nonDominated
+	// Pass 2: if deduplication left us short, backfill with best remaining
+	// (even if metrically similar) so callers always receive a full set.
+	if len(selected) < count {
+		for _, c := range nonDominated {
+			if len(selected) >= count {
+				break
+			}
+			alreadyIn := false
+			for _, s := range selected {
+				if s.SharpeScore == c.SharpeScore &&
+					s.Objectives.ExpectedReturn == c.Objectives.ExpectedReturn &&
+					s.Objectives.PortfolioVolatility == c.Objectives.PortfolioVolatility {
+					alreadyIn = true
+					break
+				}
+			}
+			if !alreadyIn {
+				selected = append(selected, c)
+			}
+		}
+	}
+
+	return selected
 }
 
 // avgReturn calculates average expected return across frontier points
@@ -1015,6 +1087,47 @@ func (fo *FrontierOptimizer) avgReturn(points []investment.FrontierPoint) float6
 		sum += p.ExpectedReturn
 	}
 	return sum / float64(len(points))
+}
+
+// summarizeExistingPortfolio computes a summary of the user's existing portfolio.
+// ADR-089 Phase 3: used to attach portfolio context to each FrontierPoint.
+func (fo *FrontierOptimizer) summarizeExistingPortfolio(ep *investment.ExistingPortfolio) *investment.ExistingPortfolioSummary {
+	if ep == nil || len(ep.Properties) == 0 {
+		return nil
+	}
+
+	summary := &investment.ExistingPortfolioSummary{
+		PropertyCount: len(ep.Properties),
+		Locations:     make([]string, 0),
+	}
+
+	locationSet := make(map[string]bool)
+	totalCapRate := 0.0
+	capRateCount := 0
+
+	for _, p := range ep.Properties {
+		summary.TotalValue += p.CurrentValue
+		summary.TotalEquity += p.Equity
+		summary.TotalDebt += p.MortgageBalance
+		summary.MonthlyCashFlow += p.MonthlyCashFlow
+
+		location := p.City + ", " + p.State
+		if !locationSet[location] {
+			locationSet[location] = true
+			summary.Locations = append(summary.Locations, location)
+		}
+		if p.CapRate > 0 {
+			totalCapRate += p.CapRate
+			capRateCount++
+		}
+	}
+
+	summary.AnnualCashFlow = summary.MonthlyCashFlow * 12
+	if capRateCount > 0 {
+		summary.AvgCapRate = totalCapRate / float64(capRateCount)
+	}
+
+	return summary
 }
 
 // avgVolatility calculates average volatility across frontier points
