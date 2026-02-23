@@ -34,6 +34,10 @@ type FrontierAnalyzeRequest struct {
 	// appends it (de-duplicated) to ScoredProperties so Configs 1/2 can draw from a wider pool
 	// than just the user's selected evaluations.
 	DiscoverySeedSessionID string `json:"discoverySeedSessionId,omitempty"`
+	// Filters: optional quality gates applied to pool-only (non-pinned) properties before
+	// BuildCohorts. Used by the Discovery Session source when the user enables filter controls.
+	// ADR-091 Phase 5.
+	Filters *investment.PropertyFilters `json:"filters,omitempty"`
 }
 
 // FrontierRecalculateRequest is the request body for POST /api/ai/frontier/recalculate.
@@ -140,6 +144,36 @@ func (h *Handler) RunFrontierAnalysis(w http.ResponseWriter, r *http.Request) {
 	allProps := req.ScoredProperties
 	if req.DiscoverySeedSessionID != "" && h.store != nil {
 		allProps = h.mergeDiscoverySeedPool(ctx, req.DiscoverySeedSessionID, user.UserID, req.ScoredProperties)
+	}
+
+	// ADR-091 Phase 5: apply optional quality filters to pool-only (non-pinned) properties
+	// when the caller supplies filters (Discovery Session source with filter controls set).
+	// Pinned properties (user's explicit evaluation selection) are never filtered.
+	if req.Filters != nil {
+		filtered := make([]investment.ScoredProperty, 0, len(allProps))
+		poolOnly := make([]investment.ScoredProperty, 0, len(allProps))
+		for _, p := range allProps {
+			if pinnedIDs[p.Property.ID] {
+				filtered = append(filtered, p)
+			} else {
+				poolOnly = append(poolOnly, p)
+			}
+		}
+		props := make([]investment.Property, len(poolOnly))
+		for i, sp := range poolOnly {
+			props[i] = sp.Property
+		}
+		filteredProps, _ := investment.ApplyPropertyFilters(props, *req.Filters)
+		filteredSet := make(map[string]bool, len(filteredProps))
+		for _, p := range filteredProps {
+			filteredSet[p.ID] = true
+		}
+		for _, sp := range poolOnly {
+			if filteredSet[sp.Property.ID] {
+				filtered = append(filtered, sp)
+			}
+		}
+		allProps = filtered
 	}
 
 	cohorts := investment.BuildCohorts(allProps, pinnedIDs, req.Profile.Strategy, req.Profile.RiskTolerance, budget, mortgageRate, dpPct)
