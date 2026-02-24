@@ -66,19 +66,19 @@ INSERT INTO v2_evaluations (
     property_zip, property_details, purchase_price, down_payment_pct,
     interest_rate, loan_term_years, monthly_rent, vacancy_rate_pct,
     maintenance_cost, property_tax, insurance, hoa_fees, appreciation_rate,
-    scenarios, sensitivity_data, chat_session_id, discovery_session_id,
+    scenarios, sensitivity_data, chat_session_id, discovery_session_id, market_context,
     status, created_at, updated_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
     $11, $12, $13, $14, $15, $16, $17, $18, $19,
-    $20, $21, $22, $23,
+    $20, $21, $22, $23, $24,
     'DRAFT'::"V2EvaluationStatus", NOW(), NOW()
 )
 RETURNING id, user_id, property_id, property_address, property_city, property_state,
           property_zip, property_details, purchase_price, down_payment_pct,
           interest_rate, loan_term_years, monthly_rent, vacancy_rate_pct,
           maintenance_cost, property_tax, insurance, hoa_fees, appreciation_rate,
-          scenarios, sensitivity_data, chat_session_id, discovery_session_id,
+          scenarios, sensitivity_data, chat_session_id, discovery_session_id, market_context,
           status::text, created_at, updated_at
 `
 
@@ -106,6 +106,7 @@ type CreateV2EvaluationParams struct {
 	SensitivityData    []byte        `json:"sensitivity_data"`
 	ChatSessionID      pgtype.Text   `json:"chat_session_id"`
 	DiscoverySessionID pgtype.Text   `json:"discovery_session_id"`
+	MarketContext      []byte        `json:"market_context"`
 }
 
 type CreateV2EvaluationRow struct {
@@ -132,12 +133,14 @@ type CreateV2EvaluationRow struct {
 	SensitivityData    []byte           `json:"sensitivity_data"`
 	ChatSessionID      pgtype.Text      `json:"chat_session_id"`
 	DiscoverySessionID pgtype.Text      `json:"discovery_session_id"`
+	MarketContext      []byte           `json:"market_context"`
 	Status             string           `json:"status"`
 	CreatedAt          pgtype.Timestamp `json:"created_at"`
 	UpdatedAt          pgtype.Timestamp `json:"updated_at"`
 }
 
 // ADR-098: chat_session_id and discovery_session_id link evaluation to originating chat + discovery
+// ADR-098 addendum: market_context stores aggregated market snapshot at evaluation time
 func (q *Queries) CreateV2Evaluation(ctx context.Context, arg CreateV2EvaluationParams) (CreateV2EvaluationRow, error) {
 	row := q.db.QueryRow(ctx, CreateV2Evaluation,
 		arg.ID,
@@ -163,6 +166,7 @@ func (q *Queries) CreateV2Evaluation(ctx context.Context, arg CreateV2Evaluation
 		arg.SensitivityData,
 		arg.ChatSessionID,
 		arg.DiscoverySessionID,
+		arg.MarketContext,
 	)
 	var i CreateV2EvaluationRow
 	err := row.Scan(
@@ -189,6 +193,7 @@ func (q *Queries) CreateV2Evaluation(ctx context.Context, arg CreateV2Evaluation
 		&i.SensitivityData,
 		&i.ChatSessionID,
 		&i.DiscoverySessionID,
+		&i.MarketContext,
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -444,19 +449,12 @@ SELECT
     e.purchase_price, e.down_payment_pct, e.interest_rate,
     e.loan_term_years, e.monthly_rent, e.vacancy_rate_pct,
     e.maintenance_cost, e.property_tax, e.insurance, e.hoa_fees,
-    e.appreciation_rate, e.scenarios, e.sensitivity_data,
+    e.appreciation_rate, e.scenarios, e.sensitivity_data, e.market_context,
     e.status::text, e.created_at, e.updated_at,
     d.id AS decision_record_id, d.memo_content, d.pdf_url, d.exported_at,
-    COALESCE(e.discovery_session_id, dse.discovery_session_id, '') AS discovery_session_id
+    COALESCE(e.discovery_session_id, '') AS discovery_session_id
 FROM v2_evaluations e
 LEFT JOIN v2_decision_records d ON d.evaluation_id = e.id
-LEFT JOIN LATERAL (
-    SELECT "discoverySessionId" AS discovery_session_id
-    FROM discovery_session_evaluations
-    WHERE "propertyId" = e.property_id
-    ORDER BY "createdAt" DESC
-    LIMIT 1
-) dse ON true
 WHERE e.user_id = $1
 ORDER BY e.created_at DESC
 LIMIT $3 OFFSET $2
@@ -491,6 +489,7 @@ type GetEvaluationsWithDecisionRecordsRow struct {
 	AppreciationRate   float64          `json:"appreciation_rate"`
 	Scenarios          []byte           `json:"scenarios"`
 	SensitivityData    []byte           `json:"sensitivity_data"`
+	MarketContext      []byte           `json:"market_context"`
 	EStatus            string           `json:"e_status"`
 	CreatedAt          pgtype.Timestamp `json:"created_at"`
 	UpdatedAt          pgtype.Timestamp `json:"updated_at"`
@@ -501,10 +500,10 @@ type GetEvaluationsWithDecisionRecordsRow struct {
 	DiscoverySessionID string           `json:"discovery_session_id"`
 }
 
-// ADR-091 Phase 4: LATERAL JOIN surfaces the most-recent discovery session that
-// contains this property, so the frontend can populate discoverySeedSessionId.
+// ADR-091 Phase 4: discovery_session_id surfaces the originating discovery pool.
 // ADR-093: property_snapshot stores full enriched data for durable frontier source.
-// ADR-098: prefer direct e.discovery_session_id column; fall back to LATERAL JOIN for older rows.
+// ADR-098: direct e.discovery_session_id column (LATERAL JOIN removed after backfill migration).
+// ADR-098 addendum: market_context stores aggregated market snapshot at evaluation time.
 func (q *Queries) GetEvaluationsWithDecisionRecords(ctx context.Context, arg GetEvaluationsWithDecisionRecordsParams) ([]GetEvaluationsWithDecisionRecordsRow, error) {
 	rows, err := q.db.Query(ctx, GetEvaluationsWithDecisionRecords, arg.UserID, arg.Offset, arg.Limit)
 	if err != nil {
@@ -537,6 +536,7 @@ func (q *Queries) GetEvaluationsWithDecisionRecords(ctx context.Context, arg Get
 			&i.AppreciationRate,
 			&i.Scenarios,
 			&i.SensitivityData,
+			&i.MarketContext,
 			&i.EStatus,
 			&i.CreatedAt,
 			&i.UpdatedAt,

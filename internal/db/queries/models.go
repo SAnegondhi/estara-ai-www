@@ -965,6 +965,7 @@ type V2Evaluation struct {
 	SensitivityData    []byte           `json:"sensitivity_data"`
 	ChatSessionID      pgtype.Text      `json:"chat_session_id"`
 	DiscoverySessionID pgtype.Text      `json:"discovery_session_id"`
+	MarketContext      []byte           `json:"market_context"`
 	Status             interface{}      `json:"status"`
 	CreatedAt          pgtype.Timestamp `json:"created_at"`
 	UpdatedAt          pgtype.Timestamp `json:"updated_at"`

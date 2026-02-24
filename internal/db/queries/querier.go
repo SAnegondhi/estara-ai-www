@@ -188,6 +188,7 @@ type Querier interface {
 	// Creates a user with password hash and Stripe customer ID (for guest checkout signup)
 	CreateUserWithPassword(ctx context.Context, arg CreateUserWithPasswordParams) (User, error)
 	// ADR-098: chat_session_id and discovery_session_id link evaluation to originating chat + discovery
+	// ADR-098 addendum: market_context stores aggregated market snapshot at evaluation time
 	CreateV2Evaluation(ctx context.Context, arg CreateV2EvaluationParams) (CreateV2EvaluationRow, error)
 	CreateVendorConfig(ctx context.Context, arg CreateVendorConfigParams) (CreateVendorConfigRow, error)
 	// Queries for admin extended tables (vendor contracts, credits, cron tracking, terms)
@@ -362,10 +363,10 @@ type Querier interface {
 	GetEmailVerificationCode(ctx context.Context, arg GetEmailVerificationCodeParams) (EmailVerificationCode, error)
 	GetEmailVerificationCodeByID(ctx context.Context, id string) (EmailVerificationCode, error)
 	GetEvaluationChatSession(ctx context.Context, arg GetEvaluationChatSessionParams) (GetEvaluationChatSessionRow, error)
-	// ADR-091 Phase 4: LATERAL JOIN surfaces the most-recent discovery session that
-	// contains this property, so the frontend can populate discoverySeedSessionId.
+	// ADR-091 Phase 4: discovery_session_id surfaces the originating discovery pool.
 	// ADR-093: property_snapshot stores full enriched data for durable frontier source.
-	// ADR-098: prefer direct e.discovery_session_id column; fall back to LATERAL JOIN for older rows.
+	// ADR-098: direct e.discovery_session_id column (LATERAL JOIN removed after backfill migration).
+	// ADR-098 addendum: market_context stores aggregated market snapshot at evaluation time.
 	GetEvaluationsWithDecisionRecords(ctx context.Context, arg GetEvaluationsWithDecisionRecordsParams) ([]GetEvaluationsWithDecisionRecordsRow, error)
 	GetFrontierRun(ctx context.Context, arg GetFrontierRunParams) (FrontierRun, error)
 	GetFrontierRunByToken(ctx context.Context, shareToken pgtype.Text) (FrontierRun, error)

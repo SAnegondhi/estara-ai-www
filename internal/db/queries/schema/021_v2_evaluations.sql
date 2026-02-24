@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS v2_evaluations (
     sensitivity_data JSONB,
     chat_session_id TEXT,
     discovery_session_id TEXT,
+    market_context JSONB,
     status "V2EvaluationStatus" NOT NULL DEFAULT 'DRAFT',
     created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP(3) NOT NULL

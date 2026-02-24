@@ -1752,6 +1752,19 @@ func (h *Handler) SaveV2Evaluation(w http.ResponseWriter, r *http.Request) {
 		loanTermYears = 30 // default to 30-year mortgage
 	}
 
+	// ADR-098 addendum: fetch market context snapshot at evaluation time.
+	// Uses the discover handler's aggregator (includes FRED mortgage rates, city cap rates,
+	// rent, vacancy, etc.). Failure is non-fatal — evaluation is still saved without context.
+	var marketContextBytes []byte
+	if h.aggregator != nil {
+		if marketData, err := h.aggregator.GetMarketData(ctx, req.PropertyCity, req.PropertyState); err == nil {
+			marketContextBytes, _ = json.Marshal(marketData)
+		} else {
+			h.logger.Warn("failed to fetch market context for evaluation", "error", err,
+				"city", req.PropertyCity, "state", req.PropertyState)
+		}
+	}
+
 	evalID := uuid.New().String()
 	row, err := h.store.Q().CreateV2Evaluation(ctx, queries.CreateV2EvaluationParams{
 		ID:               evalID,
@@ -1777,6 +1790,7 @@ func (h *Handler) SaveV2Evaluation(w http.ResponseWriter, r *http.Request) {
 		SensitivityData:  nil,
 		ChatSessionID:      pgtype.Text{String: req.ChatSessionID, Valid: req.ChatSessionID != ""},
 		DiscoverySessionID: pgtype.Text{String: req.DiscoverySessionID, Valid: req.DiscoverySessionID != ""},
+		MarketContext:      marketContextBytes,
 	})
 	if err != nil {
 		h.logger.Error("failed to save evaluation", "error", err, "property_id", req.PropertyID)
