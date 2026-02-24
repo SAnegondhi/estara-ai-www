@@ -172,6 +172,23 @@ WHERE "discoverySessionId" = $1;
 SELECT COUNT(*) FROM discovery_session_properties
 WHERE "discoverySessionId" = $1;
 
+-- name: GetSessionPropertiesByListingIDs :many
+SELECT id, "discoverySessionId", "listingId", address, city, state, "zipCode",
+       price, "estimatedRent", "capRateMin", "capRateMax", beds, baths, sqft,
+       "yearBuilt", "propertyType", "listingDate", "daysOnMarket",
+       "imageUrl", "listingSearchUrl", "googleSearchUrl", "createdAt"
+FROM discovery_session_properties
+WHERE "listingId" = ANY($1::text[])
+ORDER BY price ASC;
+
+-- name: GetDiscoverySessionByActivityId :one
+SELECT ds.id, ds."userId", ds."searchCriteria", ds.location, ds."propertyCount",
+       ds."cachedPropertyIds", ds.name, ds.notes, ds.status,
+       ds."createdAt", ds."updatedAt", ds."lastAccessedAt"
+FROM discovery_sessions ds
+JOIN discovery_session_activities dsa ON dsa."discoverySessionId" = ds.id
+WHERE dsa."activityType" = 'CHAT_SESSION' AND dsa."activityId" = $1;
+
 -- Discovery Session Evaluations Queries
 
 -- name: CreateDiscoverySessionEvaluation :one

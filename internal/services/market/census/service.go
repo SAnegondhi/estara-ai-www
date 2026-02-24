@@ -292,7 +292,10 @@ func (s *Service) fetchStateData(ctx context.Context, stateFIPS string) (*Census
 	return data, nil
 }
 
-// findPlaceCode looks up the Census place code for a city
+// findPlaceCode looks up the Census place code for a city.
+// Census NAME format is "Peoria city, Illinois" or "Peoria Heights village, Illinois".
+// We extract the place name before the type suffix and prefer an exact match to avoid
+// returning a smaller place (e.g. "Peoria Heights") when the target is "Peoria".
 func (s *Service) findPlaceCode(ctx context.Context, city, stateFIPS string) (string, error) {
 	apiURL := fmt.Sprintf("%s/%s/acs/acs5?get=NAME&for=place:*&in=state:%s&key=%s",
 		baseURL, acsYear, stateFIPS, s.apiKey)
@@ -302,17 +305,42 @@ func (s *Service) findPlaceCode(ctx context.Context, city, stateFIPS string) (st
 		return "", err
 	}
 
-	cityLower := strings.ToLower(city)
+	cityLower := strings.ToLower(strings.TrimSpace(city))
+
+	// Census place type suffixes that appear after the place name in the NAME field.
+	typeSuffixes := []string{
+		" city,", " town,", " village,", " borough,", " cdp,",
+		" township,", " municipality,", " urban district,", " city-county,",
+		" consolidated government,",
+	}
+
+	var substringFallback string
 	for i := 1; i < len(resp); i++ {
 		row := resp[i]
 		if len(row) < 3 {
 			continue
 		}
 		name := strings.ToLower(row[0])
-		if strings.Contains(name, cityLower) {
-			// Place code is the last element
-			return row[len(row)-1], nil
+		placeCode := row[len(row)-1]
+
+		// Prefer exact match: strip type suffix and compare.
+		for _, suffix := range typeSuffixes {
+			if idx := strings.Index(name, suffix); idx >= 0 {
+				if name[:idx] == cityLower {
+					return placeCode, nil
+				}
+				break
+			}
 		}
+
+		// Keep first substring match as fallback if no exact match is found.
+		if substringFallback == "" && strings.Contains(name, cityLower) {
+			substringFallback = placeCode
+		}
+	}
+
+	if substringFallback != "" {
+		return substringFallback, nil
 	}
 
 	return "", fmt.Errorf("place not found: %s", city)

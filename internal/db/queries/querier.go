@@ -346,6 +346,7 @@ type Querier interface {
 	GetDecisionRecordByID(ctx context.Context, id string) (GetDecisionRecordByIDRow, error)
 	GetDecisionRecordWithEvaluation(ctx context.Context, arg GetDecisionRecordWithEvaluationParams) (GetDecisionRecordWithEvaluationRow, error)
 	GetDiscoverySession(ctx context.Context, id string) (DiscoverySession, error)
+	GetDiscoverySessionByActivityId(ctx context.Context, activityid string) (GetDiscoverySessionByActivityIdRow, error)
 	GetDiscoverySessionByUser(ctx context.Context, arg GetDiscoverySessionByUserParams) (DiscoverySession, error)
 	GetDisputeCount(ctx context.Context) (int64, error)
 	// Get the earliest purchase date from portfolio properties for backfill
@@ -457,6 +458,7 @@ type Querier interface {
 	GetScenarioByIDAndUser(ctx context.Context, arg GetScenarioByIDAndUserParams) (Scenario, error)
 	GetSessionEvaluation(ctx context.Context, arg GetSessionEvaluationParams) (DiscoverySessionEvaluation, error)
 	GetSessionHistory(ctx context.Context, sessionID string) ([]EvaluationChatMessage, error)
+	GetSessionPropertiesByListingIDs(ctx context.Context, dollar_1 []string) ([]GetSessionPropertiesByListingIDsRow, error)
 	GetSessionProperty(ctx context.Context, arg GetSessionPropertyParams) (DiscoverySessionProperty, error)
 	// Silent Login Session Queries
 	GetSilentLoginSessionByID(ctx context.Context, id string) (SilentLoginSession, error)

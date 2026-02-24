@@ -102,38 +102,51 @@ func (sg *ScenarioGenerator) generateStressScenario(
 	projectionYears := 10
 	yearlyOutcomes := make([]investment.YearOutcome, projectionYears)
 
-	// Initialize portfolio state
+	// Initialize portfolio state using actual financing data from PropertyInPortfolio
 	portfolioValue := 0
 	totalLoanBalance := 0
+	baseMonthlyPayment := 0
+	baseMortgageRate := 0.065 // fallback rate if not derivable
 	for _, prop := range config.Properties {
 		portfolioValue += prop.Property.Price
-		// Assume 20% down payment, 80% loan
-		loanAmount := int(float64(prop.Property.Price) * 0.8)
-		totalLoanBalance += loanAmount
+		if prop.LoanAmount > 0 {
+			totalLoanBalance += prop.LoanAmount
+		} else {
+			// Fallback: estimate 80% LTV only when actual data is missing
+			totalLoanBalance += int(float64(prop.Property.Price) * 0.8)
+		}
+		if prop.MonthlyPayment > 0 {
+			baseMonthlyPayment += prop.MonthlyPayment
+		}
 	}
 
 	cumulativeCashFlow := 0
 
 	// Stress test parameters (ADR-088 Phase 7)
 	const (
-		appreciationShock = -0.15   // Historical peak drop: -15% worst 12mo
-		rentShock         = -0.05   // Rent shock: -2σ ≈ -5%
-		vacancySpike      = 0.50    // Vacancy spike: +50% (from 5% to 7.5%)
-		expenseShock      = 0.15    // Expense increase: +15%
-		mortgageRateShock = 0.02    // Mortgage rate shock: +2%
-		baseVacancyRate   = 0.05    // Base vacancy rate: 5%
-		baseMgmtRate      = 0.08    // Base management rate: 8%
-		baseExpenseRate   = 0.005   // Base monthly expense rate: 0.5% of value
-		mortgageRate      = 0.065   // Base mortgage rate: 6.5%
-		mortgageTermYears = 30      // 30-year mortgage
+		appreciationShock = -0.15 // Historical peak drop: -15% worst 12mo
+		rentShock         = -0.05 // Rent shock: -2σ ≈ -5%
+		vacancySpike      = 0.50  // Vacancy spike: +50% (from 5% to 7.5%)
+		expenseShock      = 0.15  // Expense increase: +15%
+		mortgageRateShock = 0.02  // Mortgage rate shock: +2%
+		baseVacancyRate   = 0.05  // Base vacancy rate: 5%
+		baseMgmtRate      = 0.08  // Base management rate: 8%
+		baseExpenseRate   = 0.005 // Base monthly expense rate: 0.5% of value
+		mortgageTermYears = 30    // 30-year mortgage
 	)
 
-	// Calculate stressed mortgage payment (rate + shock)
-	stressedRate := mortgageRate + mortgageRateShock
-	monthlyRate := stressedRate / 12.0
-	numPayments := mortgageTermYears * 12
+	// Calculate stressed mortgage payment.
+	// If we have actual monthly payments, scale them by the rate increase ratio.
+	// Otherwise compute from the loan balance using the stressed rate.
 	monthlyPayment := 0
-	if totalLoanBalance > 0 {
+	if baseMonthlyPayment > 0 && totalLoanBalance > 0 {
+		// Scale actual payment by the rate shock ratio (approximate but avoids re-amortizing)
+		stressedRate := baseMortgageRate + mortgageRateShock
+		monthlyPayment = int(float64(baseMonthlyPayment) * (stressedRate / baseMortgageRate))
+	} else if totalLoanBalance > 0 {
+		stressedRate := baseMortgageRate + mortgageRateShock
+		monthlyRate := stressedRate / 12.0
+		numPayments := mortgageTermYears * 12
 		monthlyPayment = int(float64(totalLoanBalance) * monthlyRate *
 			math.Pow(1+monthlyRate, float64(numPayments)) /
 			(math.Pow(1+monthlyRate, float64(numPayments)) - 1))
@@ -145,6 +158,9 @@ func (sg *ScenarioGenerator) generateStressScenario(
 		"vacancySpike", vacancySpike,
 		"expenseShock", expenseShock,
 		"mortgageRateShock", mortgageRateShock,
+		"totalLoanBalance", totalLoanBalance,
+		"baseMonthlyPayment", baseMonthlyPayment,
+		"stressedMonthlyPayment", monthlyPayment,
 	)
 
 	// Simulate each year with stress conditions
@@ -208,7 +224,7 @@ func (sg *ScenarioGenerator) generateStressScenario(
 // createPlaceholderStressScenario creates a fallback stress scenario
 func (sg *ScenarioGenerator) createPlaceholderStressScenario(projectionYears int) investment.Scenario {
 	yearlyOutcomes := make([]investment.YearOutcome, projectionYears)
-	for i := 0; i < projectionYears; i++ {
+	for i := range projectionYears {
 		yearlyOutcomes[i] = investment.YearOutcome{
 			Year:               i + 1,
 			PortfolioValue:     0,

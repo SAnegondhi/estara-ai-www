@@ -505,6 +505,50 @@ func (q *Queries) GetDiscoverySession(ctx context.Context, id string) (Discovery
 	return i, err
 }
 
+const GetDiscoverySessionByActivityId = `-- name: GetDiscoverySessionByActivityId :one
+SELECT ds.id, ds."userId", ds."searchCriteria", ds.location, ds."propertyCount",
+       ds."cachedPropertyIds", ds.name, ds.notes, ds.status,
+       ds."createdAt", ds."updatedAt", ds."lastAccessedAt"
+FROM discovery_sessions ds
+JOIN discovery_session_activities dsa ON dsa."discoverySessionId" = ds.id
+WHERE dsa."activityType" = 'CHAT_SESSION' AND dsa."activityId" = $1
+`
+
+type GetDiscoverySessionByActivityIdRow struct {
+	ID                string           `json:"id"`
+	UserId            string           `json:"userId"`
+	SearchCriteria    json.RawMessage  `json:"searchCriteria"`
+	Location          string           `json:"location"`
+	PropertyCount     int32            `json:"propertyCount"`
+	CachedPropertyIds []string         `json:"cachedPropertyIds"`
+	Name              pgtype.Text      `json:"name"`
+	Notes             pgtype.Text      `json:"notes"`
+	Status            string           `json:"status"`
+	CreatedAt         pgtype.Timestamp `json:"createdAt"`
+	UpdatedAt         pgtype.Timestamp `json:"updatedAt"`
+	LastAccessedAt    pgtype.Timestamp `json:"lastAccessedAt"`
+}
+
+func (q *Queries) GetDiscoverySessionByActivityId(ctx context.Context, activityid string) (GetDiscoverySessionByActivityIdRow, error) {
+	row := q.db.QueryRow(ctx, GetDiscoverySessionByActivityId, activityid)
+	var i GetDiscoverySessionByActivityIdRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserId,
+		&i.SearchCriteria,
+		&i.Location,
+		&i.PropertyCount,
+		&i.CachedPropertyIds,
+		&i.Name,
+		&i.Notes,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastAccessedAt,
+	)
+	return i, err
+}
+
 const GetDiscoverySessionByUser = `-- name: GetDiscoverySessionByUser :one
 SELECT id, "userId", "searchCriteria", location, "propertyCount", "cachedPropertyIds", name, notes, status, "createdAt", "updatedAt", "lastAccessedAt", "archivedAt", "expiresAt", "chatSessionCount", "evaluationCount", median_price, mode_price FROM discovery_sessions WHERE id = $1 AND "userId" = $2
 `
@@ -568,6 +612,84 @@ func (q *Queries) GetSessionEvaluation(ctx context.Context, arg GetSessionEvalua
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const GetSessionPropertiesByListingIDs = `-- name: GetSessionPropertiesByListingIDs :many
+SELECT id, "discoverySessionId", "listingId", address, city, state, "zipCode",
+       price, "estimatedRent", "capRateMin", "capRateMax", beds, baths, sqft,
+       "yearBuilt", "propertyType", "listingDate", "daysOnMarket",
+       "imageUrl", "listingSearchUrl", "googleSearchUrl", "createdAt"
+FROM discovery_session_properties
+WHERE "listingId" = ANY($1::text[])
+ORDER BY price ASC
+`
+
+type GetSessionPropertiesByListingIDsRow struct {
+	ID                 string           `json:"id"`
+	DiscoverySessionId string           `json:"discoverySessionId"`
+	ListingId          string           `json:"listingId"`
+	Address            string           `json:"address"`
+	City               string           `json:"city"`
+	State              string           `json:"state"`
+	ZipCode            pgtype.Text      `json:"zipCode"`
+	Price              int32            `json:"price"`
+	EstimatedRent      pgtype.Int4      `json:"estimatedRent"`
+	CapRateMin         pgtype.Numeric   `json:"capRateMin"`
+	CapRateMax         pgtype.Numeric   `json:"capRateMax"`
+	Beds               int32            `json:"beds"`
+	Baths              pgtype.Numeric   `json:"baths"`
+	Sqft               pgtype.Int4      `json:"sqft"`
+	YearBuilt          pgtype.Int4      `json:"yearBuilt"`
+	PropertyType       pgtype.Text      `json:"propertyType"`
+	ListingDate        pgtype.Text      `json:"listingDate"`
+	DaysOnMarket       pgtype.Int4      `json:"daysOnMarket"`
+	ImageUrl           pgtype.Text      `json:"imageUrl"`
+	ListingSearchUrl   pgtype.Text      `json:"listingSearchUrl"`
+	GoogleSearchUrl    pgtype.Text      `json:"googleSearchUrl"`
+	CreatedAt          pgtype.Timestamp `json:"createdAt"`
+}
+
+func (q *Queries) GetSessionPropertiesByListingIDs(ctx context.Context, dollar_1 []string) ([]GetSessionPropertiesByListingIDsRow, error) {
+	rows, err := q.db.Query(ctx, GetSessionPropertiesByListingIDs, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetSessionPropertiesByListingIDsRow{}
+	for rows.Next() {
+		var i GetSessionPropertiesByListingIDsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.DiscoverySessionId,
+			&i.ListingId,
+			&i.Address,
+			&i.City,
+			&i.State,
+			&i.ZipCode,
+			&i.Price,
+			&i.EstimatedRent,
+			&i.CapRateMin,
+			&i.CapRateMax,
+			&i.Beds,
+			&i.Baths,
+			&i.Sqft,
+			&i.YearBuilt,
+			&i.PropertyType,
+			&i.ListingDate,
+			&i.DaysOnMarket,
+			&i.ImageUrl,
+			&i.ListingSearchUrl,
+			&i.GoogleSearchUrl,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const GetSessionProperty = `-- name: GetSessionProperty :one

@@ -62,7 +62,7 @@ func TestCalculatePortfolioVolatility_Markowitz(t *testing.T) {
 				Weights:    tt.weights,
 			}
 
-			volatility := fo.calculatePortfolioVolatility(&config)
+			volatility := fo.calculatePortfolioVolatility(&config, nil, nil)
 
 			if math.Abs(volatility-tt.expectedVolatility) > tt.tolerance {
 				t.Errorf("Volatility = %.2f, expected ~%.2f (tolerance %.2f)",

@@ -776,10 +776,11 @@ func sqlcEvaluationToResponse(e queries.DiscoverySessionEvaluation) SessionEvalu
 	return resp
 }
 
-// numericFromFloat creates a pgtype.Numeric from float64
+// numericFromFloat creates a pgtype.Numeric from float64.
+// pgx v5 pgtype.Numeric.Scan only accepts string, not float64 — scan via FormatFloat.
 func numericFromFloat(f float64) pgtype.Numeric {
 	var n pgtype.Numeric
-	_ = n.Scan(f)
+	_ = n.Scan(strconv.FormatFloat(f, 'f', 10, 64))
 	return n
 }
 

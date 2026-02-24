@@ -358,6 +358,76 @@ func calculateCorrelationBasedScore(locations []string, correlations []investmen
 	return math.Round(score*10) / 10 // 1 decimal place
 }
 
+// ComputeMarketVolatilities fetches ZHVI time series for the given locations and returns
+// a map of "City, State" -> annualized price volatility (%). Computed as the annualized
+// standard deviation of monthly log-returns over 5 years.
+// Returns an empty map when the metro reader is unavailable or data is insufficient.
+func (ca *CorrelationAnalyzer) ComputeMarketVolatilities(ctx context.Context, locations []string) map[string]float64 {
+	result := make(map[string]float64)
+	if ca.metro == nil || len(locations) == 0 {
+		return result
+	}
+
+	seriesMap := ca.fetchTimeSeries(ctx, locations)
+
+	for _, loc := range locations {
+		ts, ok := seriesMap[loc]
+		if !ok || len(ts.zhvi) < 12 {
+			continue // Need at least 12 monthly observations
+		}
+
+		// Sort by date ascending
+		sort.Slice(ts.zhvi, func(i, j int) bool {
+			return ts.zhvi[i].date < ts.zhvi[j].date
+		})
+
+		// Compute monthly log-returns
+		logReturns := make([]float64, 0, len(ts.zhvi)-1)
+		for i := 1; i < len(ts.zhvi); i++ {
+			if ts.zhvi[i-1].value <= 0 || ts.zhvi[i].value <= 0 {
+				continue
+			}
+			lr := math.Log(ts.zhvi[i].value / ts.zhvi[i-1].value)
+			logReturns = append(logReturns, lr)
+		}
+		if len(logReturns) < 12 {
+			continue
+		}
+
+		// Standard deviation of monthly log-returns → annualize by ×√12
+		var sum, sumSq float64
+		n := float64(len(logReturns))
+		for _, r := range logReturns {
+			sum += r
+			sumSq += r * r
+		}
+		mean := sum / n
+		variance := (sumSq/n - mean*mean)
+		if variance <= 0 {
+			continue
+		}
+		monthlyStdDev := math.Sqrt(variance)
+		annualVol := monthlyStdDev * math.Sqrt(12) * 100 // convert to percentage
+
+		// Sanity-clamp to [2%, 20%] — outside this range the data is likely anomalous
+		if annualVol < 2 {
+			annualVol = 2
+		}
+		if annualVol > 20 {
+			annualVol = 20
+		}
+
+		result[loc] = math.Round(annualVol*10) / 10 // 1 decimal place
+		ca.logger.Debug("computed market volatility",
+			"location", loc,
+			"annualVol_pct", result[loc],
+			"samples", len(logReturns),
+		)
+	}
+
+	return result
+}
+
 // GenerateAllocationRationale creates a human-readable explanation for why
 // each market received its allocation percentage.
 func GenerateAllocationRationale(

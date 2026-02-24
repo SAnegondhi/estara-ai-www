@@ -196,7 +196,7 @@ func (w *DecisionMemoWorker) cacheMemos(ctx context.Context, key, userID, locati
 
 	metadata, _ := json.Marshal(map[string]interface{}{
 		"propertyCount": propertyCount,
-		"preview":       memos[0].PropertyAddress,
+		"preview":       buildMemoPreview(memos),
 	})
 
 	exp := time.Now().AddDate(0, 0, 30)
@@ -216,4 +216,49 @@ func (w *DecisionMemoWorker) cacheMemos(ctx context.Context, key, userID, locati
 	if err != nil {
 		w.logger.Warn("failed to cache memos", "error", err)
 	}
+}
+
+// buildMemoPreview creates a concise summary of memo evaluation outcomes for the history list.
+// For a single property: "Qualified | Moderate Risk | 72% fit"
+// For multiple properties: "2 Qualified, 1 Not Qualified | Moderate Risk"
+func buildMemoPreview(memos []memo.MemoData) string {
+	if len(memos) == 0 {
+		return ""
+	}
+	if len(memos) == 1 {
+		m := memos[0]
+		var parts []string
+		if m.Status != "" {
+			parts = append(parts, m.Status)
+		}
+		if m.RiskProfile != "" {
+			parts = append(parts, m.RiskProfile+" Risk")
+		}
+		if m.StrategyFit > 0 {
+			parts = append(parts, fmt.Sprintf("%d%% fit", m.StrategyFit))
+		}
+		if len(parts) > 0 {
+			out := parts[0]
+			for _, p := range parts[1:] {
+				out += " | " + p
+			}
+			return out
+		}
+		return memos[0].PropertyAddress
+	}
+	// Multiple memos — count outcomes
+	qualified := 0
+	for _, m := range memos {
+		if m.Status == "Qualified" {
+			qualified++
+		}
+	}
+	notQualified := len(memos) - qualified
+	if qualified > 0 && notQualified > 0 {
+		return fmt.Sprintf("%d Qualified, %d Not Qualified", qualified, notQualified)
+	}
+	if qualified == len(memos) {
+		return fmt.Sprintf("All %d Qualified", len(memos))
+	}
+	return fmt.Sprintf("%d properties evaluated", len(memos))
 }

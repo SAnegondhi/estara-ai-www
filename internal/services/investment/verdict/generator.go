@@ -44,7 +44,7 @@ func (vg *Generator) GenerateVerdict(
 	)
 
 	// Analyze portfolio outcomes
-	recommendation := vg.determineRecommendation(config, wealthTarget)
+	recommendation := vg.determineRecommendation(config, profile, wealthTarget)
 	rationale := vg.generateRationale(config, recommendation, wealthTarget, profile)
 	conditions := vg.identifyKeyConditions(config)
 	signals := vg.generateMonitoringSignals(config)
@@ -69,6 +69,7 @@ func (vg *Generator) GenerateVerdict(
 // determineRecommendation analyzes outcomes to determine PROCEED/PAUSE/REVISE
 func (vg *Generator) determineRecommendation(
 	config *investment.FrontierPoint,
+	profile investment.InvestorProfile,
 	wealthTarget int,
 ) investment.DecisionRecommendation {
 	base := config.Scenarios.Base
@@ -114,6 +115,48 @@ func (vg *Generator) determineRecommendation(
 		}
 	}
 
+	// Rule 2.5: Strategy-specific cash flow checks.
+	// Appreciation strategy accepts negative CoC (returns come from price growth).
+	// Cash-flow and balanced strategies require positive portfolio-level cash flow.
+	if profile.Strategy == investment.StrategyCashFlow || profile.Strategy == investment.StrategyBalanced {
+		avgCoC, negativeCFCount := computeCashFlowMetrics(config)
+		total := len(config.Properties)
+
+		if total > 0 {
+			negativeFraction := float64(negativeCFCount) / float64(total)
+
+			if avgCoC < 0 {
+				// All properties (or majority) cash-flow negative — incompatible with income strategy
+				vg.logger.Info("REVISE: Negative average CoC for cash-flow/balanced strategy",
+					"avgCoC", avgCoC,
+					"strategy", profile.Strategy,
+					"negativeCFCount", negativeCFCount,
+				)
+				return investment.DecisionRevise
+			}
+			if negativeFraction > 0.5 {
+				// More than half the properties have negative cash flow
+				vg.logger.Info("PAUSE: Majority of properties have negative cash flow",
+					"negativeFraction", negativeFraction,
+					"strategy", profile.Strategy,
+				)
+				return investment.DecisionPause
+			}
+		}
+	}
+
+	// Rule 2.6: DSCR floor for conservative risk tolerance.
+	// DSCR < 1.0 means the property cannot service its debt from NOI — unacceptable for conservative investors.
+	if profile.RiskTolerance == investment.RiskConservative {
+		avgDSCR := computeAverageDSCR(config)
+		if avgDSCR < 1.0 && avgDSCR > 0 {
+			vg.logger.Info("PAUSE: Average DSCR below 1.0 for conservative risk tolerance",
+				"avgDSCR", avgDSCR,
+			)
+			return investment.DecisionPause
+		}
+	}
+
 	// Rule 3: If Sharpe ratio is very low (<0.25), recommend REVISE.
 	// Real estate Sharpe ratios of 0.25–0.60 are healthy; equity-market thresholds (0.5+) are too strict.
 	if config.SharpeScore < 0.25 {
@@ -139,6 +182,33 @@ func (vg *Generator) determineRecommendation(
 	return investment.DecisionProceed
 }
 
+// computeCashFlowMetrics returns the average cash-on-cash return and count of negative-CF properties.
+func computeCashFlowMetrics(config *investment.FrontierPoint) (avgCoC float64, negativeCFCount int) {
+	if len(config.Properties) == 0 {
+		return 0, 0
+	}
+	total := 0.0
+	for _, p := range config.Properties {
+		total += p.CashOnCash
+		if p.MonthlyCashFlow < 0 {
+			negativeCFCount++
+		}
+	}
+	return total / float64(len(config.Properties)), negativeCFCount
+}
+
+// computeAverageDSCR returns the average DSCR across portfolio properties.
+func computeAverageDSCR(config *investment.FrontierPoint) float64 {
+	if len(config.Properties) == 0 {
+		return 0
+	}
+	total := 0.0
+	for _, p := range config.Properties {
+		total += p.DSCR
+	}
+	return total / float64(len(config.Properties))
+}
+
 // generateRationale creates 2-3 paragraph explanation for the recommendation
 func (vg *Generator) generateRationale(
 	config *investment.FrontierPoint,
@@ -152,6 +222,14 @@ func (vg *Generator) generateRationale(
 
 	var rationale string
 
+	// Compute cash flow summary once — used in all rationale branches
+	_, negativeCFCount := computeCashFlowMetrics(config)
+	totalMonthlyCF := 0
+	for _, p := range config.Properties {
+		totalMonthlyCF += p.MonthlyCashFlow
+	}
+	cashFlowNote := buildCashFlowNote(negativeCFCount, len(config.Properties), totalMonthlyCF, profile.Strategy)
+
 	switch recommendation {
 	case investment.DecisionProceed:
 		rationale = fmt.Sprintf(
@@ -161,7 +239,7 @@ func (vg *Generator) generateRationale(
 				"indicating appropriate diversification.\n\n"+
 				"The stress test scenario, while challenging with a Year 10 net worth of $%s, demonstrates portfolio resilience. "+
 				"Mid-term outcomes (Year 5) remain viable, suggesting the portfolio can weather adverse market conditions without catastrophic losses. "+
-				"This configuration aligns with your %s strategy and %s risk tolerance.\n\n"+
+				"This configuration aligns with your %s strategy and %s risk tolerance.%s\n\n"+
 				"Recommendation: Proceed with this allocation. The portfolio offers a favorable risk-return profile with sufficient downside protection. "+
 				"Monitor the key indicators outlined below to ensure market conditions remain supportive of the investment thesis.",
 			config.SharpeScore,
@@ -173,6 +251,7 @@ func (vg *Generator) generateRationale(
 			formatCurrency(stress.FinalNetWorth),
 			profile.Strategy,
 			profile.RiskTolerance,
+			cashFlowNote,
 		)
 
 	case investment.DecisionPause:
@@ -183,7 +262,7 @@ func (vg *Generator) generateRationale(
 
 		rationale = fmt.Sprintf(
 			"This portfolio configuration shows mixed signals that warrant a cautious approach. While the base scenario (P50 Monte Carlo) projects a net worth of $%s by Year 10, "+
-				"the uncertainty level or market conditions suggest waiting for greater clarity.%s The portfolio volatility of %.2f%% is elevated relative to expected returns.\n\n"+
+				"the uncertainty level or market conditions suggest waiting for greater clarity.%s The portfolio volatility of %.2f%% is elevated relative to expected returns.%s\n\n"+
 				"The stress test reveals potential vulnerabilities, particularly in mid-term outcomes. "+
 				"Although the portfolio maintains positive equity through Year 10, the downside scenario indicates material wealth erosion under adverse conditions. "+
 				"Market conditions or portfolio composition may benefit from improved entry timing or allocation adjustments.\n\n"+
@@ -192,13 +271,14 @@ func (vg *Generator) generateRationale(
 			formatCurrency(base.FinalNetWorth),
 			targetInfo,
 			config.PortfolioVolatility,
+			cashFlowNote,
 		)
 
 	case investment.DecisionRevise:
 		rationale = fmt.Sprintf(
 			"This portfolio configuration requires adjustment to better align with your investment goals. The current allocation shows a Sharpe ratio of %.2f, "+
 				"indicating suboptimal risk-adjusted returns. Under the base scenario (P50 Monte Carlo), the portfolio projects a Year 10 net worth of $%s, "+
-				"which may fall short of your target of $%s.\n\n"+
+				"which may fall short of your target of $%s.%s\n\n"+
 				"The concentration index of %.2f and portfolio composition suggest opportunities for improved diversification or property selection. "+
 				"The upside scenario (P75) achieves $%s, demonstrating potential, but the stress test reveals vulnerabilities that could be mitigated through revised allocation.\n\n"+
 				"Recommendation: Revise this allocation. Consider adjusting property selection to improve risk-adjusted returns, increasing diversification across markets, "+
@@ -206,6 +286,7 @@ func (vg *Generator) generateRationale(
 			config.SharpeScore,
 			formatCurrency(base.FinalNetWorth),
 			formatCurrency(wealthTarget),
+			cashFlowNote,
 			config.ConcentrationIndex,
 			formatCurrency(upside.FinalNetWorth),
 		)
@@ -288,6 +369,25 @@ func (vg *Generator) generateMonitoringSignals(config *investment.FrontierPoint)
 	}
 
 	return signals
+}
+
+// buildCashFlowNote constructs an informational note about negative cash flow properties.
+// Returns empty string when all properties have positive cash flow.
+func buildCashFlowNote(negativeCFCount, total, totalMonthlyCF int, strategy investment.InvestmentStrategy) string {
+	if negativeCFCount == 0 || total == 0 {
+		return ""
+	}
+	note := fmt.Sprintf(
+		"\n\nCash Flow Note: %d of %d properties in this configuration have negative estimated monthly cash flow (portfolio total: %s/month). ",
+		negativeCFCount, total, formatCurrency(totalMonthlyCF),
+	)
+	if strategy == investment.StrategyAppreciation {
+		note += "For an appreciation-focused strategy this is expected — returns are primarily driven by property value growth rather than monthly income. " +
+			"Ensure you have sufficient capital reserves to cover the monthly shortfall during the holding period."
+	} else {
+		note += "Budget for this monthly outlay in addition to rental income before proceeding."
+	}
+	return note
 }
 
 // formatCurrency formats an integer as a currency string

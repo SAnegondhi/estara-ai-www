@@ -155,6 +155,10 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 	// Falls back to hardcoded 0.7/0.3 when analyzer unavailable or data insufficient.
 	pairCorrelations := fo.computePairCorrelations(ctx, params.Locations)
 
+	// Pre-compute per-city annualised price volatility from ZHVI time series.
+	// Falls back to heuristic when market data is unavailable.
+	cityVolatilities := fo.computeCityVolatilities(ctx, params.Locations)
+
 	// Configure MC simulator with market-data-driven rates.
 	// RentGrowth defaults to appreciation x 0.6 (rent tends to grow slower than prices).
 	rentGrowthRate := appreciationRate * 0.6
@@ -164,7 +168,7 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 	fo.mcSimulator.SetMarketRates(appreciationRate, rentGrowthRate)
 
 	for i := range candidates {
-		fo.evaluateObjectives(&candidates[i], profile, params, appreciationRate, liveRiskFreeRate, pairCorrelations)
+		fo.evaluateObjectives(&candidates[i], profile, params, appreciationRate, liveRiskFreeRate, pairCorrelations, cityVolatilities)
 	}
 
 	// Step 3: Apply Pareto dominance to find non-dominated solutions.
@@ -450,7 +454,8 @@ func (fo *FrontierOptimizer) Recalculate(
 			}
 		}
 		recalcCorrelations := fo.computePairCorrelations(ctx, params.Locations)
-		fo.evaluateObjectives(&config, profile, params, appreciationRate, recalcRFR, recalcCorrelations)
+		recalcVolatilities := fo.computeCityVolatilities(ctx, params.Locations)
+		fo.evaluateObjectives(&config, profile, params, appreciationRate, recalcRFR, recalcCorrelations, recalcVolatilities)
 
 		updated := fo.regenerateConfigPhases(ctx, fp.ConfigIndex, properties, config, profile, params, fp.ExistingPortfolio, nil)
 		results = append(results, updated)
@@ -575,12 +580,13 @@ func (fo *FrontierOptimizer) evaluateObjectives(
 	appreciationRate float64,
 	riskFreeRate float64,
 	pairCorrelations map[string]float64,
+	cityVolatilities map[string]float64,
 ) {
 	// Objective 1: Expected Return — strategy-aware blend of income and appreciation.
 	config.Objectives.ExpectedReturn = fo.calculateExpectedReturn(config, profile.Strategy, appreciationRate)
 
 	// Objective 2: Portfolio Volatility via Markowitz (minimize).
-	config.Objectives.PortfolioVolatility = fo.calculatePortfolioVolatility(config, pairCorrelations)
+	config.Objectives.PortfolioVolatility = fo.calculatePortfolioVolatility(config, pairCorrelations, cityVolatilities)
 
 	// Objective 3: Concentration Index (minimize) — portfolio-aware when holdings provided.
 	config.Objectives.ConcentrationIndex = fo.calculateConcentrationIndex(config, params.ExistingPortfolio)
@@ -667,21 +673,19 @@ func (fo *FrontierOptimizer) calculateExpectedReturn(config *PortfolioConfigurat
 
 // calculatePortfolioVolatility uses Markowitz analytical formula
 // σ² = Σᵢ Σⱼ wᵢ wⱼ σᵢ σⱼ ρᵢⱼ
-func (fo *FrontierOptimizer) calculatePortfolioVolatility(config *PortfolioConfiguration, pairCorrelations map[string]float64) float64 {
+func (fo *FrontierOptimizer) calculatePortfolioVolatility(config *PortfolioConfiguration, pairCorrelations map[string]float64, cityVolatilities map[string]float64) float64 {
 	n := len(config.Properties)
 	if n == 0 {
 		return 0.0
 	}
 
-	// Get volatilities for each property
+	// Get volatilities for each property using market data where available.
 	volatilities := make([]float64, n)
 	for i, prop := range config.Properties {
-		// Phase 3: Placeholder volatility (Phase 6 will use actual market data)
-		// Estimate based on property characteristics
-		volatilities[i] = fo.estimatePropertyVolatility(prop)
+		volatilities[i] = fo.estimatePropertyVolatility(prop, cityVolatilities)
 	}
 
-	// Build correlation matrix (placeholder - Phase 6 will use actual correlations)
+	// Build correlation matrix using real Pearson correlations where available.
 	correlationMatrix := fo.buildCorrelationMatrix(n, config.Properties, pairCorrelations)
 
 	// Use Markowitz calculator from Phase 0
@@ -691,31 +695,27 @@ func (fo *FrontierOptimizer) calculatePortfolioVolatility(config *PortfolioConfi
 	return math.Sqrt(variance)
 }
 
-// estimatePropertyVolatility estimates volatility for a property
-func (fo *FrontierOptimizer) estimatePropertyVolatility(prop investment.Property) float64 {
-	// Phase 3: Simple heuristic based on price and market
-	// Phase 6: Will use actual AppreciationStdDev from providers.Property
+// estimatePropertyVolatility estimates annualised price volatility for a property.
+// Prefers real ZHVI-derived volatility from cityVolatilities when available,
+// falling back to a heuristic based on property price and location type.
+func (fo *FrontierOptimizer) estimatePropertyVolatility(prop investment.Property, cityVolatilities map[string]float64) float64 {
+	// Prefer real market-data volatility (computed from ZHVI monthly returns).
+	if len(cityVolatilities) > 0 {
+		key := prop.City + ", " + prop.State
+		if vol, ok := cityVolatilities[key]; ok && vol > 0 {
+			return vol
+		}
+	}
 
-	// Base volatility: 5% for typical residential
+	// Heuristic fallback: base 5% adjusted for price tier.
+	// Higher-priced markets tend to have higher nominal volatility.
 	baseVol := 5.0
-
-	// Adjust for price (higher price = potentially higher volatility)
 	if prop.Price > 500000 {
 		baseVol += 1.0
 	}
 	if prop.Price > 1000000 {
 		baseVol += 1.0
 	}
-
-	// Adjust for location (major markets = higher volatility)
-	majorMarkets := []string{"San Francisco", "New York", "Los Angeles", "Seattle", "Boston"}
-	for _, market := range majorMarkets {
-		if prop.City == market {
-			baseVol += 2.0
-			break
-		}
-	}
-
 	return baseVol
 }
 
@@ -1217,6 +1217,16 @@ func (fo *FrontierOptimizer) avgVolatility(points []investment.FrontierPoint) fl
 
 // computePairCorrelations fetches pairwise Pearson correlations between markets using
 // the CorrelationAnalyzer. Returns a lookup map "market1|market2" -> correlation.
+// computeCityVolatilities fetches annualised ZHVI volatility for each location.
+// Returns a map "City, State" -> volatility (%). Falls back to heuristic per property
+// when data unavailable.
+func (fo *FrontierOptimizer) computeCityVolatilities(ctx context.Context, locations []string) map[string]float64 {
+	if fo.correlationAnalyzer == nil || len(locations) == 0 {
+		return make(map[string]float64)
+	}
+	return fo.correlationAnalyzer.ComputeMarketVolatilities(ctx, locations)
+}
+
 // Returns an empty map (falls back to hardcoded values) when analyzer unavailable.
 func (fo *FrontierOptimizer) computePairCorrelations(ctx context.Context, locations []string) map[string]float64 {
 	result := make(map[string]float64)

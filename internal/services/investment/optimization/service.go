@@ -1455,16 +1455,36 @@ func (s *Service) fallbackScoring(properties []investment.Property, profile inve
 			pricePerSqft = float64(prop.Price) / float64(prop.Sqft)
 		}
 
-		// Score based on metrics (simplified algorithm)
-		buyabilityScore := 50.0
-		if prop.DaysOnMarket > 60 {
-			buyabilityScore += 20 // Motivated seller
-		}
-		if prop.DaysOnMarket > 0 && prop.DaysOnMarket < 14 {
-			buyabilityScore += 10 // Hot property
+		// Compute cap rate (age-adjusted NOI / price)
+		capRate := 0.0
+		if prop.Price > 0 && prop.EstimatedRent > 0 {
+			expRatio := investment.ExpenseRatioForAge(prop.YearBuilt)
+			annualNOI := float64(prop.EstimatedRent) * 12 * (1 - expRatio)
+			capRate = annualNOI / float64(prop.Price) * 100
 		}
 
-		rentabilityScore := 50.0 + (grossYield-5)*10 // Base 50, +10 for each % above 5%
+		// Buyability score: rewards properties with optimal time on market.
+		// Very new listings (1-3 days) or stale listings (>90 days) get penalised.
+		// Sweet spot is 7-45 days: competitive but not distressed.
+		buyabilityScore := 55.0
+		dom := prop.DaysOnMarket
+		switch {
+		case dom > 90:
+			buyabilityScore = 45 // Stale — may have issues
+		case dom > 60:
+			buyabilityScore = 60 // Motivated seller
+		case dom >= 14 && dom <= 45:
+			buyabilityScore = 75 // Sweet spot
+		case dom > 0 && dom < 7:
+			buyabilityScore = 65 // Hot but may attract competition
+		case dom == 0:
+			buyabilityScore = 55 // No DOM data
+		}
+
+		// Rentability score: cap rate drives this rather than gross yield (gross
+		// yield ignores expenses). Scale so that cap rate 5% = 50 and each 1%
+		// above adds 12 points (6% → 62, 8% → 86, 10% → 110 → clamped to 100).
+		rentabilityScore := 50.0 + (capRate-5.0)*12.0
 		if rentabilityScore > 100 {
 			rentabilityScore = 100
 		}
@@ -1472,24 +1492,76 @@ func (s *Service) fallbackScoring(properties []investment.Property, profile inve
 			rentabilityScore = 0
 		}
 
+		// ROI score: strategy-aware, using cap rate as a differentiated input.
 		roiScore := 50.0
 		switch profile.Strategy {
 		case investment.StrategyCashFlow:
+			// Cash-flow investors care about cap rate above all else.
 			roiScore = rentabilityScore
 		case investment.StrategyAppreciation:
-			// Lower price/sqft = better appreciation potential (oversimplified)
-			if pricePerSqft < 200 {
+			// Lower price/sqft signals affordable markets with appreciation runway.
+			switch {
+			case pricePerSqft < 100:
+				roiScore = 90 // Deeply undervalued market
+			case pricePerSqft < 150:
 				roiScore = 80
-			} else if pricePerSqft < 300 {
+			case pricePerSqft < 200:
+				roiScore = 70
+			case pricePerSqft < 300:
 				roiScore = 60
+			default:
+				roiScore = 50
 			}
 		case investment.StrategyBalanced:
 			roiScore = (rentabilityScore + 50) / 2
 		case investment.StrategyRiskAdjusted:
-			roiScore = (rentabilityScore + 60) / 2
+			// Reward stable income over pure yield; penalise high-yield/high-risk.
+			roiScore = (rentabilityScore*0.6 + 60*0.4)
 		}
 
-		portfolioFit := 70.0 // Default good fit
+		// portfolioFit: replaces the previous hardcoded 70.0.
+		// Rewards properties that fit the strategy and have reasonable price-to-budget ratio.
+		portfolioFit := 60.0 // baseline
+
+		// Strategy alignment: cap rate premium for cash-flow, price-per-sqft discount for appreciation
+		switch profile.Strategy {
+		case investment.StrategyCashFlow:
+			if capRate >= 7.0 {
+				portfolioFit += 20 // Excellent yield
+			} else if capRate >= 5.5 {
+				portfolioFit += 10
+			} else if capRate < 4.0 {
+				portfolioFit -= 15 // Poor fit for income strategy
+			}
+		case investment.StrategyAppreciation:
+			if pricePerSqft < 120 {
+				portfolioFit += 20
+			} else if pricePerSqft < 180 {
+				portfolioFit += 10
+			}
+		case investment.StrategyBalanced:
+			if capRate >= 5.5 {
+				portfolioFit += 10
+			}
+		}
+
+		// Age penalty: older properties need CapEx budgeting
+		age := 0
+		if prop.YearBuilt > 0 {
+			age = 2026 - prop.YearBuilt
+		}
+		if age > 60 {
+			portfolioFit -= 15
+		} else if age > 40 {
+			portfolioFit -= 8
+		}
+
+		if portfolioFit > 100 {
+			portfolioFit = 100
+		}
+		if portfolioFit < 0 {
+			portfolioFit = 0
+		}
 
 		overallScore := (buyabilityScore + rentabilityScore + roiScore + portfolioFit) / 4
 

@@ -136,6 +136,10 @@ type EvaluationChatRequest struct {
 // PropertyInput represents a property in a chat request
 type PropertyInput struct {
 	ID            string  `json:"id" validate:"required"`
+	// ListingID is the original provider listing ID (e.g. "5153197").
+	// Populated in GET session responses so clients can identify the property
+	// independently of the internal cached_properties UUID stored in ID.
+	ListingID     string  `json:"listingId,omitempty"`
 	Address       string  `json:"address" validate:"required"`
 	City          string  `json:"city" validate:"required"`
 	State         string  `json:"state" validate:"required"`
@@ -173,6 +177,7 @@ type ChatSession struct {
 	ID                string     `json:"id"`
 	UserID            string     `json:"userId"`
 	PropertyIDs       []string   `json:"propertyIds"`
+	CachedPropertyIDs []string   `json:"cachedPropertyIds"`
 	PropertyCount     int        `json:"propertyCount"`
 	InvestorProfile   *string    `json:"investorProfile,omitempty"`
 	PortfolioSnapshot *string    `json:"portfolioSnapshot,omitempty"`
@@ -909,6 +914,7 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 	session.ID = dbSession.ID
 	session.UserID = dbSession.UserID
 	session.PropertyIDs = dbSession.PropertyIds
+	session.CachedPropertyIDs = dbSession.CachedPropertyIds
 	session.PropertyCount = len(dbSession.PropertyIds)
 	session.CreatedAt = dbSession.CreatedAt.Time
 	session.UpdatedAt = dbSession.UpdatedAt.Time
@@ -957,18 +963,25 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 		messages = append(messages, msg)
 	}
 
-	// Get cached properties
+	// Get cached properties — use CachedPropertyIds (UUIDs) for lookup since
+	// GetCachedPropertiesDetailByIDs queries WHERE id = ANY(...) on the UUID primary key.
+	// PropertyIds contains original listing IDs (e.g. "5153197") which don't match.
 	properties := make([]PropertyInput, 0)
-	if len(session.PropertyIDs) > 0 {
-		propRows, err := h.store.Q().GetCachedPropertiesDetailByIDs(ctx, session.PropertyIDs)
+	lookupIDs := session.CachedPropertyIDs
+	if len(lookupIDs) == 0 {
+		lookupIDs = session.PropertyIDs // fallback for old sessions created before CachedPropertyIds was stored
+	}
+	if len(lookupIDs) > 0 {
+		propRows, err := h.store.Q().GetCachedPropertiesDetailByIDs(ctx, lookupIDs)
 		if err == nil {
 			for _, dbProp := range propRows {
 				p := PropertyInput{
-					ID:      dbProp.ID,
-					Address: dbProp.Address,
-					City:    dbProp.City,
-					State:   dbProp.State,
-					Price:   int(dbProp.Price),
+					ID:        dbProp.ID,
+					ListingID: dbProp.ListingID,
+					Address:   dbProp.Address,
+					City:      dbProp.City,
+					State:     dbProp.State,
+					Price:     int(dbProp.Price),
 				}
 
 				// Convert pgtype fields to Go types
@@ -987,18 +1000,86 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 				if dbProp.CapRate.Valid {
 					p.CapRate = fmt.Sprintf("%.2f%%", dbProp.CapRate.Float64)
 				}
+				if dbProp.ZipCode.Valid {
+					p.ZipCode = dbProp.ZipCode.String
+				}
+				if dbProp.ListingUrl.Valid {
+					p.ListingUrl = dbProp.ListingUrl.String
+				}
+				if dbProp.ImageUrl.Valid {
+					p.ImageUrl = dbProp.ImageUrl.String
+				}
 
 				properties = append(properties, p)
 			}
 		}
 	}
 
-	httputil.JSON(w, http.StatusOK, map[string]interface{}{
+	// Enrich properties with discovery session data (yearBuilt, propertyType, imageUrl)
+	if len(session.PropertyIDs) > 0 {
+		properties = h.enrichSessionProperties(ctx, properties, session.PropertyIDs)
+	}
+
+	// Look up linked discovery session context (search criteria, location name)
+	var discoveryContext map[string]interface{}
+	discSession, discErr := h.store.Q().GetDiscoverySessionByActivityId(ctx, sessionID)
+	if discErr == nil {
+		discoveryContext = map[string]interface{}{
+			"discoverySessionId": discSession.ID,
+			"location":           discSession.Location,
+			"searchCriteria":     discSession.SearchCriteria,
+			"propertyCount":      discSession.PropertyCount,
+		}
+		if discSession.Name.Valid {
+			discoveryContext["name"] = discSession.Name.String
+		}
+	}
+
+	responseBody := map[string]interface{}{
 		"success":    true,
 		"session":    session,
 		"messages":   messages,
 		"properties": properties,
-	})
+	}
+	if discoveryContext != nil {
+		responseBody["discoveryContext"] = discoveryContext
+	}
+	httputil.JSON(w, http.StatusOK, responseBody)
+}
+
+// enrichSessionProperties merges yearBuilt, propertyType, imageUrl, listingUrl from
+// discovery_session_properties into properties built from cached_properties.
+func (h *Handler) enrichSessionProperties(ctx context.Context, properties []PropertyInput, listingIDs []string) []PropertyInput {
+	if len(listingIDs) == 0 {
+		return properties
+	}
+	discProps, err := h.store.Q().GetSessionPropertiesByListingIDs(ctx, listingIDs)
+	if err != nil || len(discProps) == 0 {
+		return properties
+	}
+	discMap := make(map[string]queries.GetSessionPropertiesByListingIDsRow, len(discProps))
+	for _, dp := range discProps {
+		discMap[dp.ListingId] = dp
+	}
+	for i := range properties {
+		dp, ok := discMap[properties[i].ListingID]
+		if !ok {
+			continue
+		}
+		if dp.YearBuilt.Valid && properties[i].YearBuilt == 0 {
+			properties[i].YearBuilt = int(dp.YearBuilt.Int32)
+		}
+		if dp.PropertyType.Valid && properties[i].PropertyType == "" {
+			properties[i].PropertyType = dp.PropertyType.String
+		}
+		if dp.ImageUrl.Valid && dp.ImageUrl.String != "" {
+			properties[i].ImageUrl = dp.ImageUrl.String
+		}
+		if dp.ListingSearchUrl.Valid && dp.ListingSearchUrl.String != "" && properties[i].ListingUrl == "" {
+			properties[i].ListingUrl = dp.ListingSearchUrl.String
+		}
+	}
+	return properties
 }
 
 // DeleteChatSession deletes a chat session
