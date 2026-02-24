@@ -20,7 +20,11 @@ import (
 const (
 	// Streaming search settings
 	streamingSearchTimeout = 3 * time.Minute
-	sseKeepaliveInterval   = 30 * time.Second
+	// sseHeartbeatInterval: how often to send ": heartbeat" SSE comments to keep
+	// proxies and load balancers from closing idle connections. Must use a
+	// time.Ticker (fixed interval), NOT time.After (which resets on every select
+	// iteration, meaning the keepalive never fires while results are streaming).
+	sseHeartbeatInterval = 15 * time.Second
 )
 
 // StreamingSearchResponse represents the final SSE complete event
@@ -145,6 +149,19 @@ func (h *Handler) StreamingSearch(w http.ResponseWriter, r *http.Request) {
 		httputil.Error(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
+
+	// Disable the server's write deadline for this SSE connection. The default
+	// WriteTimeout would close the connection mid-stream on long searches.
+	// Heartbeats + context cancellation handle cleanup instead.
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
+	// Start a fixed-interval heartbeat goroutine. A time.Ticker fires every N
+	// seconds regardless of whether the main loop is busy processing results.
+	// This is critical: time.After in a select resets on every loop iteration,
+	// so it never fires while properties are actively streaming.
+	heartbeatTicker := time.NewTicker(sseHeartbeatInterval)
+	defer heartbeatTicker.Stop()
 
 	// Create context with timeout for the streaming search
 	streamCtx, cancel := context.WithTimeout(ctx, streamingSearchTimeout)
@@ -378,9 +395,9 @@ func (h *Handler) StreamingSearch(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 			return
 
-		case <-time.After(sseKeepaliveInterval):
-			// Send keepalive
-			fmt.Fprintf(w, ": keepalive\n\n")
+		case <-heartbeatTicker.C:
+			// Fixed-interval heartbeat — keeps proxies from closing idle SSE connections
+			fmt.Fprintf(w, ": heartbeat\n\n")
 			flusher.Flush()
 		}
 	}

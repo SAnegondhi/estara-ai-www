@@ -128,6 +128,13 @@ func (h *Handler) StreamEnrichmentUpdates(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Disable write deadline and start fixed-interval heartbeat (same fix as streaming_search.go)
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
+	heartbeatTicker := time.NewTicker(sseHeartbeatInterval)
+	defer heartbeatTicker.Stop()
+
 	// Subscribe to updates
 	updates, unsubscribe := enrichmentJobManager.Subscribe(jobID)
 	defer unsubscribe()
@@ -166,9 +173,8 @@ func (h *Handler) StreamEnrichmentUpdates(w http.ResponseWriter, r *http.Request
 			logger.Debug("SSE client disconnected")
 			return
 
-		case <-time.After(30 * time.Second):
-			// Send keepalive
-			fmt.Fprintf(w, ": keepalive\n\n")
+		case <-heartbeatTicker.C:
+			fmt.Fprintf(w, ": heartbeat\n\n")
 			flusher.Flush()
 		}
 	}
