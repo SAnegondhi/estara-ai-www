@@ -11,6 +11,65 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const FindCitiesNear = `-- name: FindCitiesNear :many
+SELECT city, state_id
+FROM city_states
+WHERE (
+    6371.0 * acos(
+        LEAST(1.0,
+            cos(radians($1::float8)) * cos(radians(latitude))
+            * cos(radians(longitude) - radians($2::float8))
+            + sin(radians($1::float8)) * sin(radians(latitude))
+        )
+    ) * 0.621371
+) <= $3::float8
+  AND NOT (LOWER(city) = LOWER($4::text) AND state_id = $5::text)
+ORDER BY population DESC NULLS LAST
+LIMIT $6::int4
+`
+
+type FindCitiesNearParams struct {
+	Lat         float64 `json:"lat"`
+	Lng         float64 `json:"lng"`
+	RadiusMiles float64 `json:"radius_miles"`
+	OriginCity  string  `json:"origin_city"`
+	OriginState string  `json:"origin_state"`
+	MaxResults  int32   `json:"max_results"`
+}
+
+type FindCitiesNearRow struct {
+	City    string `json:"city"`
+	StateID string `json:"state_id"`
+}
+
+// Find cities within radius_miles of (lat, lng), excluding origin city, by population desc.
+func (q *Queries) FindCitiesNear(ctx context.Context, arg FindCitiesNearParams) ([]FindCitiesNearRow, error) {
+	rows, err := q.db.Query(ctx, FindCitiesNear,
+		arg.Lat,
+		arg.Lng,
+		arg.RadiusMiles,
+		arg.OriginCity,
+		arg.OriginState,
+		arg.MaxResults,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FindCitiesNearRow{}
+	for rows.Next() {
+		var i FindCitiesNearRow
+		if err := rows.Scan(&i.City, &i.StateID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const GetCityByNameAndState = `-- name: GetCityByNameAndState :one
 SELECT
     id,

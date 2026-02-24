@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/estara-ai/www/internal/api/handlers/util"
@@ -117,6 +118,14 @@ func (h *Handler) StreamingSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Parse suburb expansion radius
+	var radiusMiles int
+	if rm := r.URL.Query().Get("radiusMiles"); rm != "" {
+		if val, err := strconv.Atoi(rm); err == nil && val > 0 {
+			radiusMiles = val
+		}
+	}
+
 	h.logger.Info("starting streaming search",
 		"city", city,
 		"state", state,
@@ -141,22 +150,60 @@ func (h *Handler) StreamingSearch(w http.ResponseWriter, r *http.Request) {
 	streamCtx, cancel := context.WithTimeout(ctx, streamingSearchTimeout)
 	defer cancel()
 
-	// Create channel for streaming results
-	results := make(chan finder.StreamingResult, 100)
+	// Create channel for streaming results (buffered to absorb bursts across parallel searches)
+	results := make(chan finder.StreamingResult, 200)
 
-	// Start streaming search in background
-	go func() {
-		defer close(results)
-		err := h.orchestrator.SearchWithStreaming(streamCtx, params, results)
-		if err != nil {
-			h.logger.Error("streaming search failed", "error", err)
-			// Send error via channel
-			results <- finder.StreamingResult{
-				Type:  "error",
-				Error: err,
+	if radiusMiles > 0 {
+		// Suburb expansion: fan out to origin + nearby cities, merge results as one logical search.
+		// Deduplication by property ID prevents duplicates when suburbs overlap.
+		cities := h.expandToNearby(ctx, city, state, radiusMiles)
+		h.logger.Info("suburb expansion", "origin", city+","+state, "radius", radiusMiles, "cities", len(cities))
+		go func() {
+			defer close(results)
+			var wg sync.WaitGroup
+			var seenIDs sync.Map
+			for _, loc := range cities {
+				wg.Add(1)
+				go func(c, s string) {
+					defer wg.Done()
+					cityParams := params
+					cityParams.City = c
+					cityParams.State = s
+					cityResults := make(chan finder.StreamingResult, 50)
+					go func() {
+						defer close(cityResults)
+						if err := h.orchestrator.SearchWithStreaming(streamCtx, cityParams, cityResults); err != nil {
+							h.logger.Warn("suburb search failed", "city", c, "state", s, "error", err)
+						}
+					}()
+					for result := range cityResults {
+						if result.Type == "property" && result.Property != nil {
+							// Deduplicate: only forward the first occurrence of each property ID
+							if _, loaded := seenIDs.LoadOrStore(result.Property.ID, true); !loaded {
+								results <- result
+							}
+						}
+						// Progress/error/failed/nodata events from sub-searches are intentionally
+						// suppressed to present a single unified result stream to the client.
+					}
+				}(loc.City, loc.State)
 			}
-		}
-	}()
+			wg.Wait()
+		}()
+	} else {
+		// Standard single-city search
+		go func() {
+			defer close(results)
+			err := h.orchestrator.SearchWithStreaming(streamCtx, params, results)
+			if err != nil {
+				h.logger.Error("streaming search failed", "error", err)
+				results <- finder.StreamingResult{
+					Type:  "error",
+					Error: err,
+				}
+			}
+		}()
+	}
 
 	// Track properties for discovery session
 	var properties []V2PropertyResult
@@ -183,6 +230,7 @@ func (h *Handler) StreamingSearch(w http.ResponseWriter, r *http.Request) {
 					// Serialize search criteria
 					criteria := SearchCriteria{
 						Location:      location,
+						RadiusMiles:   radiusMiles,
 						MinPrice:      params.MinPrice,
 						MaxPrice:      params.MaxPrice,
 						MinBeds:       params.MinBeds,

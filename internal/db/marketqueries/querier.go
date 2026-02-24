@@ -11,6 +11,8 @@ import (
 )
 
 type Querier interface {
+	// Find cities within radius_miles of (lat, lng), excluding origin city, by population desc.
+	FindCitiesNear(ctx context.Context, arg FindCitiesNearParams) ([]FindCitiesNearRow, error)
 	// Get all metros for city→metro linking during import
 	GetAllMetroLookup(ctx context.Context) ([]GetAllMetroLookupRow, error)
 	// Get all state ZHVI data for national aggregation

@@ -2,6 +2,7 @@ package pdf
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/phpdave11/gofpdf"
 
@@ -365,13 +366,41 @@ func (b *DecisionMemoBuilder) addComparisonPage(pdfDoc *gofpdf.Fpdf, page PageCo
 
 	pdfDoc.SetTextColor(theme.Primary.R, theme.Primary.G, theme.Primary.B)
 	pdfDoc.SetFont("Helvetica", "B", 14)
-	pdfDoc.Text(page.MarginLeft, y, "Portfolio Comparison Matrix")
-	y += 8
+	pdfDoc.Text(page.MarginLeft, y, "Executive Summary")
+	y += 6
 
 	pdfDoc.SetTextColor(theme.Muted.R, theme.Muted.G, theme.Muted.B)
 	pdfDoc.SetFont("Helvetica", "", 9)
-	pdfDoc.Text(page.MarginLeft, y, fmt.Sprintf("Side-by-side comparison of %d properties", len(memos)))
-	y += 8
+	pdfDoc.Text(page.MarginLeft, y, fmt.Sprintf("%d Properties Evaluated", len(memos)))
+	y += 7
+
+	// Compute verdict
+	qualified := 0
+	bestCapRate := 0.0
+	bestAddr := ""
+	for _, m := range memos {
+		if strings.EqualFold(m.Status, "Qualified") {
+			qualified++
+		}
+		if m.KeyFinancials.CapRate > bestCapRate {
+			bestCapRate = m.KeyFinancials.CapRate
+			bestAddr = m.PropertyAddress
+		}
+	}
+
+	var verdict string
+	switch {
+	case qualified == 0:
+		verdict = fmt.Sprintf("None of the %d evaluated properties meet qualification criteria.", len(memos))
+	case qualified == len(memos):
+		verdict = fmt.Sprintf("All %d properties qualify. Top performer by cap rate: %s (%.2f%%).", len(memos), bestAddr, bestCapRate)
+	default:
+		verdict = fmt.Sprintf("%d of %d properties qualify. Top performer by cap rate: %s (%.2f%%).", qualified, len(memos), bestAddr, bestCapRate)
+	}
+
+	y = AddSectionHeading(pdfDoc, page, theme, "Recommendation", y)
+	y = AddParagraph(pdfDoc, page, theme, verdict, y)
+	y = AddSectionHeading(pdfDoc, page, theme, "Portfolio Comparison", y)
 
 	// Build comparison table: rows = metrics, cols = properties
 	// Limit to 5 properties to fit on page

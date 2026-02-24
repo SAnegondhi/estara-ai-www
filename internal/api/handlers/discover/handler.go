@@ -18,6 +18,7 @@ import (
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/internal/config"
 	dbstore "github.com/estara-ai/www/internal/db"
+	"github.com/estara-ai/www/internal/db/marketqueries"
 	"github.com/estara-ai/www/internal/db/queries"
 	redisClient "github.com/estara-ai/www/internal/db/redis"
 	"github.com/estara-ai/www/internal/services/investment/expenses"
@@ -60,6 +61,47 @@ func NewHandler(
 		aggregator:   aggregator,
 		logger:       slog.Default().With("component", "discover_handler"),
 	}
+}
+
+// cityLocation is a city+state pair used for suburb fan-out searches.
+type cityLocation struct {
+	City  string
+	State string
+}
+
+// expandToNearby returns the origin city plus up to 8 nearby cities within radiusMiles.
+// Falls back to just the origin when radiusMiles == 0, the market DB is unavailable, or
+// the city is not found in city_states. Results include the origin city first.
+func (h *Handler) expandToNearby(ctx context.Context, city, state string, radiusMiles int) []cityLocation {
+	origin := []cityLocation{{City: city, State: state}}
+	if radiusMiles <= 0 || h.store.MQ() == nil {
+		return origin
+	}
+	row, err := h.store.MQ().GetCityByNameAndState(ctx, marketqueries.GetCityByNameAndStateParams{
+		City:    city,
+		StateID: state,
+	})
+	if err != nil {
+		h.logger.Warn("expandToNearby: city not found in market DB", "city", city, "state", state, "error", err)
+		return origin
+	}
+	nearby, err := h.store.MQ().FindCitiesNear(ctx, marketqueries.FindCitiesNearParams{
+		Lat:         row.Latitude,
+		Lng:         row.Longitude,
+		RadiusMiles: float64(radiusMiles),
+		OriginCity:  city,
+		OriginState: state,
+		MaxResults:  8,
+	})
+	if err != nil || len(nearby) == 0 {
+		return origin
+	}
+	result := make([]cityLocation, 0, len(nearby)+1)
+	result = append(result, origin[0])
+	for _, n := range nearby {
+		result = append(result, cityLocation{City: n.City, State: n.StateID})
+	}
+	return result
 }
 
 // PropertySearchResponse wraps the search response
@@ -314,40 +356,67 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build search params
-	params := providers.SearchParams{
+	// Build base search params
+	baseParams := providers.SearchParams{
 		City:     city,
 		State:    state,
 		MinPrice: criteria.MinPrice,
 		MaxPrice: criteria.MaxPrice,
 		MinBeds:  criteria.MinBeds,
 	}
-
-	// Handle property types (use first one if multiple provided)
 	if len(criteria.PropertyTypes) > 0 {
-		params.PropertyType = providers.PropertyType(criteria.PropertyTypes[0])
+		baseParams.PropertyType = providers.PropertyType(criteria.PropertyTypes[0])
 	}
 
+	// Expand to nearby cities if radiusMiles requested
+	searchCities := h.expandToNearby(ctx, city, state, criteria.RadiusMiles)
 	h.logger.Info("searching properties (v2 search)",
 		"city", city,
 		"state", state,
-		"minPrice", params.MinPrice,
-		"maxPrice", params.MaxPrice,
-		"minBeds", params.MinBeds,
+		"radius", criteria.RadiusMiles,
+		"cities", len(searchCities),
 	)
 
-	// Execute search with async enrichment (properties return immediately, yearBuilt/sqft enrichment via SSE)
-	result, err := h.orchestrator.SearchAsync(ctx, params)
-	if err != nil {
-		h.logger.Error("property search failed", "error", err)
-		httputil.Error(w, http.StatusInternalServerError, "property search failed")
-		return
+	// Fan-out parallel searches across all cities, then merge
+	type cityResult struct {
+		props []providers.Property
+		err   error
+	}
+	resultCh := make(chan cityResult, len(searchCities))
+	for _, loc := range searchCities {
+		go func(c, s string) {
+			p := baseParams
+			p.City = c
+			p.State = s
+			res, err := h.orchestrator.SearchAsync(ctx, p)
+			if err != nil || res == nil {
+				resultCh <- cityResult{err: err}
+				return
+			}
+			resultCh <- cityResult{props: res.Properties}
+		}(loc.City, loc.State)
 	}
 
-	// Transform to V2 response format (properties have investment metrics, yearBuilt may come via SSE)
+	// Collect and deduplicate
+	seen := make(map[string]bool)
+	var merged []providers.Property
+	for range searchCities {
+		r := <-resultCh
+		if r.err != nil {
+			continue
+		}
+		for _, p := range r.props {
+			if !seen[p.ID] {
+				seen[p.ID] = true
+				merged = append(merged, p)
+			}
+		}
+	}
+
+	// Transform to V2 response format
 	// Filter out invalid properties (zero price, zero cap rate indicates enrichment failure)
-	properties := make([]V2PropertyResult, 0, len(result.Properties))
-	for _, p := range result.Properties {
+	properties := make([]V2PropertyResult, 0, len(merged))
+	for _, p := range merged {
 		// Skip properties with zero or negative price - these are invalid listings
 		if p.Price <= 0 {
 			h.logger.Debug("skipping property with invalid price",
@@ -473,9 +542,6 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 		properties = append(properties, prop)
 	}
 
-	// Record search metrics (fire and forget)
-	go h.recordSearchMetrics(userID, "", criteria.Location, result.Metrics)
-
 	// Create discovery session if user is authenticated
 	var discoverySessionId string
 	if userID != "" && len(properties) > 0 {
@@ -509,8 +575,6 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 		Properties:         properties,
 		TotalCount:         len(properties),
 		DiscoverySessionId: discoverySessionId,
-		EnrichmentJobID:    result.EnrichmentJobID,
-		EnrichmentStatus:   result.EnrichmentStatus,
 	}
 
 	httputil.JSON(w, http.StatusOK, response)
