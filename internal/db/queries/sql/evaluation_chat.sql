@@ -43,10 +43,11 @@ WHERE session_id = $1
 ORDER BY created_at ASC;
 
 -- name: CreateEvaluationChatSession :one
+-- ADR-098: discovery_session_id links chat session to the discovery pool that supplied properties
 INSERT INTO evaluation_chat_sessions (
     id, user_id, property_ids, cached_property_ids,
-    investor_profile, portfolio_snapshot, created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+    investor_profile, portfolio_snapshot, discovery_session_id, created_at, updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
 RETURNING *;
 
 -- name: CreateEvaluationChatMessage :one

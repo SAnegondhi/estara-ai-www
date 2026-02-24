@@ -66,20 +66,22 @@ func (q *Queries) CreateEvaluationChatMessage(ctx context.Context, arg CreateEva
 const CreateEvaluationChatSession = `-- name: CreateEvaluationChatSession :one
 INSERT INTO evaluation_chat_sessions (
     id, user_id, property_ids, cached_property_ids,
-    investor_profile, portfolio_snapshot, created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-RETURNING id, user_id, property_ids, cached_property_ids, investor_profile, portfolio_snapshot, created_at, updated_at
+    investor_profile, portfolio_snapshot, discovery_session_id, created_at, updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+RETURNING id, user_id, property_ids, cached_property_ids, investor_profile, portfolio_snapshot, discovery_session_id, created_at, updated_at
 `
 
 type CreateEvaluationChatSessionParams struct {
-	ID                string   `json:"id"`
-	UserID            string   `json:"user_id"`
-	PropertyIds       []string `json:"property_ids"`
-	CachedPropertyIds []string `json:"cached_property_ids"`
-	InvestorProfile   []byte   `json:"investor_profile"`
-	PortfolioSnapshot []byte   `json:"portfolio_snapshot"`
+	ID                 string      `json:"id"`
+	UserID             string      `json:"user_id"`
+	PropertyIds        []string    `json:"property_ids"`
+	CachedPropertyIds  []string    `json:"cached_property_ids"`
+	InvestorProfile    []byte      `json:"investor_profile"`
+	PortfolioSnapshot  []byte      `json:"portfolio_snapshot"`
+	DiscoverySessionID pgtype.Text `json:"discovery_session_id"`
 }
 
+// ADR-098: discovery_session_id links chat session to the discovery pool that supplied properties
 func (q *Queries) CreateEvaluationChatSession(ctx context.Context, arg CreateEvaluationChatSessionParams) (EvaluationChatSession, error) {
 	row := q.db.QueryRow(ctx, CreateEvaluationChatSession,
 		arg.ID,
@@ -88,6 +90,7 @@ func (q *Queries) CreateEvaluationChatSession(ctx context.Context, arg CreateEva
 		arg.CachedPropertyIds,
 		arg.InvestorProfile,
 		arg.PortfolioSnapshot,
+		arg.DiscoverySessionID,
 	)
 	var i EvaluationChatSession
 	err := row.Scan(
@@ -97,6 +100,7 @@ func (q *Queries) CreateEvaluationChatSession(ctx context.Context, arg CreateEva
 		&i.CachedPropertyIds,
 		&i.InvestorProfile,
 		&i.PortfolioSnapshot,
+		&i.DiscoverySessionID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -132,9 +136,20 @@ type GetEvaluationChatSessionParams struct {
 	UserID string `json:"user_id"`
 }
 
-func (q *Queries) GetEvaluationChatSession(ctx context.Context, arg GetEvaluationChatSessionParams) (EvaluationChatSession, error) {
+type GetEvaluationChatSessionRow struct {
+	ID                string           `json:"id"`
+	UserID            string           `json:"user_id"`
+	PropertyIds       []string         `json:"property_ids"`
+	CachedPropertyIds []string         `json:"cached_property_ids"`
+	InvestorProfile   []byte           `json:"investor_profile"`
+	PortfolioSnapshot []byte           `json:"portfolio_snapshot"`
+	CreatedAt         pgtype.Timestamp `json:"created_at"`
+	UpdatedAt         pgtype.Timestamp `json:"updated_at"`
+}
+
+func (q *Queries) GetEvaluationChatSession(ctx context.Context, arg GetEvaluationChatSessionParams) (GetEvaluationChatSessionRow, error) {
 	row := q.db.QueryRow(ctx, GetEvaluationChatSession, arg.ID, arg.UserID)
-	var i EvaluationChatSession
+	var i GetEvaluationChatSessionRow
 	err := row.Scan(
 		&i.ID,
 		&i.UserID,

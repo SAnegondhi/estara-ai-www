@@ -66,70 +66,78 @@ INSERT INTO v2_evaluations (
     property_zip, property_details, purchase_price, down_payment_pct,
     interest_rate, loan_term_years, monthly_rent, vacancy_rate_pct,
     maintenance_cost, property_tax, insurance, hoa_fees, appreciation_rate,
-    scenarios, sensitivity_data, status, created_at, updated_at
+    scenarios, sensitivity_data, chat_session_id, discovery_session_id,
+    status, created_at, updated_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
     $11, $12, $13, $14, $15, $16, $17, $18, $19,
-    $20, $21, 'DRAFT'::"V2EvaluationStatus", NOW(), NOW()
+    $20, $21, $22, $23,
+    'DRAFT'::"V2EvaluationStatus", NOW(), NOW()
 )
 RETURNING id, user_id, property_id, property_address, property_city, property_state,
           property_zip, property_details, purchase_price, down_payment_pct,
           interest_rate, loan_term_years, monthly_rent, vacancy_rate_pct,
           maintenance_cost, property_tax, insurance, hoa_fees, appreciation_rate,
-          scenarios, sensitivity_data, status::text, created_at, updated_at
+          scenarios, sensitivity_data, chat_session_id, discovery_session_id,
+          status::text, created_at, updated_at
 `
 
 type CreateV2EvaluationParams struct {
-	ID               string        `json:"id"`
-	UserID           string        `json:"user_id"`
-	PropertyID       string        `json:"property_id"`
-	PropertyAddress  string        `json:"property_address"`
-	PropertyCity     string        `json:"property_city"`
-	PropertyState    string        `json:"property_state"`
-	PropertyZip      pgtype.Text   `json:"property_zip"`
-	PropertyDetails  []byte        `json:"property_details"`
-	PurchasePrice    float64       `json:"purchase_price"`
-	DownPaymentPct   float64       `json:"down_payment_pct"`
-	InterestRate     float64       `json:"interest_rate"`
-	LoanTermYears    int32         `json:"loan_term_years"`
-	MonthlyRent      float64       `json:"monthly_rent"`
-	VacancyRatePct   float64       `json:"vacancy_rate_pct"`
-	MaintenanceCost  float64       `json:"maintenance_cost"`
-	PropertyTax      float64       `json:"property_tax"`
-	Insurance        float64       `json:"insurance"`
-	HoaFees          pgtype.Float8 `json:"hoa_fees"`
-	AppreciationRate float64       `json:"appreciation_rate"`
-	Scenarios        []byte        `json:"scenarios"`
-	SensitivityData  []byte        `json:"sensitivity_data"`
+	ID                 string        `json:"id"`
+	UserID             string        `json:"user_id"`
+	PropertyID         string        `json:"property_id"`
+	PropertyAddress    string        `json:"property_address"`
+	PropertyCity       string        `json:"property_city"`
+	PropertyState      string        `json:"property_state"`
+	PropertyZip        pgtype.Text   `json:"property_zip"`
+	PropertyDetails    []byte        `json:"property_details"`
+	PurchasePrice      float64       `json:"purchase_price"`
+	DownPaymentPct     float64       `json:"down_payment_pct"`
+	InterestRate       float64       `json:"interest_rate"`
+	LoanTermYears      int32         `json:"loan_term_years"`
+	MonthlyRent        float64       `json:"monthly_rent"`
+	VacancyRatePct     float64       `json:"vacancy_rate_pct"`
+	MaintenanceCost    float64       `json:"maintenance_cost"`
+	PropertyTax        float64       `json:"property_tax"`
+	Insurance          float64       `json:"insurance"`
+	HoaFees            pgtype.Float8 `json:"hoa_fees"`
+	AppreciationRate   float64       `json:"appreciation_rate"`
+	Scenarios          []byte        `json:"scenarios"`
+	SensitivityData    []byte        `json:"sensitivity_data"`
+	ChatSessionID      pgtype.Text   `json:"chat_session_id"`
+	DiscoverySessionID pgtype.Text   `json:"discovery_session_id"`
 }
 
 type CreateV2EvaluationRow struct {
-	ID               string           `json:"id"`
-	UserID           string           `json:"user_id"`
-	PropertyID       string           `json:"property_id"`
-	PropertyAddress  string           `json:"property_address"`
-	PropertyCity     string           `json:"property_city"`
-	PropertyState    string           `json:"property_state"`
-	PropertyZip      pgtype.Text      `json:"property_zip"`
-	PropertyDetails  []byte           `json:"property_details"`
-	PurchasePrice    float64          `json:"purchase_price"`
-	DownPaymentPct   float64          `json:"down_payment_pct"`
-	InterestRate     float64          `json:"interest_rate"`
-	LoanTermYears    int32            `json:"loan_term_years"`
-	MonthlyRent      float64          `json:"monthly_rent"`
-	VacancyRatePct   float64          `json:"vacancy_rate_pct"`
-	MaintenanceCost  float64          `json:"maintenance_cost"`
-	PropertyTax      float64          `json:"property_tax"`
-	Insurance        float64          `json:"insurance"`
-	HoaFees          pgtype.Float8    `json:"hoa_fees"`
-	AppreciationRate float64          `json:"appreciation_rate"`
-	Scenarios        []byte           `json:"scenarios"`
-	SensitivityData  []byte           `json:"sensitivity_data"`
-	Status           string           `json:"status"`
-	CreatedAt        pgtype.Timestamp `json:"created_at"`
-	UpdatedAt        pgtype.Timestamp `json:"updated_at"`
+	ID                 string           `json:"id"`
+	UserID             string           `json:"user_id"`
+	PropertyID         string           `json:"property_id"`
+	PropertyAddress    string           `json:"property_address"`
+	PropertyCity       string           `json:"property_city"`
+	PropertyState      string           `json:"property_state"`
+	PropertyZip        pgtype.Text      `json:"property_zip"`
+	PropertyDetails    []byte           `json:"property_details"`
+	PurchasePrice      float64          `json:"purchase_price"`
+	DownPaymentPct     float64          `json:"down_payment_pct"`
+	InterestRate       float64          `json:"interest_rate"`
+	LoanTermYears      int32            `json:"loan_term_years"`
+	MonthlyRent        float64          `json:"monthly_rent"`
+	VacancyRatePct     float64          `json:"vacancy_rate_pct"`
+	MaintenanceCost    float64          `json:"maintenance_cost"`
+	PropertyTax        float64          `json:"property_tax"`
+	Insurance          float64          `json:"insurance"`
+	HoaFees            pgtype.Float8    `json:"hoa_fees"`
+	AppreciationRate   float64          `json:"appreciation_rate"`
+	Scenarios          []byte           `json:"scenarios"`
+	SensitivityData    []byte           `json:"sensitivity_data"`
+	ChatSessionID      pgtype.Text      `json:"chat_session_id"`
+	DiscoverySessionID pgtype.Text      `json:"discovery_session_id"`
+	Status             string           `json:"status"`
+	CreatedAt          pgtype.Timestamp `json:"created_at"`
+	UpdatedAt          pgtype.Timestamp `json:"updated_at"`
 }
 
+// ADR-098: chat_session_id and discovery_session_id link evaluation to originating chat + discovery
 func (q *Queries) CreateV2Evaluation(ctx context.Context, arg CreateV2EvaluationParams) (CreateV2EvaluationRow, error) {
 	row := q.db.QueryRow(ctx, CreateV2Evaluation,
 		arg.ID,
@@ -153,6 +161,8 @@ func (q *Queries) CreateV2Evaluation(ctx context.Context, arg CreateV2Evaluation
 		arg.AppreciationRate,
 		arg.Scenarios,
 		arg.SensitivityData,
+		arg.ChatSessionID,
+		arg.DiscoverySessionID,
 	)
 	var i CreateV2EvaluationRow
 	err := row.Scan(
@@ -177,6 +187,8 @@ func (q *Queries) CreateV2Evaluation(ctx context.Context, arg CreateV2Evaluation
 		&i.AppreciationRate,
 		&i.Scenarios,
 		&i.SensitivityData,
+		&i.ChatSessionID,
+		&i.DiscoverySessionID,
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -428,14 +440,14 @@ func (q *Queries) GetDecisionRecordWithEvaluation(ctx context.Context, arg GetDe
 const GetEvaluationsWithDecisionRecords = `-- name: GetEvaluationsWithDecisionRecords :many
 SELECT
     e.id, e.user_id, e.property_id, e.property_address, e.property_city,
-    e.property_state, e.property_zip, e.property_details,
+    e.property_state, e.property_zip, e.property_details, e.property_snapshot,
     e.purchase_price, e.down_payment_pct, e.interest_rate,
     e.loan_term_years, e.monthly_rent, e.vacancy_rate_pct,
     e.maintenance_cost, e.property_tax, e.insurance, e.hoa_fees,
     e.appreciation_rate, e.scenarios, e.sensitivity_data,
     e.status::text, e.created_at, e.updated_at,
     d.id AS decision_record_id, d.memo_content, d.pdf_url, d.exported_at,
-    COALESCE(dse.discovery_session_id, '') AS discovery_session_id
+    COALESCE(e.discovery_session_id, dse.discovery_session_id, '') AS discovery_session_id
 FROM v2_evaluations e
 LEFT JOIN v2_decision_records d ON d.evaluation_id = e.id
 LEFT JOIN LATERAL (
@@ -465,6 +477,7 @@ type GetEvaluationsWithDecisionRecordsRow struct {
 	PropertyState      string           `json:"property_state"`
 	PropertyZip        pgtype.Text      `json:"property_zip"`
 	PropertyDetails    []byte           `json:"property_details"`
+	PropertySnapshot   []byte           `json:"property_snapshot"`
 	PurchasePrice      float64          `json:"purchase_price"`
 	DownPaymentPct     float64          `json:"down_payment_pct"`
 	InterestRate       float64          `json:"interest_rate"`
@@ -490,6 +503,8 @@ type GetEvaluationsWithDecisionRecordsRow struct {
 
 // ADR-091 Phase 4: LATERAL JOIN surfaces the most-recent discovery session that
 // contains this property, so the frontend can populate discoverySeedSessionId.
+// ADR-093: property_snapshot stores full enriched data for durable frontier source.
+// ADR-098: prefer direct e.discovery_session_id column; fall back to LATERAL JOIN for older rows.
 func (q *Queries) GetEvaluationsWithDecisionRecords(ctx context.Context, arg GetEvaluationsWithDecisionRecordsParams) ([]GetEvaluationsWithDecisionRecordsRow, error) {
 	rows, err := q.db.Query(ctx, GetEvaluationsWithDecisionRecords, arg.UserID, arg.Offset, arg.Limit)
 	if err != nil {
@@ -508,6 +523,7 @@ func (q *Queries) GetEvaluationsWithDecisionRecords(ctx context.Context, arg Get
 			&i.PropertyState,
 			&i.PropertyZip,
 			&i.PropertyDetails,
+			&i.PropertySnapshot,
 			&i.PurchasePrice,
 			&i.DownPaymentPct,
 			&i.InterestRate,
@@ -683,6 +699,27 @@ func (q *Queries) ListDecisionRecordsWithEvaluation(ctx context.Context, arg Lis
 		return nil, err
 	}
 	return items, nil
+}
+
+const UpdateEvaluationPropertySnapshot = `-- name: UpdateEvaluationPropertySnapshot :exec
+UPDATE v2_evaluations
+SET property_snapshot = $1::jsonb,
+    updated_at = NOW()
+WHERE id = $2::text
+`
+
+type UpdateEvaluationPropertySnapshotParams struct {
+	Snapshot json.RawMessage `json:"snapshot"`
+	ID       string          `json:"id"`
+}
+
+// ADR-093: Write the full enriched property snapshot to v2_evaluations.
+// Called lazily when evaluations are first used as a frontier source and the
+// snapshot is missing (backfill from discovery_session_properties).
+// Also called at evaluation creation time when full provider data is available.
+func (q *Queries) UpdateEvaluationPropertySnapshot(ctx context.Context, arg UpdateEvaluationPropertySnapshotParams) error {
+	_, err := q.db.Exec(ctx, UpdateEvaluationPropertySnapshot, arg.Snapshot, arg.ID)
+	return err
 }
 
 const UpdateV2EvaluationStatus = `-- name: UpdateV2EvaluationStatus :exec

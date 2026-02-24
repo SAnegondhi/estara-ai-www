@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS v2_evaluations (
     property_state TEXT NOT NULL,
     property_zip TEXT,
     property_details JSONB,
+    property_snapshot JSONB,
     purchase_price DOUBLE PRECISION NOT NULL,
     down_payment_pct DOUBLE PRECISION NOT NULL,
     interest_rate DOUBLE PRECISION NOT NULL,
@@ -57,6 +58,8 @@ CREATE TABLE IF NOT EXISTS v2_evaluations (
     appreciation_rate DOUBLE PRECISION NOT NULL,
     scenarios JSONB,
     sensitivity_data JSONB,
+    chat_session_id TEXT,
+    discovery_session_id TEXT,
     status "V2EvaluationStatus" NOT NULL DEFAULT 'DRAFT',
     created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP(3) NOT NULL

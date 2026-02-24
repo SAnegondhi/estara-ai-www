@@ -173,10 +173,14 @@ SELECT COUNT(*) FROM discovery_session_properties
 WHERE "discoverySessionId" = $1;
 
 -- name: GetSessionPropertiesByListingIDs :many
+-- ADR-093: Used for lazy property_snapshot backfill — fetches enriched data
+-- from the most-recent discovery session that contained each listing ID.
+-- Returns latitude/longitude for geo display in frontier workspace.
 SELECT id, "discoverySessionId", "listingId", address, city, state, "zipCode",
        price, "estimatedRent", "capRateMin", "capRateMax", beds, baths, sqft,
        "yearBuilt", "propertyType", "listingDate", "daysOnMarket",
-       "imageUrl", "listingSearchUrl", "googleSearchUrl", "createdAt"
+       "imageUrl", "listingSearchUrl", "googleSearchUrl",
+       latitude, longitude, "createdAt"
 FROM discovery_session_properties
 WHERE "listingId" = ANY($1::text[])
 ORDER BY price ASC;

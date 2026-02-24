@@ -318,6 +318,8 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	r.Route("/api/v2/evaluate", func(r chi.Router) {
 		r.Use(authMiddleware.Authenticate)
 		r.Use(rateLimiter.Limit)
+		// ADR-098: POST / saves evaluation at chat time (no PDF export required)
+		r.Post("/", handlers.Discover.SaveV2Evaluation)
 		r.Get("/list", handlers.Discover.ListEvaluations)
 		r.Post("/batch", handlers.Discover.BatchEvaluate)
 		r.Post("/batch/export", handlers.Discover.ExportBatchEvaluations)

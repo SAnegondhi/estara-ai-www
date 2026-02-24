@@ -24,17 +24,19 @@ WHERE (
     ) * 0.621371
 ) <= $3::float8
   AND NOT (LOWER(city) = LOWER($4::text) AND state_id = $5::text)
+  AND population >= $6::int4
 ORDER BY population DESC NULLS LAST
-LIMIT $6::int4
+LIMIT $7::int4
 `
 
 type FindCitiesNearParams struct {
-	Lat         float64 `json:"lat"`
-	Lng         float64 `json:"lng"`
-	RadiusMiles float64 `json:"radius_miles"`
-	OriginCity  string  `json:"origin_city"`
-	OriginState string  `json:"origin_state"`
-	MaxResults  int32   `json:"max_results"`
+	Lat           float64 `json:"lat"`
+	Lng           float64 `json:"lng"`
+	RadiusMiles   float64 `json:"radius_miles"`
+	OriginCity    string  `json:"origin_city"`
+	OriginState   string  `json:"origin_state"`
+	MinPopulation int32   `json:"min_population"`
+	MaxResults    int32   `json:"max_results"`
 }
 
 type FindCitiesNearRow struct {
@@ -50,6 +52,7 @@ func (q *Queries) FindCitiesNear(ctx context.Context, arg FindCitiesNearParams) 
 		arg.RadiusMiles,
 		arg.OriginCity,
 		arg.OriginState,
+		arg.MinPopulation,
 		arg.MaxResults,
 	)
 	if err != nil {

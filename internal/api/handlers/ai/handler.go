@@ -125,12 +125,14 @@ func (h *Handler) WithMetroReader(mr *timeseries.MetroReader) *Handler {
 
 // EvaluationChatRequest represents a request to queue an evaluation chat
 type EvaluationChatRequest struct {
-	Properties        []PropertyInput  `json:"properties" validate:"required,min=1,max=10"`
-	PortfolioID       *string          `json:"portfolioId,omitempty"`
-	PortfolioSnapshot json.RawMessage  `json:"portfolioSnapshot,omitempty"`
-	InvestorProfile   *InvestorProfile `json:"investorProfile,omitempty"`
-	Message           string           `json:"message" validate:"required,min=1,max=2000"`
-	SessionID         *string          `json:"sessionId,omitempty"`
+	Properties         []PropertyInput  `json:"properties" validate:"required,min=1,max=10"`
+	PortfolioID        *string          `json:"portfolioId,omitempty"`
+	PortfolioSnapshot  json.RawMessage  `json:"portfolioSnapshot,omitempty"`
+	InvestorProfile    *InvestorProfile `json:"investorProfile,omitempty"`
+	Message            string           `json:"message" validate:"required,min=1,max=2000"`
+	SessionID          *string          `json:"sessionId,omitempty"`
+	// ADR-098: discovery session that supplied the property pool
+	DiscoverySessionID string           `json:"discoverySessionId,omitempty"`
 }
 
 // PropertyInput represents a property in a chat request
@@ -334,7 +336,7 @@ func (h *Handler) QueueEvaluationChat(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Create new session
 		var err error
-		sessionID, err = h.createChatSession(ctx, user.UserID, req.Properties, req.InvestorProfile, req.PortfolioSnapshot)
+		sessionID, err = h.createChatSession(ctx, user.UserID, req.Properties, req.InvestorProfile, req.PortfolioSnapshot, req.DiscoverySessionID)
 		if err != nil {
 			h.logger.Error("failed to create chat session", "error", err)
 			httputil.InternalError(w, fmt.Errorf("failed to create session"))
@@ -1057,7 +1059,7 @@ func (h *Handler) enrichSessionProperties(ctx context.Context, properties []Prop
 	if err != nil || len(discProps) == 0 {
 		return properties
 	}
-	discMap := make(map[string]queries.GetSessionPropertiesByListingIDsRow, len(discProps))
+	discMap := make(map[string]queries.DiscoverySessionProperty, len(discProps))
 	for _, dp := range discProps {
 		discMap[dp.ListingId] = dp
 	}
@@ -3467,7 +3469,8 @@ func (h *Handler) InvalidateCache(w http.ResponseWriter, r *http.Request) {
 // ===============================
 
 // createChatSession creates a new evaluation chat session
-func (h *Handler) createChatSession(ctx context.Context, userID string, properties []PropertyInput, profile *InvestorProfile, portfolioSnapshot json.RawMessage) (string, error) {
+// ADR-098: discoverySessionID links this chat to the discovery pool that supplied the properties
+func (h *Handler) createChatSession(ctx context.Context, userID string, properties []PropertyInput, profile *InvestorProfile, portfolioSnapshot json.RawMessage, discoverySessionID string) (string, error) {
 	// Cache properties first - track both listing IDs and cached IDs
 	listingIDs := make([]string, 0, len(properties))
 	cachedPropertyIDs := make([]string, 0, len(properties))
@@ -3521,12 +3524,13 @@ func (h *Handler) createChatSession(ctx context.Context, userID string, properti
 
 	sessionID := uuid.New().String()
 	_, err := h.store.Q().CreateEvaluationChatSession(ctx, queries.CreateEvaluationChatSessionParams{
-		ID:                sessionID,
-		UserID:            userID,
-		PropertyIds:       listingIDs,
-		CachedPropertyIds: cachedPropertyIDs,
-		InvestorProfile:   investorProfileJSON,
-		PortfolioSnapshot: portfolioSnapshotJSON,
+		ID:                 sessionID,
+		UserID:             userID,
+		PropertyIds:        listingIDs,
+		CachedPropertyIds:  cachedPropertyIDs,
+		InvestorProfile:    investorProfileJSON,
+		PortfolioSnapshot:  portfolioSnapshotJSON,
+		DiscoverySessionID: pgtype.Text{String: discoverySessionID, Valid: discoverySessionID != ""},
 	})
 
 	if err != nil {

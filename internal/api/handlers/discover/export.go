@@ -559,3 +559,77 @@ func getFloat(data map[string]interface{}, key string) float64 {
 	}
 	return 0
 }
+
+// snapshotFromSessionProperty converts a DiscoverySessionProperty DB row into the
+// evalPropertySnapshot struct stored on v2_evaluations.property_snapshot.
+// ADR-093: design decision — store complete records for durability vs. IDs-only
+// (relies on cache). Full records enable Frontier re-runs even if cache has expired.
+func snapshotFromSessionProperty(sp queries.DiscoverySessionProperty) evalPropertySnapshot {
+	snap := evalPropertySnapshot{}
+	if sp.EstimatedRent.Valid {
+		snap.EstimatedRent = int(sp.EstimatedRent.Int32)
+	}
+	if sp.YearBuilt.Valid {
+		snap.YearBuilt = int(sp.YearBuilt.Int32)
+	}
+	if sp.ImageUrl.Valid {
+		snap.ImageUrl = sp.ImageUrl.String
+	}
+	if sp.ListingSearchUrl.Valid {
+		snap.ListingSearchUrl = sp.ListingSearchUrl.String
+	}
+	if sp.GoogleSearchUrl.Valid {
+		snap.GoogleSearchUrl = sp.GoogleSearchUrl.String
+	}
+	// pgtype.Numeric → float64 via Scan
+	var f float64
+	if sp.CapRateMin.Valid {
+		if err := sp.CapRateMin.Scan(&f); err == nil {
+			snap.CapRateMin = f
+		}
+	}
+	if sp.CapRateMax.Valid {
+		if err := sp.CapRateMax.Scan(&f); err == nil {
+			snap.CapRateMax = f
+		}
+	}
+	if sp.Latitude.Valid {
+		if err := sp.Latitude.Scan(&f); err == nil {
+			snap.Latitude = f
+		}
+	}
+	if sp.Longitude.Valid {
+		if err := sp.Longitude.Scan(&f); err == nil {
+			snap.Longitude = f
+		}
+	}
+	return snap
+}
+
+// applySnapshotToItem copies enriched fields from an evalPropertySnapshot into an
+// EvaluationListItem, setting SnapshotAvailable when any field is populated.
+func applySnapshotToItem(item *EvaluationListItem, snap evalPropertySnapshot) {
+	if snap.EstimatedRent > 0 {
+		item.SnapshotAvailable = true
+	}
+	item.YearBuilt = snap.YearBuilt
+	item.ImageUrl = snap.ImageUrl
+	item.ListingSearchUrl = snap.ListingSearchUrl
+	if snap.CapRateMin != 0 {
+		v := snap.CapRateMin
+		item.CapRateMin = &v
+		item.SnapshotAvailable = true
+	}
+	if snap.CapRateMax != 0 {
+		v := snap.CapRateMax
+		item.CapRateMax = &v
+	}
+	if snap.Latitude != 0 {
+		v := snap.Latitude
+		item.Latitude = &v
+	}
+	if snap.Longitude != 0 {
+		v := snap.Longitude
+		item.Longitude = &v
+	}
+}

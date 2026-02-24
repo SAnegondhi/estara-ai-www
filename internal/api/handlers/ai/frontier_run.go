@@ -11,6 +11,7 @@ import (
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	queries "github.com/estara-ai/www/internal/db/queries"
+	"github.com/estara-ai/www/internal/db/marketqueries"
 	"github.com/estara-ai/www/internal/services/investment"
 	"github.com/estara-ai/www/internal/services/investment/optimization"
 	"github.com/estara-ai/www/internal/services/property/providers"
@@ -59,6 +60,9 @@ type FrontierRunRequest struct {
 	MinBaths float64 `json:"minBaths,omitempty"`
 	// MinPrice: absolute minimum listing price in dollars. 0 = no minimum.
 	MinPrice int `json:"minPrice,omitempty"`
+	// RadiusMiles: suburb expansion radius in miles (auto-discover only). 0/omitted = no expansion.
+	// ADR-097: when set, expands each location to nearby cities with pop >= 25K.
+	RadiusMiles int `json:"radiusMiles,omitempty"`
 }
 
 // RunFrontierPipeline is the Phase 12 full-pipeline endpoint.
@@ -221,8 +225,15 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 
 	if useAutoDiscover {
 		// Auto-discover: parallel search across all requested locations
-		emitProgress(0, fmt.Sprintf("Searching %d location(s)", len(req.Locations)))
-		discoveryLocations = req.Locations
+		discoveryLocations = req.Locations // original locations for metadata
+
+		// ADR-097: suburb expansion — fan out each location to nearby cities
+		searchLocations := h.expandFrontierLocations(ctx, req.Locations, req.RadiusMiles)
+		if req.RadiusMiles > 0 {
+			h.logger.Info("frontier suburb expansion",
+				"original", len(req.Locations), "expanded", len(searchLocations), "radius", req.RadiusMiles)
+		}
+		emitProgress(0, fmt.Sprintf("Searching %d location(s)", len(searchLocations)))
 
 		maxPrice := int(float64(req.Budget) / req.DownPaymentPct)
 
@@ -231,11 +242,11 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 			err        error
 		}
 
-		resultChan := make(chan searchResult, len(req.Locations))
+		resultChan := make(chan searchResult, len(searchLocations))
 		sem := make(chan struct{}, 5)
 		var wg sync.WaitGroup
 
-		for i, loc := range req.Locations {
+		for i, loc := range searchLocations {
 			wg.Add(1)
 			go func(idx int, location string) {
 				defer wg.Done()
@@ -255,7 +266,7 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				pct := float64(idx)/float64(len(req.Locations)) * 30
+				pct := float64(idx)/float64(len(searchLocations)) * 30
 				emitProgress(pct, fmt.Sprintf("Searching %s", location))
 
 				parts := strings.SplitN(location, ",", 2)
@@ -316,7 +327,7 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 					})
 				}
 
-				emitProgress(float64(idx+1)/float64(len(req.Locations))*30,
+				emitProgress(float64(idx+1)/float64(len(searchLocations))*30,
 					fmt.Sprintf("Found %d properties in %s", len(props), location))
 
 				// ADR-088 Phase 13: Progressive disclosure — emit "found" after search completes
@@ -335,10 +346,17 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 			close(resultChan)
 		}()
 
+		// ADR-097: dedup by property ID across expanded locations
+		seenPropertyIDs := make(map[string]bool)
 		allProperties = make([]investment.Property, 0)
 		for res := range resultChan {
 			if res.err == nil {
-				allProperties = append(allProperties, res.properties...)
+				for _, p := range res.properties {
+					if !seenPropertyIDs[p.ID] {
+						seenPropertyIDs[p.ID] = true
+						allProperties = append(allProperties, p)
+					}
+				}
 			}
 		}
 
@@ -735,5 +753,61 @@ func (h *Handler) buildMarketBenchmarks(ctx context.Context, props []investment.
 		result[key] = bench
 	}
 
+	return result
+}
+
+// expandFrontierLocations expands a list of location strings to include nearby cities
+// using the Haversine-based FindCitiesNear market DB query.
+// ADR-097: uses MinPopulation=25000 for investment-grade markets (vs. 10K for Discover).
+// Returns the original list unchanged if radiusMiles <= 0 or market DB is unavailable.
+func (h *Handler) expandFrontierLocations(ctx context.Context, locations []string, radiusMiles int) []string {
+	if radiusMiles <= 0 || h.store.MQ() == nil {
+		return locations
+	}
+	seen := make(map[string]bool)
+	var result []string
+	addLoc := func(city, state string) {
+		key := strings.ToLower(city + "," + state)
+		if !seen[key] {
+			seen[key] = true
+			if state != "" {
+				result = append(result, city+", "+state)
+			} else {
+				result = append(result, city)
+			}
+		}
+	}
+	for _, loc := range locations {
+		parts := strings.SplitN(loc, ",", 2)
+		city := strings.TrimSpace(parts[0])
+		state := ""
+		if len(parts) > 1 {
+			state = strings.TrimSpace(parts[1])
+		}
+		addLoc(city, state)
+
+		row, err := h.store.MQ().GetCityByNameAndState(ctx, marketqueries.GetCityByNameAndStateParams{
+			City:    city,
+			StateID: state,
+		})
+		if err != nil {
+			continue
+		}
+		nearby, err := h.store.MQ().FindCitiesNear(ctx, marketqueries.FindCitiesNearParams{
+			Lat:           row.Latitude,
+			Lng:           row.Longitude,
+			RadiusMiles:   float64(radiusMiles),
+			OriginCity:    city,
+			OriginState:   state,
+			MinPopulation: 25000, // ADR-097: investment-grade markets only
+			MaxResults:    8,
+		})
+		if err != nil {
+			continue
+		}
+		for _, n := range nearby {
+			addLoc(n.City, n.StateID)
+		}
+	}
 	return result
 }

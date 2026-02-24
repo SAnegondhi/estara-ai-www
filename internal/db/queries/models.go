@@ -474,14 +474,15 @@ type EvaluationChatMessage struct {
 }
 
 type EvaluationChatSession struct {
-	ID                string           `json:"id"`
-	UserID            string           `json:"user_id"`
-	PropertyIds       []string         `json:"property_ids"`
-	CachedPropertyIds []string         `json:"cached_property_ids"`
-	InvestorProfile   []byte           `json:"investor_profile"`
-	PortfolioSnapshot []byte           `json:"portfolio_snapshot"`
-	CreatedAt         pgtype.Timestamp `json:"created_at"`
-	UpdatedAt         pgtype.Timestamp `json:"updated_at"`
+	ID                 string           `json:"id"`
+	UserID             string           `json:"user_id"`
+	PropertyIds        []string         `json:"property_ids"`
+	CachedPropertyIds  []string         `json:"cached_property_ids"`
+	InvestorProfile    []byte           `json:"investor_profile"`
+	PortfolioSnapshot  []byte           `json:"portfolio_snapshot"`
+	DiscoverySessionID pgtype.Text      `json:"discovery_session_id"`
+	CreatedAt          pgtype.Timestamp `json:"created_at"`
+	UpdatedAt          pgtype.Timestamp `json:"updated_at"`
 }
 
 type FrontierRun struct {
@@ -940,30 +941,33 @@ type V2DecisionRecord struct {
 }
 
 type V2Evaluation struct {
-	ID               string           `json:"id"`
-	UserID           string           `json:"user_id"`
-	PropertyID       string           `json:"property_id"`
-	PropertyAddress  string           `json:"property_address"`
-	PropertyCity     string           `json:"property_city"`
-	PropertyState    string           `json:"property_state"`
-	PropertyZip      pgtype.Text      `json:"property_zip"`
-	PropertyDetails  []byte           `json:"property_details"`
-	PurchasePrice    float64          `json:"purchase_price"`
-	DownPaymentPct   float64          `json:"down_payment_pct"`
-	InterestRate     float64          `json:"interest_rate"`
-	LoanTermYears    int32            `json:"loan_term_years"`
-	MonthlyRent      float64          `json:"monthly_rent"`
-	VacancyRatePct   float64          `json:"vacancy_rate_pct"`
-	MaintenanceCost  float64          `json:"maintenance_cost"`
-	PropertyTax      float64          `json:"property_tax"`
-	Insurance        float64          `json:"insurance"`
-	HoaFees          pgtype.Float8    `json:"hoa_fees"`
-	AppreciationRate float64          `json:"appreciation_rate"`
-	Scenarios        []byte           `json:"scenarios"`
-	SensitivityData  []byte           `json:"sensitivity_data"`
-	Status           interface{}      `json:"status"`
-	CreatedAt        pgtype.Timestamp `json:"created_at"`
-	UpdatedAt        pgtype.Timestamp `json:"updated_at"`
+	ID                 string           `json:"id"`
+	UserID             string           `json:"user_id"`
+	PropertyID         string           `json:"property_id"`
+	PropertyAddress    string           `json:"property_address"`
+	PropertyCity       string           `json:"property_city"`
+	PropertyState      string           `json:"property_state"`
+	PropertyZip        pgtype.Text      `json:"property_zip"`
+	PropertyDetails    []byte           `json:"property_details"`
+	PropertySnapshot   []byte           `json:"property_snapshot"`
+	PurchasePrice      float64          `json:"purchase_price"`
+	DownPaymentPct     float64          `json:"down_payment_pct"`
+	InterestRate       float64          `json:"interest_rate"`
+	LoanTermYears      int32            `json:"loan_term_years"`
+	MonthlyRent        float64          `json:"monthly_rent"`
+	VacancyRatePct     float64          `json:"vacancy_rate_pct"`
+	MaintenanceCost    float64          `json:"maintenance_cost"`
+	PropertyTax        float64          `json:"property_tax"`
+	Insurance          float64          `json:"insurance"`
+	HoaFees            pgtype.Float8    `json:"hoa_fees"`
+	AppreciationRate   float64          `json:"appreciation_rate"`
+	Scenarios          []byte           `json:"scenarios"`
+	SensitivityData    []byte           `json:"sensitivity_data"`
+	ChatSessionID      pgtype.Text      `json:"chat_session_id"`
+	DiscoverySessionID pgtype.Text      `json:"discovery_session_id"`
+	Status             interface{}      `json:"status"`
+	CreatedAt          pgtype.Timestamp `json:"created_at"`
+	UpdatedAt          pgtype.Timestamp `json:"updated_at"`
 }
 
 type V2EvaluationQuota struct {

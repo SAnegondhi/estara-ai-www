@@ -86,12 +86,13 @@ func (h *Handler) expandToNearby(ctx context.Context, city, state string, radius
 		return origin
 	}
 	nearby, err := h.store.MQ().FindCitiesNear(ctx, marketqueries.FindCitiesNearParams{
-		Lat:         row.Latitude,
-		Lng:         row.Longitude,
-		RadiusMiles: float64(radiusMiles),
-		OriginCity:  city,
-		OriginState: state,
-		MaxResults:  8,
+		Lat:           row.Latitude,
+		Lng:           row.Longitude,
+		RadiusMiles:   float64(radiusMiles),
+		OriginCity:    city,
+		OriginState:   state,
+		MinPopulation: 10000, // ADR-097: exclude sub-viable markets (<10K pop)
+		MaxResults:    8,
 	})
 	if err != nil || len(nearby) == 0 {
 		return origin
@@ -1439,28 +1440,54 @@ func (h *Handler) GetRecords(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusOK, response)
 }
 
+// evalPropertySnapshot is parsed from v2_evaluations.property_snapshot JSONB.
+// ADR-093: stores enriched provider data at evaluation time (or backfilled from
+// discovery_session_properties) for durable frontier source independence from cache.
+type evalPropertySnapshot struct {
+	EstimatedRent    int     `json:"estimatedRent,omitempty"`
+	CapRateMin       float64 `json:"capRateMin,omitempty"`
+	CapRateMax       float64 `json:"capRateMax,omitempty"`
+	YearBuilt        int     `json:"yearBuilt,omitempty"`
+	ImageUrl         string  `json:"imageUrl,omitempty"`
+	ListingSearchUrl string  `json:"listingSearchUrl,omitempty"`
+	GoogleSearchUrl  string  `json:"googleSearchUrl,omitempty"`
+	Latitude         float64 `json:"latitude,omitempty"`
+	Longitude        float64 `json:"longitude,omitempty"`
+}
+
 // EvaluationListItem is a compact view of a v2_evaluation for use in property pickers.
 // ADR-091 Phase 4: added full property fields (extracted from property_details JSONB)
 // and discoverySessionId (from LATERAL JOIN on discovery_session_evaluations).
+// ADR-093: added snapshot fields (from property_snapshot JSONB, backfilled from session).
 type EvaluationListItem struct {
-	ID                  string  `json:"id"`
-	PropertyID          string  `json:"propertyId"`
-	Address             string  `json:"address"`
-	City                string  `json:"city"`
-	State               string  `json:"state"`
-	ZipCode             *string `json:"zipCode,omitempty"`
-	PurchasePrice       float64 `json:"purchasePrice"`
-	MonthlyRent         float64 `json:"monthlyRent"`
-	HasDecisionMemo     bool    `json:"hasDecisionMemo"`
-	DecisionRecordID    *string `json:"decisionRecordId,omitempty"`
-	CreatedAt           string  `json:"createdAt"`
+	ID               string  `json:"id"`
+	PropertyID       string  `json:"propertyId"`
+	Address          string  `json:"address"`
+	City             string  `json:"city"`
+	State            string  `json:"state"`
+	ZipCode          *string `json:"zipCode,omitempty"`
+	PurchasePrice    float64 `json:"purchasePrice"`
+	MonthlyRent      float64 `json:"monthlyRent"`
+	HasDecisionMemo  bool    `json:"hasDecisionMemo"`
+	DecisionRecordID *string `json:"decisionRecordId,omitempty"`
+	CreatedAt        string  `json:"createdAt"`
 	// Full property detail fields extracted from property_details JSONB
-	Beds                int     `json:"beds,omitempty"`
-	Baths               float64 `json:"baths,omitempty"`
-	Sqft                int     `json:"sqft,omitempty"`
-	PropertyType        string  `json:"propertyType,omitempty"`
+	Beds         int     `json:"beds,omitempty"`
+	Baths        float64 `json:"baths,omitempty"`
+	Sqft         int     `json:"sqft,omitempty"`
+	PropertyType string  `json:"propertyType,omitempty"`
 	// Discovery session that originally surfaced this property (empty if unknown)
-	DiscoverySessionID  string  `json:"discoverySessionId,omitempty"`
+	DiscoverySessionID string `json:"discoverySessionId,omitempty"`
+	// ADR-093: enriched provider snapshot fields (from property_snapshot or session backfill)
+	YearBuilt         int      `json:"yearBuilt,omitempty"`
+	ImageUrl          string   `json:"imageUrl,omitempty"`
+	ListingSearchUrl  string   `json:"listingSearchUrl,omitempty"`
+	CapRateMin        *float64 `json:"capRateMin,omitempty"`
+	CapRateMax        *float64 `json:"capRateMax,omitempty"`
+	Latitude          *float64 `json:"latitude,omitempty"`
+	Longitude         *float64 `json:"longitude,omitempty"`
+	// SnapshotAvailable indicates whether full enriched snapshot data is present
+	SnapshotAvailable bool `json:"snapshotAvailable,omitempty"`
 }
 
 type EvaluationListResponse struct {
@@ -1503,6 +1530,10 @@ func (h *Handler) ListEvaluations(w http.ResponseWriter, r *http.Request) {
 	}
 
 	items := make([]EvaluationListItem, 0, len(rows))
+	// Track which items need snapshot backfill (no property_snapshot in DB yet)
+	var missingSnapshotPropertyIDs []string
+	missingSnapshotIdxByPropID := make(map[string]int) // propertyID → items index
+
 	for _, row := range rows {
 		item := EvaluationListItem{
 			ID:            row.ID,
@@ -1535,7 +1566,67 @@ func (h *Handler) ListEvaluations(w http.ResponseWriter, r *http.Request) {
 		if row.DiscoverySessionID != "" {
 			item.DiscoverySessionID = row.DiscoverySessionID
 		}
+		// ADR-093: parse property_snapshot for enriched provider data
+		if len(row.PropertySnapshot) > 0 {
+			var snap evalPropertySnapshot
+			if err := json.Unmarshal(row.PropertySnapshot, &snap); err == nil {
+				applySnapshotToItem(&item, snap)
+			}
+		} else {
+			// No snapshot yet — queue for backfill from discovery_session_properties
+			missingSnapshotPropertyIDs = append(missingSnapshotPropertyIDs, row.PropertyID)
+			missingSnapshotIdxByPropID[row.PropertyID] = len(items)
+		}
 		items = append(items, item)
+	}
+
+	// ADR-093: Backfill property_snapshot from discovery_session_properties (lazy write).
+	// Design decision: store complete records for durability vs. IDs-only (relies on cache).
+	// This fetch is synchronous (enriches current response) while the DB write is async.
+	if len(missingSnapshotPropertyIDs) > 0 {
+		sessionProps, fetchErr := h.store.Q().GetSessionPropertiesByListingIDs(ctx, missingSnapshotPropertyIDs)
+		if fetchErr == nil && len(sessionProps) > 0 {
+			// Build a map: listingId → first matching session property
+			spByListingID := make(map[string]queries.DiscoverySessionProperty)
+			for _, sp := range sessionProps {
+				if _, exists := spByListingID[sp.ListingId]; !exists {
+					spByListingID[sp.ListingId] = sp
+				}
+			}
+			// Enrich in-memory items + schedule async DB write
+			type writeBack struct {
+				evalID   string
+				snapshot []byte
+			}
+			var writes []writeBack
+			for propID, idx := range missingSnapshotIdxByPropID {
+				sp, ok := spByListingID[propID]
+				if !ok {
+					continue
+				}
+				snap := snapshotFromSessionProperty(sp)
+				applySnapshotToItem(&items[idx], snap)
+				snapJSON, marshalErr := json.Marshal(snap)
+				if marshalErr == nil && len(rows) > idx {
+					writes = append(writes, writeBack{evalID: rows[idx].ID, snapshot: snapJSON})
+				}
+			}
+			// Async DB write — fire-and-forget so the response isn't delayed
+			if len(writes) > 0 {
+				go func(w []writeBack) {
+					bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+					for _, wb := range w {
+						if err := h.store.Q().UpdateEvaluationPropertySnapshot(bgCtx, queries.UpdateEvaluationPropertySnapshotParams{
+							Snapshot: wb.snapshot,
+							ID:       wb.evalID,
+						}); err != nil {
+							h.logger.Warn("property_snapshot backfill failed", "evalId", wb.evalID, "error", err)
+						}
+					}
+				}(writes)
+			}
+		}
 	}
 
 	httputil.JSON(w, http.StatusOK, EvaluationListResponse{
@@ -1592,4 +1683,111 @@ func (h *Handler) recordSearchMetrics(userID, sessionID, location string, metric
 	}); err != nil {
 		h.logger.Warn("failed to record search metrics", "error", err)
 	}
+}
+
+// --- ADR-098: SaveV2Evaluation ---
+
+// SaveV2EvaluationRequest persists an evaluation record at chat time (not just at PDF export).
+// This ensures evaluation history is complete even when users never export a PDF.
+type SaveV2EvaluationRequest struct {
+	PropertyID         string          `json:"propertyId" validate:"required"`
+	PropertyAddress    string          `json:"propertyAddress" validate:"required"`
+	PropertyCity       string          `json:"propertyCity" validate:"required"`
+	PropertyState      string          `json:"propertyState" validate:"required"`
+	PropertyZip        string          `json:"propertyZip,omitempty"`
+	PropertyDetails    json.RawMessage `json:"propertyDetails,omitempty"`
+	PurchasePrice      float64         `json:"purchasePrice" validate:"required,gt=0"`
+	DownPaymentPct     float64         `json:"downPaymentPct"`
+	InterestRate       float64         `json:"interestRate"`
+	LoanTermYears      int             `json:"loanTermYears"`
+	MonthlyRent        float64         `json:"monthlyRent"`
+	VacancyRatePct     float64         `json:"vacancyRatePct"`
+	MaintenanceCost    float64         `json:"maintenanceCost"`
+	PropertyTax        float64         `json:"propertyTax"`
+	Insurance          float64         `json:"insurance"`
+	HoaFees            *float64        `json:"hoaFees,omitempty"`
+	AppreciationRate   float64         `json:"appreciationRate"`
+	Scenarios          json.RawMessage `json:"scenarios,omitempty"`
+	ChatSessionID      string          `json:"chatSessionId,omitempty"`
+	DiscoverySessionID string          `json:"discoverySessionId,omitempty"`
+}
+
+// SaveV2Evaluation creates a v2_evaluations row at evaluation chat time.
+// Mirrors the www_v1 POST /api/v2/evaluate endpoint in Go, making CreateV2Evaluation reachable.
+func (h *Handler) SaveV2Evaluation(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user := middleware.GetUserFromContext(ctx)
+	if user == nil {
+		httputil.Unauthorized(w, "authentication required")
+		return
+	}
+
+	var req SaveV2EvaluationRequest
+	if err := httputil.DecodeJSON(r, &req); err != nil {
+		httputil.BadRequest(w, "invalid request body")
+		return
+	}
+	if err := h.validate.Struct(req); err != nil {
+		httputil.BadRequest(w, "validation failed: "+err.Error())
+		return
+	}
+
+	var propertyDetailsBytes []byte
+	if len(req.PropertyDetails) > 0 {
+		propertyDetailsBytes = req.PropertyDetails
+	}
+
+	var scenariosBytes []byte
+	if len(req.Scenarios) > 0 {
+		scenariosBytes = req.Scenarios
+	}
+
+	var hoaFees pgtype.Float8
+	if req.HoaFees != nil {
+		hoaFees = pgtype.Float8{Float64: *req.HoaFees, Valid: true}
+	}
+
+	loanTermYears := req.LoanTermYears
+	if loanTermYears == 0 {
+		loanTermYears = 30 // default to 30-year mortgage
+	}
+
+	evalID := uuid.New().String()
+	row, err := h.store.Q().CreateV2Evaluation(ctx, queries.CreateV2EvaluationParams{
+		ID:               evalID,
+		UserID:           user.UserID,
+		PropertyID:       req.PropertyID,
+		PropertyAddress:  req.PropertyAddress,
+		PropertyCity:     req.PropertyCity,
+		PropertyState:    req.PropertyState,
+		PropertyZip:      pgtype.Text{String: req.PropertyZip, Valid: req.PropertyZip != ""},
+		PropertyDetails:  propertyDetailsBytes,
+		PurchasePrice:    req.PurchasePrice,
+		DownPaymentPct:   req.DownPaymentPct,
+		InterestRate:     req.InterestRate,
+		LoanTermYears:    int32(loanTermYears),
+		MonthlyRent:      req.MonthlyRent,
+		VacancyRatePct:   req.VacancyRatePct,
+		MaintenanceCost:  req.MaintenanceCost,
+		PropertyTax:      req.PropertyTax,
+		Insurance:        req.Insurance,
+		HoaFees:          hoaFees,
+		AppreciationRate: req.AppreciationRate,
+		Scenarios:        scenariosBytes,
+		SensitivityData:  nil,
+		ChatSessionID:      pgtype.Text{String: req.ChatSessionID, Valid: req.ChatSessionID != ""},
+		DiscoverySessionID: pgtype.Text{String: req.DiscoverySessionID, Valid: req.DiscoverySessionID != ""},
+	})
+	if err != nil {
+		h.logger.Error("failed to save evaluation", "error", err, "property_id", req.PropertyID)
+		httputil.InternalError(w, fmt.Errorf("failed to save evaluation"))
+		return
+	}
+
+	httputil.JSON(w, http.StatusCreated, map[string]any{
+		"success":      true,
+		"evaluationId": row.ID,
+		"status":       row.Status,
+		"createdAt":    row.CreatedAt.Time.Format(time.RFC3339),
+	})
 }

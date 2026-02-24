@@ -151,6 +151,7 @@ type Querier interface {
 	CreateEarlyAccessUser(ctx context.Context, arg CreateEarlyAccessUserParams) (User, error)
 	CreateEmailVerificationCode(ctx context.Context, arg CreateEmailVerificationCodeParams) (EmailVerificationCode, error)
 	CreateEvaluationChatMessage(ctx context.Context, arg CreateEvaluationChatMessageParams) (EvaluationChatMessage, error)
+	// ADR-098: discovery_session_id links chat session to the discovery pool that supplied properties
 	CreateEvaluationChatSession(ctx context.Context, arg CreateEvaluationChatSessionParams) (EvaluationChatSession, error)
 	CreateGuestSession(ctx context.Context, arg CreateGuestSessionParams) (GuestSession, error)
 	CreateInsightAccess(ctx context.Context, arg CreateInsightAccessParams) (InsightAccess, error)
@@ -186,6 +187,7 @@ type Querier interface {
 	CreateUserConsent(ctx context.Context, arg CreateUserConsentParams) (UserConsent, error)
 	// Creates a user with password hash and Stripe customer ID (for guest checkout signup)
 	CreateUserWithPassword(ctx context.Context, arg CreateUserWithPasswordParams) (User, error)
+	// ADR-098: chat_session_id and discovery_session_id link evaluation to originating chat + discovery
 	CreateV2Evaluation(ctx context.Context, arg CreateV2EvaluationParams) (CreateV2EvaluationRow, error)
 	CreateVendorConfig(ctx context.Context, arg CreateVendorConfigParams) (CreateVendorConfigRow, error)
 	// Queries for admin extended tables (vendor contracts, credits, cron tracking, terms)
@@ -359,9 +361,11 @@ type Querier interface {
 	// Email Verification Code Queries
 	GetEmailVerificationCode(ctx context.Context, arg GetEmailVerificationCodeParams) (EmailVerificationCode, error)
 	GetEmailVerificationCodeByID(ctx context.Context, id string) (EmailVerificationCode, error)
-	GetEvaluationChatSession(ctx context.Context, arg GetEvaluationChatSessionParams) (EvaluationChatSession, error)
+	GetEvaluationChatSession(ctx context.Context, arg GetEvaluationChatSessionParams) (GetEvaluationChatSessionRow, error)
 	// ADR-091 Phase 4: LATERAL JOIN surfaces the most-recent discovery session that
 	// contains this property, so the frontend can populate discoverySeedSessionId.
+	// ADR-093: property_snapshot stores full enriched data for durable frontier source.
+	// ADR-098: prefer direct e.discovery_session_id column; fall back to LATERAL JOIN for older rows.
 	GetEvaluationsWithDecisionRecords(ctx context.Context, arg GetEvaluationsWithDecisionRecordsParams) ([]GetEvaluationsWithDecisionRecordsRow, error)
 	GetFrontierRun(ctx context.Context, arg GetFrontierRunParams) (FrontierRun, error)
 	GetFrontierRunByToken(ctx context.Context, shareToken pgtype.Text) (FrontierRun, error)
@@ -458,7 +462,10 @@ type Querier interface {
 	GetScenarioByIDAndUser(ctx context.Context, arg GetScenarioByIDAndUserParams) (Scenario, error)
 	GetSessionEvaluation(ctx context.Context, arg GetSessionEvaluationParams) (DiscoverySessionEvaluation, error)
 	GetSessionHistory(ctx context.Context, sessionID string) ([]EvaluationChatMessage, error)
-	GetSessionPropertiesByListingIDs(ctx context.Context, dollar_1 []string) ([]GetSessionPropertiesByListingIDsRow, error)
+	// ADR-093: Used for lazy property_snapshot backfill — fetches enriched data
+	// from the most-recent discovery session that contained each listing ID.
+	// Returns latitude/longitude for geo display in frontier workspace.
+	GetSessionPropertiesByListingIDs(ctx context.Context, dollar_1 []string) ([]DiscoverySessionProperty, error)
 	GetSessionProperty(ctx context.Context, arg GetSessionPropertyParams) (DiscoverySessionProperty, error)
 	// Silent Login Session Queries
 	GetSilentLoginSessionByID(ctx context.Context, id string) (SilentLoginSession, error)
@@ -712,6 +719,11 @@ type Querier interface {
 	UpdateEarlyAccessInvited(ctx context.Context, id string) (EarlyAccess, error)
 	UpdateEarlyAccessStatus(ctx context.Context, arg UpdateEarlyAccessStatusParams) (UpdateEarlyAccessStatusRow, error)
 	UpdateEvaluationChatSessionTimestamp(ctx context.Context, id string) error
+	// ADR-093: Write the full enriched property snapshot to v2_evaluations.
+	// Called lazily when evaluations are first used as a frontier source and the
+	// snapshot is missing (backfill from discovery_session_properties).
+	// Also called at evaluation creation time when full provider data is available.
+	UpdateEvaluationPropertySnapshot(ctx context.Context, arg UpdateEvaluationPropertySnapshotParams) error
 	UpdateGuestSessionActivity(ctx context.Context, arg UpdateGuestSessionActivityParams) (GuestSession, error)
 	UpdateInsightAccess(ctx context.Context, arg UpdateInsightAccessParams) (InsightAccess, error)
 	UpdateInvestorReportAllocation(ctx context.Context, arg UpdateInvestorReportAllocationParams) error

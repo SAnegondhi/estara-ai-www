@@ -38,6 +38,7 @@ WHERE (
     ) * 0.621371
 ) <= sqlc.arg('radius_miles')::float8
   AND NOT (LOWER(city) = LOWER(sqlc.arg('origin_city')::text) AND state_id = sqlc.arg('origin_state')::text)
+  AND population >= sqlc.arg('min_population')::int4
 ORDER BY population DESC NULLS LAST
 LIMIT sqlc.arg('max_results')::int4;
 

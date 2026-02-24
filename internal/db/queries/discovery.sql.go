@@ -618,46 +618,25 @@ const GetSessionPropertiesByListingIDs = `-- name: GetSessionPropertiesByListing
 SELECT id, "discoverySessionId", "listingId", address, city, state, "zipCode",
        price, "estimatedRent", "capRateMin", "capRateMax", beds, baths, sqft,
        "yearBuilt", "propertyType", "listingDate", "daysOnMarket",
-       "imageUrl", "listingSearchUrl", "googleSearchUrl", "createdAt"
+       "imageUrl", "listingSearchUrl", "googleSearchUrl",
+       latitude, longitude, "createdAt"
 FROM discovery_session_properties
 WHERE "listingId" = ANY($1::text[])
 ORDER BY price ASC
 `
 
-type GetSessionPropertiesByListingIDsRow struct {
-	ID                 string           `json:"id"`
-	DiscoverySessionId string           `json:"discoverySessionId"`
-	ListingId          string           `json:"listingId"`
-	Address            string           `json:"address"`
-	City               string           `json:"city"`
-	State              string           `json:"state"`
-	ZipCode            pgtype.Text      `json:"zipCode"`
-	Price              int32            `json:"price"`
-	EstimatedRent      pgtype.Int4      `json:"estimatedRent"`
-	CapRateMin         pgtype.Numeric   `json:"capRateMin"`
-	CapRateMax         pgtype.Numeric   `json:"capRateMax"`
-	Beds               int32            `json:"beds"`
-	Baths              pgtype.Numeric   `json:"baths"`
-	Sqft               pgtype.Int4      `json:"sqft"`
-	YearBuilt          pgtype.Int4      `json:"yearBuilt"`
-	PropertyType       pgtype.Text      `json:"propertyType"`
-	ListingDate        pgtype.Text      `json:"listingDate"`
-	DaysOnMarket       pgtype.Int4      `json:"daysOnMarket"`
-	ImageUrl           pgtype.Text      `json:"imageUrl"`
-	ListingSearchUrl   pgtype.Text      `json:"listingSearchUrl"`
-	GoogleSearchUrl    pgtype.Text      `json:"googleSearchUrl"`
-	CreatedAt          pgtype.Timestamp `json:"createdAt"`
-}
-
-func (q *Queries) GetSessionPropertiesByListingIDs(ctx context.Context, dollar_1 []string) ([]GetSessionPropertiesByListingIDsRow, error) {
+// ADR-093: Used for lazy property_snapshot backfill — fetches enriched data
+// from the most-recent discovery session that contained each listing ID.
+// Returns latitude/longitude for geo display in frontier workspace.
+func (q *Queries) GetSessionPropertiesByListingIDs(ctx context.Context, dollar_1 []string) ([]DiscoverySessionProperty, error) {
 	rows, err := q.db.Query(ctx, GetSessionPropertiesByListingIDs, dollar_1)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []GetSessionPropertiesByListingIDsRow{}
+	items := []DiscoverySessionProperty{}
 	for rows.Next() {
-		var i GetSessionPropertiesByListingIDsRow
+		var i DiscoverySessionProperty
 		if err := rows.Scan(
 			&i.ID,
 			&i.DiscoverySessionId,
@@ -680,6 +659,8 @@ func (q *Queries) GetSessionPropertiesByListingIDs(ctx context.Context, dollar_1
 			&i.ImageUrl,
 			&i.ListingSearchUrl,
 			&i.GoogleSearchUrl,
+			&i.Latitude,
+			&i.Longitude,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
