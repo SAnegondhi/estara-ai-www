@@ -105,7 +105,7 @@ func (s *Service) GenerateMemos(ctx context.Context, properties []BatchPropertyI
 
 	// Step 3: Fetch time series for charts (30%)
 	report(25, "Loading market trends")
-	marketCtx := s.buildMarketContext(ctx, city, state, marketData)
+	marketCtx := s.buildMarketContext(ctx, city, state, marketData, properties[0])
 
 	// Step 4: Compute financials per property (30-50%)
 	report(30, "Computing financials")
@@ -116,6 +116,8 @@ func (s *Service) GenerateMemos(ctx context.Context, properties []BatchPropertyI
 			MarketData:    marketData,
 			MortgageRate:  mortgageRate,
 			MarketVacancy: vacancyRate,
+			PriceCAGR:     marketCtx.PriceCAGR,
+			RentCAGR:      marketCtx.RentCAGR,
 		}
 		calculations[i] = s.calculator.Compute(input)
 	}
@@ -154,12 +156,17 @@ func (s *Service) GenerateMemos(ctx context.Context, properties []BatchPropertyI
 	report(85, "Assembling memos")
 	memos := make([]MemoData, len(properties))
 	for i, prop := range properties {
+		// Override subject-specific fields on the shared market context
+		propMarketCtx := marketCtx
+		propMarketCtx.SubjectPrice = prop.Price
+		propMarketCtx.SubjectRent = prop.EstimatedRent
+
 		memo := MemoData{
 			PropertyAddress:  prop.Address,
 			PropertySubtitle: buildSubtitle(prop),
 			GeneratedAt:      time.Now(),
 			Strategy:         opts.Strategy,
-			MarketContext:    marketCtx,
+			MarketContext:    propMarketCtx,
 			Property:         prop,
 		}
 
@@ -210,10 +217,13 @@ func (s *Service) fetchMarketData(ctx context.Context, city, state string) (*agg
 }
 
 // buildMarketContext constructs market trend data for charts.
-func (s *Service) buildMarketContext(ctx context.Context, city, state string, marketData *aggregator.MarketData) MarketContextData {
+// prop is used to set the subject property reference lines on the charts.
+func (s *Service) buildMarketContext(ctx context.Context, city, state string, marketData *aggregator.MarketData, prop BatchPropertyInput) MarketContextData {
 	mctx := MarketContextData{
-		City:  city,
-		State: state,
+		City:         city,
+		State:        state,
+		SubjectPrice: prop.Price,
+		SubjectRent:  prop.EstimatedRent,
 	}
 
 	if marketData != nil {

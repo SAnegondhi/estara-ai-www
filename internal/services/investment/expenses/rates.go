@@ -129,3 +129,21 @@ var insuranceRates = map[string]InsuranceInfo{
 	"WY": {AvgPremium: 1874, RatePercent: 0.65, RiskFactors: []string{"hail", "wildfire"}},
 	"DC": {AvgPremium: 1389, RatePercent: 0.25, RiskFactors: []string{}},
 }
+
+// GetPropertyTaxRate returns the effective property tax rate (%) for a state abbreviation.
+// Falls back to the national default if the state is not found.
+func GetPropertyTaxRate(state string) float64 {
+	if info, ok := propertyTaxRates[state]; ok {
+		return info.Rate
+	}
+	return DefaultPropertyTaxRate
+}
+
+// GetInsuranceRate returns the insurance rate (% of home value) for a state abbreviation.
+// Falls back to the national default if the state is not found.
+func GetInsuranceRate(state string) float64 {
+	if info, ok := insuranceRates[state]; ok {
+		return info.RatePercent
+	}
+	return DefaultInsuranceRate
+}

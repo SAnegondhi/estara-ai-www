@@ -32,6 +32,11 @@ func (b *DecisionMemoBuilder) Build(memos []memo.MemoData) ([]byte, error) {
 	AddCoverPage(pdfDoc, page, theme, "Investment Decision Memo", fmt.Sprintf("%d Properties", len(memos)), market, "")
 	AddHeaderFooter(pdfDoc, page, theme, "Decision Memo")
 
+	// Comparison matrix (multi-property only)
+	if len(memos) > 1 {
+		b.addComparisonPage(pdfDoc, page, theme, memos)
+	}
+
 	// Generate pages per property
 	for i, m := range memos {
 		b.addPropertyPages(pdfDoc, page, theme, m, i+1, len(memos))
@@ -111,15 +116,18 @@ func (b *DecisionMemoBuilder) addPropertyPages(pdfDoc *gofpdf.Fpdf, page PageCon
 		}
 	}
 
-	// Comparables
-	if m.Comparables != nil && m.Comparables.Sales != nil {
+	// Market Context
+	if len(m.MarketContext.PriceTrend) > 0 || m.MarketContext.MedianPrice > 0 {
+		y, _ = EnsureSpace(pdfDoc, page, y, 40)
+		y = AddSectionHeading(pdfDoc, page, theme, fmt.Sprintf("Market Context - %s, %s", m.MarketContext.City, m.MarketContext.State), y)
+		y = b.addMarketContextTable(pdfDoc, page, theme, m.MarketContext, y)
+	}
+
+	// Comparables - only show if real data exists
+	if m.Comparables != nil && m.Comparables.Sales != nil && len(m.Comparables.Sales.Sales) > 0 {
 		y, _ = EnsureSpace(pdfDoc, page, y, 40)
 		y = AddSectionHeading(pdfDoc, page, theme, "Comparable Sales", y)
 		y = b.addCompsTable(pdfDoc, page, theme, m.Comparables, y)
-	} else {
-		y, _ = EnsureSpace(pdfDoc, page, y, 20)
-		y = AddSectionHeading(pdfDoc, page, theme, "Comparable Sales", y)
-		y = AddParagraph(pdfDoc, page, theme, "Comparable sales data is not yet available for this property. This section will be populated when a geo-spatial data provider is configured.", y)
 	}
 
 	// Portfolio Impact
@@ -301,6 +309,108 @@ func (b *DecisionMemoBuilder) addPortfolioImpactTable(pdfDoc *gofpdf.Fpdf, page 
 		pdfDoc.SetTextColor(theme.Text.R, theme.Text.G, theme.Text.B)
 	}
 	return y
+}
+
+func (b *DecisionMemoBuilder) addMarketContextTable(pdfDoc *gofpdf.Fpdf, page PageConfig, theme Theme, ctx memo.MarketContextData, y float64) float64 {
+	headers := []string{"Metric", "Subject Property", "Market Median", "Difference"}
+	rows := [][]string{}
+
+	if ctx.MedianPrice > 0 && ctx.SubjectPrice > 0 {
+		diff := float64(ctx.SubjectPrice-ctx.MedianPrice) / float64(ctx.MedianPrice) * 100
+		rows = append(rows, []string{
+			"Home Price",
+			fmt.Sprintf("$%s", formatNum(ctx.SubjectPrice)),
+			fmt.Sprintf("$%s", formatNum(ctx.MedianPrice)),
+			fmt.Sprintf("%+.1f%%", diff),
+		})
+	}
+	if ctx.MedianRent > 0 && ctx.SubjectRent > 0 {
+		diff := float64(ctx.SubjectRent-ctx.MedianRent) / float64(ctx.MedianRent) * 100
+		rows = append(rows, []string{
+			"Monthly Rent",
+			fmt.Sprintf("$%s/mo", formatNum(ctx.SubjectRent)),
+			fmt.Sprintf("$%s/mo", formatNum(ctx.MedianRent)),
+			fmt.Sprintf("%+.1f%%", diff),
+		})
+	}
+	if ctx.PriceCAGR != 0 {
+		rows = append(rows, []string{
+			"Price CAGR (5yr)",
+			"—",
+			fmt.Sprintf("%.1f%%", ctx.PriceCAGR),
+			"—",
+		})
+	}
+	if ctx.RentCAGR != 0 {
+		rows = append(rows, []string{
+			"Rent CAGR (5yr)",
+			"—",
+			fmt.Sprintf("%.1f%%", ctx.RentCAGR),
+			"—",
+		})
+	}
+
+	if len(rows) == 0 {
+		return AddParagraph(pdfDoc, page, theme, "Market context data unavailable for this location.", y)
+	}
+	return AddComparisonTable(pdfDoc, page, theme, "", headers, rows, y)
+}
+
+func (b *DecisionMemoBuilder) addComparisonPage(pdfDoc *gofpdf.Fpdf, page PageConfig, theme Theme, memos []memo.MemoData) {
+	if len(memos) < 2 {
+		return
+	}
+	pdfDoc.AddPage()
+	y := page.MarginTop
+
+	pdfDoc.SetTextColor(theme.Primary.R, theme.Primary.G, theme.Primary.B)
+	pdfDoc.SetFont("Helvetica", "B", 14)
+	pdfDoc.Text(page.MarginLeft, y, "Portfolio Comparison Matrix")
+	y += 8
+
+	pdfDoc.SetTextColor(theme.Muted.R, theme.Muted.G, theme.Muted.B)
+	pdfDoc.SetFont("Helvetica", "", 9)
+	pdfDoc.Text(page.MarginLeft, y, fmt.Sprintf("Side-by-side comparison of %d properties", len(memos)))
+	y += 8
+
+	// Build comparison table: rows = metrics, cols = properties
+	// Limit to 5 properties to fit on page
+	shown := memos
+	if len(shown) > 5 {
+		shown = shown[:5]
+	}
+
+	// Header row: property addresses
+	headers := []string{"Metric"}
+	for i, m := range shown {
+		addr := m.PropertyAddress
+		if len(addr) > 20 {
+			addr = addr[:20] + "..."
+		}
+		headers = append(headers, fmt.Sprintf("Prop %d: %s", i+1, addr))
+	}
+
+	rows := [][]string{
+		b.compRow("Status", shown, func(m memo.MemoData) string { return m.Status }),
+		b.compRow("Price", shown, func(m memo.MemoData) string { return fmt.Sprintf("$%s", formatNum(m.KeyFinancials.PurchasePrice)) }),
+		b.compRow("Cap Rate", shown, func(m memo.MemoData) string { return fmt.Sprintf("%.2f%%", m.KeyFinancials.CapRate) }),
+		b.compRow("CoC (Yr1)", shown, func(m memo.MemoData) string { return fmt.Sprintf("%.2f%%", m.KeyFinancials.CashOnCashYr1) }),
+		b.compRow("DSCR", shown, func(m memo.MemoData) string { return fmt.Sprintf("%.2f", m.KeyFinancials.DSCR) }),
+		b.compRow("IRR (5yr)", shown, func(m memo.MemoData) string { return fmt.Sprintf("%.1f%%", m.KeyFinancials.IRR5Yr) }),
+		b.compRow("Equity Mult (10yr)", shown, func(m memo.MemoData) string { return fmt.Sprintf("%.2fx", m.KeyFinancials.EquityMultiple10) }),
+		b.compRow("Risk Profile", shown, func(m memo.MemoData) string { return m.RiskProfile }),
+		b.compRow("Strategy Fit", shown, func(m memo.MemoData) string { return fmt.Sprintf("%d%%", m.StrategyFit) }),
+	}
+
+	AddComparisonTable(pdfDoc, page, theme, "", headers, rows, y)
+}
+
+func (b *DecisionMemoBuilder) compRow(label string, memos []memo.MemoData, val func(memo.MemoData) string) []string {
+	row := []string{label}
+	for _, m := range memos {
+		row = append(row, val(m))
+	}
+	return row
 }
 
 func (b *DecisionMemoBuilder) addDisclaimerPage(pdfDoc *gofpdf.Fpdf, page PageConfig, theme Theme) {

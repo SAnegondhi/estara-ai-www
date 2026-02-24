@@ -27,6 +27,8 @@ type CalculationInput struct {
 	MarketData     *aggregator.MarketData
 	MortgageRate   float64 // Current 30yr fixed from FRED
 	MarketVacancy  float64 // Market vacancy rate from FRED (%)
+	PriceCAGR      float64 // 5-year price CAGR from time series (%)
+	RentCAGR       float64 // 5-year rent CAGR from time series (%)
 }
 
 // CalculationOutput holds computed financials for a single property.
@@ -104,9 +106,9 @@ func (c *Calculator) Compute(input CalculationInput) *CalculationOutput {
 		dscr = noi / annualDebtService
 	}
 
-	// Base scenario assumptions
-	appreciationRate := 0.03
-	rentGrowthRate := 0.02
+	// Base scenario assumptions — use market data when available
+	appreciationRate := c.resolveAppreciationRate(input)
+	rentGrowthRate := c.resolveRentGrowthRate(input)
 
 	// 10-year projections
 	projections := c.project10Year(price, monthlyRent, opex.TotalAnnual, annualDebtService, appreciationRate, rentGrowthRate, 0.025, downPayment, loanAmount, mortgageRate/100, loanTermYears)
@@ -143,10 +145,10 @@ func (c *Calculator) Compute(input CalculationInput) *CalculationOutput {
 	}
 
 	// Underwriting assumptions vs market
-	assumptions := c.buildAssumptions(input, *opex, mortgageRate)
+	assumptions := c.buildAssumptions(input, *opex, mortgageRate, appreciationRate, rentGrowthRate)
 
 	// Stress-test scenarios
-	scenarios := c.computeScenarios(price, monthlyRent, downPayment, loanAmount, *opex, mortgageRate, loanTermYears)
+	scenarios := c.computeScenarios(price, monthlyRent, downPayment, loanAmount, *opex, mortgageRate, loanTermYears, appreciationRate, rentGrowthRate)
 
 	return &CalculationOutput{
 		KeyFinancials:       kf,
@@ -259,26 +261,55 @@ func newtonIRR(cashFlows []float64) float64 {
 	return rate * 100 // Return as percentage
 }
 
+// resolveAppreciationRate returns a data-driven appreciation rate, falling back to 3%.
+func (c *Calculator) resolveAppreciationRate(input CalculationInput) float64 {
+	// Prefer 5yr CAGR (more stable than 1yr YoY)
+	if input.PriceCAGR != 0 {
+		rate := input.PriceCAGR / 100
+		return math.Max(-0.05, math.Min(rate, 0.10))
+	}
+	// Fall back to dampened 1yr YoY (70% to account for mean reversion)
+	if input.MarketData != nil && input.MarketData.YearOverYearPct != 0 {
+		rate := input.MarketData.YearOverYearPct / 100 * 0.70
+		return math.Max(-0.05, math.Min(rate, 0.10))
+	}
+	return 0.03 // national fallback
+}
+
+// resolveRentGrowthRate returns a data-driven rent growth rate, falling back to 2%.
+func (c *Calculator) resolveRentGrowthRate(input CalculationInput) float64 {
+	if input.RentCAGR != 0 {
+		rate := input.RentCAGR / 100
+		return math.Max(-0.03, math.Min(rate, 0.08))
+	}
+	if input.MarketData != nil && input.MarketData.RentYearOverYear != 0 {
+		rate := input.MarketData.RentYearOverYear / 100 * 0.70
+		return math.Max(-0.03, math.Min(rate, 0.08))
+	}
+	return 0.02 // national fallback
+}
+
 // computeScenarios calculates Base, Conservative, and Downside scenarios.
 func (c *Calculator) computeScenarios(
 	price, monthlyRent, downPayment, loanAmount float64,
 	opex expenses.OperatingExpenses,
 	mortgageRate float64,
 	loanTermYears int,
+	baseAppreciation, baseRentGrowth float64,
 ) []ScenarioRow {
 	scenarios := []scenarioParams{
 		{
 			Name:             "Base",
-			AppreciationRate: 0.03,
+			AppreciationRate: baseAppreciation,
 			VacancyRate:      opex.VacancyRate / 100, // Already calculated from market
-			RentGrowthRate:   0.02,
+			RentGrowthRate:   baseRentGrowth,
 			ExpenseGrowth:    0.025,
 		},
 		{
 			Name:             "Conservative",
-			AppreciationRate: 0.015,
+			AppreciationRate: baseAppreciation * 0.50, // 50% of base
 			VacancyRate:      math.Min((opex.VacancyRate+3)/100, 0.15), // +3% above market
-			RentGrowthRate:   0.01,
+			RentGrowthRate:   baseRentGrowth * 0.50,
 			ExpenseGrowth:    0.03,
 		},
 		{
@@ -358,7 +389,7 @@ func (c *Calculator) computeScenarios(
 }
 
 // buildAssumptions creates the assumption vs market comparison rows.
-func (c *Calculator) buildAssumptions(input CalculationInput, opex expenses.OperatingExpenses, mortgageRate float64) []AssumptionRow {
+func (c *Calculator) buildAssumptions(input CalculationInput, opex expenses.OperatingExpenses, mortgageRate float64, appreciationRate, rentGrowthRate float64) []AssumptionRow {
 	rows := []AssumptionRow{
 		{
 			Parameter:  "Vacancy Rate",
@@ -369,14 +400,14 @@ func (c *Calculator) buildAssumptions(input CalculationInput, opex expenses.Oper
 		{
 			Parameter:  "Property Tax Rate",
 			Assumption: fmt.Sprintf("%.2f%%", opex.PropertyTaxRate),
-			MarketAvg:  fmt.Sprintf("%.2f%% (nat'l avg)", 1.07),
-			Variance:   c.rateVariance(opex.PropertyTaxRate, 1.07),
+			MarketAvg:  c.statePropertyTaxAvg(input.Property.State),
+			Variance:   c.rateVariance(opex.PropertyTaxRate, expenses.GetPropertyTaxRate(input.Property.State)),
 		},
 		{
 			Parameter:  "Insurance Rate",
 			Assumption: fmt.Sprintf("%.2f%%", opex.InsuranceRate),
-			MarketAvg:  fmt.Sprintf("%.2f%% (nat'l avg)", 0.60),
-			Variance:   c.rateVariance(opex.InsuranceRate, 0.60),
+			MarketAvg:  c.stateInsuranceAvg(input.Property.State),
+			Variance:   c.rateVariance(opex.InsuranceRate, expenses.GetInsuranceRate(input.Property.State)),
 		},
 		{
 			Parameter:  "Maintenance Rate",
@@ -398,15 +429,15 @@ func (c *Calculator) buildAssumptions(input CalculationInput, opex expenses.Oper
 		},
 		{
 			Parameter:  "Appreciation Rate",
-			Assumption: "3.0%",
+			Assumption: fmt.Sprintf("%.1f%%", appreciationRate*100),
 			MarketAvg:  c.marketAppreciation(input),
-			Variance:   c.appreciationVariance(input),
+			Variance:   c.appreciationVarianceActual(appreciationRate*100, input),
 		},
 		{
 			Parameter:  "Rent Growth Rate",
-			Assumption: "2.0%",
+			Assumption: fmt.Sprintf("%.1f%%", rentGrowthRate*100),
 			MarketAvg:  c.marketRentGrowth(input),
-			Variance:   c.rentGrowthVariance(input),
+			Variance:   c.rentGrowthVarianceActual(rentGrowthRate*100, input),
 		},
 	}
 
@@ -417,6 +448,46 @@ func (c *Calculator) buildAssumptions(input CalculationInput, opex expenses.Oper
 		}
 	}
 	return rows
+}
+
+func (c *Calculator) statePropertyTaxAvg(state string) string {
+	rate := expenses.GetPropertyTaxRate(state)
+	if state != "" {
+		return fmt.Sprintf("%.2f%% (%s avg)", rate, state)
+	}
+	return fmt.Sprintf("%.2f%% (nat'l avg)", rate)
+}
+
+func (c *Calculator) stateInsuranceAvg(state string) string {
+	rate := expenses.GetInsuranceRate(state)
+	if state != "" {
+		return fmt.Sprintf("%.2f%% (%s avg)", rate, state)
+	}
+	return fmt.Sprintf("%.2f%% (nat'l avg)", rate)
+}
+
+// appreciationVarianceActual computes variance between actual used rate and market YoY.
+func (c *Calculator) appreciationVarianceActual(usedPct float64, input CalculationInput) string {
+	if input.MarketData != nil && input.MarketData.YearOverYearPct != 0 {
+		diff := usedPct - input.MarketData.YearOverYearPct
+		if math.Abs(diff) < 0.5 {
+			return "In line"
+		}
+		return fmt.Sprintf("%+.1f%%", diff)
+	}
+	return "In line"
+}
+
+// rentGrowthVarianceActual computes variance between actual used rate and market YoY.
+func (c *Calculator) rentGrowthVarianceActual(usedPct float64, input CalculationInput) string {
+	if input.MarketData != nil && input.MarketData.RentYearOverYear != 0 {
+		diff := usedPct - input.MarketData.RentYearOverYear
+		if math.Abs(diff) < 0.5 {
+			return "In line"
+		}
+		return fmt.Sprintf("%+.1f%%", diff)
+	}
+	return "In line"
 }
 
 func (c *Calculator) marketVacancy(input CalculationInput) string {
@@ -472,33 +543,11 @@ func (c *Calculator) marketAppreciation(input CalculationInput) string {
 	return "3.0% (nat'l avg)"
 }
 
-func (c *Calculator) appreciationVariance(input CalculationInput) string {
-	if input.MarketData != nil && input.MarketData.YearOverYearPct != 0 {
-		diff := 3.0 - input.MarketData.YearOverYearPct
-		if math.Abs(diff) < 0.5 {
-			return "In line"
-		}
-		return fmt.Sprintf("%+.1f%%", -diff) // Negative if market is higher
-	}
-	return "In line"
-}
-
 func (c *Calculator) marketRentGrowth(input CalculationInput) string {
 	if input.MarketData != nil && input.MarketData.RentYearOverYear != 0 {
 		return fmt.Sprintf("%.1f%% (YoY)", input.MarketData.RentYearOverYear)
 	}
 	return "2.0% (est.)"
-}
-
-func (c *Calculator) rentGrowthVariance(input CalculationInput) string {
-	if input.MarketData != nil && input.MarketData.RentYearOverYear != 0 {
-		diff := 2.0 - input.MarketData.RentYearOverYear
-		if math.Abs(diff) < 0.5 {
-			return "In line"
-		}
-		return fmt.Sprintf("%+.1f%%", -diff)
-	}
-	return "In line"
 }
 
 // ComputePortfolioImpacts calculates how acquiring each candidate property
@@ -544,33 +593,33 @@ func (c *Calculator) ComputePortfolioImpacts(snapshot queries.V2PortfolioSnapsho
 				Dimension:       "Total Value",
 				Current:         fmt.Sprintf("$%s", formatNumber(int(currentValue))),
 				PostAcquisition: fmt.Sprintf("$%s", formatNumber(int(newValue))),
-				Threshold:       "",
+				Threshold:       "—",
 			},
 			{
 				Dimension:       "Total Equity",
 				Current:         fmt.Sprintf("$%s", formatNumber(int(currentEquity))),
 				PostAcquisition: fmt.Sprintf("$%s", formatNumber(int(newEquity))),
-				Threshold:       "",
+				Threshold:       "—",
 			},
 			{
 				Dimension:       "Portfolio Cap Rate",
 				Current:         fmt.Sprintf("%.2f%%", currentCapRate),
 				PostAcquisition: fmt.Sprintf("%.2f%%", newCapRate),
-				Threshold:       "",
-				IsWarning:       newCapRate < currentCapRate-0.5,
+				Threshold:       "> 5.0%",
+				IsWarning:       newCapRate < 5.0,
 			},
 			{
 				Dimension:       "Property Count",
 				Current:         fmt.Sprintf("%d", propCount),
 				PostAcquisition: fmt.Sprintf("%d", newCount),
-				Threshold:       "",
+				Threshold:       "—",
 			},
 			{
 				Dimension:       "Annual Cash Flow",
 				Current:         fmt.Sprintf("$%s", formatNumber(int(currentCF))),
 				PostAcquisition: fmt.Sprintf("$%s", formatNumber(int(newAnnualCF))),
-				Threshold:       "",
-				IsWarning:       newAnnualCF < currentCF,
+				Threshold:       "> $0",
+				IsWarning:       newAnnualCF < 0,
 			},
 		}
 
