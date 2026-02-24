@@ -784,6 +784,9 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			"createdAt":         row.CreatedAt.Time.Format(time.RFC3339),
 			"updatedAt":         row.UpdatedAt.Time.Format(time.RFC3339),
 			"messageCount":      row.MessageCount,
+			// ADR-091: discovery session that supplied the property pool — used as
+			// discoverySeedSessionId when this chat session is the source for Frontier.
+			"discoverySessionId": row.DiscoverySessionID.String,
 		}
 
 		// Add last message if exists

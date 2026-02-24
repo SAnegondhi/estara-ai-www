@@ -236,6 +236,7 @@ func (q *Queries) ListEvaluationChatMessages(ctx context.Context, sessionID stri
 const ListEvaluationChatSessionsExtended = `-- name: ListEvaluationChatSessionsExtended :many
 SELECT
     s.id, s.user_id, s.property_ids, s.cached_property_ids, s.investor_profile, s.portfolio_snapshot,
+    s.discovery_session_id,
     s.created_at, s.updated_at,
     (SELECT COUNT(*) FROM evaluation_chat_messages WHERE session_id = s.id) as message_count,
     (SELECT content FROM evaluation_chat_messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) as last_message_content,
@@ -261,6 +262,7 @@ type ListEvaluationChatSessionsExtendedRow struct {
 	CachedPropertyIds  []string         `json:"cached_property_ids"`
 	InvestorProfile    []byte           `json:"investor_profile"`
 	PortfolioSnapshot  []byte           `json:"portfolio_snapshot"`
+	DiscoverySessionID pgtype.Text      `json:"discovery_session_id"`
 	CreatedAt          pgtype.Timestamp `json:"created_at"`
 	UpdatedAt          pgtype.Timestamp `json:"updated_at"`
 	MessageCount       int64            `json:"message_count"`
@@ -286,6 +288,7 @@ func (q *Queries) ListEvaluationChatSessionsExtended(ctx context.Context, arg Li
 			&i.CachedPropertyIds,
 			&i.InvestorProfile,
 			&i.PortfolioSnapshot,
+			&i.DiscoverySessionID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.MessageCount,
