@@ -474,6 +474,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 
 		r.Get("/", handlers.Portfolio.List)
 		r.Post("/", handlers.Portfolio.Create)
+		r.Post("/scenarios", handlers.Portfolio.CalculateScenarios)
 		r.Get("/metrics", handlers.Portfolio.GetMetrics)
 		r.Get("/recommendations", handlers.Portfolio.GetRecommendations)
 		r.Get("/projections", handlers.Portfolio.GetProjections)

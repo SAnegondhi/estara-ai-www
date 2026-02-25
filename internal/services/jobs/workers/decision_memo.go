@@ -95,6 +95,8 @@ func (w *DecisionMemoWorker) Process(
 	if userID == "" {
 		userID = job.UserID
 	}
+	discoverySessionID, _ := job.Payload["discoverySessionId"].(string)
+	payloadLocation, _ := job.Payload["location"].(string)
 
 	opts := memo.GenerateOptions{
 		Strategy:     strategy,
@@ -115,9 +117,12 @@ func (w *DecisionMemoWorker) Process(
 
 	// Cache memos in analysis_cache for history retrieval
 	cacheKey := w.buildMemoCacheKey(userID, properties)
-	location := fmt.Sprintf("%s, %s", properties[0].City, properties[0].State)
+	location := payloadLocation
+	if location == "" {
+		location = fmt.Sprintf("%s, %s", properties[0].City, properties[0].State)
+	}
 	if w.db != nil {
-		w.cacheMemos(ctx, cacheKey, userID, location, memos, len(properties))
+		w.cacheMemos(ctx, cacheKey, userID, location, discoverySessionID, memos, len(properties))
 	}
 
 	resultData := map[string]interface{}{
@@ -183,7 +188,7 @@ func (w *DecisionMemoWorker) buildMemoCacheKey(userID string, properties []memo.
 }
 
 // cacheMemos stores generated memos in analysis_cache for later retrieval.
-func (w *DecisionMemoWorker) cacheMemos(ctx context.Context, key, userID, location string, memos []memo.MemoData, propertyCount int) {
+func (w *DecisionMemoWorker) cacheMemos(ctx context.Context, key, userID, location, discoverySessionID string, memos []memo.MemoData, propertyCount int) {
 	content, err := json.Marshal(map[string]interface{}{
 		"memos":         memos,
 		"propertyCount": propertyCount,
@@ -195,8 +200,9 @@ func (w *DecisionMemoWorker) cacheMemos(ctx context.Context, key, userID, locati
 	}
 
 	metadata, _ := json.Marshal(map[string]interface{}{
-		"propertyCount": propertyCount,
-		"preview":       buildMemoPreview(memos),
+		"propertyCount":      propertyCount,
+		"preview":            buildMemoPreview(memos),
+		"discoverySessionId": discoverySessionID,
 	})
 
 	exp := time.Now().AddDate(0, 0, 30)

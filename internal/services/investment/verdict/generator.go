@@ -234,10 +234,10 @@ func (vg *Generator) generateRationale(
 	case investment.DecisionProceed:
 		rationale = fmt.Sprintf(
 			"This portfolio configuration demonstrates strong fundamentals with a Sharpe ratio of %.2f and manageable volatility of %.2f%%. "+
-				"Under the base scenario (P50 Monte Carlo), the portfolio is projected to achieve a net worth of $%s by Year 10, "+
-				"with an upside potential of $%s (P75). The portfolio consists of %d carefully selected properties with a concentration index of %.2f, "+
+				"Under the base scenario (P50 Monte Carlo), the portfolio is projected to achieve a net worth of %s by Year 10, "+
+				"with an upside potential of %s (P75). The portfolio consists of %d carefully selected properties with a concentration index of %.2f, "+
 				"indicating appropriate diversification.\n\n"+
-				"The stress test scenario, while challenging with a Year 10 net worth of $%s, demonstrates portfolio resilience. "+
+				"The stress test scenario, while challenging with a Year 10 net worth of %s, demonstrates portfolio resilience. "+
 				"Mid-term outcomes (Year 5) remain viable, suggesting the portfolio can weather adverse market conditions without catastrophic losses. "+
 				"This configuration aligns with your %s strategy and %s risk tolerance.%s\n\n"+
 				"Recommendation: Proceed with this allocation. The portfolio offers a favorable risk-return profile with sufficient downside protection. "+
@@ -257,11 +257,11 @@ func (vg *Generator) generateRationale(
 	case investment.DecisionPause:
 		targetInfo := ""
 		if wealthTarget > 0 {
-			targetInfo = fmt.Sprintf(" Your wealth target of $%s may not be reliably achieved under current projections.", formatCurrency(wealthTarget))
+			targetInfo = fmt.Sprintf(" Your wealth target of %s may not be reliably achieved under current projections.", formatCurrency(wealthTarget))
 		}
 
 		rationale = fmt.Sprintf(
-			"This portfolio configuration shows mixed signals that warrant a cautious approach. While the base scenario (P50 Monte Carlo) projects a net worth of $%s by Year 10, "+
+			"This portfolio configuration shows mixed signals that warrant a cautious approach. While the base scenario (P50 Monte Carlo) projects a net worth of %s by Year 10, "+
 				"the uncertainty level or market conditions suggest waiting for greater clarity.%s The portfolio volatility of %.2f%% is elevated relative to expected returns.%s\n\n"+
 				"The stress test reveals potential vulnerabilities, particularly in mid-term outcomes. "+
 				"Although the portfolio maintains positive equity through Year 10, the downside scenario indicates material wealth erosion under adverse conditions. "+
@@ -277,10 +277,10 @@ func (vg *Generator) generateRationale(
 	case investment.DecisionRevise:
 		rationale = fmt.Sprintf(
 			"This portfolio configuration requires adjustment to better align with your investment goals. The current allocation shows a Sharpe ratio of %.2f, "+
-				"indicating suboptimal risk-adjusted returns. Under the base scenario (P50 Monte Carlo), the portfolio projects a Year 10 net worth of $%s, "+
-				"which may fall short of your target of $%s.%s\n\n"+
+				"indicating suboptimal risk-adjusted returns. Under the base scenario (P50 Monte Carlo), the portfolio projects a Year 10 net worth of %s, "+
+				"which may fall short of your target of %s.%s\n\n"+
 				"The concentration index of %.2f and portfolio composition suggest opportunities for improved diversification or property selection. "+
-				"The upside scenario (P75) achieves $%s, demonstrating potential, but the stress test reveals vulnerabilities that could be mitigated through revised allocation.\n\n"+
+				"The upside scenario (P75) achieves %s, demonstrating potential, but the stress test reveals vulnerabilities that could be mitigated through revised allocation.\n\n"+
 				"Recommendation: Revise this allocation. Consider adjusting property selection to improve risk-adjusted returns, increasing diversification across markets, "+
 				"or modifying acquisition timing. Re-run the analysis with revised parameters to generate a more robust portfolio configuration.",
 			config.SharpeScore,
@@ -313,7 +313,7 @@ func (vg *Generator) identifyKeyConditions(config *investment.FrontierPoint) []s
 	// Add Track B condition if reinvestment plan exists
 	if config.ReinvestmentPlan != nil && config.ReinvestmentPlan.TrackB.FiredProbability > 0.5 {
 		conditions = append(conditions,
-			fmt.Sprintf("Portfolio cash flow consistently exceeds $%s threshold for Track B reinvestment (%.0f%% probability)",
+			fmt.Sprintf("Portfolio cash flow consistently exceeds %s threshold for Track B reinvestment (%.0f%% probability)",
 				formatCurrency(config.ReinvestmentPlan.TrackB.Threshold),
 				config.ReinvestmentPlan.TrackB.FiredProbability*100,
 			),

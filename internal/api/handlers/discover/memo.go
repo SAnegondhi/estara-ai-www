@@ -35,9 +35,11 @@ func (h *Handler) SetMemoPDFBuilder(b *pdf.DecisionMemoBuilder) {
 
 // DecisionMemoRequest is the request body for queuing memo generation.
 type DecisionMemoRequest struct {
-	Properties   []memo.BatchPropertyInput `json:"properties" validate:"required,min=1,max=10,dive"`
-	Strategy     string                    `json:"strategy"`
-	ForceRefresh bool                      `json:"forceRefresh"`
+	Properties         []memo.BatchPropertyInput `json:"properties" validate:"required,min=1,max=10,dive"`
+	Strategy           string                    `json:"strategy"`
+	ForceRefresh       bool                      `json:"forceRefresh"`
+	DiscoverySessionID string                    `json:"discoverySessionId,omitempty"`
+	Location           string                    `json:"location,omitempty"`
 }
 
 // DecisionMemoResponse is returned when a memo job is queued.
@@ -96,10 +98,12 @@ func (h *Handler) QueueDecisionMemos(w http.ResponseWriter, r *http.Request) {
 	}
 
 	job := queue.NewJob(queue.JobTypeDecisionMemo, user.UserID, map[string]interface{}{
-		"properties":   json.RawMessage(propsJSON),
-		"strategy":     req.Strategy,
-		"forceRefresh": req.ForceRefresh,
-		"userId":       user.UserID,
+		"properties":         json.RawMessage(propsJSON),
+		"strategy":           req.Strategy,
+		"forceRefresh":       req.ForceRefresh,
+		"userId":             user.UserID,
+		"discoverySessionId": req.DiscoverySessionID,
+		"location":           req.Location,
 	})
 
 	if h.redis == nil || memoJobQueue == nil {
@@ -223,12 +227,13 @@ func (h *Handler) StreamDecisionMemoProgress(w http.ResponseWriter, r *http.Requ
 
 // MemoHistoryEntry is one item in the memo history list.
 type MemoHistoryEntry struct {
-	ID            string    `json:"id"`
-	Key           string    `json:"key"`
-	Location      string    `json:"location"`
-	CreatedAt     time.Time `json:"createdAt"`
-	PropertyCount int       `json:"propertyCount"`
-	Preview       string    `json:"preview"`
+	ID                 string    `json:"id"`
+	Key                string    `json:"key"`
+	Location           string    `json:"location"`
+	CreatedAt          time.Time `json:"createdAt"`
+	PropertyCount      int       `json:"propertyCount"`
+	Preview            string    `json:"preview"`
+	DiscoverySessionID string    `json:"discoverySessionId,omitempty"`
 }
 
 // GetMemoHistory handles GET /api/v2/discover/decision-memo/history
@@ -268,7 +273,7 @@ func (h *Handler) GetMemoHistory(w http.ResponseWriter, r *http.Request) {
 		if row.CreatedAt.Valid {
 			entry.CreatedAt = row.CreatedAt.Time
 		}
-		// Extract propertyCount and preview from metadata
+		// Extract propertyCount, preview, and discoverySessionId from metadata
 		if len(row.Metadata) > 0 {
 			var meta map[string]interface{}
 			if err := json.Unmarshal(row.Metadata, &meta); err == nil {
@@ -277,6 +282,9 @@ func (h *Handler) GetMemoHistory(w http.ResponseWriter, r *http.Request) {
 				}
 				if prev, ok := meta["preview"].(string); ok {
 					entry.Preview = prev
+				}
+				if sid, ok := meta["discoverySessionId"].(string); ok {
+					entry.DiscoverySessionID = sid
 				}
 			}
 		}
