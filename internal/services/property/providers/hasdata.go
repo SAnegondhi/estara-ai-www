@@ -164,7 +164,8 @@ type hasDataZillowProp struct {
 	MLSID        string      `json:"mlsId"`
 	URL          string      `json:"url"`
 	Price        int         `json:"price"`
-	PropertyType string      `json:"propertyType"`
+	PropertyType string      `json:"propertyType"` // may be empty; prefer HomeType
+	HomeType     string      `json:"homeType"`      // Zillow native enum: "SINGLE_FAMILY", "CONDO", etc.
 	Beds         int         `json:"beds"`
 	Baths        float64     `json:"baths"`
 	Area         int         `json:"area"` // square feet
@@ -531,7 +532,7 @@ func (p *HasDataProvider) convertZillowProperty(zp hasDataZillowProp) hasDataPro
 			Sqft:         zp.Area,
 			LotSize:      zp.LotSize,
 			YearBuilt:    zp.YearBuilt,
-			PropertyType: zp.PropertyType,
+			PropertyType: firstNonEmpty(zp.HomeType, zp.PropertyType),
 		},
 		Listing: hasDataListing{
 			Status:       zp.Status,
@@ -688,6 +689,16 @@ func (p *HasDataProvider) parseListingStatus(s string) ListingStatus {
 	default:
 		return ListingStatusActive
 	}
+}
+
+// firstNonEmpty returns the first non-empty string from the provided values.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // hasDataPropertyAPIResponse represents the response from HasData Property API
