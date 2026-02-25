@@ -246,12 +246,12 @@ func TestGenerateVerdict_Revise_LowSharpe(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	vg := NewGenerator(logger)
 
-	// Create config with low Sharpe ratio
+	// Create config with low Sharpe ratio — threshold is < 0.25
 	config := &investment.FrontierPoint{
 		ConfigIndex:         0,
 		ExpectedReturn:      5.0,
 		PortfolioVolatility: 8.0,
-		SharpeScore:         0.3, // Very low!
+		SharpeScore:         0.2, // Below the 0.25 REVISE threshold
 		ConcentrationIndex:  0.4,
 		Properties:          make([]investment.PropertyInPortfolio, 5),
 		Scenarios: &investment.ScenarioSet{
@@ -290,7 +290,7 @@ func TestGenerateVerdict_Revise_LowSharpe(t *testing.T) {
 		t.Errorf("Recommendation = %s, want REVISE (low Sharpe)", verdict.Recommendation)
 	}
 
-	t.Logf("✅ REVISE verdict (Sharpe=0.3): %s", verdict.Recommendation)
+	t.Logf("✅ REVISE verdict (Sharpe=0.2): %s", verdict.Recommendation)
 }
 
 func TestGenerateVerdict_MonitoringSignals(t *testing.T) {

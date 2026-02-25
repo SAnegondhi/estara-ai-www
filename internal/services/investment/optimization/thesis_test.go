@@ -51,7 +51,7 @@ func TestBuildScoringPrompt_Phase2(t *testing.T) {
 		{"includes capexAlert field", "capexAlert"},
 		{"includes property ID", "prop_123"},
 		{"includes city", "Austin"},
-		{"excludes numerical scores", "!buyabilityScore"}, // Should NOT include old score fields
+		{"includes buyabilityScore field", "buyabilityScore"}, // Structured scoring field in prompt
 	}
 
 	for _, tt := range tests {

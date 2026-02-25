@@ -81,8 +81,8 @@ func TestCalculateTrackB_Placeholder(t *testing.T) {
 	trackB := rm.calculateTrackB(config, nil) // nil = no MC results
 
 	// Phase 5: Verify placeholder values (no MC results provided)
-	if trackB.Threshold != 50000 {
-		t.Errorf("Threshold = %d, want 50000", trackB.Threshold)
+	if trackB.Threshold != 80000 {
+		t.Errorf("Threshold = %d, want 80000", trackB.Threshold)
 	}
 
 	if trackB.MedianFiredYear != 0 {
@@ -144,8 +144,8 @@ func TestCalculateReinvestmentPlan(t *testing.T) {
 	}
 
 	// Verify Track B (placeholder)
-	if plan.TrackB.Threshold != 50000 {
-		t.Errorf("TrackB.Threshold = %d, want 50000", plan.TrackB.Threshold)
+	if plan.TrackB.Threshold != 80000 {
+		t.Errorf("TrackB.Threshold = %d, want 80000", plan.TrackB.Threshold)
 	}
 }
 
@@ -184,8 +184,8 @@ func TestCalculateTrackB_WithMCResults(t *testing.T) {
 	trackB := rm.calculateTrackB(config, mcResults)
 
 	// Verify threshold
-	if trackB.Threshold != 50000 {
-		t.Errorf("Threshold = %d, want 50000", trackB.Threshold)
+	if trackB.Threshold != 80000 {
+		t.Errorf("Threshold = %d, want 80000", trackB.Threshold)
 	}
 
 	// Verify median fired year: [3, 4, 4, 5, 5, 6, 7] → median = 5

@@ -15,7 +15,7 @@ func TestFrontier_ReinvestmentPlan_TrackA(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil, nil, nil)
 
 	// Create test properties
 	properties := []investment.ScoredProperty{
@@ -80,10 +80,10 @@ func TestFrontier_ReinvestmentPlan_TrackA(t *testing.T) {
 			}
 		}
 
-		// Verify Track B (placeholder in Phase 5)
+		// Verify Track B — threshold derived from property price (20% down payment)
 		trackB := point.ReinvestmentPlan.TrackB
-		if trackB.Threshold != 50000 {
-			t.Errorf("Config %d: TrackB.Threshold = %d, want 50000", i, trackB.Threshold)
+		if trackB.Threshold <= 0 {
+			t.Errorf("Config %d: TrackB.Threshold = %d, want > 0 (derived from property price)", i, trackB.Threshold)
 		}
 
 		if trackB.MedianFiredYear != 0 {
@@ -100,7 +100,7 @@ func TestFrontier_ReinvestmentPlan_NoYearlyBudgets(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil, nil, nil)
 
 	properties := []investment.ScoredProperty{
 		{Property: investment.Property{ID: "p1", City: "Austin", State: "TX", Price: 300000, EstimatedRent: 2000}},
@@ -150,10 +150,10 @@ func TestFrontier_ReinvestmentPlan_NoYearlyBudgets(t *testing.T) {
 				i, len(trackA.YearlyBudgets))
 		}
 
-		// Track B should still have default threshold
+		// Track B threshold derived from property price (20% down payment)
 		trackB := point.ReinvestmentPlan.TrackB
-		if trackB.Threshold != 50000 {
-			t.Errorf("Config %d: TrackB.Threshold = %d, want 50000", i, trackB.Threshold)
+		if trackB.Threshold <= 0 {
+			t.Errorf("Config %d: TrackB.Threshold = %d, want > 0", i, trackB.Threshold)
 		}
 	}
 
@@ -165,7 +165,7 @@ func TestFrontier_ReinvestmentPlan_SingleYearBudget(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil, nil, nil)
 
 	properties := []investment.ScoredProperty{
 		{Property: investment.Property{ID: "p1", City: "Austin", State: "TX", Price: 300000, EstimatedRent: 2000}},

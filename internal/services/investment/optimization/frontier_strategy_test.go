@@ -345,7 +345,7 @@ func TestFrontier_DistinctMetrics(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil, nil, nil)
 
 	props := buildDiverseProperties()
 	profile := investment.InvestorProfile{
@@ -412,7 +412,7 @@ func TestFrontier_StrategyInfluencesExpectedReturn(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil, nil, nil)
 
 	props := buildDiverseProperties()
 	params := investment.InvestmentPlanningParams{MortgageRate: testMortgageRate, DownPaymentPct: testDownPayment}
@@ -475,7 +475,7 @@ func TestFrontier_RecalculateMaintainsRelativeOrdering(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil, nil, nil)
 
 	props := buildDiverseProperties()
 	profile := investment.InvestorProfile{
@@ -593,7 +593,7 @@ func TestFrontier_LabelFlowToFrontierPoint(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil, nil, nil)
 
 	props := buildDiverseProperties()
 	profile := investment.InvestorProfile{

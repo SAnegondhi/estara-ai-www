@@ -15,7 +15,7 @@ func TestCalculatePortfolioVolatility_Markowitz(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil, nil, nil)
 
 	tests := []struct {
 		name               string
@@ -81,7 +81,7 @@ func TestDominates_ParetoDominance(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil, nil, nil)
 
 	tests := []struct {
 		name     string
@@ -173,7 +173,7 @@ func TestGenerateFrontier_Integration(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil, nil, nil)
 
 	// Create 10 properties with varying characteristics
 	properties := []investment.ScoredProperty{
@@ -268,7 +268,7 @@ func TestCalculateMarketHHI(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil, nil, nil)
 
 	tests := []struct {
 		name        string
@@ -331,7 +331,7 @@ func TestCalculateSpatialConcentration(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil, nil, nil)
 
 	tests := []struct {
 		name               string
@@ -398,7 +398,7 @@ func TestCalculateStressTestEquity(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil, nil, nil)
 
 	profile := investment.InvestorProfile{
 		Strategy:          investment.StrategyCashFlow,
@@ -440,7 +440,7 @@ func TestCalculateStressTestEquity(t *testing.T) {
 				Weights:    tt.weights,
 			}
 
-			stressEquity := fo.calculateStressTestEquity(&config, profile)
+			stressEquity := fo.calculateStressTestEquity(&config, profile, investment.InvestmentPlanningParams{})
 
 			if tt.expectPositive && stressEquity <= 0 {
 				t.Errorf("Expected positive stress equity, got %d", stressEquity)
@@ -458,7 +458,7 @@ func TestRecalculate_MortgageRateOverride(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil, nil, nil)
 
 	// Use the actual mortgage calculator to build consistent test data at 7%
 	loanAmountP1 := 300000 // $400K price, 25% down
@@ -550,7 +550,7 @@ func TestRecalculate_EmptyInput(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil, nil, nil)
 
 	ctx := context.Background()
 	_, err := fo.Recalculate(ctx, nil, investment.InvestorProfile{}, investment.InvestmentPlanningParams{}, investment.AssumptionOverrides{})
@@ -564,7 +564,7 @@ func TestRecalculate_NoOverrides(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	markowitzCalc := NewMarkowitzCalculator()
 	reinvestModeler := projection.NewReinvestmentModeler(logger, nil)
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, nil, nil, nil, nil, nil)
 
 	existing := []investment.FrontierPoint{
 		{

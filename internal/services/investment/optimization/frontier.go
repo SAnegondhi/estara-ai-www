@@ -165,7 +165,9 @@ func (fo *FrontierOptimizer) GenerateFrontier(
 	if rentGrowthRate < 1.5 {
 		rentGrowthRate = 1.5
 	}
-	fo.mcSimulator.SetMarketRates(appreciationRate, rentGrowthRate)
+	if fo.mcSimulator != nil {
+		fo.mcSimulator.SetMarketRates(appreciationRate, rentGrowthRate)
+	}
 
 	for i := range candidates {
 		fo.evaluateObjectives(&candidates[i], profile, params, appreciationRate, liveRiskFreeRate, pairCorrelations, cityVolatilities)

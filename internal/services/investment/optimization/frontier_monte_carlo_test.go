@@ -19,7 +19,7 @@ func TestGenerateFrontier_WithMonteCarloSimulation(t *testing.T) {
 	scenarioGenerator := projection.NewScenarioGenerator(logger)
 
 	// Create frontier optimizer with MC simulator and scenario generator
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, mcSimulator, scenarioGenerator, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, mcSimulator, scenarioGenerator, nil, nil, nil)
 
 	// Create test properties
 	properties := []investment.ScoredProperty{
@@ -137,9 +137,9 @@ func TestGenerateFrontier_WithMonteCarloSimulation(t *testing.T) {
 				i, point.ReinvestmentPlan.TrackA.TotalCapital)
 		}
 
-		// Track B threshold should be set
-		if point.ReinvestmentPlan.TrackB.Threshold != 50000 {
-			t.Errorf("Config %d: expected Track B threshold=50000, got %d",
+		// Track B threshold is derived from property price (20% down payment)
+		if point.ReinvestmentPlan.TrackB.Threshold <= 0 {
+			t.Errorf("Config %d: expected Track B threshold > 0, got %d",
 				i, point.ReinvestmentPlan.TrackB.Threshold)
 		}
 
@@ -195,7 +195,7 @@ func TestGenerateFrontier_WithYearlyBudgets(t *testing.T) {
 	mcSimulator := projection.NewMonteCarloSimulator(logger)
 	scenarioGenerator := projection.NewScenarioGenerator(logger)
 
-	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, mcSimulator, scenarioGenerator, nil)
+	fo := NewFrontierOptimizer(logger, markowitzCalc, reinvestModeler, mcSimulator, scenarioGenerator, nil, nil, nil)
 
 	// Create test properties (need at least 5)
 	properties := []investment.ScoredProperty{
