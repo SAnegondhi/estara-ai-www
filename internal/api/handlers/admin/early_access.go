@@ -205,33 +205,34 @@ func (h *Handler) ApproveEarlyAccess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check no existing user with this email
-	_, userErr := h.store.Q().GetUserByEmail(ctx, ear.Email)
-	if userErr == nil {
-		// User already exists — still approve request, link user_id below
-		h.logger.Warn("approving early access for existing email", "email", ear.Email)
-	}
-
 	// Build admin identity from JWT
 	adminID := h.extractAdminID(r)
 
-	// Create user
-	userID := newID()
 	now := time.Now()
 	// Set period_end far in the future for unlimited early access
 	periodEnd := now.AddDate(10, 0, 0) // 10 years
 
-	// Create user (no password — will be set via setup-password flow)
-	newUser, err := h.store.Q().CreateEarlyAccessUser(ctx, queries.CreateEarlyAccessUserParams{
-		ID:        userID,
-		Email:     ear.Email,
-		FirstName: pgtype.Text{String: ear.FirstName, Valid: true},
-		LastName:  pgtype.Text{String: ear.LastName, Valid: true},
-	})
-	if err != nil {
-		h.logger.Error("failed to create early access user", "error", err, "email", ear.Email)
-		httputil.Error(w, http.StatusInternalServerError, "failed to create user account")
-		return
+	// Reuse existing user or create new one
+	existingUser, userErr := h.store.Q().GetUserByEmail(ctx, ear.Email)
+	var newUser queries.User
+	if userErr == nil {
+		// User already exists — reuse it (email is unique, can't create duplicate)
+		h.logger.Warn("approving early access for existing email — reusing user", "email", ear.Email, "user_id", existingUser.ID)
+		newUser = existingUser
+	} else {
+		// Create user (no password — will be set via setup-password flow)
+		created, err := h.store.Q().CreateEarlyAccessUser(ctx, queries.CreateEarlyAccessUserParams{
+			ID:        newID(),
+			Email:     ear.Email,
+			FirstName: pgtype.Text{String: ear.FirstName, Valid: true},
+			LastName:  pgtype.Text{String: ear.LastName, Valid: true},
+		})
+		if err != nil {
+			h.logger.Error("failed to create early access user", "error", err, "email", ear.Email)
+			httputil.Error(w, http.StatusInternalServerError, "failed to create user account")
+			return
+		}
+		newUser = created
 	}
 
 	// Create quota row with unlimited access
