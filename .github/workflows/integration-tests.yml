@@ -43,7 +43,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.24'
 
       - name: Install sqlc
         run: |
@@ -85,7 +85,22 @@ jobs:
           NEXT_PUBLIC_CLIENT_URL: http://localhost:3002
           CLIENT_URL: http://localhost:3002
           MARKETING_URL: http://localhost:3500
-        run: make test-integration
+        run: |
+          # Write env vars to .env.test so make test-integration can source it
+          cat > .env.test <<EOF
+          DATABASE_URL=${DATABASE_URL}
+          MARKET_DATABASE_URL=${MARKET_DATABASE_URL}
+          REDIS_URL=${REDIS_URL}
+          REDIS_CACHE_URL=${REDIS_CACHE_URL}
+          CLIENT_JWT_SECRET=${CLIENT_JWT_SECRET}
+          AUTH_SECRET=${AUTH_SECRET}
+          AUTH_TRUST_HOST=${AUTH_TRUST_HOST}
+          NEXT_PUBLIC_WWW_URL=${NEXT_PUBLIC_WWW_URL}
+          NEXT_PUBLIC_CLIENT_URL=${NEXT_PUBLIC_CLIENT_URL}
+          CLIENT_URL=${CLIENT_URL}
+          MARKETING_URL=${MARKETING_URL}
+          EOF
+          make test-integration
 
       - name: Upload test results
         if: always()
