@@ -829,10 +829,16 @@ func (h *Handler) CheckCronEndpoints(w http.ResponseWriter, r *http.Request) {
 		resp.Body.Close()
 
 		code := resp.StatusCode
+		// 405 = route is registered but only accepts POST (correct for cron endpoints)
+		// 404 = route missing entirely
+		// 5xx = route exists but panicked/errored
 		status := "ok"
-		if code == http.StatusNotFound {
+		switch {
+		case code == http.StatusMethodNotAllowed:
+			status = "registered" // POST-only cron endpoint, GET probe confirms it exists
+		case code == http.StatusNotFound:
 			status = "not_found"
-		} else if code >= 500 {
+		case code >= 500:
 			status = "error"
 		}
 		results = append(results, cronEndpointResult{
