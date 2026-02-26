@@ -688,6 +688,11 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		// Cron Job Management
 		r.Route("/cron-jobs", func(r chi.Router) {
 			r.Get("/", handlers.Admin.ListCronJobs)
+			// cron-job.org integration (ADR-099) — must be before /{id} to avoid routing conflicts
+			r.Get("/sync-status", handlers.Admin.GetSyncStatus)
+			r.Post("/sync", handlers.Admin.SyncCronJobs)
+			r.Post("/bulk-toggle", handlers.Admin.BulkToggleCronJobs)
+			r.Post("/check-endpoints", handlers.Admin.CheckCronEndpoints)
 			r.Get("/{id}/runs", handlers.Admin.GetCronJobRuns)
 			r.Post("/{id}/toggle", handlers.Admin.ToggleCronJob)
 			r.Post("/{id}/trigger", handlers.Admin.TriggerCronJob)

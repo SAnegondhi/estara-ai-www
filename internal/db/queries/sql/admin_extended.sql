@@ -235,3 +235,12 @@ WHERE "cronJobId" = $1;
 -- name: DeleteOldCronJobRuns :exec
 DELETE FROM cron_job_runs
 WHERE "startedAt" < NOW() - ($1 || ' days')::INTERVAL;
+
+-- name: UpdateCronJobExternalID :exec
+UPDATE cron_job_configs SET external_job_id = $2, "updatedAt" = NOW() WHERE id = $1;
+
+-- name: BulkToggleCronJobsByIDs :many
+UPDATE cron_job_configs
+SET "isEnabled" = $2, "updatedAt" = NOW()
+WHERE id = ANY($1::text[])
+RETURNING *;

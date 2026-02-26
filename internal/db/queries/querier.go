@@ -20,6 +20,7 @@ type Querier interface {
 	// Batch fetch cache entries for multiple keys (to avoid N+1 queries)
 	// Only fetch fields needed for preview generation (not full metricsData/narrativeData)
 	BatchGetAnalysisCacheByKeys(ctx context.Context, keys []string) ([]BatchGetAnalysisCacheByKeysRow, error)
+	BulkToggleCronJobsByIDs(ctx context.Context, arg BulkToggleCronJobsByIDsParams) ([]CronJobConfig, error)
 	CancelIAPSubscriptions(ctx context.Context, userid string) error
 	CancelInsightAccess(ctx context.Context, id string) (InsightAccess, error)
 	CancelSubscription(ctx context.Context, arg CancelSubscriptionParams) error
@@ -710,6 +711,7 @@ type Querier interface {
 	UpdateCacheAccessByUserAndKey(ctx context.Context, arg UpdateCacheAccessByUserAndKeyParams) error
 	UpdateContactAdmin(ctx context.Context, arg UpdateContactAdminParams) (UpdateContactAdminRow, error)
 	UpdateContactSubmissionStatus(ctx context.Context, arg UpdateContactSubmissionStatusParams) (UpdateContactSubmissionStatusRow, error)
+	UpdateCronJobExternalID(ctx context.Context, arg UpdateCronJobExternalIDParams) error
 	UpdateCronJobLastRun(ctx context.Context, arg UpdateCronJobLastRunParams) error
 	// ADR-087 Phase 7: Data Source Version Tracking Queries
 	// Event-driven refresh based on data source version changes

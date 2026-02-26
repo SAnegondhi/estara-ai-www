@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/estara-ai/www/internal/db/queries"
+	"github.com/estara-ai/www/internal/services/cronjoborgclient"
 	"github.com/estara-ai/www/pkg/httputil"
 )
 
@@ -35,6 +37,9 @@ type CronJobResponse struct {
 	LastRunError        *string `json:"lastRunError"`
 	CreatedAt           string  `json:"createdAt"`
 	UpdatedAt           *string `json:"updatedAt"`
+	// cron-job.org integration (ADR-099)
+	ExternalJobID  *int64 `json:"externalJobId"`
+	ExternalSynced bool   `json:"externalSynced"`
 }
 
 // CronJobRunResponse is a JSON-safe representation of a cron job run.
@@ -87,6 +92,11 @@ func cronJobToResponse(c queries.CronJobConfig) CronJobResponse {
 	if c.UpdatedAt.Valid {
 		s := c.UpdatedAt.Time.Format(time.RFC3339)
 		resp.UpdatedAt = &s
+	}
+	if c.ExternalJobID.Valid {
+		v := c.ExternalJobID.Int64
+		resp.ExternalJobID = &v
+		resp.ExternalSynced = true
 	}
 	return resp
 }
@@ -281,4 +291,278 @@ func (h *Handler) TriggerCronJob(w http.ResponseWriter, r *http.Request) {
 		"triggered":  true,
 		"statusCode": resp.StatusCode,
 	})
+}
+
+// cronOrgClient returns a cron-job.org API client using the configured CRON_SECRET.
+func (h *Handler) cronOrgClient() *cronjoborgclient.Client {
+	return cronjoborgclient.New(h.cfg.Cron.Secret)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// cron-job.org integration handlers (ADR-099)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// cronSyncStatusJob is a per-job sync status entry.
+type cronSyncStatusJob struct {
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	Synced          bool    `json:"synced"`
+	ExternalJobID   *int64  `json:"externalJobId"`
+	ExternalEnabled *bool   `json:"externalEnabled"`
+}
+
+// GetSyncStatus returns how many local cron jobs are synced to cron-job.org.
+// GET /api/admin/cron-jobs/sync-status
+func (h *Handler) GetSyncStatus(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	q := h.store.Q()
+
+	localJobs, err := q.ListCronJobConfigs(ctx)
+	if err != nil {
+		h.logger.Error("sync-status: list local jobs", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, "failed to list cron jobs")
+		return
+	}
+
+	client := h.cronOrgClient()
+	remoteJobs, err := client.ListJobs()
+	if err != nil {
+		h.logger.Warn("sync-status: list remote jobs failed", "error", err)
+		// Return local status even if remote is unreachable — surface as unsynced.
+		remoteJobs = nil
+	}
+
+	// Index remote jobs by jobId for O(1) lookup.
+	remoteByID := make(map[int64]cronjoborgclient.CronOrgJob, len(remoteJobs))
+	for _, rj := range remoteJobs {
+		remoteByID[rj.JobID] = rj
+	}
+
+	var jobStatuses []cronSyncStatusJob
+	synced := 0
+
+	for _, lj := range localJobs {
+		entry := cronSyncStatusJob{
+			ID:   lj.ID,
+			Name: lj.Name,
+		}
+		if lj.ExternalJobID.Valid {
+			v := lj.ExternalJobID.Int64
+			entry.ExternalJobID = &v
+			if rj, ok := remoteByID[v]; ok {
+				entry.Synced = true
+				entry.ExternalEnabled = &rj.Enabled
+				synced++
+			}
+		}
+		jobStatuses = append(jobStatuses, entry)
+	}
+
+	httputil.Success(w, map[string]any{
+		"total":   len(localJobs),
+		"synced":  synced,
+		"unsynced": len(localJobs) - synced,
+		"jobs":    jobStatuses,
+	})
+}
+
+// SyncCronJobs creates missing cron-job.org entries for unsynced local jobs.
+// POST /api/admin/cron-jobs/sync
+func (h *Handler) SyncCronJobs(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	q := h.store.Q()
+
+	localJobs, err := q.ListCronJobConfigs(ctx)
+	if err != nil {
+		h.logger.Error("sync: list local jobs", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, "failed to list cron jobs")
+		return
+	}
+
+	client := h.cronOrgClient()
+	secret := h.cfg.Cron.Secret
+
+	port := h.cfg.Server.Port
+	if port == 0 {
+		port = 3000
+	}
+
+	created := 0
+	alreadySynced := 0
+	var failures []string
+
+	for _, lj := range localJobs {
+		if lj.ExternalJobID.Valid {
+			alreadySynced++
+			continue
+		}
+
+		schedule, err := cronjoborgclient.ParseCronExpression(lj.Schedule)
+		if err != nil {
+			h.logger.Warn("sync: unparseable schedule", "job", lj.Name, "schedule", lj.Schedule, "error", err)
+			failures = append(failures, fmt.Sprintf("%s: unparseable schedule %q", lj.Name, lj.Schedule))
+			continue
+		}
+
+		endpointURL := fmt.Sprintf("https://api.estara-ai.com%s", lj.Endpoint)
+		jobID, err := client.CreateJob(endpointURL, schedule, lj.Name, secret)
+		if err != nil {
+			h.logger.Warn("sync: create job failed", "job", lj.Name, "error", err)
+			failures = append(failures, fmt.Sprintf("%s: %v", lj.Name, err))
+			continue
+		}
+
+		if err := q.UpdateCronJobExternalID(ctx, queries.UpdateCronJobExternalIDParams{
+			ID:            lj.ID,
+			ExternalJobID: pgtype.Int8{Int64: jobID, Valid: true},
+		}); err != nil {
+			h.logger.Error("sync: store external job id", "job", lj.Name, "jobId", jobID, "error", err)
+			failures = append(failures, fmt.Sprintf("%s: failed to store external id", lj.Name))
+			continue
+		}
+		created++
+	}
+
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "CRON_SYNC", "cron_jobs", "", map[string]any{
+		"created":      created,
+		"alreadySynced": alreadySynced,
+		"failures":     len(failures),
+	})
+
+	httputil.Success(w, map[string]any{
+		"created":      created,
+		"alreadySynced": alreadySynced,
+		"failures":     failures,
+	})
+}
+
+// BulkToggleCronJobs enables or disables a set of cron jobs in both local DB
+// and cron-job.org.
+// POST /api/admin/cron-jobs/bulk-toggle
+func (h *Handler) BulkToggleCronJobs(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var req struct {
+		IDs     []string `json:"ids"`
+		Enabled bool     `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.BadRequest(w, "invalid request body")
+		return
+	}
+	if len(req.IDs) == 0 {
+		httputil.BadRequest(w, "ids must not be empty")
+		return
+	}
+
+	q := h.store.Q()
+
+	updated, err := q.BulkToggleCronJobsByIDs(ctx, queries.BulkToggleCronJobsByIDsParams{
+		Column1:   req.IDs,
+		IsEnabled: req.Enabled,
+	})
+	if err != nil {
+		h.logger.Error("bulk-toggle: update local db", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, "failed to toggle cron jobs")
+		return
+	}
+
+	// Propagate to cron-job.org for jobs that have an external ID.
+	client := h.cronOrgClient()
+	var extFailures []string
+	for _, job := range updated {
+		if !job.ExternalJobID.Valid {
+			continue
+		}
+		if err := client.UpdateJob(job.ExternalJobID.Int64, req.Enabled); err != nil {
+			h.logger.Warn("bulk-toggle: update remote job", "job", job.Name, "error", err)
+			extFailures = append(extFailures, job.Name)
+		}
+	}
+
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "CRON_BULK_TOGGLE", "cron_jobs", "", map[string]any{
+		"ids":         req.IDs,
+		"enabled":     req.Enabled,
+		"extFailures": extFailures,
+	})
+
+	jobs := make([]CronJobResponse, len(updated))
+	for i, c := range updated {
+		jobs[i] = cronJobToResponse(c)
+	}
+
+	httputil.Success(w, map[string]any{
+		"jobs":            jobs,
+		"remoteFailures":  extFailures,
+	})
+}
+
+// cronEndpointResult is the health check result for a single endpoint.
+type cronEndpointResult struct {
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	Endpoint   string  `json:"endpoint"`
+	Status     string  `json:"status"`     // "ok" | "not_found" | "error"
+	HTTPStatus *int    `json:"httpStatus"`
+}
+
+// CheckCronEndpoints probes each /api/cron/* route with a GET request to verify
+// it is registered (405 = exists, wrong method; 404 = missing route; 5xx = error).
+// POST /api/admin/cron-jobs/check-endpoints
+func (h *Handler) CheckCronEndpoints(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	q := h.store.Q()
+
+	jobs, err := q.ListCronJobConfigs(ctx)
+	if err != nil {
+		h.logger.Error("check-endpoints: list jobs", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, "failed to list cron jobs")
+		return
+	}
+
+	port := h.cfg.Server.Port
+	if port == 0 {
+		port = 3000
+	}
+
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	results := make([]cronEndpointResult, 0, len(jobs))
+
+	for _, job := range jobs {
+		url := fmt.Sprintf("http://localhost:%d%s", port, job.Endpoint)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			results = append(results, cronEndpointResult{
+				ID: job.ID, Name: job.Name, Endpoint: job.Endpoint,
+				Status: "error",
+			})
+			continue
+		}
+		req.Header.Set("X-Cron-Secret", h.cfg.Cron.Secret)
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			results = append(results, cronEndpointResult{
+				ID: job.ID, Name: job.Name, Endpoint: job.Endpoint,
+				Status: "error",
+			})
+			continue
+		}
+		resp.Body.Close()
+
+		code := resp.StatusCode
+		status := "ok"
+		if code == http.StatusNotFound {
+			status = "not_found"
+		} else if code >= 500 {
+			status = "error"
+		}
+		results = append(results, cronEndpointResult{
+			ID: job.ID, Name: job.Name, Endpoint: job.Endpoint,
+			Status:     status,
+			HTTPStatus: &code,
+		})
+	}
+
+	httputil.Success(w, results)
 }

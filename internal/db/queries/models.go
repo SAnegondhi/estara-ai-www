@@ -324,6 +324,7 @@ type CronJobConfig struct {
 	TotalRuns           int32            `json:"totalRuns"`
 	SuccessfulRuns      int32            `json:"successfulRuns"`
 	FailedRuns          int32            `json:"failedRuns"`
+	ExternalJobID       pgtype.Int8      `json:"external_job_id"`
 	CreatedAt           pgtype.Timestamp `json:"createdAt"`
 	UpdatedAt           pgtype.Timestamp `json:"updatedAt"`
 }

@@ -36,6 +36,61 @@ func (q *Queries) ApplyAdminCredit(ctx context.Context, id string) (AdminCredit,
 	return i, err
 }
 
+const BulkToggleCronJobsByIDs = `-- name: BulkToggleCronJobsByIDs :many
+UPDATE cron_job_configs
+SET "isEnabled" = $2, "updatedAt" = NOW()
+WHERE id = ANY($1::text[])
+RETURNING id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", external_job_id, "createdAt", "updatedAt"
+`
+
+type BulkToggleCronJobsByIDsParams struct {
+	Column1   []string `json:"column_1"`
+	IsEnabled bool     `json:"isEnabled"`
+}
+
+func (q *Queries) BulkToggleCronJobsByIDs(ctx context.Context, arg BulkToggleCronJobsByIDsParams) ([]CronJobConfig, error) {
+	rows, err := q.db.Query(ctx, BulkToggleCronJobsByIDs, arg.Column1, arg.IsEnabled)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CronJobConfig{}
+	for rows.Next() {
+		var i CronJobConfig
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.Schedule,
+			&i.Endpoint,
+			&i.IsRequired,
+			&i.IsConfigured,
+			&i.IsEnabled,
+			&i.LastRun,
+			&i.LastRunStatus,
+			&i.LastRunDuration,
+			&i.LastRunError,
+			&i.ConsecutiveFailures,
+			&i.AlertOnFailure,
+			&i.MaxFailures,
+			&i.TimeoutMs,
+			&i.TotalRuns,
+			&i.SuccessfulRuns,
+			&i.FailedRuns,
+			&i.ExternalJobID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const CompleteCronJobRun = `-- name: CompleteCronJobRun :one
 UPDATE cron_job_runs SET
     status = $2,
@@ -172,7 +227,7 @@ INSERT INTO cron_job_configs (
     "createdAt", "updatedAt"
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW()
-) RETURNING id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", "createdAt", "updatedAt"
+) RETURNING id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", external_job_id, "createdAt", "updatedAt"
 `
 
 type CreateCronJobConfigParams struct {
@@ -221,6 +276,7 @@ func (q *Queries) CreateCronJobConfig(ctx context.Context, arg CreateCronJobConf
 		&i.TotalRuns,
 		&i.SuccessfulRuns,
 		&i.FailedRuns,
+		&i.ExternalJobID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -430,7 +486,7 @@ func (q *Queries) GetAdminCreditsByUser(ctx context.Context, userid string) ([]A
 }
 
 const GetCronJobConfigByID = `-- name: GetCronJobConfigByID :one
-SELECT id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", "createdAt", "updatedAt" FROM cron_job_configs
+SELECT id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", external_job_id, "createdAt", "updatedAt" FROM cron_job_configs
 WHERE id = $1
 `
 
@@ -457,6 +513,7 @@ func (q *Queries) GetCronJobConfigByID(ctx context.Context, id string) (CronJobC
 		&i.TotalRuns,
 		&i.SuccessfulRuns,
 		&i.FailedRuns,
+		&i.ExternalJobID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -464,7 +521,7 @@ func (q *Queries) GetCronJobConfigByID(ctx context.Context, id string) (CronJobC
 }
 
 const GetCronJobConfigByName = `-- name: GetCronJobConfigByName :one
-SELECT id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", "createdAt", "updatedAt" FROM cron_job_configs
+SELECT id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", external_job_id, "createdAt", "updatedAt" FROM cron_job_configs
 WHERE name = $1
 `
 
@@ -491,6 +548,7 @@ func (q *Queries) GetCronJobConfigByName(ctx context.Context, name string) (Cron
 		&i.TotalRuns,
 		&i.SuccessfulRuns,
 		&i.FailedRuns,
+		&i.ExternalJobID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -675,7 +733,7 @@ func (q *Queries) ListAdminCredits(ctx context.Context, arg ListAdminCreditsPara
 }
 
 const ListCronJobConfigs = `-- name: ListCronJobConfigs :many
-SELECT id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", "createdAt", "updatedAt" FROM cron_job_configs
+SELECT id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", external_job_id, "createdAt", "updatedAt" FROM cron_job_configs
 ORDER BY name
 `
 
@@ -708,6 +766,7 @@ func (q *Queries) ListCronJobConfigs(ctx context.Context) ([]CronJobConfig, erro
 			&i.TotalRuns,
 			&i.SuccessfulRuns,
 			&i.FailedRuns,
+			&i.ExternalJobID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -979,7 +1038,7 @@ UPDATE cron_job_configs SET
     "isEnabled" = $2,
     "updatedAt" = NOW()
 WHERE id = $1
-RETURNING id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", "createdAt", "updatedAt"
+RETURNING id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", external_job_id, "createdAt", "updatedAt"
 `
 
 type ToggleCronJobConfigParams struct {
@@ -1010,10 +1069,25 @@ func (q *Queries) ToggleCronJobConfig(ctx context.Context, arg ToggleCronJobConf
 		&i.TotalRuns,
 		&i.SuccessfulRuns,
 		&i.FailedRuns,
+		&i.ExternalJobID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const UpdateCronJobExternalID = `-- name: UpdateCronJobExternalID :exec
+UPDATE cron_job_configs SET external_job_id = $2, "updatedAt" = NOW() WHERE id = $1
+`
+
+type UpdateCronJobExternalIDParams struct {
+	ID            string      `json:"id"`
+	ExternalJobID pgtype.Int8 `json:"external_job_id"`
+}
+
+func (q *Queries) UpdateCronJobExternalID(ctx context.Context, arg UpdateCronJobExternalIDParams) error {
+	_, err := q.db.Exec(ctx, UpdateCronJobExternalID, arg.ID, arg.ExternalJobID)
+	return err
 }
 
 const UpdateCronJobLastRun = `-- name: UpdateCronJobLastRun :exec
@@ -1133,7 +1207,7 @@ DO UPDATE SET
     endpoint = EXCLUDED.endpoint,
     "timeoutMs" = EXCLUDED."timeoutMs",
     "updatedAt" = NOW()
-RETURNING id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", "createdAt", "updatedAt"
+RETURNING id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", external_job_id, "createdAt", "updatedAt"
 `
 
 type UpsertCronJobConfigParams struct {
@@ -1175,6 +1249,7 @@ func (q *Queries) UpsertCronJobConfig(ctx context.Context, arg UpsertCronJobConf
 		&i.TotalRuns,
 		&i.SuccessfulRuns,
 		&i.FailedRuns,
+		&i.ExternalJobID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

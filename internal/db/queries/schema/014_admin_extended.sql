@@ -161,6 +161,7 @@ CREATE TABLE IF NOT EXISTS cron_job_configs (
     "totalRuns" INTEGER NOT NULL DEFAULT 0,
     "successfulRuns" INTEGER NOT NULL DEFAULT 0,
     "failedRuns" INTEGER NOT NULL DEFAULT 0,
+    external_job_id BIGINT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3)
 );
