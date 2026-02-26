@@ -47,7 +47,7 @@ WHERE "actorType" IS NULL AND "adminId" IS NOT NULL;
 
 UPDATE audit_logs
 SET "actorType" = 'SYSTEM'
-WHERE "actorType" IS NULL AND event IN ('SYSTEM_ERROR', 'CACHE_OPERATION');
+WHERE "actorType" IS NULL AND event IN ('SYSTEM_ERROR', 'CACHE_INVALIDATE');
 
 UPDATE audit_logs
 SET "actorType" = 'ADMIN_USER'
