@@ -125,44 +125,44 @@ func applyIncomeFloors(pool []RankedProperty, risk RiskTolerance) []RankedProper
 // ADR-090 Phase E: added "growth" configType (Appreciation strategy only).
 // ADR-091: added "pinned" configType (user-selected evaluations / memos).
 //
-// Label matrix:
+// Label matrix (objective-first naming):
 //
-//	pinned   + any                   → "Your Selection"   (ADR-091: user-selected verbatim)
-//	growth   + any                   → "Growth"           (Phase E: price-biased pipeline)
-//	quality  + appreciation          → "Growth"           (when Growth pipeline not active)
-//	quality  + cash-flow             → "Quality-CF"
+//	pinned   + any                   → "Your Selection"      (ADR-091: user-selected verbatim)
+//	growth   + any                   → "Appreciation"        (Phase E: price-biased pipeline)
+//	quality  + appreciation          → "Appreciation"        (when Growth pipeline not active)
+//	quality  + cash-flow             → "Cash Flow"
 //	quality  + any                   → "Quality"
-//	income   + cash-flow + conserv.  → "Defensive Income"
-//	income   + conservative          → "Defensive"
-//	income   + any                   → "Income"
-//	balanced + risk-adjusted         → "Risk-Balanced"
+//	income   + cash-flow + conserv.  → "Conservative Income"
+//	income   + conservative          → "Conservative"
+//	income   + any                   → "High Yield"
+//	balanced + risk-adjusted         → "Risk-Adjusted"
 //	balanced + any                   → "Balanced"
 func GenerateLabel(configType string, strategy InvestmentStrategy, risk RiskTolerance) string {
 	switch configType {
 	case string(ConfigPinned): // ADR-091: user-selected properties (evaluations / memos)
 		return "Your Selection"
 	case string(ConfigGrowth): // Phase E: price-biased pipeline for Appreciation strategy
-		return "Growth"
+		return "Appreciation"
 	case string(ConfigQuality):
 		switch strategy {
 		case StrategyAppreciation:
-			return "Growth" // Quality cohort with Appreciation modifier (when Growth not active)
+			return "Appreciation" // Quality cohort with Appreciation modifier (when Growth not active)
 		case StrategyCashFlow:
-			return "Quality-CF"
+			return "Cash Flow"
 		default:
 			return "Quality"
 		}
 	case string(ConfigIncome):
 		if strategy == StrategyCashFlow && risk == RiskConservative {
-			return "Defensive Income"
+			return "Conservative Income"
 		}
 		if risk == RiskConservative {
-			return "Defensive"
+			return "Conservative"
 		}
-		return "Income"
+		return "High Yield"
 	case string(ConfigBalanced):
 		if strategy == StrategyRiskAdjusted {
-			return "Risk-Balanced"
+			return "Risk-Adjusted"
 		}
 		return "Balanced"
 	default:

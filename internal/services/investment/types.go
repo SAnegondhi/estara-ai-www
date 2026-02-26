@@ -378,7 +378,7 @@ const (
 // ADR-091: ConfigPinned holds user-selected properties verbatim (no ranking filter applied).
 type PropertyCohort struct {
 	Properties []RankedProperty
-	Label      string     // e.g. "Quality", "Income", "Balanced", "Defensive Income", "Growth", "Your Selection"
+	Label      string     // e.g. "Quality", "High Yield", "Balanced", "Conservative Income", "Appreciation", "Your Selection"
 	ConfigType ConfigType // see ConfigQuality, ConfigIncome, ConfigBalanced, ConfigGrowth, ConfigPinned
 }
 

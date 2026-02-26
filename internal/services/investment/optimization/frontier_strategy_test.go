@@ -309,10 +309,10 @@ func TestBuildCohorts_LabelsSensitiveToStrategyAndRisk(t *testing.T) {
 		wantIncome  string
 		wantBalance string
 	}{
-		{investment.StrategyAppreciation, investment.RiskModerate, "Growth", "Income", "Balanced"},
-		{investment.StrategyCashFlow, investment.RiskConservative, "Quality-CF", "Defensive Income", "Balanced"},
-		{investment.StrategyRiskAdjusted, investment.RiskModerate, "Quality", "Income", "Risk-Balanced"},
-		{investment.StrategyBalanced, investment.RiskModerate, "Quality", "Income", "Balanced"},
+		{investment.StrategyAppreciation, investment.RiskModerate, "Appreciation", "High Yield", "Balanced"},
+		{investment.StrategyCashFlow, investment.RiskConservative, "Cash Flow", "Conservative Income", "Balanced"},
+		{investment.StrategyRiskAdjusted, investment.RiskModerate, "Quality", "High Yield", "Risk-Adjusted"},
+		{investment.StrategyBalanced, investment.RiskModerate, "Quality", "High Yield", "Balanced"},
 	}
 
 	for _, tc := range cases {
@@ -557,19 +557,19 @@ func TestGenerateLabel_DirectMatrix(t *testing.T) {
 		want       string
 	}{
 		// Quality cohort
-		{"quality", investment.StrategyAppreciation, investment.RiskModerate, "Growth"},
-		{"quality", investment.StrategyAppreciation, investment.RiskConservative, "Growth"},
-		{"quality", investment.StrategyCashFlow, investment.RiskModerate, "Quality-CF"},
-		{"quality", investment.StrategyCashFlow, investment.RiskConservative, "Quality-CF"},
+		{"quality", investment.StrategyAppreciation, investment.RiskModerate, "Appreciation"},
+		{"quality", investment.StrategyAppreciation, investment.RiskConservative, "Appreciation"},
+		{"quality", investment.StrategyCashFlow, investment.RiskModerate, "Cash Flow"},
+		{"quality", investment.StrategyCashFlow, investment.RiskConservative, "Cash Flow"},
 		{"quality", investment.StrategyBalanced, investment.RiskModerate, "Quality"},
 		{"quality", investment.StrategyRiskAdjusted, investment.RiskAggressive, "Quality"},
 		// Income cohort
-		{"income", investment.StrategyCashFlow, investment.RiskConservative, "Defensive Income"},
-		{"income", investment.StrategyBalanced, investment.RiskConservative, "Defensive"},
-		{"income", investment.StrategyBalanced, investment.RiskModerate, "Income"},
-		{"income", investment.StrategyAppreciation, investment.RiskAggressive, "Income"},
+		{"income", investment.StrategyCashFlow, investment.RiskConservative, "Conservative Income"},
+		{"income", investment.StrategyBalanced, investment.RiskConservative, "Conservative"},
+		{"income", investment.StrategyBalanced, investment.RiskModerate, "High Yield"},
+		{"income", investment.StrategyAppreciation, investment.RiskAggressive, "High Yield"},
 		// Balanced cohort
-		{"balanced", investment.StrategyRiskAdjusted, investment.RiskModerate, "Risk-Balanced"},
+		{"balanced", investment.StrategyRiskAdjusted, investment.RiskModerate, "Risk-Adjusted"},
 		{"balanced", investment.StrategyBalanced, investment.RiskModerate, "Balanced"},
 		{"balanced", investment.StrategyCashFlow, investment.RiskConservative, "Balanced"},
 	}
@@ -646,14 +646,14 @@ func TestBuildCohorts_AppreciationUsesGrowthCohort(t *testing.T) {
 	props := buildDiverseProperties()
 	const budget = 2_000_000
 
-	// Appreciation strategy → primary cohort should be "Growth" with ConfigType "growth"
+	// Appreciation strategy → primary cohort should be "Appreciation" with ConfigType "growth"
 	apprCohorts := investment.BuildCohorts(props, nil, investment.StrategyAppreciation, investment.RiskModerate, budget, testMortgageRate, testDownPayment)
 	if len(apprCohorts) < 3 {
 		t.Fatalf("Appreciation: expected ≥3 cohorts, got %d", len(apprCohorts))
 	}
 	primary := apprCohorts[0]
-	if primary.Label != "Growth" {
-		t.Errorf("Appreciation primary cohort label=%q; want %q", primary.Label, "Growth")
+	if primary.Label != "Appreciation" {
+		t.Errorf("Appreciation primary cohort label=%q; want %q", primary.Label, "Appreciation")
 	}
 	if primary.ConfigType != investment.ConfigGrowth {
 		t.Errorf("Appreciation primary cohort ConfigType=%q; want %q", primary.ConfigType, investment.ConfigGrowth)
@@ -753,7 +753,7 @@ func TestGrowthIncomeJaccard(t *testing.T) {
 	}
 }
 
-// TestGenerateLabel_GrowthCohortType verifies that GenerateLabel returns "Growth" for
+// TestGenerateLabel_GrowthCohortType verifies that GenerateLabel returns "Appreciation" for
 // the "growth" configType regardless of strategy or risk — Phase E extension of TestGenerateLabel_DirectMatrix.
 func TestGenerateLabel_GrowthCohortType(t *testing.T) {
 	for _, strat := range []investment.InvestmentStrategy{
@@ -764,10 +764,10 @@ func TestGenerateLabel_GrowthCohortType(t *testing.T) {
 			investment.RiskConservative, investment.RiskModerate, investment.RiskAggressive,
 		} {
 			got := investment.GenerateLabel(string(investment.ConfigGrowth), strat, risk)
-			if got != "Growth" {
-				t.Errorf("GenerateLabel(growth, %v, %v)=%q; want %q", strat, risk, got, "Growth")
+			if got != "Appreciation" {
+				t.Errorf("GenerateLabel(growth, %v, %v)=%q; want %q", strat, risk, got, "Appreciation")
 			}
 		}
 	}
-	t.Log("✅ GenerateLabel returns 'Growth' for ConfigGrowth across all strategy×risk combinations")
+	t.Log("✅ GenerateLabel returns 'Appreciation' for ConfigGrowth across all strategy×risk combinations")
 }
