@@ -1,9 +1,12 @@
 package admin
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -13,6 +16,13 @@ import (
 	"github.com/estara-ai/www/internal/services/cronjoborgclient"
 	"github.com/estara-ai/www/pkg/httputil"
 )
+
+// generateCronID returns a random hex ID for new cron job configs.
+func generateCronID() string {
+	b := make([]byte, 12)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
 
 // CronJobResponse is a JSON-safe representation of a cron job config.
 type CronJobResponse struct {
@@ -504,6 +514,274 @@ type cronEndpointResult struct {
 	Endpoint   string  `json:"endpoint"`
 	Status     string  `json:"status"`     // "ok" | "not_found" | "error"
 	HTTPStatus *int    `json:"httpStatus"`
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 2: CRUD + server discovery (ADR-099)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// CronJobFormRequest is the body for create/update cron job config.
+type CronJobFormRequest struct {
+	Name        string `json:"name" validate:"required,max=100"`
+	Description string `json:"description"`
+	Schedule    string `json:"schedule" validate:"required"`
+	Endpoint    string `json:"endpoint" validate:"required"`
+	IsEnabled   bool   `json:"isEnabled"`
+	TimeoutMs   int32  `json:"timeoutMs"`
+	MaxFailures int32  `json:"maxFailures"`
+}
+
+// cronDiscoveredRoute is a single route found by chi.Walk.
+type cronDiscoveredRoute struct {
+	Method   string `json:"method"`
+	Pattern  string `json:"pattern"`
+	InDB     bool   `json:"inDb"`
+	JobID    string `json:"jobId,omitempty"`
+	JobName  string `json:"jobName,omitempty"`
+}
+
+// DiscoverCronJobs walks the chi router to return all /api/cron/* routes,
+// annotated with whether each exists in the local DB.
+// GET /api/admin/cron-jobs/discover
+func (h *Handler) DiscoverCronJobs(w http.ResponseWriter, r *http.Request) {
+	if h.router == nil {
+		httputil.Error(w, http.StatusServiceUnavailable, "router not available")
+		return
+	}
+
+	ctx := r.Context()
+	q := h.store.Q()
+
+	localJobs, err := q.ListCronJobConfigs(ctx)
+	if err != nil {
+		h.logger.Error("discover: list local jobs", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, "failed to list cron jobs")
+		return
+	}
+
+	// Index local jobs by endpoint for O(1) lookup.
+	localByEndpoint := make(map[string]queries.CronJobConfig, len(localJobs))
+	for _, lj := range localJobs {
+		localByEndpoint[lj.Endpoint] = lj
+	}
+
+	var discovered []cronDiscoveredRoute
+	seenPaths := make(map[string]bool)
+
+	_ = chi.Walk(h.router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		if !strings.HasPrefix(route, "/api/cron") {
+			return nil
+		}
+		// Deduplicate (chi may emit same route with multiple methods)
+		key := method + ":" + route
+		if seenPaths[key] {
+			return nil
+		}
+		seenPaths[key] = true
+
+		entry := cronDiscoveredRoute{
+			Method:  method,
+			Pattern: route,
+		}
+		if lj, ok := localByEndpoint[route]; ok {
+			entry.InDB = true
+			entry.JobID = lj.ID
+			entry.JobName = lj.Name
+		}
+		discovered = append(discovered, entry)
+		return nil
+	})
+
+	// Build reverse: DB entries whose endpoint doesn't match any server route.
+	serverRoutes := make(map[string]bool)
+	for _, d := range discovered {
+		serverRoutes[d.Pattern] = true
+	}
+
+	var orphaned []CronJobResponse
+	for _, lj := range localJobs {
+		if !serverRoutes[lj.Endpoint] {
+			orphaned = append(orphaned, cronJobToResponse(lj))
+		}
+	}
+
+	httputil.Success(w, map[string]any{
+		"routes":   discovered,
+		"orphaned": orphaned,
+	})
+}
+
+// CreateCronJob creates a new cron job config entry.
+// POST /api/admin/cron-jobs/
+func (h *Handler) CreateCronJob(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var req CronJobFormRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.BadRequest(w, "invalid request body")
+		return
+	}
+	if err := h.validate.Struct(req); err != nil {
+		httputil.BadRequest(w, err.Error())
+		return
+	}
+	if req.TimeoutMs <= 0 {
+		req.TimeoutMs = 60000
+	}
+	if req.MaxFailures <= 0 {
+		req.MaxFailures = 3
+	}
+
+	// Soft-check: probe the endpoint (404 = warning, not block).
+	endpointStatus := h.probeEndpoint(req.Endpoint)
+
+	id := generateCronID()
+	q := h.store.Q()
+	config, err := q.CreateCronJobConfig(ctx, queries.CreateCronJobConfigParams{
+		ID:          id,
+		Name:        req.Name,
+		Description: req.Description,
+		Schedule:    req.Schedule,
+		Endpoint:    req.Endpoint,
+		IsEnabled:   req.IsEnabled,
+		TimeoutMs:   req.TimeoutMs,
+		MaxFailures: req.MaxFailures,
+	})
+	if err != nil {
+		h.logger.Error("create cron job: insert", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, "failed to create cron job")
+		return
+	}
+
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "CRON_CREATE", "cron_job", id, map[string]any{
+		"name":           req.Name,
+		"endpoint":       req.Endpoint,
+		"endpointStatus": endpointStatus,
+	})
+
+	httputil.Success(w, map[string]any{
+		"job":            cronJobToResponse(config),
+		"endpointStatus": endpointStatus,
+	})
+}
+
+// UpdateCronJob updates an existing cron job config.
+// PUT /api/admin/cron-jobs/{id}
+func (h *Handler) UpdateCronJob(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	jobID := chi.URLParam(r, "id")
+	if jobID == "" {
+		httputil.BadRequest(w, "id is required")
+		return
+	}
+
+	var req CronJobFormRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.BadRequest(w, "invalid request body")
+		return
+	}
+	if err := h.validate.Struct(req); err != nil {
+		httputil.BadRequest(w, err.Error())
+		return
+	}
+	if req.TimeoutMs <= 0 {
+		req.TimeoutMs = 60000
+	}
+	if req.MaxFailures <= 0 {
+		req.MaxFailures = 3
+	}
+
+	// Soft-check: probe the endpoint.
+	endpointStatus := h.probeEndpoint(req.Endpoint)
+
+	q := h.store.Q()
+	config, err := q.UpdateCronJobConfig(ctx, queries.UpdateCronJobConfigParams{
+		ID:          jobID,
+		Name:        req.Name,
+		Description: req.Description,
+		Schedule:    req.Schedule,
+		Endpoint:    req.Endpoint,
+		IsEnabled:   req.IsEnabled,
+		TimeoutMs:   req.TimeoutMs,
+		MaxFailures: req.MaxFailures,
+	})
+	if err != nil {
+		h.logger.Error("update cron job: update", "error", err, "job_id", jobID)
+		httputil.Error(w, http.StatusInternalServerError, "failed to update cron job")
+		return
+	}
+
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "CRON_UPDATE", "cron_job", jobID, map[string]any{
+		"name":           req.Name,
+		"endpoint":       req.Endpoint,
+		"endpointStatus": endpointStatus,
+	})
+
+	httputil.Success(w, map[string]any{
+		"job":            cronJobToResponse(config),
+		"endpointStatus": endpointStatus,
+	})
+}
+
+// DeleteCronJob removes a cron job config from the local DB (does NOT delete
+// from cron-job.org — admin should disable/delete there separately).
+// DELETE /api/admin/cron-jobs/{id}
+func (h *Handler) DeleteCronJob(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	jobID := chi.URLParam(r, "id")
+	if jobID == "" {
+		httputil.BadRequest(w, "id is required")
+		return
+	}
+
+	q := h.store.Q()
+	// Fetch before delete for audit log.
+	existing, err := q.GetCronJobConfigByID(ctx, jobID)
+	if err != nil {
+		httputil.Error(w, http.StatusNotFound, "cron job not found")
+		return
+	}
+
+	if err := q.DeleteCronJobConfig(ctx, jobID); err != nil {
+		h.logger.Error("delete cron job: delete", "error", err, "job_id", jobID)
+		httputil.Error(w, http.StatusInternalServerError, "failed to delete cron job")
+		return
+	}
+
+	h.logAdminAudit(ctx, r, "ADMIN_USER", "CRON_DELETE", "cron_job", jobID, map[string]any{
+		"name":     existing.Name,
+		"endpoint": existing.Endpoint,
+	})
+
+	httputil.Success(w, map[string]any{"deleted": true, "id": jobID})
+}
+
+// probeEndpoint sends a GET to the local server endpoint and returns a status string.
+// Returns "ok", "not_found", or "error". Hard 5-second timeout, non-blocking.
+func (h *Handler) probeEndpoint(endpoint string) string {
+	port := h.cfg.Server.Port
+	if port == 0 {
+		port = 3000
+	}
+	url := fmt.Sprintf("http://localhost:%d%s", port, endpoint)
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "error"
+	}
+	req.Header.Set("X-Cron-Secret", h.cfg.Cron.Secret)
+	resp, err := client.Do(req)
+	if err != nil {
+		return "error"
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return "not_found"
+	}
+	if resp.StatusCode >= 500 {
+		return "error"
+	}
+	return "ok"
 }
 
 // CheckCronEndpoints probes each /api/cron/* route with a GET request to verify

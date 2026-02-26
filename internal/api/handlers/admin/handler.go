@@ -39,6 +39,7 @@ type Handler struct {
 	importer  *importer.Service
 	billing   *billingService.StripeClient
 	whitelist *whitelist.Service
+	router    chi.Router
 }
 
 // SetBilling injects the Stripe billing client into the handler.
@@ -49,6 +50,11 @@ func (h *Handler) SetBilling(b *billingService.StripeClient) {
 // SetWhitelist injects the whitelist service for admin management.
 func (h *Handler) SetWhitelist(wl *whitelist.Service) {
 	h.whitelist = wl
+}
+
+// SetRouter injects the chi router for server-side route discovery (ADR-099).
+func (h *Handler) SetRouter(r chi.Router) {
+	h.router = r
 }
 
 // NewHandler creates a new admin handler

@@ -236,6 +236,22 @@ WHERE "cronJobId" = $1;
 DELETE FROM cron_job_runs
 WHERE "startedAt" < NOW() - ($1 || ' days')::INTERVAL;
 
+-- name: UpdateCronJobConfig :one
+UPDATE cron_job_configs SET
+    name = $2,
+    description = $3,
+    schedule = $4,
+    endpoint = $5,
+    "isEnabled" = $6,
+    "timeoutMs" = $7,
+    "maxFailures" = $8,
+    "updatedAt" = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: DeleteCronJobConfig :exec
+DELETE FROM cron_job_configs WHERE id = $1;
+
 -- name: UpdateCronJobExternalID :exec
 UPDATE cron_job_configs SET external_job_id = $2, "updatedAt" = NOW() WHERE id = $1;
 

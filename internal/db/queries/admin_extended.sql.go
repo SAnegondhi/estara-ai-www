@@ -430,6 +430,15 @@ func (q *Queries) CreateVendorContract(ctx context.Context, arg CreateVendorCont
 	return i, err
 }
 
+const DeleteCronJobConfig = `-- name: DeleteCronJobConfig :exec
+DELETE FROM cron_job_configs WHERE id = $1
+`
+
+func (q *Queries) DeleteCronJobConfig(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, DeleteCronJobConfig, id)
+	return err
+}
+
 const DeleteOldCronJobRuns = `-- name: DeleteOldCronJobRuns :exec
 DELETE FROM cron_job_runs
 WHERE "startedAt" < NOW() - ($1 || ' days')::INTERVAL
@@ -1048,6 +1057,70 @@ type ToggleCronJobConfigParams struct {
 
 func (q *Queries) ToggleCronJobConfig(ctx context.Context, arg ToggleCronJobConfigParams) (CronJobConfig, error) {
 	row := q.db.QueryRow(ctx, ToggleCronJobConfig, arg.ID, arg.IsEnabled)
+	var i CronJobConfig
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Schedule,
+		&i.Endpoint,
+		&i.IsRequired,
+		&i.IsConfigured,
+		&i.IsEnabled,
+		&i.LastRun,
+		&i.LastRunStatus,
+		&i.LastRunDuration,
+		&i.LastRunError,
+		&i.ConsecutiveFailures,
+		&i.AlertOnFailure,
+		&i.MaxFailures,
+		&i.TimeoutMs,
+		&i.TotalRuns,
+		&i.SuccessfulRuns,
+		&i.FailedRuns,
+		&i.ExternalJobID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const UpdateCronJobConfig = `-- name: UpdateCronJobConfig :one
+UPDATE cron_job_configs SET
+    name = $2,
+    description = $3,
+    schedule = $4,
+    endpoint = $5,
+    "isEnabled" = $6,
+    "timeoutMs" = $7,
+    "maxFailures" = $8,
+    "updatedAt" = NOW()
+WHERE id = $1
+RETURNING id, name, description, schedule, endpoint, "isRequired", "isConfigured", "isEnabled", "lastRun", "lastRunStatus", "lastRunDuration", "lastRunError", "consecutiveFailures", "alertOnFailure", "maxFailures", "timeoutMs", "totalRuns", "successfulRuns", "failedRuns", external_job_id, "createdAt", "updatedAt"
+`
+
+type UpdateCronJobConfigParams struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Schedule    string `json:"schedule"`
+	Endpoint    string `json:"endpoint"`
+	IsEnabled   bool   `json:"isEnabled"`
+	TimeoutMs   int32  `json:"timeoutMs"`
+	MaxFailures int32  `json:"maxFailures"`
+}
+
+func (q *Queries) UpdateCronJobConfig(ctx context.Context, arg UpdateCronJobConfigParams) (CronJobConfig, error) {
+	row := q.db.QueryRow(ctx, UpdateCronJobConfig,
+		arg.ID,
+		arg.Name,
+		arg.Description,
+		arg.Schedule,
+		arg.Endpoint,
+		arg.IsEnabled,
+		arg.TimeoutMs,
+		arg.MaxFailures,
+	)
 	var i CronJobConfig
 	err := row.Scan(
 		&i.ID,

@@ -225,6 +225,7 @@ type Querier interface {
 	DeleteCacheOlderThan(ctx context.Context, createdat pgtype.Timestamp) (int64, error)
 	// Admin Contact Submission Management Queries
 	DeleteContactSubmission(ctx context.Context, id string) error
+	DeleteCronJobConfig(ctx context.Context, id string) error
 	// Admin Waitlist (Early Access) Management Queries
 	DeleteEarlyAccess(ctx context.Context, id string) error
 	DeleteEmailVerificationCodeByID(ctx context.Context, id string) error
@@ -711,6 +712,7 @@ type Querier interface {
 	UpdateCacheAccessByUserAndKey(ctx context.Context, arg UpdateCacheAccessByUserAndKeyParams) error
 	UpdateContactAdmin(ctx context.Context, arg UpdateContactAdminParams) (UpdateContactAdminRow, error)
 	UpdateContactSubmissionStatus(ctx context.Context, arg UpdateContactSubmissionStatusParams) (UpdateContactSubmissionStatusRow, error)
+	UpdateCronJobConfig(ctx context.Context, arg UpdateCronJobConfigParams) (CronJobConfig, error)
 	UpdateCronJobExternalID(ctx context.Context, arg UpdateCronJobExternalIDParams) error
 	UpdateCronJobLastRun(ctx context.Context, arg UpdateCronJobLastRunParams) error
 	// ADR-087 Phase 7: Data Source Version Tracking Queries

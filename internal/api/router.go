@@ -168,6 +168,9 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		handlers.Admin.SetBilling(stripeClient)
 	}
 
+	// Wire chi router into admin handler for server-side route discovery (ADR-099 Phase 2)
+	handlers.Admin.SetRouter(r)
+
 	// Wire Decision Memo service into discover handler (ADR-079)
 	if svc.JobQueue != nil {
 		handlers.Discover.SetMemoService(svc.JobQueue)
@@ -688,11 +691,16 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		// Cron Job Management
 		r.Route("/cron-jobs", func(r chi.Router) {
 			r.Get("/", handlers.Admin.ListCronJobs)
+			r.Post("/", handlers.Admin.CreateCronJob)
 			// cron-job.org integration (ADR-099) — must be before /{id} to avoid routing conflicts
 			r.Get("/sync-status", handlers.Admin.GetSyncStatus)
 			r.Post("/sync", handlers.Admin.SyncCronJobs)
 			r.Post("/bulk-toggle", handlers.Admin.BulkToggleCronJobs)
 			r.Post("/check-endpoints", handlers.Admin.CheckCronEndpoints)
+			// ADR-099 Phase 2: server discovery + CRUD
+			r.Get("/discover", handlers.Admin.DiscoverCronJobs)
+			r.Put("/{id}", handlers.Admin.UpdateCronJob)
+			r.Delete("/{id}", handlers.Admin.DeleteCronJob)
 			r.Get("/{id}/runs", handlers.Admin.GetCronJobRuns)
 			r.Post("/{id}/toggle", handlers.Admin.ToggleCronJob)
 			r.Post("/{id}/trigger", handlers.Admin.TriggerCronJob)
