@@ -565,7 +565,7 @@ func (h *Handler) DiscoverCronJobs(w http.ResponseWriter, r *http.Request) {
 		localByEndpoint[lj.Endpoint] = lj
 	}
 
-	var discovered []cronDiscoveredRoute
+	discovered := make([]cronDiscoveredRoute, 0)
 	seenPaths := make(map[string]bool)
 
 	_ = chi.Walk(h.router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
@@ -598,7 +598,7 @@ func (h *Handler) DiscoverCronJobs(w http.ResponseWriter, r *http.Request) {
 		serverRoutes[d.Pattern] = true
 	}
 
-	var orphaned []CronJobResponse
+	orphaned := make([]CronJobResponse, 0)
 	for _, lj := range localJobs {
 		if !serverRoutes[lj.Endpoint] {
 			orphaned = append(orphaned, cronJobToResponse(lj))
