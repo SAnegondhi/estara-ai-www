@@ -141,6 +141,10 @@ func NewDB(ctx context.Context, cfg *config.Config) (*DB, error) {
 			slog.Warn("failed to connect to market database", "error", err)
 		} else {
 			db.Market = marketPool
+			// Ensure market schema exists (idempotent — uses CREATE IF NOT EXISTS)
+			if err := RunMarketSchema(ctx, marketPool); err != nil {
+				slog.Warn("market schema init warning", "error", err)
+			}
 		}
 	}
 
