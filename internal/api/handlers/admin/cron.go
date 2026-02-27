@@ -303,9 +303,9 @@ func (h *Handler) TriggerCronJob(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// cronOrgClient returns a cron-job.org API client using the configured CRON_SECRET.
+// cronOrgClient returns a cron-job.org API client using the configured CRON_API_KEY.
 func (h *Handler) cronOrgClient() *cronjoborgclient.Client {
-	return cronjoborgclient.New(h.cfg.Cron.Secret)
+	return cronjoborgclient.New(h.cfg.Cron.ApiKey)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -419,6 +419,7 @@ func (h *Handler) SyncCronJobs(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			h.logger.Warn("sync: create job failed", "job", lj.Name, "error", err)
 			failures = append(failures, fmt.Sprintf("%s: %v", lj.Name, err))
+			time.Sleep(15 * time.Second) // cron-job.org allows max 5 creations/min; back off on any error
 			continue
 		}
 
@@ -431,6 +432,7 @@ func (h *Handler) SyncCronJobs(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		created++
+		time.Sleep(13 * time.Second) // 4/min — safely under the 5/min creation rate limit
 	}
 
 	h.logAdminAudit(ctx, r, "ADMIN_USER", "CRON_SYNC", "cron_jobs", "", map[string]any{

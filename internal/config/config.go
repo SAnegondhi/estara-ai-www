@@ -159,6 +159,7 @@ type MarketConfig struct {
 // CronConfig holds cron job configuration
 type CronConfig struct {
 	Secret string `mapstructure:"CRON_SECRET"`
+	ApiKey string `mapstructure:"CRON_API_KEY"`
 }
 
 // AdminConfig holds admin configuration
@@ -292,6 +293,7 @@ func Load() (*Config, error) {
 	// Cron config
 	cfg.Cron = CronConfig{
 		Secret: v.GetString("CRON_SECRET"),
+		ApiKey: v.GetString("CRON_API_KEY"),
 	}
 
 	// Admin config

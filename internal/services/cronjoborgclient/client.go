@@ -1,6 +1,6 @@
 // Package cronjoborgclient provides a REST API client for cron-job.org.
-// Authentication uses the CRON_SECRET as a Bearer token (same value used
-// as X-Cron-Secret on inbound cron requests).
+// Authentication uses CRON_API_KEY as a Bearer token (the cron-job.org account
+// API key — distinct from CRON_SECRET which authenticates inbound cron requests).
 package cronjoborgclient
 
 import (
@@ -29,7 +29,7 @@ type Client struct {
 }
 
 // New creates a new cron-job.org client. apiKey is the Bearer token
-// (maps to CRON_SECRET in .env.local).
+// (maps to CRON_API_KEY in .env.local).
 func New(apiKey string) *Client {
 	return &Client{
 		apiKey: apiKey,
@@ -76,12 +76,7 @@ type createJobBody struct {
 }
 
 type extData struct {
-	Headers []headerKV `json:"headers"`
-}
-
-type headerKV struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
+	Headers map[string]string `json:"headers"`
 }
 
 // createJobResponse is the response body from PUT /jobs.
@@ -101,9 +96,7 @@ func (c *Client) CreateJob(url string, schedule JobSchedule, title, secret strin
 			RequestMethod: 1, // POST
 			Title:         title,
 			ExtendedData: extData{
-				Headers: []headerKV{
-					{Name: "X-Cron-Secret", Value: secret},
-				},
+				Headers: map[string]string{"X-Cron-Secret": secret},
 			},
 		},
 	}
