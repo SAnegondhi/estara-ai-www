@@ -33,9 +33,11 @@ type parseDocumentResponse struct {
 	Sqft         *int     `json:"sqft"`
 	YearBuilt    *int     `json:"yearBuilt"`
 	Units        *int     `json:"units"`
-	AskingPrice  *float64 `json:"askingPrice"`
-	BrokerRent   *float64 `json:"brokerRent"`      // Monthly rent, broker-stated
-	BrokerCapRate *float64 `json:"brokerCapRate"`  // As a decimal (e.g. 0.065 for 6.5%)
+	AskingPrice       *float64 `json:"askingPrice"`
+	BrokerRentCurrent  *float64 `json:"brokerRentCurrent"`  // Current in-place monthly rent (broker-stated)
+	BrokerRentProForma *float64 `json:"brokerRentProForma"` // Pro forma monthly rent (broker-projected)
+	BrokerRentMarket   *float64 `json:"brokerRentMarket"`   // Market monthly rent (broker-cited)
+	BrokerCapRate      *float64 `json:"brokerCapRate"`      // As a decimal (e.g. 0.065 for 6.5%)
 	VacancyRate  *float64 `json:"vacancyRate"`     // As a decimal
 	// Financing
 	DownPaymentPct *float64 `json:"downPaymentPct"` // As a decimal (e.g. 0.20)
@@ -133,37 +135,49 @@ func (h *Handler) ParseDocument(w http.ResponseWriter, r *http.Request) {
 const extractionSystemPrompt = `You are a real estate data extraction assistant. Your only job is to extract structured property data from broker offering memoranda (OMs), pitch decks, and property listings.
 
 Rules:
-- Extract only what is explicitly stated in the document — never infer, calculate, or assume.
-- Return null for fields not found.
+- Extract ONLY what is explicitly stated in the document — never infer, calculate, estimate, or assume.
+- Return null for any field not found. Do NOT guess or derive values from other fields.
 - Do not calculate cap rate from rent and price — only extract if explicitly stated as a cap rate.
 - For rent, extract the monthly figure. If stated as annual, divide by 12.
+- Rent disambiguation: many OMs contain multiple rent figures (current in-place, pro forma projected, market comparable). You MUST return them in separate fields — never conflate or average them.
+  - brokerRentCurrent: the actual current rent being collected today (in-place rents)
+  - brokerRentProForma: the broker's projected future rent after renovations or lease-up
+  - brokerRentMarket: market-rate comparable rents cited (not current, not projected — market context)
+  - If the document has only one rent figure and does not distinguish type, put it in brokerRentCurrent and leave the others null.
+- Prose-only documents: some OMs are written as narrative text with no financial tables (common for NNN commercial). For these, extract only what is explicitly stated in prose. Return null for any field not mentioned. Do NOT hallucinate expense breakdowns, unit mixes, or rent rolls that are not present.
 - Confidence levels: "high" = exact explicit statement, "medium" = clearly implied from context, "low" = uncertain or ambiguous.
 - Return ONLY valid JSON with no markdown, no explanation, no prose.`
 
 const extractionUserPrompt = `Extract the following fields from this broker OM document. Return a single JSON object with exactly these keys. Use null for any field not found.
 
+CRITICAL: Return null for any field not explicitly present in the document. Do not estimate, calculate, or infer missing values.
+
 {
-  "address": string | null,           // Street address only (no city/state)
+  "address": string | null,            // Street address only (no city/state)
   "city": string | null,
-  "state": string | null,             // 2-letter abbreviation
+  "state": string | null,              // 2-letter abbreviation
   "zip": string | null,
-  "propertyType": string | null,      // One of: sfh, multifamily, condo, townhouse, commercial, nnn, other
+  "propertyType": string | null,       // One of: sfh, multifamily, condo, townhouse, commercial, nnn, other
   "beds": number | null,
   "baths": number | null,
   "sqft": number | null,
   "yearBuilt": number | null,
-  "units": number | null,             // Number of rental units (use 1 for SFH)
-  "askingPrice": number | null,       // In USD, numeric only
-  "brokerRent": number | null,        // Monthly rent in USD, broker-stated
-  "brokerCapRate": number | null,     // As decimal (e.g., 0.065 for 6.5%)
-  "vacancyRate": number | null,       // As decimal (e.g., 0.05 for 5%)
-  "downPaymentPct": number | null,    // As decimal (e.g., 0.25 for 25%)
-  "interestRate": number | null,      // As decimal (e.g., 0.0725 for 7.25%)
-  "financingType": string | null,     // One of: conventional, cash, other
-  "confidence": {                     // Confidence for each extracted (non-null) field
+  "units": number | null,              // Number of rental units (use 1 for SFH)
+  "askingPrice": number | null,        // In USD, numeric only
+  "brokerRentCurrent": number | null,  // Current in-place monthly rent, broker-stated (NOT pro forma)
+  "brokerRentProForma": number | null, // Pro forma monthly rent after stabilization/renovation (null if not stated)
+  "brokerRentMarket": number | null,   // Market-rate comparable monthly rent cited in OM (null if not stated)
+  "brokerCapRate": number | null,      // As decimal (e.g., 0.065 for 6.5%)
+  "vacancyRate": number | null,        // As decimal (e.g., 0.05 for 5%)
+  "downPaymentPct": number | null,     // As decimal (e.g., 0.25 for 25%)
+  "interestRate": number | null,       // As decimal (e.g., 0.0725 for 7.25%)
+  "financingType": string | null,      // One of: conventional, cash, other
+  "confidence": {                      // Confidence for each extracted (non-null) field only
     "<fieldName>": "high" | "medium" | "low"
   }
-}`
+}
+
+If the document is a prose/narrative OM without structured financial tables (e.g., a commercial NNN summary), extract only what is stated in the executive summary or narrative text. Return null for expense breakdowns, unit mixes, and rent rolls that are not present. The response must still be valid JSON.`
 
 // anthropicDocumentRequest is the raw Anthropic API request for document analysis.
 // We make a direct HTTP call here because the existing Client.Message struct uses
@@ -300,9 +314,11 @@ func (h *Handler) extractDocumentFields(ctx context.Context, fileBytes []byte, m
 		Sqft          *int               `json:"sqft"`
 		YearBuilt     *int               `json:"yearBuilt"`
 		Units         *int               `json:"units"`
-		AskingPrice   *float64           `json:"askingPrice"`
-		BrokerRent    *float64           `json:"brokerRent"`
-		BrokerCapRate *float64           `json:"brokerCapRate"`
+		AskingPrice        *float64           `json:"askingPrice"`
+		BrokerRentCurrent  *float64           `json:"brokerRentCurrent"`
+		BrokerRentProForma *float64           `json:"brokerRentProForma"`
+		BrokerRentMarket   *float64           `json:"brokerRentMarket"`
+		BrokerCapRate      *float64           `json:"brokerCapRate"`
 		VacancyRate   *float64           `json:"vacancyRate"`
 		DownPaymentPct *float64          `json:"downPaymentPct"`
 		InterestRate  *float64           `json:"interestRate"`
@@ -314,29 +330,32 @@ func (h *Handler) extractDocumentFields(ctx context.Context, fileBytes []byte, m
 	}
 
 	// Check if anything was extracted.
-	extracted := raw.Address != nil || raw.AskingPrice != nil || raw.BrokerRent != nil ||
-		raw.City != nil || raw.Beds != nil || raw.Sqft != nil
+	extracted := raw.Address != nil || raw.AskingPrice != nil ||
+		raw.BrokerRentCurrent != nil || raw.BrokerRentProForma != nil || raw.BrokerRentMarket != nil ||
+		raw.City != nil || raw.Beds != nil || raw.Sqft != nil || raw.BrokerCapRate != nil
 
 	result := &parseDocumentResponse{
-		Address:       raw.Address,
-		City:          raw.City,
-		State:         raw.State,
-		Zip:           raw.Zip,
-		PropertyType:  raw.PropertyType,
-		Beds:          raw.Beds,
-		Baths:         raw.Baths,
-		Sqft:          raw.Sqft,
-		YearBuilt:     raw.YearBuilt,
-		Units:         raw.Units,
-		AskingPrice:   raw.AskingPrice,
-		BrokerRent:    raw.BrokerRent,
-		BrokerCapRate: raw.BrokerCapRate,
-		VacancyRate:   raw.VacancyRate,
-		DownPaymentPct: raw.DownPaymentPct,
-		InterestRate:  raw.InterestRate,
-		FinancingType: raw.FinancingType,
-		Confidence:    raw.Confidence,
-		Extracted:     extracted,
+		Address:            raw.Address,
+		City:               raw.City,
+		State:              raw.State,
+		Zip:                raw.Zip,
+		PropertyType:       raw.PropertyType,
+		Beds:               raw.Beds,
+		Baths:              raw.Baths,
+		Sqft:               raw.Sqft,
+		YearBuilt:          raw.YearBuilt,
+		Units:              raw.Units,
+		AskingPrice:        raw.AskingPrice,
+		BrokerRentCurrent:  raw.BrokerRentCurrent,
+		BrokerRentProForma: raw.BrokerRentProForma,
+		BrokerRentMarket:   raw.BrokerRentMarket,
+		BrokerCapRate:      raw.BrokerCapRate,
+		VacancyRate:        raw.VacancyRate,
+		DownPaymentPct:     raw.DownPaymentPct,
+		InterestRate:       raw.InterestRate,
+		FinancingType:      raw.FinancingType,
+		Confidence:         raw.Confidence,
+		Extracted:          extracted,
 	}
 	if !extracted {
 		result.Note = "We couldn't extract data from this document. Please fill in the fields manually."
