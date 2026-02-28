@@ -434,9 +434,9 @@ SELECT
     COUNT(*) FILTER (WHERE source = 'direct')                                                     AS source_direct,
     COUNT(*) FILTER (WHERE source = 'other')                                                      AS source_other,
     COALESCE((SELECT total_pipeline_value FROM prop_agg), 0)::double precision                    AS total_pipeline_value,
-    (SELECT weighted_avg_cap_rate FROM prop_agg)::double precision                                AS weighted_avg_cap_rate,
-    (SELECT weighted_avg_cap_rate_property_count FROM prop_agg)::bigint                           AS weighted_avg_cap_rate_property_count,
-    (SELECT total_properties_with_rent_data FROM prop_agg)::bigint                                AS total_properties_with_rent_data
+    COALESCE((SELECT weighted_avg_cap_rate FROM prop_agg), 0)::double precision                   AS weighted_avg_cap_rate,
+    COALESCE((SELECT weighted_avg_cap_rate_property_count FROM prop_agg), 0)::bigint              AS weighted_avg_cap_rate_property_count,
+    COALESCE((SELECT total_properties_with_rent_data FROM prop_agg), 0)::bigint                   AS total_properties_with_rent_data
 FROM pipeline_deals
 WHERE pipeline_deals.user_id = $1
 `
