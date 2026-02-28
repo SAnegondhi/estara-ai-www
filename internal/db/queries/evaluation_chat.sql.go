@@ -68,7 +68,7 @@ INSERT INTO evaluation_chat_sessions (
     id, user_id, property_ids, cached_property_ids,
     investor_profile, portfolio_snapshot, discovery_session_id, created_at, updated_at
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
-RETURNING id, user_id, property_ids, cached_property_ids, investor_profile, portfolio_snapshot, discovery_session_id, created_at, updated_at
+RETURNING id, user_id, property_ids, cached_property_ids, investor_profile, portfolio_snapshot, discovery_session_id, pipeline_deal_id, created_at, updated_at
 `
 
 type CreateEvaluationChatSessionParams struct {
@@ -101,6 +101,7 @@ func (q *Queries) CreateEvaluationChatSession(ctx context.Context, arg CreateEva
 		&i.InvestorProfile,
 		&i.PortfolioSnapshot,
 		&i.DiscoverySessionID,
+		&i.PipelineDealID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -236,7 +237,7 @@ func (q *Queries) ListEvaluationChatMessages(ctx context.Context, sessionID stri
 const ListEvaluationChatSessionsExtended = `-- name: ListEvaluationChatSessionsExtended :many
 SELECT
     s.id, s.user_id, s.property_ids, s.cached_property_ids, s.investor_profile, s.portfolio_snapshot,
-    s.discovery_session_id,
+    s.discovery_session_id, s.pipeline_deal_id,
     s.created_at, s.updated_at,
     (SELECT COUNT(*) FROM evaluation_chat_messages WHERE session_id = s.id) as message_count,
     (SELECT content FROM evaluation_chat_messages WHERE session_id = s.id ORDER BY created_at DESC LIMIT 1) as last_message_content,
@@ -263,6 +264,7 @@ type ListEvaluationChatSessionsExtendedRow struct {
 	InvestorProfile    []byte           `json:"investor_profile"`
 	PortfolioSnapshot  []byte           `json:"portfolio_snapshot"`
 	DiscoverySessionID pgtype.Text      `json:"discovery_session_id"`
+	PipelineDealID     pgtype.UUID      `json:"pipeline_deal_id"`
 	CreatedAt          pgtype.Timestamp `json:"created_at"`
 	UpdatedAt          pgtype.Timestamp `json:"updated_at"`
 	MessageCount       int64            `json:"message_count"`
@@ -289,6 +291,7 @@ func (q *Queries) ListEvaluationChatSessionsExtended(ctx context.Context, arg Li
 			&i.InvestorProfile,
 			&i.PortfolioSnapshot,
 			&i.DiscoverySessionID,
+			&i.PipelineDealID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.MessageCount,

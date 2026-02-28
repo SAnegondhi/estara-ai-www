@@ -7,6 +7,7 @@ package queries
 import (
 	"context"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -21,6 +22,8 @@ type Querier interface {
 	// Only fetch fields needed for preview generation (not full metricsData/narrativeData)
 	BatchGetAnalysisCacheByKeys(ctx context.Context, keys []string) ([]BatchGetAnalysisCacheByKeysRow, error)
 	BulkToggleCronJobsByIDs(ctx context.Context, arg BulkToggleCronJobsByIDsParams) ([]CronJobConfig, error)
+	BumpPipelineDealActivity(ctx context.Context, pipelineDealID uuid.UUID) error
+	BumpPipelineDealMemoCount(ctx context.Context, id uuid.UUID) error
 	CancelIAPSubscriptions(ctx context.Context, userid string) error
 	CancelInsightAccess(ctx context.Context, id string) (InsightAccess, error)
 	CancelSubscription(ctx context.Context, arg CancelSubscriptionParams) error
@@ -167,6 +170,15 @@ type Querier interface {
 	CreatePasswordResetToken(ctx context.Context, arg CreatePasswordResetTokenParams) (PasswordResetToken, error)
 	// Password Setup Token Queries (ADR-085)
 	CreatePasswordSetupToken(ctx context.Context, arg CreatePasswordSetupTokenParams) (PasswordSetupToken, error)
+	// ADR-101: Investment Pipeline queries
+	// ============================================================
+	// PIPELINE DEALS
+	// ============================================================
+	CreatePipelineDeal(ctx context.Context, arg CreatePipelineDealParams) (PipelineDeal, error)
+	// ============================================================
+	// PIPELINE PROPERTIES
+	// ============================================================
+	CreatePipelineProperty(ctx context.Context, arg CreatePipelinePropertyParams) (PipelineProperty, error)
 	CreatePortfolioProperty(ctx context.Context, arg CreatePortfolioPropertyParams) (V2PortfolioProperty, error)
 	// Create a new portfolio snapshot
 	CreatePortfolioSnapshot(ctx context.Context, arg CreatePortfolioSnapshotParams) (V2PortfolioSnapshot, error)
@@ -252,6 +264,8 @@ type Querier interface {
 	DeleteOldestPropertyCache(ctx context.Context, limit int32) (int64, error)
 	DeletePasswordResetTokenByToken(ctx context.Context, token string) error
 	DeletePasswordResetTokensByUser(ctx context.Context, userid string) error
+	DeletePipelineDeal(ctx context.Context, arg DeletePipelineDealParams) (int64, error)
+	DeletePipelineProperty(ctx context.Context, arg DeletePipelinePropertyParams) (int64, error)
 	// Delete all snapshots for a user (for regeneration)
 	DeletePortfolioSnapshots(ctx context.Context, userID string) error
 	// Deletes all cache entries for a specific provider
@@ -417,6 +431,9 @@ type Querier interface {
 	GetPasswordResetTokensByUser(ctx context.Context, arg GetPasswordResetTokensByUserParams) ([]PasswordResetToken, error)
 	GetPasswordSetupToken(ctx context.Context, token string) (PasswordSetupToken, error)
 	GetPendingInvestorReports(ctx context.Context, limit int32) ([]InvestorReport, error)
+	GetPipelineDeal(ctx context.Context, arg GetPipelineDealParams) (PipelineDeal, error)
+	GetPipelineProperty(ctx context.Context, arg GetPipelinePropertyParams) (PipelineProperty, error)
+	GetPipelineStats(ctx context.Context, userID string) (GetPipelineStatsRow, error)
 	GetPortfolioPropertiesByIDs(ctx context.Context, arg GetPortfolioPropertiesByIDsParams) ([]V2PortfolioProperty, error)
 	GetPortfolioProperty(ctx context.Context, arg GetPortfolioPropertyParams) (V2PortfolioProperty, error)
 	// Portfolio Snapshots SQLC Queries
@@ -596,6 +613,8 @@ type Querier interface {
 	ListMarketAnalysisHistory(ctx context.Context, arg ListMarketAnalysisHistoryParams) ([]ListMarketAnalysisHistoryRow, error)
 	ListMarketHistory(ctx context.Context) ([]MarketHistory, error)
 	ListPendingEarlyAccess(ctx context.Context, limit int32) ([]EarlyAccess, error)
+	ListPipelineDeals(ctx context.Context, arg ListPipelineDealsParams) ([]PipelineDeal, error)
+	ListPipelineProperties(ctx context.Context, arg ListPipelinePropertiesParams) ([]PipelineProperty, error)
 	// Fetch most accessed reports (popular nationwide)
 	ListPopularReports(ctx context.Context, arg ListPopularReportsParams) ([]MarketAnalysisReport, error)
 	// V2 Portfolio Properties Queries
@@ -738,6 +757,9 @@ type Querier interface {
 	UpdateInvoicePaid(ctx context.Context, arg UpdateInvoicePaidParams) error
 	UpdateInvoiceStatus(ctx context.Context, arg UpdateInvoiceStatusParams) error
 	UpdateInvoiceStatusByStripeID(ctx context.Context, arg UpdateInvoiceStatusByStripeIDParams) error
+	UpdatePipelineDeal(ctx context.Context, arg UpdatePipelineDealParams) (PipelineDeal, error)
+	UpdatePipelineDealStatus(ctx context.Context, arg UpdatePipelineDealStatusParams) (PipelineDeal, error)
+	UpdatePipelineProperty(ctx context.Context, arg UpdatePipelinePropertyParams) (PipelineProperty, error)
 	UpdatePortfolioProperty(ctx context.Context, arg UpdatePortfolioPropertyParams) (V2PortfolioProperty, error)
 	// Updates access timestamp and increments access count
 	UpdatePropertyCacheAccess(ctx context.Context, cacheKey string) error

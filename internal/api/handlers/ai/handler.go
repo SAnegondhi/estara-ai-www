@@ -797,6 +797,13 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			// ADR-091: discovery session that supplied the property pool — used as
 			// discoverySeedSessionId when this chat session is the source for Frontier.
 			"discoverySessionId": row.DiscoverySessionID.String,
+			// ADR-101: pipeline deal context (empty string when not a Pipeline session)
+			"pipelineDealId": func() string {
+				if row.PipelineDealID.Valid {
+					return uuid.UUID(row.PipelineDealID.Bytes).String()
+				}
+				return ""
+			}(),
 		}
 
 		// Add last message if exists

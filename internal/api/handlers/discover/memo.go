@@ -234,6 +234,9 @@ type MemoHistoryEntry struct {
 	PropertyCount      int       `json:"propertyCount"`
 	Preview            string    `json:"preview"`
 	DiscoverySessionID string    `json:"discoverySessionId,omitempty"`
+	// ADR-101: present when memo was generated from a Pipeline deal
+	PipelineDealID   string `json:"pipelineDealId,omitempty"`
+	PipelineDealName string `json:"pipelineDealName,omitempty"`
 }
 
 // GetMemoHistory handles GET /api/v2/discover/decision-memo/history
@@ -285,6 +288,13 @@ func (h *Handler) GetMemoHistory(w http.ResponseWriter, r *http.Request) {
 				}
 				if sid, ok := meta["discoverySessionId"].(string); ok {
 					entry.DiscoverySessionID = sid
+				}
+				// ADR-101: present when memo was generated from a Pipeline deal
+				if pid, ok := meta["pipelineDealId"].(string); ok {
+					entry.PipelineDealID = pid
+				}
+				if pname, ok := meta["pipelineDealName"].(string); ok {
+					entry.PipelineDealName = pname
 				}
 			}
 		}

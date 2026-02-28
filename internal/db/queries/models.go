@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -482,6 +483,7 @@ type EvaluationChatSession struct {
 	InvestorProfile    []byte           `json:"investor_profile"`
 	PortfolioSnapshot  []byte           `json:"portfolio_snapshot"`
 	DiscoverySessionID pgtype.Text      `json:"discovery_session_id"`
+	PipelineDealID     pgtype.UUID      `json:"pipeline_deal_id"`
 	CreatedAt          pgtype.Timestamp `json:"created_at"`
 	UpdatedAt          pgtype.Timestamp `json:"updated_at"`
 }
@@ -655,6 +657,48 @@ type PasswordSetupToken struct {
 	ExpiresAt time.Time          `json:"expires_at"`
 	UsedAt    pgtype.Timestamptz `json:"used_at"`
 	CreatedAt time.Time          `json:"created_at"`
+}
+
+type PipelineDeal struct {
+	ID                uuid.UUID          `json:"id"`
+	UserID            string             `json:"user_id"`
+	Name              string             `json:"name"`
+	Source            string             `json:"source"`
+	Status            string             `json:"status"`
+	Notes             pgtype.Text        `json:"notes"`
+	PropertyCount     int32              `json:"property_count"`
+	MemoCount         int32              `json:"memo_count"`
+	PortfolioExcluded bool               `json:"portfolio_excluded"`
+	LastActivityAt    pgtype.Timestamptz `json:"last_activity_at"`
+	CreatedAt         time.Time          `json:"created_at"`
+	UpdatedAt         time.Time          `json:"updated_at"`
+}
+
+type PipelineProperty struct {
+	ID               uuid.UUID      `json:"id"`
+	PipelineDealID   uuid.UUID      `json:"pipeline_deal_id"`
+	Address          string         `json:"address"`
+	City             pgtype.Text    `json:"city"`
+	State            pgtype.Text    `json:"state"`
+	Zip              pgtype.Text    `json:"zip"`
+	PropertyType     pgtype.Text    `json:"property_type"`
+	Beds             pgtype.Numeric `json:"beds"`
+	Baths            pgtype.Numeric `json:"baths"`
+	Sqft             pgtype.Int4    `json:"sqft"`
+	YearBuilt        pgtype.Int4    `json:"year_built"`
+	Units            pgtype.Int4    `json:"units"`
+	AskingPrice      pgtype.Numeric `json:"asking_price"`
+	TargetPrice      pgtype.Numeric `json:"target_price"`
+	DownPaymentPct   pgtype.Numeric `json:"down_payment_pct"`
+	FinancingType    pgtype.Text    `json:"financing_type"`
+	InterestRate     pgtype.Numeric `json:"interest_rate"`
+	BrokerRent       pgtype.Numeric `json:"broker_rent"`
+	SystemRent       pgtype.Numeric `json:"system_rent"`
+	CurrentOccupancy pgtype.Numeric `json:"current_occupancy"`
+	ExpenseOverrides []byte         `json:"expense_overrides"`
+	SourceType       string         `json:"source_type"`
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
 }
 
 // Size-based FIFO cache for individual property details (ADR-061)
@@ -967,6 +1011,8 @@ type V2Evaluation struct {
 	ChatSessionID      pgtype.Text      `json:"chat_session_id"`
 	DiscoverySessionID pgtype.Text      `json:"discovery_session_id"`
 	MarketContext      []byte           `json:"market_context"`
+	PipelinePropertyID pgtype.UUID      `json:"pipeline_property_id"`
+	PipelineDealID     pgtype.UUID      `json:"pipeline_deal_id"`
 	Status             interface{}      `json:"status"`
 	CreatedAt          pgtype.Timestamp `json:"created_at"`
 	UpdatedAt          pgtype.Timestamp `json:"updated_at"`
