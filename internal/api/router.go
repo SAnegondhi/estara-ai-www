@@ -500,7 +500,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Post("/{id}/baseline-changes", handlers.Portfolio.CreateBaselineChange)
 	})
 
-	// ADR-101/ADR-102: Investment Pipeline
+	// ADR-101/ADR-102/ADR-104: Investment Pipeline
 	r.Route("/api/pipeline", func(r chi.Router) {
 		r.Use(authMiddleware.Authenticate)
 		r.Use(rateLimiter.Limit)
@@ -508,7 +508,8 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Get("/deals", handlers.Pipeline.ListDeals)
 		r.Post("/deals", handlers.Pipeline.CreateDeal)
 		r.Get("/deals/stats", handlers.Pipeline.GetStats)
-		r.Post("/parse-document", handlers.Pipeline.ParseDocument) // ADR-102: broker OM parse
+		r.Post("/parse-document", handlers.Pipeline.ParseDocument)       // ADR-102: broker OM parse
+		r.Get("/retrospective", handlers.Pipeline.GetRetrospective)      // ADR-104: acquisition retrospective
 
 		r.Route("/deals/{dealId}", func(r chi.Router) {
 			r.Get("/", handlers.Pipeline.GetDeal)

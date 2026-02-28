@@ -58,6 +58,7 @@ type updateDealRequest struct {
 	Status            *string `json:"status"`
 	Notes             *string `json:"notes"`
 	PortfolioExcluded *bool   `json:"portfolioExcluded"`
+	ClosedOutcome     *string `json:"closedOutcome"` // ADR-104: acquired | rejected | other
 }
 
 type createPropertyRequest struct {
@@ -353,6 +354,7 @@ func (h *Handler) UpdateDeal(w http.ResponseWriter, r *http.Request) {
 		Status:            textFromPtr(req.Status),
 		Notes:             textFromPtr(req.Notes),
 		PortfolioExcluded: portfolioExcluded,
+		ClosedOutcome:     textFromPtr(req.ClosedOutcome),
 	})
 	if err != nil {
 		httputil.NotFound(w, "deal not found")
@@ -612,6 +614,65 @@ func (h *Handler) DeleteProperty(w http.ResponseWriter, r *http.Request) {
 	_ = h.store.Q().BumpPipelineDealActivity(r.Context(), dealID)
 
 	httputil.NoContent(w)
+}
+
+// GetRetrospective handles GET /api/pipeline/retrospective?days=90
+// Returns pipeline activity analytics for the given period (0 = all time).
+func (h *Handler) GetRetrospective(w http.ResponseWriter, r *http.Request) {
+	userID, ok := getUserID(r)
+	if !ok {
+		httputil.Unauthorized(w, "not authenticated")
+		return
+	}
+
+	daysStr := r.URL.Query().Get("days")
+	days := 90 // default
+	if daysStr != "" {
+		if d, err := strconv.Atoi(daysStr); err == nil && d >= 0 {
+			days = d
+		}
+	}
+
+	row, err := h.store.Q().GetPipelineRetrospective(r.Context(), queries.GetPipelineRetrospectiveParams{
+		UserID:  userID,
+		Column2: int32(days),
+	})
+	if err != nil {
+		h.logger.Error("GetPipelineRetrospective failed", "error", err, "user_id", userID)
+		httputil.InternalError(w, err)
+		return
+	}
+
+	period := "90d"
+	switch days {
+	case 0:
+		period = "all"
+	case 30:
+		period = "30d"
+	case 365:
+		period = "1y"
+	default:
+		period = strconv.Itoa(days) + "d"
+	}
+
+	httputil.Success(w, map[string]any{
+		"period":               period,
+		"totalEvaluations":     row.TotalEvaluations,
+		"discoveryEvaluations": row.DiscoveryEvaluations,
+		"pipelineEvaluations":  row.PipelineEvaluations,
+		"pipelineBySource": map[string]any{
+			"broker":      row.SourceBroker,
+			"off-market":  row.SourceOffMarket,
+			"syndication": row.SourceSyndication,
+			"jv":          row.SourceJv,
+			"auction":     row.SourceAuction,
+			"direct":      row.SourceDirect,
+			"other":       row.SourceOther,
+		},
+		"proceededDeals":    row.ProceededDeals,
+		"totalPipelineDeals": row.TotalPipelineDeals,
+		"activePipelineDeals": row.ActivePipelineDeals,
+	})
 }
 
 // GetRentEstimate handles GET /api/pipeline/deals/{dealId}/properties/{propId}/rent-estimate

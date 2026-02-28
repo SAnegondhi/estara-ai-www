@@ -50,7 +50,7 @@ INSERT INTO pipeline_deals (
     gen_random_uuid(), $1, $2, $3, 'under_review', $4,
     0, 0, $5, NULL,
     NOW(), NOW()
-) RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, created_at, updated_at
+) RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, created_at, updated_at
 `
 
 type CreatePipelineDealParams struct {
@@ -85,6 +85,7 @@ func (q *Queries) CreatePipelineDeal(ctx context.Context, arg CreatePipelineDeal
 		&i.MemoCount,
 		&i.PortfolioExcluded,
 		&i.LastActivityAt,
+		&i.ClosedOutcome,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -230,7 +231,7 @@ func (q *Queries) DeletePipelineProperty(ctx context.Context, arg DeletePipeline
 }
 
 const GetPipelineDeal = `-- name: GetPipelineDeal :one
-SELECT id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, created_at, updated_at FROM pipeline_deals
+SELECT id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, created_at, updated_at FROM pipeline_deals
 WHERE id = $1 AND user_id = $2
 `
 
@@ -253,6 +254,7 @@ func (q *Queries) GetPipelineDeal(ctx context.Context, arg GetPipelineDealParams
 		&i.MemoCount,
 		&i.PortfolioExcluded,
 		&i.LastActivityAt,
+		&i.ClosedOutcome,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -298,6 +300,92 @@ func (q *Queries) GetPipelineProperty(ctx context.Context, arg GetPipelineProper
 		&i.SourceType,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const GetPipelineRetrospective = `-- name: GetPipelineRetrospective :one
+
+WITH period_evals AS (
+    SELECT
+        e.pipeline_deal_id,
+        pd.source AS deal_source
+    FROM v2_evaluations e
+    LEFT JOIN pipeline_deals pd ON pd.id = e.pipeline_deal_id AND pd.user_id = $1
+    WHERE e.user_id = $1
+      AND ($2::int = 0 OR e.created_at >= NOW() - make_interval(days => $2::int))
+),
+pipeline_deal_stats AS (
+    SELECT
+        COUNT(*) FILTER (
+            WHERE status = 'proceeding'
+               OR (status = 'closed' AND closed_outcome = 'acquired')
+        )::bigint                                                         AS proceeded_deals,
+        COUNT(*)::bigint                                                  AS total_pipeline_deals,
+        COUNT(*) FILTER (WHERE status NOT IN ('passed', 'closed'))::bigint AS active_pipeline_deals
+    FROM pipeline_deals
+    WHERE user_id = $1
+)
+SELECT
+    COUNT(*)::bigint                                           AS total_evaluations,
+    COUNT(*) FILTER (WHERE pipeline_deal_id IS NULL)::bigint  AS discovery_evaluations,
+    COUNT(*) FILTER (WHERE pipeline_deal_id IS NOT NULL)::bigint AS pipeline_evaluations,
+    COUNT(*) FILTER (WHERE deal_source = 'broker')::bigint    AS source_broker,
+    COUNT(*) FILTER (WHERE deal_source = 'off-market')::bigint AS source_off_market,
+    COUNT(*) FILTER (WHERE deal_source = 'syndication')::bigint AS source_syndication,
+    COUNT(*) FILTER (WHERE deal_source = 'jv')::bigint        AS source_jv,
+    COUNT(*) FILTER (WHERE deal_source = 'auction')::bigint   AS source_auction,
+    COUNT(*) FILTER (WHERE deal_source = 'direct')::bigint    AS source_direct,
+    COUNT(*) FILTER (WHERE deal_source = 'other')::bigint     AS source_other,
+    (SELECT proceeded_deals     FROM pipeline_deal_stats)     AS proceeded_deals,
+    (SELECT total_pipeline_deals FROM pipeline_deal_stats)    AS total_pipeline_deals,
+    (SELECT active_pipeline_deals FROM pipeline_deal_stats)   AS active_pipeline_deals
+FROM period_evals
+`
+
+type GetPipelineRetrospectiveParams struct {
+	UserID  string `json:"user_id"`
+	Column2 int32  `json:"column_2"`
+}
+
+type GetPipelineRetrospectiveRow struct {
+	TotalEvaluations     int64 `json:"total_evaluations"`
+	DiscoveryEvaluations int64 `json:"discovery_evaluations"`
+	PipelineEvaluations  int64 `json:"pipeline_evaluations"`
+	SourceBroker         int64 `json:"source_broker"`
+	SourceOffMarket      int64 `json:"source_off_market"`
+	SourceSyndication    int64 `json:"source_syndication"`
+	SourceJv             int64 `json:"source_jv"`
+	SourceAuction        int64 `json:"source_auction"`
+	SourceDirect         int64 `json:"source_direct"`
+	SourceOther          int64 `json:"source_other"`
+	ProceededDeals       int64 `json:"proceeded_deals"`
+	TotalPipelineDeals   int64 `json:"total_pipeline_deals"`
+	ActivePipelineDeals  int64 `json:"active_pipeline_deals"`
+}
+
+// ============================================================
+// ADR-104: Retrospective Analytics
+// ============================================================
+// $1 = user_id TEXT
+// $2 = days INT (0 = all time, otherwise last N days)
+func (q *Queries) GetPipelineRetrospective(ctx context.Context, arg GetPipelineRetrospectiveParams) (GetPipelineRetrospectiveRow, error) {
+	row := q.db.QueryRow(ctx, GetPipelineRetrospective, arg.UserID, arg.Column2)
+	var i GetPipelineRetrospectiveRow
+	err := row.Scan(
+		&i.TotalEvaluations,
+		&i.DiscoveryEvaluations,
+		&i.PipelineEvaluations,
+		&i.SourceBroker,
+		&i.SourceOffMarket,
+		&i.SourceSyndication,
+		&i.SourceJv,
+		&i.SourceAuction,
+		&i.SourceDirect,
+		&i.SourceOther,
+		&i.ProceededDeals,
+		&i.TotalPipelineDeals,
+		&i.ActivePipelineDeals,
 	)
 	return i, err
 }
@@ -401,7 +489,7 @@ func (q *Queries) GetPipelineStats(ctx context.Context, userID string) (GetPipel
 }
 
 const ListPipelineDeals = `-- name: ListPipelineDeals :many
-SELECT id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, created_at, updated_at FROM pipeline_deals
+SELECT id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, created_at, updated_at FROM pipeline_deals
 WHERE user_id = $1
   AND ($2::boolean = TRUE OR status NOT IN ('passed', 'closed'))
 ORDER BY
@@ -434,6 +522,7 @@ func (q *Queries) ListPipelineDeals(ctx context.Context, arg ListPipelineDealsPa
 			&i.MemoCount,
 			&i.PortfolioExcluded,
 			&i.LastActivityAt,
+			&i.ClosedOutcome,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -511,9 +600,10 @@ UPDATE pipeline_deals SET
     status             = COALESCE($5::text, status),
     notes              = COALESCE($6::text, notes),
     portfolio_excluded = COALESCE($7::boolean, portfolio_excluded),
+    closed_outcome     = COALESCE($8::text, closed_outcome),
     updated_at         = NOW()
 WHERE id = $1 AND user_id = $2
-RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, created_at, updated_at
+RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, created_at, updated_at
 `
 
 type UpdatePipelineDealParams struct {
@@ -524,6 +614,7 @@ type UpdatePipelineDealParams struct {
 	Status            pgtype.Text `json:"status"`
 	Notes             pgtype.Text `json:"notes"`
 	PortfolioExcluded pgtype.Bool `json:"portfolio_excluded"`
+	ClosedOutcome     pgtype.Text `json:"closed_outcome"`
 }
 
 func (q *Queries) UpdatePipelineDeal(ctx context.Context, arg UpdatePipelineDealParams) (PipelineDeal, error) {
@@ -535,6 +626,7 @@ func (q *Queries) UpdatePipelineDeal(ctx context.Context, arg UpdatePipelineDeal
 		arg.Status,
 		arg.Notes,
 		arg.PortfolioExcluded,
+		arg.ClosedOutcome,
 	)
 	var i PipelineDeal
 	err := row.Scan(
@@ -548,6 +640,7 @@ func (q *Queries) UpdatePipelineDeal(ctx context.Context, arg UpdatePipelineDeal
 		&i.MemoCount,
 		&i.PortfolioExcluded,
 		&i.LastActivityAt,
+		&i.ClosedOutcome,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -559,7 +652,7 @@ UPDATE pipeline_deals SET
     status     = $3,
     updated_at = NOW()
 WHERE id = $1 AND user_id = $2
-RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, created_at, updated_at
+RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, created_at, updated_at
 `
 
 type UpdatePipelineDealStatusParams struct {
@@ -582,6 +675,7 @@ func (q *Queries) UpdatePipelineDealStatus(ctx context.Context, arg UpdatePipeli
 		&i.MemoCount,
 		&i.PortfolioExcluded,
 		&i.LastActivityAt,
+		&i.ClosedOutcome,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

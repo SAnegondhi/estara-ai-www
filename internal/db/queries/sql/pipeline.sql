@@ -34,6 +34,7 @@ UPDATE pipeline_deals SET
     status             = COALESCE(sqlc.narg('status')::text, status),
     notes              = COALESCE(sqlc.narg('notes')::text, notes),
     portfolio_excluded = COALESCE(sqlc.narg('portfolio_excluded')::boolean, portfolio_excluded),
+    closed_outcome     = COALESCE(sqlc.narg('closed_outcome')::text, closed_outcome),
     updated_at         = NOW()
 WHERE id = $1 AND user_id = $2
 RETURNING *;
@@ -176,3 +177,46 @@ USING pipeline_deals pd
 WHERE pp.id = $1
   AND pp.pipeline_deal_id = pd.id
   AND pd.user_id = $2;
+
+-- ============================================================
+-- ADR-104: Retrospective Analytics
+-- ============================================================
+
+-- name: GetPipelineRetrospective :one
+-- $1 = user_id TEXT
+-- $2 = days INT (0 = all time, otherwise last N days)
+WITH period_evals AS (
+    SELECT
+        e.pipeline_deal_id,
+        pd.source AS deal_source
+    FROM v2_evaluations e
+    LEFT JOIN pipeline_deals pd ON pd.id = e.pipeline_deal_id AND pd.user_id = $1
+    WHERE e.user_id = $1
+      AND ($2::int = 0 OR e.created_at >= NOW() - make_interval(days => $2::int))
+),
+pipeline_deal_stats AS (
+    SELECT
+        COUNT(*) FILTER (
+            WHERE status = 'proceeding'
+               OR (status = 'closed' AND closed_outcome = 'acquired')
+        )::bigint                                                         AS proceeded_deals,
+        COUNT(*)::bigint                                                  AS total_pipeline_deals,
+        COUNT(*) FILTER (WHERE status NOT IN ('passed', 'closed'))::bigint AS active_pipeline_deals
+    FROM pipeline_deals
+    WHERE user_id = $1
+)
+SELECT
+    COUNT(*)::bigint                                           AS total_evaluations,
+    COUNT(*) FILTER (WHERE pipeline_deal_id IS NULL)::bigint  AS discovery_evaluations,
+    COUNT(*) FILTER (WHERE pipeline_deal_id IS NOT NULL)::bigint AS pipeline_evaluations,
+    COUNT(*) FILTER (WHERE deal_source = 'broker')::bigint    AS source_broker,
+    COUNT(*) FILTER (WHERE deal_source = 'off-market')::bigint AS source_off_market,
+    COUNT(*) FILTER (WHERE deal_source = 'syndication')::bigint AS source_syndication,
+    COUNT(*) FILTER (WHERE deal_source = 'jv')::bigint        AS source_jv,
+    COUNT(*) FILTER (WHERE deal_source = 'auction')::bigint   AS source_auction,
+    COUNT(*) FILTER (WHERE deal_source = 'direct')::bigint    AS source_direct,
+    COUNT(*) FILTER (WHERE deal_source = 'other')::bigint     AS source_other,
+    (SELECT proceeded_deals     FROM pipeline_deal_stats)     AS proceeded_deals,
+    (SELECT total_pipeline_deals FROM pipeline_deal_stats)    AS total_pipeline_deals,
+    (SELECT active_pipeline_deals FROM pipeline_deal_stats)   AS active_pipeline_deals
+FROM period_evals;

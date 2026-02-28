@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS pipeline_deals (
     memo_count       INTEGER NOT NULL DEFAULT 0,
     portfolio_excluded BOOLEAN NOT NULL DEFAULT FALSE,
     last_activity_at TIMESTAMPTZ,
+    closed_outcome   TEXT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
