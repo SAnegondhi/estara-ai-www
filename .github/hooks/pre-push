@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+#
+# pre-push hook — blocks direct pushes to master.
+# Use a branch + PR instead. CI must pass before merge.
+#
+# Emergency bypass: git push --no-verify
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [[ "$remote_ref" == "refs/heads/master" ]]; then
+    echo ""
+    echo "  ✗  Direct push to master is not allowed."
+    echo ""
+    echo "     Open a branch and PR instead:"
+    echo ""
+    echo "       git checkout -b your-branch-name"
+    echo "       git push origin your-branch-name"
+    echo "       gh pr create"
+    echo ""
+    echo "     Emergency bypass: git push --no-verify"
+    echo ""
+    exit 1
+  fi
+done
+
+exit 0
