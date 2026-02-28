@@ -103,7 +103,8 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 			WithInvestmentOptimizer(svc.InvestmentOptimizer).      // ADR-088 Phase 12
 			WithPropertyFinder(svc.PropertyFinder).                // ADR-088 Phase 12
 			WithMarketData(svc.MarketData).                        // Quality-gate market benchmarks
-			WithMetroReader(svc.MetroReader),                      // HUD FMR by bedroom count
+			WithMetroReader(svc.MetroReader).                      // HUD FMR by bedroom count
+			WithTrendsService(svc.TrendsService),                  // ADR-100: report enrichment (historical time series)
 		Portfolio:     portfolio.NewHandler(store, cfg),
 		Admin:         admin.NewHandler(store, redis, cfg, authMiddleware),
 		Cron:          cron.NewHandler(store, redis, cfg),
@@ -456,6 +457,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Get("/history", handlers.AI.GetAnalysisHistory)      // ADR-073
 		r.Get("/context", handlers.AI.GetAnalysisContext)       // ADR-073
 		r.Get("/report", handlers.AI.GetAnalysisReport)        // ADR-073
+		r.Post("/report/export", handlers.AI.ExportAnalysisPDF) // ADR-100 PDF export
 		r.Post("/preload", handlers.AI.PreloadReports)         // ADR-087 Phase 5
 		r.Post("/retry/{jobId}", handlers.AI.RetryAnalysis)
 		r.Post("/cancel/{jobId}", handlers.AI.CancelAnalysis)

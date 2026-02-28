@@ -70,6 +70,49 @@ const (
 	AnalysisEventError     = "error"
 )
 
+// AnalysisTimeSeriesPoint holds a single time series data point for chart rendering
+type AnalysisTimeSeriesPoint struct {
+	Date  string  `json:"date"`  // ISO 8601 YYYY-MM
+	Value float64 `json:"value"`
+}
+
+// AnalysisTimeSeries holds historical time series data for a single metric
+type AnalysisTimeSeries struct {
+	HomeValues    []AnalysisTimeSeriesPoint `json:"homeValues"`
+	RentValues    []AnalysisTimeSeriesPoint `json:"rentValues"`
+	MortgageRates []AnalysisTimeSeriesPoint `json:"mortgageRates,omitempty"`
+}
+
+// AnalysisMetrics holds the full set of structured market metrics for report rendering
+type AnalysisMetrics struct {
+	// Core KPIs
+	MedianHomePrice      int     `json:"medianHomePrice"`
+	MedianRent           int     `json:"medianRent"`
+	CapRate              float64 `json:"capRate"`
+	MortgageRate30       float64 `json:"mortgageRate30"`
+	GrossYield           float64 `json:"grossYield"`
+	PriceToRentRatio     float64 `json:"priceToRentRatio"`
+	// Price / Rent changes
+	PriceChangeYoY       float64 `json:"priceChangeYoY"`
+	RentChangeYoY        float64 `json:"rentChangeYoY"`
+	// Supply / Demand
+	DaysOnMarket         int     `json:"daysOnMarket,omitempty"`
+	VacancyRate          float64 `json:"vacancyRate,omitempty"`
+	// Economic context
+	UnemploymentRate     float64 `json:"unemploymentRate,omitempty"`
+	EmploymentGrowthRate float64 `json:"employmentGrowthRate,omitempty"`
+	PopulationGrowthRate float64 `json:"populationGrowthRate,omitempty"`
+	// Confidence / metadata
+	Confidence           float64 `json:"confidence,omitempty"`
+	DataDate             string  `json:"dataDate,omitempty"`
+}
+
+// AnalysisReportEnrichment holds structured data appended to GetAnalysisReport responses (ADR-100)
+type AnalysisReportEnrichment struct {
+	Metrics    *AnalysisMetrics    `json:"metrics,omitempty"`
+	TimeSeries *AnalysisTimeSeries `json:"timeSeries,omitempty"`
+}
+
 // AnalysisContext holds comprehensive context for AI analysis
 type AnalysisContext struct {
 	Location       string            `json:"location"`

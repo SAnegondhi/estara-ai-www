@@ -14,6 +14,40 @@ type MarketAnalysisPDFData struct {
 	Narrative  map[string]interface{} `json:"narrative,omitempty"`
 	FullReport string                 `json:"fullReport,omitempty"`
 	DataPoints map[string]interface{} `json:"dataPoints,omitempty"`
+	// ADR-100: structured enrichment from aggregator + trends service
+	StructuredMetrics *MarketAnalysisMetrics    `json:"structuredMetrics,omitempty"`
+	TimeSeries        *MarketAnalysisTimeSeries `json:"timeSeries,omitempty"`
+}
+
+// MarketAnalysisMetrics holds typed market metrics for PDF rendering (ADR-100).
+type MarketAnalysisMetrics struct {
+	MedianHomePrice      int     `json:"medianHomePrice"`
+	MedianRent           int     `json:"medianRent"`
+	CapRate              float64 `json:"capRate"`
+	MortgageRate30       float64 `json:"mortgageRate30"`
+	GrossYield           float64 `json:"grossYield"`
+	PriceToRentRatio     float64 `json:"priceToRentRatio"`
+	PriceChangeYoY       float64 `json:"priceChangeYoY"`
+	RentChangeYoY        float64 `json:"rentChangeYoY"`
+	VacancyRate          float64 `json:"vacancyRate"`
+	UnemploymentRate     float64 `json:"unemploymentRate"`
+	EmploymentGrowthRate float64 `json:"employmentGrowthRate"`
+	PopulationGrowthRate float64 `json:"populationGrowthRate"`
+	DaysOnMarket         int     `json:"daysOnMarket"`
+	DataDate             string  `json:"dataDate"`
+}
+
+// MarketAnalysisTimeSeriesPoint is a single chart data point (ADR-100).
+type MarketAnalysisTimeSeriesPoint struct {
+	Date  string  `json:"date"`
+	Value float64 `json:"value"`
+}
+
+// MarketAnalysisTimeSeries holds historical time series for chart rendering (ADR-100).
+type MarketAnalysisTimeSeries struct {
+	HomeValues    []MarketAnalysisTimeSeriesPoint `json:"homeValues"`
+	RentValues    []MarketAnalysisTimeSeriesPoint `json:"rentValues"`
+	MortgageRates []MarketAnalysisTimeSeriesPoint `json:"mortgageRates,omitempty"`
 }
 
 // BuildMarketAnalysisPDF renders a market analysis PDF report.
@@ -33,6 +67,37 @@ func BuildMarketAnalysisPDF(ctx context.Context, data MarketAnalysisPDFData) ([]
 	pdf.AddPage()
 	y := page.MarginTop
 
+	// ADR-100: Render structured KPI strip when enrichment data is available
+	if data.StructuredMetrics != nil {
+		y = AddSectionHeading(pdf, page, theme, "Market Snapshot", y)
+		kpis := buildStructuredMetricsGrid(data.StructuredMetrics)
+		y = AddMetricsGrid(pdf, page, theme, kpis, y)
+		y += 4
+	}
+
+	// ADR-100: Render time series charts when historical data is available
+	if data.TimeSeries != nil {
+		charts, _ := buildTimeSeriesCharts(ctx, data.TimeSeries, location)
+		if len(charts) > 0 {
+			y = AddSectionHeading(pdf, page, theme, "Historical Trends (5 Years)", y+2)
+			chartWidth := (page.Width - page.MarginLeft - page.MarginRight - 10) / 2
+			chartHeight := 60.0
+			y, _ = EnsureSpace(pdf, page, y+4, chartHeight+12)
+			if len(charts) > 0 {
+				_ = AddImageFromBase64(pdf, "home_values", charts[0], page.MarginLeft, y, chartWidth, chartHeight)
+			}
+			if len(charts) > 1 {
+				_ = AddImageFromBase64(pdf, "rent_values", charts[1], page.MarginLeft+chartWidth+10, y, chartWidth, chartHeight)
+			}
+			y += chartHeight + 8
+			if len(charts) > 2 {
+				y, _ = EnsureSpace(pdf, page, y, chartHeight+12)
+				_ = AddImageFromBase64(pdf, "mortgage_rates", charts[2], page.MarginLeft, y, chartWidth, chartHeight)
+				y += chartHeight + 8
+			}
+		}
+	}
+
 	if data.FullReport != "" {
 		// V2 path: the markdown report IS the full content — render it directly
 		y = RenderMarkdown(pdf, page, theme, data.FullReport, y)
@@ -43,29 +108,35 @@ func BuildMarketAnalysisPDF(ctx context.Context, data MarketAnalysisPDFData) ([]
 			y = AddParagraph(pdf, page, theme, summary, y)
 		}
 
-		y = AddSectionHeading(pdf, page, theme, "Market Snapshot", y+2)
-		metrics := buildMarketAnalysisMetrics(data)
-		y = AddMetricsGrid(pdf, page, theme, metrics, y)
+		// Only show legacy metrics grid if no structured metrics were rendered above
+		if data.StructuredMetrics == nil {
+			y = AddSectionHeading(pdf, page, theme, "Market Metrics", y+2)
+			metrics := buildMarketAnalysisMetrics(data)
+			y = AddMetricsGrid(pdf, page, theme, metrics, y)
+		}
 
-		charts, _ := buildMarketAnalysisCharts(ctx, data)
-		if len(charts) > 0 {
-			y = AddSectionHeading(pdf, page, theme, "Market Charts", y+2)
-			chartWidth := (page.Width - page.MarginLeft - page.MarginRight - 10) / 2
-			chartHeight := 55.0
+		// Legacy charts only when no time series data
+		if data.TimeSeries == nil {
+			charts, _ := buildMarketAnalysisCharts(ctx, data)
 			if len(charts) > 0 {
-				_ = AddImageFromBase64(pdf, "price_trends", charts[0], page.MarginLeft, y+4, chartWidth, chartHeight)
+				y = AddSectionHeading(pdf, page, theme, "Market Charts", y+2)
+				chartWidth := (page.Width - page.MarginLeft - page.MarginRight - 10) / 2
+				chartHeight := 55.0
+				if len(charts) > 0 {
+					_ = AddImageFromBase64(pdf, "price_trends", charts[0], page.MarginLeft, y+4, chartWidth, chartHeight)
+				}
+				if len(charts) > 1 {
+					_ = AddImageFromBase64(pdf, "affordability", charts[1], page.MarginLeft+chartWidth+10, y+4, chartWidth, chartHeight)
+				}
+				y += chartHeight + 12
+				if len(charts) > 2 {
+					_ = AddImageFromBase64(pdf, "supply_demand", charts[2], page.MarginLeft, y, chartWidth, chartHeight)
+				}
+				if len(charts) > 3 {
+					_ = AddImageFromBase64(pdf, "waterfall", charts[3], page.MarginLeft+chartWidth+10, y, chartWidth, chartHeight)
+				}
+				y += chartHeight + 8
 			}
-			if len(charts) > 1 {
-				_ = AddImageFromBase64(pdf, "affordability", charts[1], page.MarginLeft+chartWidth+10, y+4, chartWidth, chartHeight)
-			}
-			y += chartHeight + 12
-			if len(charts) > 2 {
-				_ = AddImageFromBase64(pdf, "supply_demand", charts[2], page.MarginLeft, y, chartWidth, chartHeight)
-			}
-			if len(charts) > 3 {
-				_ = AddImageFromBase64(pdf, "waterfall", charts[3], page.MarginLeft+chartWidth+10, y, chartWidth, chartHeight)
-			}
-			y += chartHeight + 8
 		}
 
 		sections := []struct {
@@ -100,6 +171,148 @@ func BuildMarketAnalysisPDF(ctx context.Context, data MarketAnalysisPDFData) ([]
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// buildStructuredMetricsGrid builds a MetricItem slice from typed ADR-100 enrichment data.
+func buildStructuredMetricsGrid(m *MarketAnalysisMetrics) []MetricItem {
+	items := []MetricItem{}
+	if m.MedianHomePrice > 0 {
+		items = append(items, MetricItem{Label: "Median Home Price", Value: fmt.Sprintf("$%s", formatInt(m.MedianHomePrice))})
+	}
+	if m.MedianRent > 0 {
+		items = append(items, MetricItem{Label: "Median Rent/mo", Value: fmt.Sprintf("$%s", formatInt(m.MedianRent))})
+	}
+	if m.CapRate > 0 {
+		items = append(items, MetricItem{Label: "Cap Rate", Value: fmt.Sprintf("%.1f%%", m.CapRate)})
+	}
+	if m.GrossYield > 0 {
+		items = append(items, MetricItem{Label: "Gross Yield", Value: fmt.Sprintf("%.1f%%", m.GrossYield)})
+	}
+	if m.PriceToRentRatio > 0 {
+		items = append(items, MetricItem{Label: "Price-to-Rent", Value: fmt.Sprintf("%.0fx", m.PriceToRentRatio)})
+	}
+	if m.MortgageRate30 > 0 {
+		items = append(items, MetricItem{Label: "30Y Rate", Value: fmt.Sprintf("%.2f%%", m.MortgageRate30)})
+	}
+	if m.PriceChangeYoY != 0 {
+		items = append(items, MetricItem{Label: "Price YoY", Value: fmt.Sprintf("%+.1f%%", m.PriceChangeYoY)})
+	}
+	if m.RentChangeYoY != 0 {
+		items = append(items, MetricItem{Label: "Rent YoY", Value: fmt.Sprintf("%+.1f%%", m.RentChangeYoY)})
+	}
+	if m.VacancyRate > 0 {
+		items = append(items, MetricItem{Label: "Vacancy Rate", Value: fmt.Sprintf("%.1f%%", m.VacancyRate)})
+	}
+	if m.UnemploymentRate > 0 {
+		items = append(items, MetricItem{Label: "Unemployment", Value: fmt.Sprintf("%.1f%%", m.UnemploymentRate)})
+	}
+	if m.DaysOnMarket > 0 {
+		items = append(items, MetricItem{Label: "Days on Market", Value: fmt.Sprintf("%d", m.DaysOnMarket)})
+	}
+	return items
+}
+
+// formatInt formats an integer with comma-separated thousands.
+func formatInt(n int) string {
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+	result := ""
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			result += ","
+		}
+		result += string(c)
+	}
+	return result
+}
+
+// buildTimeSeriesCharts generates QuickChart line chart PNGs from historical time series (ADR-100).
+func buildTimeSeriesCharts(ctx context.Context, ts *MarketAnalysisTimeSeries, location string) ([]string, error) {
+	client := NewQuickChartClient()
+	charts := []string{}
+
+	lineColor := "#1e3a8a"
+	rentColor := "#10b981"
+	rateColor := "#f59e0b"
+
+	buildLineChart := func(points []MarketAnalysisTimeSeriesPoint, label, color string, prefix string) string {
+		if len(points) < 2 {
+			return ""
+		}
+		labels := make([]string, len(points))
+		values := make([]float64, len(points))
+		for i, p := range points {
+			if len(p.Date) >= 7 {
+				labels[i] = p.Date[:7] // YYYY-MM
+			} else {
+				labels[i] = p.Date
+			}
+			values[i] = p.Value
+		}
+		// Show only every 12th label for readability
+		sparseLabels := make([]string, len(labels))
+		for i, l := range labels {
+			if i%12 == 0 || i == len(labels)-1 {
+				sparseLabels[i] = l
+			}
+		}
+		callbackStr := ""
+		if prefix == "$" {
+			callbackStr = `function(value) { return '$' + (value >= 1000 ? (value/1000).toFixed(0) + 'k' : value); }`
+		} else if prefix == "%" {
+			callbackStr = `function(value) { return value.toFixed(2) + '%'; }`
+		}
+		config := map[string]interface{}{
+			"type": "line",
+			"data": map[string]interface{}{
+				"labels": sparseLabels,
+				"datasets": []map[string]interface{}{
+					{
+						"label":           label,
+						"data":            values,
+						"borderColor":     color,
+						"backgroundColor": color + "20",
+						"fill":            true,
+						"tension":         0.3,
+						"pointRadius":     0,
+						"borderWidth":     2,
+					},
+				},
+			},
+			"options": map[string]interface{}{
+				"plugins": map[string]interface{}{
+					"legend": map[string]interface{}{"display": true},
+				},
+				"scales": map[string]interface{}{
+					"x": map[string]interface{}{
+						"ticks": map[string]interface{}{"maxRotation": 45},
+					},
+					"y": map[string]interface{}{
+						"ticks": map[string]interface{}{"callback": callbackStr},
+					},
+				},
+			},
+		}
+		png, err := client.RenderPNG(ctx, config, 600, 350, "#FFFFFF")
+		if err != nil {
+			return ""
+		}
+		return EncodePNGBase64(png)
+	}
+
+	if img := buildLineChart(ts.HomeValues, "Median Home Value — "+location, lineColor, "$"); img != "" {
+		charts = append(charts, img)
+	}
+	if img := buildLineChart(ts.RentValues, "Median Rent — "+location, rentColor, "$"); img != "" {
+		charts = append(charts, img)
+	}
+	if img := buildLineChart(ts.MortgageRates, "30Y Mortgage Rate", rateColor, "%"); img != "" {
+		charts = append(charts, img)
+	}
+
+	return charts, nil
 }
 
 func buildMarketAnalysisMetrics(data MarketAnalysisPDFData) []MetricItem {
