@@ -1294,6 +1294,8 @@ CREATE TABLE IF NOT EXISTS evaluation_chat_sessions (
     cached_property_ids TEXT[] DEFAULT '{}',
     investor_profile JSONB,
     portfolio_snapshot JSONB,
+    discovery_session_id TEXT,      -- ADR-098: direct FK to discovery session
+    pipeline_deal_id UUID,          -- ADR-101: pipeline deal context
     created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP(3) NOT NULL
 );
@@ -1360,6 +1362,12 @@ CREATE TABLE IF NOT EXISTS v2_evaluations (
     scenarios JSONB,
     sensitivity_data JSONB,
     status "V2EvaluationStatus" NOT NULL DEFAULT 'DRAFT',
+    chat_session_id TEXT,           -- ADR-098: direct FK to chat session
+    discovery_session_id TEXT,      -- ADR-098: direct FK to discovery session
+    market_context JSONB,           -- ADR-098: market conditions at time of evaluation
+    property_snapshot JSONB,        -- ADR-093: full enriched property data at evaluation time
+    pipeline_property_id UUID,      -- ADR-101: pipeline property context
+    pipeline_deal_id UUID,          -- ADR-101: pipeline deal context
     created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP(3) NOT NULL
 );
@@ -1515,3 +1523,61 @@ CREATE TABLE IF NOT EXISTS password_setup_tokens (
     used_at    TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ============================================================
+-- 029: pipeline (ADR-101/ADR-104)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS pipeline_deals (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id          TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    source           TEXT NOT NULL DEFAULT 'broker',
+    -- source: broker | off-market | syndication | jv | auction | direct | other
+    status           TEXT NOT NULL DEFAULT 'under_review',
+    -- status: under_review | memo_generated | passed | proceeding | closed
+    notes            TEXT,
+    property_count   INTEGER NOT NULL DEFAULT 0,
+    memo_count       INTEGER NOT NULL DEFAULT 0,
+    portfolio_excluded BOOLEAN NOT NULL DEFAULT FALSE,
+    last_activity_at TIMESTAMPTZ,
+    closed_outcome   TEXT,          -- ADR-104: acquired | rejected | other | NULL
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_deals_user_id        ON pipeline_deals(user_id);
+CREATE INDEX IF NOT EXISTS idx_pipeline_deals_status         ON pipeline_deals(status);
+CREATE INDEX IF NOT EXISTS idx_pipeline_deals_user_status    ON pipeline_deals(user_id, status);
+
+CREATE TABLE IF NOT EXISTS pipeline_properties (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    pipeline_deal_id  UUID NOT NULL REFERENCES pipeline_deals(id) ON DELETE CASCADE,
+    address           TEXT NOT NULL,
+    city              TEXT,
+    state             TEXT,
+    zip               TEXT,
+    property_type     TEXT,
+    -- property_type: sfh | multifamily | condo | townhouse | commercial | nnn | other
+    beds              NUMERIC,
+    baths             NUMERIC,
+    sqft              INTEGER,
+    year_built        INTEGER,
+    units             INTEGER,
+    asking_price      NUMERIC,
+    target_price      NUMERIC,
+    down_payment_pct  NUMERIC,
+    financing_type    TEXT,
+    -- financing_type: conventional | cash | other
+    interest_rate     NUMERIC,
+    broker_rent       NUMERIC,
+    system_rent       NUMERIC,
+    current_occupancy NUMERIC,
+    expense_overrides JSONB,
+    source_type       TEXT NOT NULL DEFAULT 'manual',
+    -- source_type: manual | address_lookup | document_upload | discover_duplicate
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_properties_deal_id ON pipeline_properties(pipeline_deal_id);
