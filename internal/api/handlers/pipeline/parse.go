@@ -302,34 +302,39 @@ func (h *Handler) extractDocumentFields(ctx context.Context, fileBytes []byte, m
 		}
 	}
 
-	// Parse the extracted JSON.
+	return parseExtractionJSON(rawText)
+}
+
+// parseExtractionJSON maps a Claude JSON string to a parseDocumentResponse.
+// Extracted as a separate function so it can be unit-tested without mocking HTTP.
+func parseExtractionJSON(rawJSON string) (*parseDocumentResponse, error) {
 	var raw struct {
-		Address       *string            `json:"address"`
-		City          *string            `json:"city"`
-		State         *string            `json:"state"`
-		Zip           *string            `json:"zip"`
-		PropertyType  *string            `json:"propertyType"`
-		Beds          *float64           `json:"beds"`
-		Baths         *float64           `json:"baths"`
-		Sqft          *int               `json:"sqft"`
-		YearBuilt     *int               `json:"yearBuilt"`
-		Units         *int               `json:"units"`
-		AskingPrice        *float64           `json:"askingPrice"`
-		BrokerRentCurrent  *float64           `json:"brokerRentCurrent"`
-		BrokerRentProForma *float64           `json:"brokerRentProForma"`
-		BrokerRentMarket   *float64           `json:"brokerRentMarket"`
-		BrokerCapRate      *float64           `json:"brokerCapRate"`
-		VacancyRate   *float64           `json:"vacancyRate"`
-		DownPaymentPct *float64          `json:"downPaymentPct"`
-		InterestRate  *float64           `json:"interestRate"`
-		FinancingType *string            `json:"financingType"`
-		Confidence    map[string]string  `json:"confidence"`
+		Address            *string           `json:"address"`
+		City               *string           `json:"city"`
+		State              *string           `json:"state"`
+		Zip                *string           `json:"zip"`
+		PropertyType       *string           `json:"propertyType"`
+		Beds               *float64          `json:"beds"`
+		Baths              *float64          `json:"baths"`
+		Sqft               *int              `json:"sqft"`
+		YearBuilt          *int              `json:"yearBuilt"`
+		Units              *int              `json:"units"`
+		AskingPrice        *float64          `json:"askingPrice"`
+		BrokerRentCurrent  *float64          `json:"brokerRentCurrent"`
+		BrokerRentProForma *float64          `json:"brokerRentProForma"`
+		BrokerRentMarket   *float64          `json:"brokerRentMarket"`
+		BrokerCapRate      *float64          `json:"brokerCapRate"`
+		VacancyRate        *float64          `json:"vacancyRate"`
+		DownPaymentPct     *float64          `json:"downPaymentPct"`
+		InterestRate       *float64          `json:"interestRate"`
+		FinancingType      *string           `json:"financingType"`
+		Confidence         map[string]string `json:"confidence"`
 	}
-	if err := json.Unmarshal([]byte(rawText), &raw); err != nil {
+	if err := json.Unmarshal([]byte(rawJSON), &raw); err != nil {
 		return nil, fmt.Errorf("parse extracted JSON: %w", err)
 	}
 
-	// Check if anything was extracted.
+	// extracted = true when at least one substantive field was found.
 	extracted := raw.Address != nil || raw.AskingPrice != nil ||
 		raw.BrokerRentCurrent != nil || raw.BrokerRentProForma != nil || raw.BrokerRentMarket != nil ||
 		raw.City != nil || raw.Beds != nil || raw.Sqft != nil || raw.BrokerCapRate != nil
