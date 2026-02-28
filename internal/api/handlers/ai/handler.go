@@ -37,6 +37,7 @@ import (
 	"github.com/estara-ai/www/internal/services/market/economics"
 	"github.com/estara-ai/www/internal/services/market/timeseries"
 	"github.com/estara-ai/www/internal/services/market/trends"
+	"github.com/estara-ai/www/internal/services/pdf"
 	"github.com/estara-ai/www/pkg/httputil"
 	"github.com/estara-ai/www/pkg/sse"
 )
@@ -3490,6 +3491,105 @@ func (h *Handler) buildReportEnrichment(ctx context.Context, location string) *a
 		return nil
 	}
 	return enrichment
+}
+
+// ExportAnalysisPDF generates a PDF from a stored market analysis report (ADR-100).
+// POST /api/ai/analysis/report/export  { "key": "<cacheKey>" }
+func (h *Handler) ExportAnalysisPDF(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user := middleware.GetUserFromContext(ctx)
+	if user == nil {
+		httputil.Error(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	var req struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Key == "" {
+		httputil.BadRequest(w, "key is required")
+		return
+	}
+
+	q := h.store.Q()
+	cache, err := q.GetCacheByKeyNoExpiry(ctx, req.Key)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			httputil.NotFound(w, "report not found")
+			return
+		}
+		h.logger.Error("ExportAnalysisPDF: failed to load cache", "error", err, "key", req.Key)
+		httputil.Error(w, http.StatusInternalServerError, "failed to load report")
+		return
+	}
+
+	pdfData := pdf.MarketAnalysisPDFData{
+		Location: cache.Location,
+	}
+	if cache.MetricsData != nil {
+		_ = json.Unmarshal(cache.MetricsData, &pdfData.Metrics)
+	}
+	if cache.NarrativeData != nil {
+		_ = json.Unmarshal(cache.NarrativeData, &pdfData.Narrative)
+	}
+	if cache.FullReport.Valid && cache.FullReport.String != "" {
+		pdfData.FullReport = cache.FullReport.String
+	} else if cache.Content != "" {
+		pdfData.FullReport = cache.Content
+	}
+	if cache.Metadata != nil {
+		_ = json.Unmarshal(cache.Metadata, &pdfData.DataPoints)
+	}
+
+	// ADR-100: Enrich with structured metrics + time series for richer PDF charts
+	enrichCtx, enrichCancel := context2.WithTimeout(ctx, 8*time.Second)
+	defer enrichCancel()
+	enrichment := h.buildReportEnrichment(enrichCtx, cache.Location)
+	if enrichment != nil && enrichment.Metrics != nil {
+		m := enrichment.Metrics
+		pdfData.StructuredMetrics = &pdf.MarketAnalysisMetrics{
+			MedianHomePrice:      m.MedianHomePrice,
+			MedianRent:           m.MedianRent,
+			CapRate:              m.CapRate,
+			MortgageRate30:       m.MortgageRate30,
+			GrossYield:           m.GrossYield,
+			PriceToRentRatio:     m.PriceToRentRatio,
+			PriceChangeYoY:       m.PriceChangeYoY,
+			RentChangeYoY:        m.RentChangeYoY,
+			VacancyRate:          m.VacancyRate,
+			UnemploymentRate:     m.UnemploymentRate,
+			EmploymentGrowthRate: m.EmploymentGrowthRate,
+			PopulationGrowthRate: m.PopulationGrowthRate,
+			DaysOnMarket:         m.DaysOnMarket,
+			DataDate:             m.DataDate,
+		}
+	}
+	if enrichment != nil && enrichment.TimeSeries != nil {
+		ts := enrichment.TimeSeries
+		pdfTS := &pdf.MarketAnalysisTimeSeries{}
+		for _, p := range ts.HomeValues {
+			pdfTS.HomeValues = append(pdfTS.HomeValues, pdf.MarketAnalysisTimeSeriesPoint{Date: p.Date, Value: p.Value})
+		}
+		for _, p := range ts.RentValues {
+			pdfTS.RentValues = append(pdfTS.RentValues, pdf.MarketAnalysisTimeSeriesPoint{Date: p.Date, Value: p.Value})
+		}
+		for _, p := range ts.MortgageRates {
+			pdfTS.MortgageRates = append(pdfTS.MortgageRates, pdf.MarketAnalysisTimeSeriesPoint{Date: p.Date, Value: p.Value})
+		}
+		pdfData.TimeSeries = pdfTS
+	}
+
+	pdfBytes, err := pdf.BuildMarketAnalysisPDF(ctx, pdfData)
+	if err != nil {
+		h.logger.Error("ExportAnalysisPDF: build failed", "error", err)
+		httputil.Error(w, http.StatusInternalServerError, "failed to generate pdf")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", `inline; filename="market_analysis.pdf"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(pdfBytes)
 }
 
 // ===============================

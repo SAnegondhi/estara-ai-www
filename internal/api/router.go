@@ -457,6 +457,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Get("/history", handlers.AI.GetAnalysisHistory)      // ADR-073
 		r.Get("/context", handlers.AI.GetAnalysisContext)       // ADR-073
 		r.Get("/report", handlers.AI.GetAnalysisReport)        // ADR-073
+		r.Post("/report/export", handlers.AI.ExportAnalysisPDF) // ADR-100 PDF export
 		r.Post("/preload", handlers.AI.PreloadReports)         // ADR-087 Phase 5
 		r.Post("/retry/{jobId}", handlers.AI.RetryAnalysis)
 		r.Post("/cancel/{jobId}", handlers.AI.CancelAnalysis)
