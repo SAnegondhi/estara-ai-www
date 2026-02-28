@@ -36,6 +36,7 @@ import (
 	"github.com/estara-ai/www/internal/services/market/aggregator"
 	"github.com/estara-ai/www/internal/services/market/economics"
 	"github.com/estara-ai/www/internal/services/market/timeseries"
+	"github.com/estara-ai/www/internal/services/market/trends"
 	"github.com/estara-ai/www/pkg/httputil"
 	"github.com/estara-ai/www/pkg/sse"
 )
@@ -61,6 +62,8 @@ type Handler struct {
 	marketData *aggregator.Aggregator
 	// MetroReader provides city snapshots including HUD FMR by bedroom count
 	metroReader *timeseries.MetroReader
+	// ADR-100: Market trends service for historical time series in report enrichment
+	trendsService *trends.Service
 }
 
 // NewHandler creates a new AI handler
@@ -116,6 +119,12 @@ func (h *Handler) WithMarketData(md *aggregator.Aggregator) *Handler {
 // WithMetroReader injects the metro reader for HUD FMR by bedroom count in quality-gate benchmarks.
 func (h *Handler) WithMetroReader(mr *timeseries.MetroReader) *Handler {
 	h.metroReader = mr
+	return h
+}
+
+// WithTrendsService injects the market trends service for ADR-100 report enrichment.
+func (h *Handler) WithTrendsService(svc *trends.Service) *Handler {
+	h.trendsService = svc
 	return h
 }
 
@@ -3365,7 +3374,122 @@ func (h *Handler) GetAnalysisReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ADR-100: Enrich response with structured market metrics + historical time series.
+	// Both calls are best-effort — failures are logged and skipped (never block the response).
+	enrichCtx, enrichCancel := context2.WithTimeout(ctx, 6*time.Second)
+	defer enrichCancel()
+	enrichment := h.buildReportEnrichment(enrichCtx, cache.Location)
+	if enrichment != nil {
+		resp["reportData"] = enrichment
+	}
+
 	httputil.JSON(w, http.StatusOK, resp)
+}
+
+// buildReportEnrichment fetches structured metrics + historical time series for ADR-100 report rendering.
+// Failures from either source are non-fatal — the function returns whatever data is available.
+func (h *Handler) buildReportEnrichment(ctx context.Context, location string) *agents.AnalysisReportEnrichment {
+	if h.marketData == nil && h.trendsService == nil {
+		return nil
+	}
+
+	// Parse "City, State" location string
+	parts := strings.SplitN(location, ",", 2)
+	city := strings.TrimSpace(parts[0])
+	state := ""
+	if len(parts) > 1 {
+		state = strings.TrimSpace(parts[1])
+	}
+
+	enrichment := &agents.AnalysisReportEnrichment{}
+
+	// Fetch market metrics (aggregator) + time series (trends) concurrently
+	type result struct {
+		metrics *agents.AnalysisMetrics
+		ts      *agents.AnalysisTimeSeries
+	}
+	ch := make(chan result, 1)
+
+	go func() {
+		r := result{}
+
+		if h.marketData != nil && city != "" {
+			md, err := h.marketData.GetMarketData(ctx, city, state)
+			if err != nil {
+				h.logger.Warn("report enrichment: aggregator fetch failed", "location", location, "error", err)
+			} else {
+				m := &agents.AnalysisMetrics{
+					MedianHomePrice:      md.MedianHomePrice,
+					MedianRent:           md.MedianRent,
+					CapRate:              md.CapRate,
+					MortgageRate30:       md.MortgageRate30,
+					PriceChangeYoY:       md.YearOverYearPct,
+					RentChangeYoY:        md.RentYearOverYear,
+					VacancyRate:          md.VacancyRate,
+					UnemploymentRate:     md.UnemploymentRate,
+					EmploymentGrowthRate: md.EmploymentGrowthRate,
+					PopulationGrowthRate: md.PopulationGrowthRate,
+					Confidence:           md.Confidence,
+					DataDate:             md.DataDate.Format("2006-01-02"),
+				}
+				if md.MedianHomePrice > 0 && md.MedianRent > 0 {
+					m.PriceToRentRatio = float64(md.MedianHomePrice) / (float64(md.MedianRent) * 12)
+					m.GrossYield = (float64(md.MedianRent) * 12) / float64(md.MedianHomePrice) * 100
+				}
+				if md.MedianDaysOnMarket != nil {
+					m.DaysOnMarket = *md.MedianDaysOnMarket
+				}
+				r.metrics = m
+			}
+		}
+
+		if h.trendsService != nil {
+			historical, err := h.trendsService.GetHistoricalData(ctx, location, 5)
+			if err != nil {
+				h.logger.Warn("report enrichment: trends fetch failed", "location", location, "error", err)
+			} else {
+				ts := &agents.AnalysisTimeSeries{}
+				for _, p := range historical.HomeValues {
+					ts.HomeValues = append(ts.HomeValues, agents.AnalysisTimeSeriesPoint{
+						Date:  p.Date.Format("2006-01"),
+						Value: p.Value,
+					})
+				}
+				for _, p := range historical.RentValues {
+					ts.RentValues = append(ts.RentValues, agents.AnalysisTimeSeriesPoint{
+						Date:  p.Date.Format("2006-01"),
+						Value: p.Value,
+					})
+				}
+				for _, p := range historical.MortgageRates {
+					ts.MortgageRates = append(ts.MortgageRates, agents.AnalysisTimeSeriesPoint{
+						Date:  p.Date.Format("2006-01"),
+						Value: p.Value,
+					})
+				}
+				r.ts = ts
+			}
+		}
+
+		ch <- r
+	}()
+
+	select {
+	case r := <-ch:
+		if r.metrics != nil {
+			enrichment.Metrics = r.metrics
+		}
+		if r.ts != nil {
+			enrichment.TimeSeries = r.ts
+		}
+	case <-ctx.Done():
+		h.logger.Warn("report enrichment: context deadline exceeded", "location", location)
+	}
+
+	if enrichment.Metrics == nil && enrichment.TimeSeries == nil {
+		return nil
+	}
+	return enrichment
 }
 
 // ===============================

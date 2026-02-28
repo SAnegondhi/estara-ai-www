@@ -103,7 +103,8 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 			WithInvestmentOptimizer(svc.InvestmentOptimizer).      // ADR-088 Phase 12
 			WithPropertyFinder(svc.PropertyFinder).                // ADR-088 Phase 12
 			WithMarketData(svc.MarketData).                        // Quality-gate market benchmarks
-			WithMetroReader(svc.MetroReader),                      // HUD FMR by bedroom count
+			WithMetroReader(svc.MetroReader).                      // HUD FMR by bedroom count
+			WithTrendsService(svc.TrendsService),                  // ADR-100: report enrichment (historical time series)
 		Portfolio:     portfolio.NewHandler(store, cfg),
 		Admin:         admin.NewHandler(store, redis, cfg, authMiddleware),
 		Cron:          cron.NewHandler(store, redis, cfg),
