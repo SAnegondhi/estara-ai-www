@@ -8,6 +8,8 @@ package pipeline
 import (
 	"strings"
 	"testing"
+
+	"github.com/xuri/excelize/v2"
 )
 
 // ptr helpers
@@ -377,6 +379,104 @@ func TestParseExtractionJSON_RentFieldsAreIndependent(t *testing.T) {
 	assertFloat(t, "brokerRentCurrent", result.BrokerRentCurrent, 5000)
 	assertNilFloat(t, "brokerRentProForma", result.BrokerRentProForma)
 	assertNilFloat(t, "brokerRentMarket", result.BrokerRentMarket)
+}
+
+// ---------------------------------------------------------------------------
+// excelToText tests
+// ---------------------------------------------------------------------------
+
+// makeMinimalXLSX creates a minimal valid XLSX file in memory using excelize.
+func makeMinimalXLSX(t *testing.T, sheetData map[string][][]string) []byte {
+	t.Helper()
+	f := excelize.NewFile()
+	defer f.Close()
+
+	first := true
+	for sheet, rows := range sheetData {
+		if first {
+			// Rename the default Sheet1 to the first sheet name.
+			if err := f.SetSheetName("Sheet1", sheet); err != nil {
+				t.Fatalf("rename sheet: %v", err)
+			}
+			first = false
+		} else {
+			f.NewSheet(sheet)
+		}
+		for r, row := range rows {
+			for c, val := range row {
+				cell, _ := excelize.CoordinatesToCellName(c+1, r+1)
+				f.SetCellValue(sheet, cell, val)
+			}
+		}
+	}
+
+	buf, err := f.WriteToBuffer()
+	if err != nil {
+		t.Fatalf("write xlsx: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestExcelToText_SingleSheet(t *testing.T) {
+	xlsx := makeMinimalXLSX(t, map[string][][]string{
+		"Financials": {
+			{"Asking Price", "$3,150,000"},
+			{"Cap Rate", "5.0%"},
+			{"Units", "25"},
+		},
+	})
+
+	text, err := excelToText(xlsx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(text, "Financials") {
+		t.Error("output should contain sheet name 'Financials'")
+	}
+	if !strings.Contains(text, "Asking Price") {
+		t.Error("output should contain 'Asking Price'")
+	}
+	if !strings.Contains(text, "3,150,000") {
+		t.Error("output should contain asking price value")
+	}
+	if !strings.Contains(text, "Cap Rate") {
+		t.Error("output should contain 'Cap Rate'")
+	}
+}
+
+func TestExcelToText_MultipleSheets(t *testing.T) {
+	xlsx := makeMinimalXLSX(t, map[string][][]string{
+		"Summary":  {{"Property", "Lund Pointe Apartments"}, {"Price", "3150000"}},
+		"RentRoll": {{"Unit", "Type", "Rent"}, {"101", "2bd/1ba", "1200"}},
+	})
+
+	text, err := excelToText(xlsx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(text, "Lund Pointe") {
+		t.Error("output should contain property name from Summary sheet")
+	}
+	if !strings.Contains(text, "RentRoll") || !strings.Contains(text, "Summary") {
+		t.Error("output should include both sheet names")
+	}
+}
+
+func TestExcelToText_EmptyFile_ReturnsError(t *testing.T) {
+	xlsx := makeMinimalXLSX(t, map[string][][]string{
+		"Sheet1": {},
+	})
+	_, err := excelToText(xlsx)
+	if err == nil {
+		t.Error("expected error for empty Excel file, got nil")
+	}
+}
+
+func TestExcelToText_InvalidBytes_ReturnsError(t *testing.T) {
+	_, err := excelToText([]byte("this is not an xlsx file"))
+	if err == nil {
+		t.Error("expected error for invalid xlsx bytes")
+	}
 }
 
 // ---------------------------------------------------------------------------

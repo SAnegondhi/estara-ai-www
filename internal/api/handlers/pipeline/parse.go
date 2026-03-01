@@ -14,6 +14,7 @@ import (
 
 	"github.com/estara-ai/www/internal/api/middleware"
 	"github.com/estara-ai/www/pkg/httputil"
+	"github.com/xuri/excelize/v2"
 )
 
 // ---------------------------------------------------------------------------
@@ -96,9 +97,15 @@ func (h *Handler) ParseDocument(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.Contains(ct, "pdf") || strings.HasSuffix(filename, ".pdf"):
 		mediaType = "application/pdf"
+	case strings.Contains(ct, "spreadsheetml") || strings.Contains(ct, "ms-excel") ||
+		strings.HasSuffix(filename, ".xlsx") || strings.HasSuffix(filename, ".xls"):
+		mediaType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case strings.Contains(ct, "text/plain") || strings.Contains(ct, "text/csv") ||
+		strings.HasSuffix(filename, ".txt") || strings.HasSuffix(filename, ".csv"):
+		mediaType = "text/plain"
 	default:
 		httputil.Error(w, http.StatusBadRequest,
-			"Only PDF files are supported. Please upload a PDF version of the broker OM.")
+			"Unsupported file type. Please upload a PDF, Excel (.xlsx/.xls), or text (.txt/.csv) file.")
 		return
 	}
 
@@ -211,6 +218,72 @@ type anthropicTextBlock struct {
 }
 
 func (h *Handler) extractDocumentFields(ctx context.Context, fileBytes []byte, mediaType string) (*parseDocumentResponse, error) {
+	switch mediaType {
+	case "application/pdf":
+		return h.extractFromPDF(ctx, fileBytes)
+	case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+		text, err := excelToText(fileBytes)
+		if err != nil {
+			return nil, fmt.Errorf("read Excel file: %w", err)
+		}
+		return h.extractFromText(ctx, text)
+	case "text/plain":
+		return h.extractFromText(ctx, string(fileBytes))
+	default:
+		return nil, fmt.Errorf("unsupported media type: %s", mediaType)
+	}
+}
+
+// excelToText converts an Excel workbook to a plain-text representation
+// that Claude can parse. Each sheet is rendered as a tab-delimited table.
+func excelToText(data []byte) (string, error) {
+	f, err := excelize.OpenReader(bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	var sb strings.Builder
+	for _, sheet := range f.GetSheetList() {
+		rows, err := f.GetRows(sheet)
+		if err != nil {
+			continue
+		}
+		// Skip entirely empty sheets.
+		hasContent := false
+		for _, row := range rows {
+			for _, cell := range row {
+				if strings.TrimSpace(cell) != "" {
+					hasContent = true
+					break
+				}
+			}
+			if hasContent {
+				break
+			}
+		}
+		if !hasContent {
+			continue
+		}
+
+		fmt.Fprintf(&sb, "=== Sheet: %s ===\n", sheet)
+		for _, row := range rows {
+			sb.WriteString(strings.Join(row, "\t"))
+			sb.WriteByte('\n')
+		}
+		sb.WriteByte('\n')
+	}
+
+	result := strings.TrimSpace(sb.String())
+	if result == "" {
+		return "", fmt.Errorf("Excel file contains no readable content")
+	}
+	return result, nil
+}
+
+// extractFromPDF sends a base64-encoded PDF to Claude using the native PDF
+// document block (requires anthropic-beta: pdfs-2024-09-25).
+func (h *Handler) extractFromPDF(ctx context.Context, fileBytes []byte) (*parseDocumentResponse, error) {
 	encoded := base64.StdEncoding.EncodeToString(fileBytes)
 
 	reqBody := anthropicDocumentRequest{
@@ -225,19 +298,43 @@ func (h *Handler) extractDocumentFields(ctx context.Context, fileBytes []byte, m
 						Type: "document",
 						Source: anthropicDocSource{
 							Type:      "base64",
-							MediaType: mediaType,
+							MediaType: "application/pdf",
 							Data:      encoded,
 						},
 					},
-					anthropicTextBlock{
-						Type: "text",
-						Text: extractionUserPrompt,
-					},
+					anthropicTextBlock{Type: "text", Text: extractionUserPrompt},
 				},
 			},
 		},
 	}
 
+	return h.callAnthropic(ctx, reqBody, true)
+}
+
+// extractFromText sends pre-extracted plain text (from .txt, .csv, or Excel)
+// to Claude as a text-only message — no document block, no PDF beta header.
+func (h *Handler) extractFromText(ctx context.Context, text string) (*parseDocumentResponse, error) {
+	userMsg := "The following is the content of a broker OM document:\n\n---\n" + text + "\n---\n\n" + extractionUserPrompt
+
+	reqBody := anthropicDocumentRequest{
+		Model:     "claude-sonnet-4-20250514",
+		MaxTokens: 2048,
+		System:    extractionSystemPrompt,
+		Messages: []anthropicDocumentMsg{
+			{
+				Role:    "user",
+				Content: []interface{}{anthropicTextBlock{Type: "text", Text: userMsg}},
+			},
+		},
+	}
+
+	return h.callAnthropic(ctx, reqBody, false)
+}
+
+// callAnthropic sends the request to the Anthropic Messages API and parses the
+// extraction JSON from the first text content block in the response.
+// setPDFBeta adds the anthropic-beta: pdfs-2024-09-25 header (PDF path only).
+func (h *Handler) callAnthropic(ctx context.Context, reqBody anthropicDocumentRequest, setPDFBeta bool) (*parseDocumentResponse, error) {
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -254,7 +351,9 @@ func (h *Handler) extractDocumentFields(ctx context.Context, fileBytes []byte, m
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", h.cfg.AI.AnthropicAPIKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
-	httpReq.Header.Set("anthropic-beta", "pdfs-2024-09-25")
+	if setPDFBeta {
+		httpReq.Header.Set("anthropic-beta", "pdfs-2024-09-25")
+	}
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
@@ -266,12 +365,10 @@ func (h *Handler) extractDocumentFields(ctx context.Context, fileBytes []byte, m
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
-
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("anthropic error %d: %s", resp.StatusCode, string(respBytes))
 	}
 
-	// Parse the Anthropic response envelope.
 	var envelope struct {
 		Content []struct {
 			Type string `json:"type"`
