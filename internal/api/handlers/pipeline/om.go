@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/estara-ai/www/internal/db/queries"
+	anthropic "github.com/estara-ai/www/internal/services/ai/anthropic"
 	"github.com/estara-ai/www/pkg/httputil"
 )
 
@@ -1672,6 +1673,11 @@ func (h *Handler) GeneratePipelineMemo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
+	// Disable write deadline so the long-running SSE stream is not cut off by
+	// the server's write_timeout (typically 60s).
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		httputil.InternalError(w, fmt.Errorf("streaming not supported"))
@@ -1691,21 +1697,43 @@ func (h *Handler) GeneratePipelineMemo(w http.ResponseWriter, r *http.Request) {
 
 	sendEvent("progress", `{"phase":"Generating decision memo...","pct":30}`)
 
-	// Call Claude for the memo (non-streaming for simplicity — stream the full result at once).
-	memo, err := h.callClaudeForMemo(r.Context(), prompt)
+	// Use streaming Claude API so the SSE connection stays alive during generation.
+	aiClient := anthropic.NewClient(anthropic.ClientConfig{
+		APIKey:    h.cfg.AI.AnthropicAPIKey,
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 8192,
+		Timeout:   240 * time.Second,
+	})
+
+	streamCh, err := aiClient.Stream(r.Context(), "", prompt)
 	if err != nil {
-		h.logger.Error("pipeline memo generation failed", "error", err, "deal_id", dealID)
+		h.logger.Error("pipeline memo stream start failed", "error", err, "deal_id", dealID)
 		errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
 		sendEvent("error", string(errJSON))
 		return
 	}
 
+	var memoBuf strings.Builder
+	for evt := range streamCh {
+		if evt.Error != nil {
+			h.logger.Error("pipeline memo stream error", "error", evt.Error.Message, "deal_id", dealID)
+			errJSON, _ := json.Marshal(map[string]string{"error": evt.Error.Message})
+			sendEvent("error", string(errJSON))
+			return
+		}
+		if evt.Type == "content_block_delta" && evt.Delta.Type == "text_delta" && evt.Delta.Text != "" {
+			memoBuf.WriteString(evt.Delta.Text)
+			tokenJSON, _ := json.Marshal(map[string]string{"text": evt.Delta.Text})
+			sendEvent("token", string(tokenJSON))
+		}
+	}
+
+	memo := memoBuf.String()
+
 	// Bump memo count on the deal.
 	_ = h.store.Q().BumpPipelineDealMemoCount(r.Context(), dealID)
 
-	sendEvent("progress", `{"phase":"Complete","pct":100}`)
-
-	// Send the memo content.
+	// Send the complete event with the full memo.
 	memoJSON, _ := json.Marshal(map[string]any{
 		"memo":   memo,
 		"dealId": dealID.String(),
