@@ -1742,15 +1742,30 @@ func (h *Handler) GeneratePipelineMemo(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildPipelineMemoPrompt constructs the Claude prompt for a pipeline decision memo.
+// buildPipelineMemoPrompt constructs the Claude prompt for a pipeline decision memo.
+// The memo is an investor decision document — it helps the investor decide whether to
+// proceed with a deal. It is NOT a critique of any offering memorandum. OM data (when
+// present) is one input among many; manual-entry deals are equally valid.
 func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("Generate a comprehensive investment decision memo for the following deal: **%s**\n\n", dealName))
-	sb.WriteString("## Properties in this Deal\n\n")
+	sb.WriteString("You are Estara's Investment Analyst. Generate a professional Investment Decision Memo ")
+	sb.WriteString("to help an investor decide whether to proceed with a pipeline deal.\n\n")
+	sb.WriteString("ROLE: Decision support. Frame everything as factors for the investor to weigh — ")
+	sb.WriteString("not as advice. Use probabilistic language: \"may\", \"could\", \"data indicates\".\n\n")
+	sb.WriteString("IMPORTANT: This memo is about the INVESTMENT OPPORTUNITY, not about any document. ")
+	sb.WriteString("If OM data is available it is one data source; if not, work with what you have.\n\n")
+	sb.WriteString("---\n\n")
+	sb.WriteString(fmt.Sprintf("# Deal: %s\n\n", dealName))
+	sb.WriteString(fmt.Sprintf("**Properties in deal**: %d\n\n", len(props)))
+
+	hasOMData := false
 
 	for i, p := range props {
-		sb.WriteString(fmt.Sprintf("### Property %d: %s\n", i+1, p.Address))
+		sb.WriteString(fmt.Sprintf("## Property %d\n\n", i+1))
 
+		// Core identification
+		sb.WriteString(fmt.Sprintf("**Address**: %s\n", p.Address))
 		if p.City.Valid && p.State.Valid {
 			sb.WriteString(fmt.Sprintf("**Location**: %s, %s\n", p.City.String, p.State.String))
 		}
@@ -1759,26 +1774,6 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 		}
 		if p.Units.Valid {
 			sb.WriteString(fmt.Sprintf("**Units**: %d\n", p.Units.Int32))
-		}
-		if p.AskingPrice.Valid {
-			f, _ := p.AskingPrice.Float64Value()
-			sb.WriteString(fmt.Sprintf("**Asking Price**: $%.0f\n", f.Float64))
-		}
-		if p.TargetPrice.Valid {
-			f, _ := p.TargetPrice.Float64Value()
-			sb.WriteString(fmt.Sprintf("**Target Price**: $%.0f\n", f.Float64))
-		}
-		if p.BrokerRent.Valid {
-			f, _ := p.BrokerRent.Float64Value()
-			sb.WriteString(fmt.Sprintf("**Broker Rent**: $%.0f/mo\n", f.Float64))
-		}
-		if p.SystemRent.Valid {
-			f, _ := p.SystemRent.Float64Value()
-			sb.WriteString(fmt.Sprintf("**System Rent Estimate**: $%.0f/mo\n", f.Float64))
-		}
-		if p.BrokerCapRate.Valid {
-			f, _ := p.BrokerCapRate.Float64Value()
-			sb.WriteString(fmt.Sprintf("**Broker Cap Rate**: %.2f%%\n", f.Float64*100))
 		}
 		if p.YearBuilt.Valid {
 			sb.WriteString(fmt.Sprintf("**Year Built**: %d\n", p.YearBuilt.Int32))
@@ -1790,168 +1785,159 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 			f, _ := p.CurrentOccupancy.Float64Value()
 			sb.WriteString(fmt.Sprintf("**Occupancy**: %.0f%%\n", f.Float64*100))
 		}
-		if p.DownPaymentPct.Valid {
-			f, _ := p.DownPaymentPct.Float64Value()
-			sb.WriteString(fmt.Sprintf("**Down Payment**: %.0f%%\n", f.Float64*100))
+
+		// Pricing
+		sb.WriteString("\n**Pricing**\n")
+		if p.AskingPrice.Valid {
+			f, _ := p.AskingPrice.Float64Value()
+			sb.WriteString(fmt.Sprintf("- Asking Price: $%.0f\n", f.Float64))
 		}
-		if p.InterestRate.Valid {
-			f, _ := p.InterestRate.Float64Value()
-			sb.WriteString(fmt.Sprintf("**Interest Rate**: %.2f%%\n", f.Float64*100))
+		if p.TargetPrice.Valid {
+			f, _ := p.TargetPrice.Float64Value()
+			sb.WriteString(fmt.Sprintf("- Investor Target Price: $%.0f\n", f.Float64))
 		}
 
-		// ADR-107: prefer om_validated_data (OM + user-supplied answers merged) over raw om_data.
+		// Income / returns
+		sb.WriteString("\n**Income & Returns**\n")
+		if p.BrokerRent.Valid {
+			f, _ := p.BrokerRent.Float64Value()
+			sb.WriteString(fmt.Sprintf("- Stated Monthly Rent: $%.0f\n", f.Float64))
+		}
+		if p.SystemRent.Valid {
+			f, _ := p.SystemRent.Float64Value()
+			sb.WriteString(fmt.Sprintf("- System Rent Estimate: $%.0f/mo\n", f.Float64))
+		}
+		if p.BrokerCapRate.Valid {
+			f, _ := p.BrokerCapRate.Float64Value()
+			sb.WriteString(fmt.Sprintf("- Stated Cap Rate: %.2f%%\n", f.Float64*100))
+		}
+		// Financing assumptions
+		if p.DownPaymentPct.Valid || p.InterestRate.Valid {
+			sb.WriteString("\n**Financing Assumptions**\n")
+			if p.DownPaymentPct.Valid {
+				f, _ := p.DownPaymentPct.Float64Value()
+				sb.WriteString(fmt.Sprintf("- Down Payment: %.0f%%\n", f.Float64*100))
+			}
+			if p.InterestRate.Valid {
+				f, _ := p.InterestRate.Float64Value()
+				sb.WriteString(fmt.Sprintf("- Interest Rate: %.2f%%\n", f.Float64*100))
+			}
+		}
+
+		// Notes
+		if p.Notes.Valid && p.Notes.String != "" {
+			sb.WriteString(fmt.Sprintf("\n**Investor Notes**: %s\n", p.Notes.String))
+		}
+
+		// Extract key financials from OM data if available — used for appendix only.
 		omForMemo := p.OmData
 		if len(p.OmValidatedData) > 0 && string(p.OmValidatedData) != "null" {
 			omForMemo = p.OmValidatedData
 		}
-
-		// ADR-108: extract propertyType from om_data for type-specific guidance.
-		var omParsed struct {
-			PropertyType              *string  `json:"propertyType"`
-			NOISummaryStated          *float64 `json:"noiSummaryStated"`
-			NOIComputedFromStatement  *float64 `json:"noiComputedFromStatement"`
-			TenantSchedule            []struct {
-				TenantName  string   `json:"tenantName"`
-				AnnualRent  *float64 `json:"annualRent"`
-				LeaseExpiry *string  `json:"leaseExpiry"`
-			} `json:"tenantSchedule"`
-			BrokerMarket *struct {
-				VacancyRate   *float64 `json:"vacancyRate"`
-				RentGrowthYoY *float64 `json:"rentGrowthYoY"`
-				SubmarketName *string  `json:"submarketName"`
-			} `json:"brokerMarket"`
-		}
-		propTypeForMemo := ""
-		if p.PropertyType.Valid {
-			propTypeForMemo = p.PropertyType.String
-		}
-		if len(omForMemo) > 2 {
-			if jerr := json.Unmarshal(omForMemo, &omParsed); jerr == nil {
-				if omParsed.PropertyType != nil && propTypeForMemo == "" {
-					propTypeForMemo = *omParsed.PropertyType
+		if len(omForMemo) > 2 && string(omForMemo) != "null" {
+			hasOMData = true
+			// Extract a compact summary of OM financials rather than dumping raw JSON.
+			var om struct {
+				AskingPrice          *float64 `json:"askingPrice"`
+				BrokerNOI            *float64 `json:"brokerNOI"`
+				BrokerNOIStabilized  *float64 `json:"brokerNOIStabilized"`
+				CapRate              *float64 `json:"capRate"`
+				CapRateProForma      *float64 `json:"capRateProForma"`
+				Occupancy            *float64 `json:"occupancy"`
+				TotalExpenses        *float64 `json:"totalExpenses"`
+				PropertyDescription  *string  `json:"propertyDescription"`
+				InvestmentHighlights []string `json:"investmentHighlights"`
+				RentByUnitType       []struct {
+					UnitType    *string  `json:"unitType"`
+					Count       *int     `json:"count"`
+					RentCurrent *float64 `json:"rentCurrent"`
+					RentMarket  *float64 `json:"rentMarket"`
+				} `json:"rentByUnitType"`
+				OmDate *string `json:"omDate"`
+			}
+			if jerr := json.Unmarshal(omForMemo, &om); jerr == nil {
+				sb.WriteString("\n**Additional data from offering document**\n")
+				if om.OmDate != nil && *om.OmDate != "" {
+					sb.WriteString(fmt.Sprintf("- Document date: %s\n", *om.OmDate))
 				}
-			}
-		}
-
-		if len(omForMemo) > 0 && string(omForMemo) != "null" {
-			label := "Offering Memorandum Data"
-			if len(p.OmValidatedData) > 0 && string(p.OmValidatedData) != "null" {
-				label = "Offering Memorandum Data (validated + user-corrected)"
-			}
-			sb.WriteString(fmt.Sprintf("\n**%s**:\n```json\n", label))
-			// Truncate large OM blobs to keep the prompt within a manageable token budget.
-			// Most critical fields (askingPrice, capRate, NOI, rentByUnitType) appear early in the JSON.
-			const maxOMBytes = 3000
-			if len(omForMemo) > maxOMBytes {
-				sb.Write(omForMemo[:maxOMBytes])
-				sb.WriteString("\n... [truncated for brevity]\n")
-			} else {
-				sb.Write(omForMemo)
-			}
-			sb.WriteString("\n```\n")
-		}
-
-		// Type-specific analysis instructions injected inline per property (ADR-108).
-		switch propTypeForMemo {
-		case "multifamily", "student_housing":
-			sb.WriteString("\n**Multifamily-specific analysis required:**\n")
-			sb.WriteString("- NOI cross-check: if `noiSummaryStated` and `noiComputedFromStatement` differ, flag the gap in basis points and explain what it means for the stated cap rate.\n")
-			sb.WriteString("- Rent roll: compare `rentCurrent` vs `rentProForma` vs `rentMarket` per unit type — quantify the rent-to-market upside or risk.\n")
-			sb.WriteString("- Vacancy: if `vacancyLabel` = 'bad debt', note this is credit loss not physical vacancy — adjust NOI sensitivity.\n")
-			sb.WriteString("- Expense ratio: if `expenseRatioPct` available, benchmark against 35-45% norm for multifamily.\n")
-			sb.WriteString("- Value-add: if `valueAdd` present, calculate total renovation cost vs. rent premium capture.\n")
-		case "nnn", "retail", "office":
-			sb.WriteString("\n**NNN/Commercial-specific analysis required:**\n")
-			sb.WriteString("- Tenant schedule: evaluate credit quality, lease concentration risk (top tenant pct of total rent), nearest lease expiry.\n")
-			sb.WriteString("- WALR: weighted average lease remaining — quantify re-leasing risk if < 5 years.\n")
-			sb.WriteString("- Escalations: annual rent bumps vs. market inflation — does the income stream keep pace?\n")
-			sb.WriteString("- Cap rate vs. tenant risk: NNN with speculative tenants should trade at higher cap than investment-grade.\n")
-			if len(omParsed.TenantSchedule) > 0 {
-				total := 0.0
-				for _, t := range omParsed.TenantSchedule {
-					if t.AnnualRent != nil {
-						total += *t.AnnualRent
+				if om.BrokerNOI != nil {
+					sb.WriteString(fmt.Sprintf("- Year-1 NOI (document): $%.0f\n", *om.BrokerNOI))
+				}
+				if om.BrokerNOIStabilized != nil {
+					sb.WriteString(fmt.Sprintf("- Stabilized NOI (document): $%.0f\n", *om.BrokerNOIStabilized))
+				}
+				if om.TotalExpenses != nil {
+					sb.WriteString(fmt.Sprintf("- Total Expenses (document): $%.0f\n", *om.TotalExpenses))
+				}
+				if om.CapRateProForma != nil {
+					sb.WriteString(fmt.Sprintf("- Pro Forma Cap Rate (document): %.2f%%\n", *om.CapRateProForma*100))
+				}
+				if om.Occupancy != nil {
+					sb.WriteString(fmt.Sprintf("- Occupancy (document): %.0f%%\n", *om.Occupancy*100))
+				}
+				if len(om.RentByUnitType) > 0 {
+					sb.WriteString("- Rent roll summary:\n")
+					for _, u := range om.RentByUnitType {
+						ut := "unit"
+						if u.UnitType != nil {
+							ut = *u.UnitType
+						}
+						line := fmt.Sprintf("  - %s", ut)
+						if u.Count != nil {
+							line += fmt.Sprintf(" (%d units)", *u.Count)
+						}
+						if u.RentCurrent != nil {
+							line += fmt.Sprintf(": current $%.0f/mo", *u.RentCurrent)
+						}
+						if u.RentMarket != nil {
+							line += fmt.Sprintf(", market $%.0f/mo", *u.RentMarket)
+						}
+						sb.WriteString(line + "\n")
 					}
 				}
-				if total > 0 {
-					sb.WriteString(fmt.Sprintf("- Total tenant schedule annual rent: $%.0f\n", total))
+				if om.PropertyDescription != nil && *om.PropertyDescription != "" {
+					desc := *om.PropertyDescription
+					if len(desc) > 300 {
+						desc = desc[:300] + "…"
+					}
+					sb.WriteString(fmt.Sprintf("- Property description: %s\n", desc))
 				}
 			}
-		case "industrial", "warehouse":
-			sb.WriteString("\n**Industrial/Warehouse-specific analysis required:**\n")
-			sb.WriteString("- Physical spec: clear height, dock doors, column spacing relative to market standard for the tenant use case.\n")
-			sb.WriteString("- Lease structure: gross vs. NNN — landlord exposure to opex.\n")
-			sb.WriteString("- Location: last-mile vs. bulk distribution — cap rate benchmark differs by 50-150bps.\n")
-		case "mixed_use":
-			sb.WriteString("\n**Mixed-use-specific analysis required:**\n")
-			sb.WriteString("- Residential vs. commercial income split — which component drives value?\n")
-			sb.WriteString("- Commercial vacancy risk: retail turnover in mixed-use is higher than pure-play.\n")
-			sb.WriteString("- Zoning restrictions on residential-to-commercial conversion (if value-add angle).\n")
-		case "self_storage":
-			sb.WriteString("\n**Self-storage-specific analysis required:**\n")
-			sb.WriteString("- Occupancy trend: self-storage typically stabilizes at 85-92% — flag if stated occupancy is outside this range.\n")
-			sb.WriteString("- Climate-controlled mix: premium units should trade at higher $/sqft.\n")
-			sb.WriteString("- Revenue per available square foot vs. local market.\n")
-		case "portfolio":
-			sb.WriteString("\n**Portfolio-specific analysis required:**\n")
-			sb.WriteString("- Portfolio discount: blended cap rate may embed poor performers — identify outliers in individual property NOI/cap rates.\n")
-			sb.WriteString("- Geographic/type concentration risk.\n")
-			sb.WriteString("- Are all properties available individually, or is portfolio acquisition required?\n")
-		}
-		if omParsed.BrokerMarket != nil {
-			sb.WriteString("\n**Broker market context stated in OM:**\n")
-			if omParsed.BrokerMarket.SubmarketName != nil {
-				sb.WriteString(fmt.Sprintf("- Submarket: %s\n", *omParsed.BrokerMarket.SubmarketName))
-			}
-			if omParsed.BrokerMarket.VacancyRate != nil {
-				sb.WriteString(fmt.Sprintf("- Broker-stated vacancy rate: %.1f%%\n", *omParsed.BrokerMarket.VacancyRate*100))
-			}
-			if omParsed.BrokerMarket.RentGrowthYoY != nil {
-				sb.WriteString(fmt.Sprintf("- Broker-stated rent growth YoY: %.1f%%\n", *omParsed.BrokerMarket.RentGrowthYoY*100))
-			}
-			sb.WriteString("- Cross-check broker market claims against system market data in your analysis.\n")
 		}
 
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString(`
-## Memo Structure
+	// Memo structure instructions
+	sb.WriteString("---\n\n")
+	sb.WriteString("## Memo Structure\n\n")
+	sb.WriteString("Write the Investment Decision Memo with these sections:\n\n")
+	sb.WriteString("### Executive Summary\n")
+	sb.WriteString("2-3 sentences. What is this deal and what is the core investment question the investor needs to answer.\n\n")
+	sb.WriteString("### Investment Thesis\n")
+	sb.WriteString("What would need to be true for this to be a compelling investment. The value drivers and upside case.\n\n")
+	sb.WriteString("### Financial Snapshot\n")
+	sb.WriteString("Key numbers: pricing, income, cap rate, estimated cash flow. ")
+	sb.WriteString("If both stated rent and system rent estimate are available, note the variance and what it implies for underwriting. ")
+	sb.WriteString("If financing assumptions are present, sketch the debt service and cash-on-cash range.\n\n")
+	sb.WriteString("### Market & Location\n")
+	sb.WriteString("What the location tells us about demand, rent growth potential, and exit optionality. Be specific about the city/market if stated.\n\n")
+	sb.WriteString("### Risk Factors\n")
+	sb.WriteString("3-5 specific risks. Rate each Low / Medium / High. Include market risk, property risk, financing risk, and execution risk as applicable.\n\n")
+	sb.WriteString("### Decision Criteria\n")
+	sb.WriteString("The 2-3 things the investor needs to verify or negotiate before proceeding. Frame as questions, not directives.\n\n")
+	sb.WriteString("### Verdict\n")
+	sb.WriteString("One of: **Proceed** / **Negotiate** / **Pass** — with a concise rationale and any specific conditions.\n\n")
 
-Write a decision memo with these sections:
+	if hasOMData {
+		sb.WriteString("### Appendix: Offering Document Notes\n")
+		sb.WriteString("Brief observations on data quality and any figures that warrant independent verification. ")
+		sb.WriteString("Keep this section short — it is an appendix, not the focus of the memo.\n\n")
+	}
 
-### Executive Summary
-Brief verdict on the deal. Investment thesis or red flags.
-
-### Property Analysis
-For each property: location, physical condition assessment, market positioning.
-
-### Financial Analysis
-Review asking price vs. target price. Analyze rental income and cap rate.
-
-### Broker vs. System Underwriting
-Compare broker-stated figures against system conservative underwriting:
-- Broker cap rate vs. system cap rate (note delta in basis points)
-- Broker rent vs. system rent estimate (note variance)
-- Broker NOI vs. system NOI (if available from OM)
-- Implications of any gap (risk premium, negotiation leverage)
-
-### OM Critique
-(Include only if OM data is present for any property)
-Assess the quality and reliability of the broker's offering memorandum:
-- Are investment highlights substantiated by the financials?
-- Are expense assumptions reasonable vs. market norms?
-- Are market claims verifiable?
-- Notable omissions or red flags in the OM presentation?
-
-### Risk Assessment
-Key risks: market, property, financing, execution. Rate each: Low / Medium / High.
-
-### Recommendation
-Clear verdict: Proceed / Pass / Negotiate. Specific conditions or next steps.
-
----
-Write the memo in professional but direct prose. Use headers and bullet points. Be specific — cite actual numbers from the data above.`)
+	sb.WriteString("---\n")
+	sb.WriteString("Write in professional prose. Use headers and brief bullet points where appropriate. ")
+	sb.WriteString("Cite specific numbers. Be direct — this memo should be actionable in under 5 minutes of reading.")
 
 	return sb.String()
 }
