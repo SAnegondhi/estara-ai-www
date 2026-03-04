@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -59,51 +60,74 @@ type updateDealRequest struct {
 	Notes             *string `json:"notes"`
 	PortfolioExcluded *bool   `json:"portfolioExcluded"`
 	ClosedOutcome     *string `json:"closedOutcome"` // ADR-104: acquired | rejected | other
+	InputComplete     *bool   `json:"inputComplete"` // ADR-107: deal ready for analysis
 }
 
 type createPropertyRequest struct {
-	Address          string          `json:"address"`
-	City             string          `json:"city"`
-	State            string          `json:"state"`
-	Zip              string          `json:"zip"`
-	PropertyType     string          `json:"propertyType"`
-	Beds             *float64        `json:"beds"`
-	Baths            *float64        `json:"baths"`
-	Sqft             *int32          `json:"sqft"`
-	YearBuilt        *int32          `json:"yearBuilt"`
-	Units            *int32          `json:"units"`
-	AskingPrice      *float64        `json:"askingPrice"`
-	TargetPrice      *float64        `json:"targetPrice"`
-	DownPaymentPct   *float64        `json:"downPaymentPct"`
-	FinancingType    string          `json:"financingType"`
-	InterestRate     *float64        `json:"interestRate"`
-	BrokerRent       *float64        `json:"brokerRent"`
-	SystemRent       *float64        `json:"systemRent"`
-	CurrentOccupancy *float64        `json:"currentOccupancy"`
-	ExpenseOverrides json.RawMessage `json:"expenseOverrides"`
-	SourceType       string          `json:"sourceType"`
+	Address             string          `json:"address"`
+	City                string          `json:"city"`
+	State               string          `json:"state"`
+	Zip                 string          `json:"zip"`
+	PropertyType        string          `json:"propertyType"`
+	Beds                *float64        `json:"beds"`
+	Baths               *float64        `json:"baths"`
+	Sqft                *int32          `json:"sqft"`
+	YearBuilt           *int32          `json:"yearBuilt"`
+	Units               *int32          `json:"units"`
+	AskingPrice         *float64        `json:"askingPrice"`
+	TargetPrice         *float64        `json:"targetPrice"`
+	DownPaymentPct      *float64        `json:"downPaymentPct"`
+	FinancingType       string          `json:"financingType"`
+	InterestRate        *float64        `json:"interestRate"`
+	BrokerRent          *float64        `json:"brokerRent"`
+	SystemRent          *float64        `json:"systemRent"`
+	CurrentOccupancy    *float64        `json:"currentOccupancy"`
+	ExpenseOverrides    json.RawMessage `json:"expenseOverrides"`
+	UnitMix             json.RawMessage `json:"unitMix"`
+	LotSqft             *int32          `json:"lotSqft"`
+	BuildingCount       *int32          `json:"buildingCount"`
+	Notes               string          `json:"notes"`
+	SourceType          string          `json:"sourceType"`
+	// ADR-107 Phase 2: commercial property fields
+	LeaseType           string          `json:"leaseType"`
+	TenantCount         *int32          `json:"tenantCount"`
+	AnchorTenant        string          `json:"anchorTenant"`
+	WeightedAvgLeaseYrs *float64        `json:"weightedAvgLeaseYrs"`
+	CommercialSqft      *int32          `json:"commercialSqft"`
+	CommercialMix       json.RawMessage `json:"commercialMix"`
 }
 
 type updatePropertyRequest struct {
-	Address          *string          `json:"address"`
-	City             *string          `json:"city"`
-	State            *string          `json:"state"`
-	Zip              *string          `json:"zip"`
-	PropertyType     *string          `json:"propertyType"`
-	Beds             *float64         `json:"beds"`
-	Baths            *float64         `json:"baths"`
-	Sqft             *int32           `json:"sqft"`
-	YearBuilt        *int32           `json:"yearBuilt"`
-	Units            *int32           `json:"units"`
-	AskingPrice      *float64         `json:"askingPrice"`
-	TargetPrice      *float64         `json:"targetPrice"`
-	DownPaymentPct   *float64         `json:"downPaymentPct"`
-	FinancingType    *string          `json:"financingType"`
-	InterestRate     *float64         `json:"interestRate"`
-	BrokerRent       *float64         `json:"brokerRent"`
-	SystemRent       *float64         `json:"systemRent"`
-	CurrentOccupancy *float64         `json:"currentOccupancy"`
-	ExpenseOverrides *json.RawMessage `json:"expenseOverrides"`
+	Address             *string          `json:"address"`
+	City                *string          `json:"city"`
+	State               *string          `json:"state"`
+	Zip                 *string          `json:"zip"`
+	PropertyType        *string          `json:"propertyType"`
+	Beds                *float64         `json:"beds"`
+	Baths               *float64         `json:"baths"`
+	Sqft                *int32           `json:"sqft"`
+	YearBuilt           *int32           `json:"yearBuilt"`
+	Units               *int32           `json:"units"`
+	AskingPrice         *float64         `json:"askingPrice"`
+	TargetPrice         *float64         `json:"targetPrice"`
+	DownPaymentPct      *float64         `json:"downPaymentPct"`
+	FinancingType       *string          `json:"financingType"`
+	InterestRate        *float64         `json:"interestRate"`
+	BrokerRent          *float64         `json:"brokerRent"`
+	SystemRent          *float64         `json:"systemRent"`
+	CurrentOccupancy    *float64         `json:"currentOccupancy"`
+	ExpenseOverrides    *json.RawMessage `json:"expenseOverrides"`
+	UnitMix             *json.RawMessage `json:"unitMix"`
+	LotSqft             *int32           `json:"lotSqft"`
+	BuildingCount       *int32           `json:"buildingCount"`
+	Notes               *string          `json:"notes"`
+	// ADR-107 Phase 2: commercial property fields
+	LeaseType           *string          `json:"leaseType"`
+	TenantCount         *int32           `json:"tenantCount"`
+	AnchorTenant        *string          `json:"anchorTenant"`
+	WeightedAvgLeaseYrs *float64         `json:"weightedAvgLeaseYrs"`
+	CommercialSqft      *int32           `json:"commercialSqft"`
+	CommercialMix       *json.RawMessage `json:"commercialMix"`
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +169,336 @@ func numericFromFloatPtr(f *float64) pgtype.Numeric {
 	return numericFromFloat(f)
 }
 
+// int4FromFloat64Ptr converts *float64 → pgtype.Int4 (truncates decimal).
+func int4FromFloat64Ptr(f *float64) pgtype.Int4 {
+	if f == nil {
+		return pgtype.Int4{Valid: false}
+	}
+	return pgtype.Int4{Int32: int32(*f), Valid: true}
+}
+
+// omCoalesceFloat returns the first non-nil *float64, or nil if both are nil.
+func omCoalesceFloat(a, b *float64) *float64 {
+	if a != nil {
+		return a
+	}
+	return b
+}
+
+// int4FromGoIntPtr converts *int → pgtype.Int4.
+func int4FromGoIntPtr(i *int) pgtype.Int4 {
+	if i == nil {
+		return pgtype.Int4{Valid: false}
+	}
+	return pgtype.Int4{Int32: int32(*i), Valid: true}
+}
+
+// ---------------------------------------------------------------------------
+// Response mappers — camelCase JSON for TypeScript client.
+// sqlc generates snake_case json tags; these structs provide camelCase.
+// []byte JSONB fields are wrapped in json.RawMessage (not base64).
+// ---------------------------------------------------------------------------
+
+// numericToFloat converts pgtype.Numeric to *float64.
+func numericToFloat(n pgtype.Numeric) *float64 {
+	if !n.Valid {
+		return nil
+	}
+	b, err := n.MarshalJSON()
+	if err != nil || string(b) == "null" {
+		return nil
+	}
+	var f float64
+	if err := json.Unmarshal(b, &f); err != nil {
+		return nil
+	}
+	return &f
+}
+
+// int4ToPtr converts pgtype.Int4 to *int32.
+func int4ToPtr(n pgtype.Int4) *int32 {
+	if !n.Valid {
+		return nil
+	}
+	return &n.Int32
+}
+
+// textToPtr converts pgtype.Text to *string.
+func textToPtr(t pgtype.Text) *string {
+	if !t.Valid {
+		return nil
+	}
+	s := t.String
+	return &s
+}
+
+// rawJSONOrNil returns nil for empty/null JSONB, else json.RawMessage.
+func rawJSONOrNil(b []byte) json.RawMessage {
+	if len(b) == 0 || string(b) == "null" {
+		return nil
+	}
+	return json.RawMessage(b)
+}
+
+// pipelineDealResponse is the camelCase JSON response for deal endpoints.
+type pipelineDealResponse struct {
+	ID                string     `json:"id"`
+	UserID            string     `json:"userId"`
+	Name              string     `json:"name"`
+	Source            string     `json:"source"`
+	Status            string     `json:"status"`
+	Notes             *string    `json:"notes"`
+	PropertyCount     int32      `json:"propertyCount"`
+	MemoCount         int32      `json:"memoCount"`
+	PortfolioExcluded bool       `json:"portfolioExcluded"`
+	LastActivityAt    *time.Time `json:"lastActivityAt"`
+	ClosedOutcome     *string    `json:"closedOutcome"`
+	InputComplete     bool       `json:"inputComplete"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	UpdatedAt         time.Time  `json:"updatedAt"`
+}
+
+func mapDealToResponse(d queries.PipelineDeal) pipelineDealResponse {
+	var lastActivityAt *time.Time
+	if d.LastActivityAt.Valid {
+		t := d.LastActivityAt.Time
+		lastActivityAt = &t
+	}
+	return pipelineDealResponse{
+		ID:                d.ID.String(),
+		UserID:            d.UserID,
+		Name:              d.Name,
+		Source:            d.Source,
+		Status:            d.Status,
+		Notes:             textToPtr(d.Notes),
+		PropertyCount:     d.PropertyCount,
+		MemoCount:         d.MemoCount,
+		PortfolioExcluded: d.PortfolioExcluded,
+		LastActivityAt:    lastActivityAt,
+		ClosedOutcome:     textToPtr(d.ClosedOutcome),
+		InputComplete:     d.InputComplete,
+		CreatedAt:         d.CreatedAt,
+		UpdatedAt:         d.UpdatedAt,
+	}
+}
+
+// pipelinePropertyResponse is the camelCase JSON response for property endpoints.
+// OmFileData is excluded (binary blob, never sent to client).
+type pipelinePropertyResponse struct {
+	ID                   string          `json:"id"`
+	PipelineDealID       string          `json:"pipelineDealId"`
+	Address              string          `json:"address"`
+	City                 *string         `json:"city"`
+	State                *string         `json:"state"`
+	Zip                  *string         `json:"zip"`
+	PropertyType         *string         `json:"propertyType"`
+	Beds                 *float64        `json:"beds"`
+	Baths                *float64        `json:"baths"`
+	Sqft                 *int32          `json:"sqft"`
+	YearBuilt            *int32          `json:"yearBuilt"`
+	Units                *int32          `json:"units"`
+	AskingPrice          *float64        `json:"askingPrice"`
+	TargetPrice          *float64        `json:"targetPrice"`
+	DownPaymentPct       *float64        `json:"downPaymentPct"`
+	FinancingType        *string         `json:"financingType"`
+	InterestRate         *float64        `json:"interestRate"`
+	BrokerRent           *float64        `json:"brokerRent"`
+	SystemRent           *float64        `json:"systemRent"`
+	CurrentOccupancy     *float64        `json:"currentOccupancy"`
+	ExpenseOverrides     json.RawMessage `json:"expenseOverrides"`
+	UnitMix              json.RawMessage `json:"unitMix"`
+	LotSqft              *int32          `json:"lotSqft"`
+	BuildingCount        *int32          `json:"buildingCount"`
+	Notes                *string         `json:"notes"`
+	SourceType           string          `json:"sourceType"`
+	OmData               json.RawMessage `json:"omData"`
+	BrokerCapRate        *float64        `json:"brokerCapRate"`
+	OmFilePath           *string         `json:"omFilePath"`
+	OmFileName           *string         `json:"omFileName"`
+	OmFileType           *string         `json:"omFileType"`
+	OmValidationStatus   string          `json:"omValidationStatus"`
+	OmQuestions          json.RawMessage `json:"omQuestions"`
+	OmValidatedData      json.RawMessage `json:"omValidatedData"`
+	PropertyCompleteness string          `json:"propertyCompleteness"`
+	LeaseType            *string         `json:"leaseType"`
+	TenantCount          *int32          `json:"tenantCount"`
+	AnchorTenant         *string         `json:"anchorTenant"`
+	WeightedAvgLeaseYrs  *float64        `json:"weightedAvgLeaseYrs"`
+	CommercialSqft       *int32          `json:"commercialSqft"`
+	CommercialMix        json.RawMessage `json:"commercialMix"`
+	// ADR-108: physical detail columns from type-aware OM extraction
+	YearRenovated        *int32          `json:"yearRenovated"`
+	Stories              *int32          `json:"stories"`
+	Zoning               *string         `json:"zoning"`
+	Construction         *string         `json:"construction"`
+	ParkingSpaces        *int32          `json:"parkingSpaces"`
+	CreatedAt            time.Time       `json:"createdAt"`
+	UpdatedAt            time.Time       `json:"updatedAt"`
+}
+
+func mapPropertyToResponse(p queries.PipelineProperty) pipelinePropertyResponse {
+	return pipelinePropertyResponse{
+		ID:                   p.ID.String(),
+		PipelineDealID:       p.PipelineDealID.String(),
+		Address:              p.Address,
+		City:                 textToPtr(p.City),
+		State:                textToPtr(p.State),
+		Zip:                  textToPtr(p.Zip),
+		PropertyType:         textToPtr(p.PropertyType),
+		Beds:                 numericToFloat(p.Beds),
+		Baths:                numericToFloat(p.Baths),
+		Sqft:                 int4ToPtr(p.Sqft),
+		YearBuilt:            int4ToPtr(p.YearBuilt),
+		Units:                int4ToPtr(p.Units),
+		AskingPrice:          numericToFloat(p.AskingPrice),
+		TargetPrice:          numericToFloat(p.TargetPrice),
+		DownPaymentPct:       numericToFloat(p.DownPaymentPct),
+		FinancingType:        textToPtr(p.FinancingType),
+		InterestRate:         numericToFloat(p.InterestRate),
+		BrokerRent:           numericToFloat(p.BrokerRent),
+		SystemRent:           numericToFloat(p.SystemRent),
+		CurrentOccupancy:     numericToFloat(p.CurrentOccupancy),
+		ExpenseOverrides:     rawJSONOrNil(p.ExpenseOverrides),
+		UnitMix:              rawJSONOrNil(p.UnitMix),
+		LotSqft:              int4ToPtr(p.LotSqft),
+		BuildingCount:        int4ToPtr(p.BuildingCount),
+		Notes:                textToPtr(p.Notes),
+		SourceType:           p.SourceType,
+		OmData:               rawJSONOrNil(p.OmData),
+		BrokerCapRate:        numericToFloat(p.BrokerCapRate),
+		OmFilePath:           textToPtr(p.OmFilePath),
+		OmFileName:           textToPtr(p.OmFileName),
+		OmFileType:           textToPtr(p.OmFileType),
+		OmValidationStatus:   p.OmValidationStatus,
+		OmQuestions:          rawJSONOrNil(p.OmQuestions),
+		OmValidatedData:      rawJSONOrNil(p.OmValidatedData),
+		PropertyCompleteness: p.PropertyCompleteness,
+		LeaseType:            textToPtr(p.LeaseType),
+		TenantCount:          int4ToPtr(p.TenantCount),
+		AnchorTenant:         textToPtr(p.AnchorTenant),
+		WeightedAvgLeaseYrs:  numericToFloat(p.WeightedAvgLeaseYrs),
+		CommercialSqft:       int4ToPtr(p.CommercialSqft),
+		CommercialMix:        rawJSONOrNil(p.CommercialMix),
+		YearRenovated:        int4ToPtr(p.YearRenovated),
+		Stories:              int4ToPtr(p.Stories),
+		Zoning:               textToPtr(p.Zoning),
+		Construction:         textToPtr(p.Construction),
+		ParkingSpaces:        int4ToPtr(p.ParkingSpaces),
+		CreatedAt:            p.CreatedAt,
+		UpdatedAt:            p.UpdatedAt,
+	}
+}
+
+// computePropertyCompleteness returns the completeness level for a property.
+// ADR-107: 'incomplete' | 'sufficient' | 'complete'
+// ADR-108: uses om_data fallback chains when structured columns are null (OM-sourced properties).
+// Computed server-side on every create/update so the client always has fresh status.
+func computePropertyCompleteness(prop queries.PipelineProperty) string {
+	// Parse om_data for fallback values (ADR-108).
+	var om struct {
+		AskingPrice            *float64 `json:"askingPrice"`
+		CapRate                *float64 `json:"capRate"`
+		GrossPotentialRentCurrent *float64 `json:"grossPotentialRentCurrent"`
+		GrossPotentialRent     *float64 `json:"grossPotentialRent"`
+		NOICurrent             *float64 `json:"noiCurrent"`
+		BrokerNOI              *float64 `json:"brokerNOI"`
+		RentableSF             *float64 `json:"rentableSF"`
+		BuildingSqft           *float64 `json:"buildingSqft"`
+		VacancyPct             *float64 `json:"vacancyPct"`
+		PropertyType           *string  `json:"propertyType"`
+		RentByUnitType         []struct {
+			Count *int `json:"count"`
+		} `json:"rentByUnitType"`
+		TenantSchedule []struct {
+			TenantName string `json:"tenantName"`
+		} `json:"tenantSchedule"`
+	}
+	hasOMData := false
+	if len(prop.OmData) > 2 {
+		if jerr := json.Unmarshal(prop.OmData, &om); jerr == nil {
+			hasOMData = true
+		}
+	}
+
+	// Asking price: structured column OR om fallback.
+	hasAskingPrice := prop.AskingPrice.Valid || (hasOMData && om.AskingPrice != nil)
+
+	// Broker rent: structured column OR om.GrossPotentialRentCurrent OR om.GrossPotentialRent.
+	hasBrokerRent := prop.BrokerRent.Valid ||
+		(hasOMData && (om.GrossPotentialRentCurrent != nil || om.GrossPotentialRent != nil))
+
+	// Cap rate / NOI proxy: structured brokerCapRate OR om.CapRate OR om.NOICurrent OR om.BrokerNOI.
+	hasBrokerCapRate := prop.BrokerCapRate.Valid ||
+		(hasOMData && (om.CapRate != nil || om.NOICurrent != nil || om.BrokerNOI != nil))
+
+	// Units: structured column OR sum count from rent roll.
+	hasUnits := prop.Units.Valid
+	if !hasUnits && hasOMData {
+		for _, row := range om.RentByUnitType {
+			if row.Count != nil && *row.Count > 0 {
+				hasUnits = true
+				break
+			}
+		}
+	}
+
+	// Sqft: structured column OR om.RentableSF OR om.BuildingSqft.
+	hasSqft := prop.Sqft.Valid || (hasOMData && (om.RentableSF != nil || om.BuildingSqft != nil))
+
+	// Unit mix rent check.
+	hasUnitMixRent := string(prop.UnitMix) != "null" && len(prop.UnitMix) > 2
+	if !hasUnitMixRent && hasOMData {
+		hasUnitMixRent = len(om.RentByUnitType) > 0
+	}
+
+	// Tenant schedule for NNN/retail/office.
+	hasTenants := hasOMData && len(om.TenantSchedule) > 0
+
+	// Property type: structured column OR om.PropertyType (from Pass 1 classification).
+	pType := ""
+	if prop.PropertyType.Valid {
+		pType = prop.PropertyType.String
+	} else if hasOMData && om.PropertyType != nil {
+		pType = *om.PropertyType
+	}
+
+	hasNOIProxy := hasBrokerCapRate
+
+	var sufficient bool
+	switch pType {
+	case "sfh", "condo", "townhouse", "":
+		sufficient = hasAskingPrice && (hasBrokerRent || hasNOIProxy)
+	case "multifamily", "student_housing", "senior_housing":
+		sufficient = hasAskingPrice && hasUnits && (hasBrokerRent || hasUnitMixRent)
+	case "office", "commercial", "nnn", "retail":
+		sufficient = hasAskingPrice && (hasBrokerRent || hasNOIProxy || hasTenants)
+	case "warehouse", "industrial":
+		sufficient = hasAskingPrice && hasSqft
+	case "mixed_use":
+		sufficient = hasAskingPrice && (hasUnits || hasSqft)
+	case "self_storage":
+		sufficient = hasAskingPrice && (hasSqft || hasNOIProxy)
+	case "portfolio":
+		sufficient = hasAskingPrice && hasNOIProxy
+	default:
+		sufficient = hasAskingPrice
+	}
+
+	if !sufficient {
+		return "incomplete"
+	}
+
+	// 'complete' = sufficient + financing + occupancy + expense data
+	hasFinancing := prop.DownPaymentPct.Valid && prop.InterestRate.Valid
+	hasOccupancy := prop.CurrentOccupancy.Valid ||
+		(hasOMData && om.VacancyPct != nil) // 1 - vacancyPct gives occupancy
+	hasExpenses := len(prop.ExpenseOverrides) > 2 // non-null JSONB
+	if hasFinancing && hasOccupancy && hasExpenses {
+		return "complete"
+	}
+	return "sufficient"
+}
+
 // getUserID extracts the authenticated user ID from the request context.
 func getUserID(r *http.Request) (string, bool) {
 	claims := middleware.GetUserFromContext(r.Context())
@@ -178,7 +532,11 @@ func (h *Handler) ListDeals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.Success(w, deals)
+	mapped := make([]pipelineDealResponse, len(deals))
+	for i, d := range deals {
+		mapped[i] = mapDealToResponse(d)
+	}
+	httputil.Success(w, mapped)
 }
 
 // CreateDeal handles POST /api/pipeline/deals
@@ -215,7 +573,7 @@ func (h *Handler) CreateDeal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.Created(w, deal)
+	httputil.Created(w, mapDealToResponse(deal))
 }
 
 // pipelineStatsResponse is the camelCase JSON response for GET /api/pipeline/deals/stats.
@@ -315,9 +673,13 @@ func (h *Handler) GetDeal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mappedProps := make([]pipelinePropertyResponse, len(props))
+	for i, p := range props {
+		mappedProps[i] = mapPropertyToResponse(p)
+	}
 	httputil.Success(w, map[string]any{
-		"deal":       deal,
-		"properties": props,
+		"deal":       mapDealToResponse(deal),
+		"properties": mappedProps,
 	})
 }
 
@@ -346,6 +708,11 @@ func (h *Handler) UpdateDeal(w http.ResponseWriter, r *http.Request) {
 		portfolioExcluded = pgtype.Bool{Bool: *req.PortfolioExcluded, Valid: true}
 	}
 
+	var inputComplete pgtype.Bool
+	if req.InputComplete != nil {
+		inputComplete = pgtype.Bool{Bool: *req.InputComplete, Valid: true}
+	}
+
 	deal, err := h.store.Q().UpdatePipelineDeal(r.Context(), queries.UpdatePipelineDealParams{
 		ID:                dealID,
 		UserID:            userID,
@@ -355,13 +722,14 @@ func (h *Handler) UpdateDeal(w http.ResponseWriter, r *http.Request) {
 		Notes:             textFromPtr(req.Notes),
 		PortfolioExcluded: portfolioExcluded,
 		ClosedOutcome:     textFromPtr(req.ClosedOutcome),
+		InputComplete:     inputComplete,
 	})
 	if err != nil {
 		httputil.NotFound(w, "deal not found")
 		return
 	}
 
-	httputil.Success(w, deal)
+	httputil.Success(w, mapDealToResponse(deal))
 }
 
 // DeleteDeal handles DELETE /api/pipeline/deals/{dealId}
@@ -430,27 +798,37 @@ func (h *Handler) AddProperty(w http.ResponseWriter, r *http.Request) {
 	}
 
 	prop, err := h.store.Q().CreatePipelineProperty(r.Context(), queries.CreatePipelinePropertyParams{
-		PipelineDealID:   dealID,
-		Address:          req.Address,
-		City:             textVal(req.City),
-		State:            textVal(req.State),
-		Zip:              textVal(req.Zip),
-		PropertyType:     textVal(req.PropertyType),
-		Beds:             numericFromFloat(req.Beds),
-		Baths:            numericFromFloat(req.Baths),
-		Sqft:             int4FromPtr(req.Sqft),
-		YearBuilt:        int4FromPtr(req.YearBuilt),
-		Units:            int4FromPtr(req.Units),
-		AskingPrice:      numericFromFloat(req.AskingPrice),
-		TargetPrice:      numericFromFloat(req.TargetPrice),
-		DownPaymentPct:   numericFromFloat(req.DownPaymentPct),
-		FinancingType:    textVal(req.FinancingType),
-		InterestRate:     numericFromFloat(req.InterestRate),
-		BrokerRent:       numericFromFloat(req.BrokerRent),
-		SystemRent:       numericFromFloat(req.SystemRent),
-		CurrentOccupancy: numericFromFloat(req.CurrentOccupancy),
-		ExpenseOverrides: req.ExpenseOverrides,
-		SourceType:       req.SourceType,
+		PipelineDealID:      dealID,
+		Address:             req.Address,
+		City:                textVal(req.City),
+		State:               textVal(req.State),
+		Zip:                 textVal(req.Zip),
+		PropertyType:        textVal(req.PropertyType),
+		Beds:                numericFromFloat(req.Beds),
+		Baths:               numericFromFloat(req.Baths),
+		Sqft:                int4FromPtr(req.Sqft),
+		YearBuilt:           int4FromPtr(req.YearBuilt),
+		Units:               int4FromPtr(req.Units),
+		AskingPrice:         numericFromFloat(req.AskingPrice),
+		TargetPrice:         numericFromFloat(req.TargetPrice),
+		DownPaymentPct:      numericFromFloat(req.DownPaymentPct),
+		FinancingType:       textVal(req.FinancingType),
+		InterestRate:        numericFromFloat(req.InterestRate),
+		BrokerRent:          numericFromFloat(req.BrokerRent),
+		SystemRent:          numericFromFloat(req.SystemRent),
+		CurrentOccupancy:    numericFromFloat(req.CurrentOccupancy),
+		ExpenseOverrides:    req.ExpenseOverrides,
+		UnitMix:             req.UnitMix,
+		LotSqft:             int4FromPtr(req.LotSqft),
+		BuildingCount:       int4FromPtr(req.BuildingCount),
+		Notes:               textVal(req.Notes),
+		SourceType:          req.SourceType,
+		LeaseType:           textVal(req.LeaseType),
+		TenantCount:         int4FromPtr(req.TenantCount),
+		AnchorTenant:        textVal(req.AnchorTenant),
+		WeightedAvgLeaseYrs: numericFromFloat(req.WeightedAvgLeaseYrs),
+		CommercialSqft:      int4FromPtr(req.CommercialSqft),
+		CommercialMix:       req.CommercialMix,
 	})
 	if err != nil {
 		h.logger.Error("CreatePipelineProperty failed", "error", err)
@@ -458,10 +836,18 @@ func (h *Handler) AddProperty(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Compute and store completeness (ADR-107).
+	completeness := computePropertyCompleteness(prop)
+	_ = h.store.Q().UpdatePropertyCompleteness(r.Context(), queries.UpdatePropertyCompletenessParams{
+		ID:                   prop.ID,
+		PropertyCompleteness: completeness,
+	})
+	prop.PropertyCompleteness = completeness
+
 	// Update deal's property count.
 	_ = h.store.Q().BumpPipelineDealActivity(r.Context(), dealID)
 
-	httputil.Created(w, prop)
+	httputil.Created(w, mapPropertyToResponse(prop))
 }
 
 // ListProperties handles GET /api/pipeline/deals/{dealId}/properties
@@ -488,7 +874,11 @@ func (h *Handler) ListProperties(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.Success(w, props)
+	mapped := make([]pipelinePropertyResponse, len(props))
+	for i, p := range props {
+		mapped[i] = mapPropertyToResponse(p)
+	}
+	httputil.Success(w, mapped)
 }
 
 // GetProperty handles GET /api/pipeline/deals/{dealId}/properties/{propId}
@@ -514,7 +904,7 @@ func (h *Handler) GetProperty(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.Success(w, prop)
+	httputil.Success(w, mapPropertyToResponse(prop))
 }
 
 // UpdateProperty handles PUT /api/pipeline/deals/{dealId}/properties/{propId}
@@ -549,28 +939,46 @@ func (h *Handler) UpdateProperty(w http.ResponseWriter, r *http.Request) {
 	if req.ExpenseOverrides != nil {
 		expenseOverrides = *req.ExpenseOverrides
 	}
+	var unitMix []byte
+	if req.UnitMix != nil {
+		unitMix = *req.UnitMix
+	}
+	var commercialMix []byte
+	if req.CommercialMix != nil {
+		commercialMix = *req.CommercialMix
+	}
 
 	prop, err := h.store.Q().UpdatePipelineProperty(r.Context(), queries.UpdatePipelinePropertyParams{
-		ID:               propID,
-		Address:          textFromPtr(req.Address),
-		City:             textFromPtr(req.City),
-		State:            textFromPtr(req.State),
-		Zip:              textFromPtr(req.Zip),
-		PropertyType:     textFromPtr(req.PropertyType),
-		Beds:             numericFromFloatPtr(req.Beds),
-		Baths:            numericFromFloatPtr(req.Baths),
-		Sqft:             int4FromPtr(req.Sqft),
-		YearBuilt:        int4FromPtr(req.YearBuilt),
-		Units:            int4FromPtr(req.Units),
-		AskingPrice:      numericFromFloatPtr(req.AskingPrice),
-		TargetPrice:      numericFromFloatPtr(req.TargetPrice),
-		DownPaymentPct:   numericFromFloatPtr(req.DownPaymentPct),
-		FinancingType:    textFromPtr(req.FinancingType),
-		InterestRate:     numericFromFloatPtr(req.InterestRate),
-		BrokerRent:       numericFromFloatPtr(req.BrokerRent),
-		SystemRent:       numericFromFloatPtr(req.SystemRent),
-		CurrentOccupancy: numericFromFloatPtr(req.CurrentOccupancy),
-		ExpenseOverrides: expenseOverrides,
+		ID:                  propID,
+		Address:             textFromPtr(req.Address),
+		City:                textFromPtr(req.City),
+		State:               textFromPtr(req.State),
+		Zip:                 textFromPtr(req.Zip),
+		PropertyType:        textFromPtr(req.PropertyType),
+		Beds:                numericFromFloatPtr(req.Beds),
+		Baths:               numericFromFloatPtr(req.Baths),
+		Sqft:                int4FromPtr(req.Sqft),
+		YearBuilt:           int4FromPtr(req.YearBuilt),
+		Units:               int4FromPtr(req.Units),
+		AskingPrice:         numericFromFloatPtr(req.AskingPrice),
+		TargetPrice:         numericFromFloatPtr(req.TargetPrice),
+		DownPaymentPct:      numericFromFloatPtr(req.DownPaymentPct),
+		FinancingType:       textFromPtr(req.FinancingType),
+		InterestRate:        numericFromFloatPtr(req.InterestRate),
+		BrokerRent:          numericFromFloatPtr(req.BrokerRent),
+		SystemRent:          numericFromFloatPtr(req.SystemRent),
+		CurrentOccupancy:    numericFromFloatPtr(req.CurrentOccupancy),
+		ExpenseOverrides:    expenseOverrides,
+		UnitMix:             unitMix,
+		LotSqft:             int4FromPtr(req.LotSqft),
+		BuildingCount:       int4FromPtr(req.BuildingCount),
+		Notes:               textFromPtr(req.Notes),
+		LeaseType:           textFromPtr(req.LeaseType),
+		TenantCount:         int4FromPtr(req.TenantCount),
+		AnchorTenant:        textFromPtr(req.AnchorTenant),
+		WeightedAvgLeaseYrs: numericFromFloatPtr(req.WeightedAvgLeaseYrs),
+		CommercialSqft:      int4FromPtr(req.CommercialSqft),
+		CommercialMix:       commercialMix,
 	})
 	if err != nil {
 		h.logger.Error("UpdatePipelineProperty failed", "error", err)
@@ -578,7 +986,15 @@ func (h *Handler) UpdateProperty(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.Success(w, prop)
+	// Recompute completeness after update (ADR-107).
+	completeness := computePropertyCompleteness(prop)
+	_ = h.store.Q().UpdatePropertyCompleteness(r.Context(), queries.UpdatePropertyCompletenessParams{
+		ID:                   prop.ID,
+		PropertyCompleteness: completeness,
+	})
+	prop.PropertyCompleteness = completeness
+
+	httputil.Success(w, mapPropertyToResponse(prop))
 }
 
 // DeleteProperty handles DELETE /api/pipeline/deals/{dealId}/properties/{propId}
@@ -614,6 +1030,54 @@ func (h *Handler) DeleteProperty(w http.ResponseWriter, r *http.Request) {
 	_ = h.store.Q().BumpPipelineDealActivity(r.Context(), dealID)
 
 	httputil.NoContent(w)
+}
+
+// UpdateOMValidated handles PATCH /api/pipeline/deals/{dealId}/properties/{propId}/om-validated
+// Saves user-edited OM fields to om_validated_data.
+// ?confirm=true transitions om_validation_status to 'validated'.
+// ADR-108: blur-save pattern — each field edit calls this endpoint; "Save & Confirm" adds ?confirm=true.
+func (h *Handler) UpdateOMValidated(w http.ResponseWriter, r *http.Request) {
+	userID, ok := getUserID(r)
+	if !ok {
+		httputil.Unauthorized(w, "not authenticated")
+		return
+	}
+
+	propID, err := uuid.Parse(chi.URLParam(r, "propId"))
+	if err != nil {
+		httputil.BadRequest(w, "invalid property ID")
+		return
+	}
+
+	// Verify ownership.
+	if _, err := h.store.Q().GetPipelineProperty(r.Context(), queries.GetPipelinePropertyParams{
+		ID: propID, UserID: userID,
+	}); err != nil {
+		httputil.NotFound(w, "property not found")
+		return
+	}
+
+	// Parse body — must be valid JSON (the omValidatedData object).
+	var body json.RawMessage
+	if err := httputil.DecodeJSON(r, &body); err != nil {
+		httputil.BadRequest(w, "invalid JSON body")
+		return
+	}
+
+	confirm := r.URL.Query().Get("confirm") == "true"
+
+	prop, err := h.store.Q().UpdateOMValidatedData(r.Context(), queries.UpdateOMValidatedDataParams{
+		ID:              propID,
+		OmValidatedData: []byte(body),
+		Column3:         confirm,
+	})
+	if err != nil {
+		h.logger.Error("UpdateOMValidatedData failed", "propId", propID, "error", err)
+		httputil.InternalError(w, err)
+		return
+	}
+
+	httputil.Success(w, mapPropertyToResponse(prop))
 }
 
 // GetRetrospective handles GET /api/pipeline/retrospective?days=90

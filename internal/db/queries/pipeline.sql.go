@@ -7,6 +7,8 @@ package queries
 
 import (
 	"context"
+	"encoding/json"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -50,7 +52,7 @@ INSERT INTO pipeline_deals (
     gen_random_uuid(), $1, $2, $3, 'under_review', $4,
     0, 0, $5, NULL,
     NOW(), NOW()
-) RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, created_at, updated_at
+) RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, created_at, updated_at
 `
 
 type CreatePipelineDealParams struct {
@@ -86,6 +88,7 @@ func (q *Queries) CreatePipelineDeal(ctx context.Context, arg CreatePipelineDeal
 		&i.PortfolioExcluded,
 		&i.LastActivityAt,
 		&i.ClosedOutcome,
+		&i.InputComplete,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -99,40 +102,61 @@ INSERT INTO pipeline_properties (
     property_type, beds, baths, sqft, year_built, units,
     asking_price, target_price, down_payment_pct, financing_type, interest_rate,
     broker_rent, system_rent, current_occupancy,
-    expense_overrides, source_type,
+    expense_overrides, unit_mix, lot_sqft, building_count,
+    notes, source_type,
+    lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix,
+    year_renovated, stories, zoning, construction, parking_spaces,
     created_at, updated_at
 ) VALUES (
     gen_random_uuid(), $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10, $11,
     $12, $13, $14, $15, $16,
     $17, $18, $19,
-    $20, $21,
+    $20, $21, $22, $23,
+    $24, $25,
+    $26, $27, $28, $29, $30, $31,
+    $32, $33, $34, $35, $36,
     NOW(), NOW()
-) RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, source_type, created_at, updated_at
+) RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, unit_mix, lot_sqft, building_count, notes, source_type, om_data, broker_cap_rate, om_file_path, om_file_data, om_file_name, om_file_type, om_validation_status, om_questions, om_validated_data, property_completeness, lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix, year_renovated, stories, zoning, construction, parking_spaces, created_at, updated_at
 `
 
 type CreatePipelinePropertyParams struct {
-	PipelineDealID   uuid.UUID      `json:"pipeline_deal_id"`
-	Address          string         `json:"address"`
-	City             pgtype.Text    `json:"city"`
-	State            pgtype.Text    `json:"state"`
-	Zip              pgtype.Text    `json:"zip"`
-	PropertyType     pgtype.Text    `json:"property_type"`
-	Beds             pgtype.Numeric `json:"beds"`
-	Baths            pgtype.Numeric `json:"baths"`
-	Sqft             pgtype.Int4    `json:"sqft"`
-	YearBuilt        pgtype.Int4    `json:"year_built"`
-	Units            pgtype.Int4    `json:"units"`
-	AskingPrice      pgtype.Numeric `json:"asking_price"`
-	TargetPrice      pgtype.Numeric `json:"target_price"`
-	DownPaymentPct   pgtype.Numeric `json:"down_payment_pct"`
-	FinancingType    pgtype.Text    `json:"financing_type"`
-	InterestRate     pgtype.Numeric `json:"interest_rate"`
-	BrokerRent       pgtype.Numeric `json:"broker_rent"`
-	SystemRent       pgtype.Numeric `json:"system_rent"`
-	CurrentOccupancy pgtype.Numeric `json:"current_occupancy"`
-	ExpenseOverrides []byte         `json:"expense_overrides"`
-	SourceType       string         `json:"source_type"`
+	PipelineDealID      uuid.UUID      `json:"pipeline_deal_id"`
+	Address             string         `json:"address"`
+	City                pgtype.Text    `json:"city"`
+	State               pgtype.Text    `json:"state"`
+	Zip                 pgtype.Text    `json:"zip"`
+	PropertyType        pgtype.Text    `json:"property_type"`
+	Beds                pgtype.Numeric `json:"beds"`
+	Baths               pgtype.Numeric `json:"baths"`
+	Sqft                pgtype.Int4    `json:"sqft"`
+	YearBuilt           pgtype.Int4    `json:"year_built"`
+	Units               pgtype.Int4    `json:"units"`
+	AskingPrice         pgtype.Numeric `json:"asking_price"`
+	TargetPrice         pgtype.Numeric `json:"target_price"`
+	DownPaymentPct      pgtype.Numeric `json:"down_payment_pct"`
+	FinancingType       pgtype.Text    `json:"financing_type"`
+	InterestRate        pgtype.Numeric `json:"interest_rate"`
+	BrokerRent          pgtype.Numeric `json:"broker_rent"`
+	SystemRent          pgtype.Numeric `json:"system_rent"`
+	CurrentOccupancy    pgtype.Numeric `json:"current_occupancy"`
+	ExpenseOverrides    []byte         `json:"expense_overrides"`
+	UnitMix             []byte         `json:"unit_mix"`
+	LotSqft             pgtype.Int4    `json:"lot_sqft"`
+	BuildingCount       pgtype.Int4    `json:"building_count"`
+	Notes               pgtype.Text    `json:"notes"`
+	SourceType          string         `json:"source_type"`
+	LeaseType           pgtype.Text    `json:"lease_type"`
+	TenantCount         pgtype.Int4    `json:"tenant_count"`
+	AnchorTenant        pgtype.Text    `json:"anchor_tenant"`
+	WeightedAvgLeaseYrs pgtype.Numeric `json:"weighted_avg_lease_yrs"`
+	CommercialSqft      pgtype.Int4    `json:"commercial_sqft"`
+	CommercialMix       []byte         `json:"commercial_mix"`
+	YearRenovated       pgtype.Int4    `json:"year_renovated"`
+	Stories             pgtype.Int4    `json:"stories"`
+	Zoning              pgtype.Text    `json:"zoning"`
+	Construction        pgtype.Text    `json:"construction"`
+	ParkingSpaces       pgtype.Int4    `json:"parking_spaces"`
 }
 
 // ============================================================
@@ -160,7 +184,22 @@ func (q *Queries) CreatePipelineProperty(ctx context.Context, arg CreatePipeline
 		arg.SystemRent,
 		arg.CurrentOccupancy,
 		arg.ExpenseOverrides,
+		arg.UnitMix,
+		arg.LotSqft,
+		arg.BuildingCount,
+		arg.Notes,
 		arg.SourceType,
+		arg.LeaseType,
+		arg.TenantCount,
+		arg.AnchorTenant,
+		arg.WeightedAvgLeaseYrs,
+		arg.CommercialSqft,
+		arg.CommercialMix,
+		arg.YearRenovated,
+		arg.Stories,
+		arg.Zoning,
+		arg.Construction,
+		arg.ParkingSpaces,
 	)
 	var i PipelineProperty
 	err := row.Scan(
@@ -185,7 +224,32 @@ func (q *Queries) CreatePipelineProperty(ctx context.Context, arg CreatePipeline
 		&i.SystemRent,
 		&i.CurrentOccupancy,
 		&i.ExpenseOverrides,
+		&i.UnitMix,
+		&i.LotSqft,
+		&i.BuildingCount,
+		&i.Notes,
 		&i.SourceType,
+		&i.OmData,
+		&i.BrokerCapRate,
+		&i.OmFilePath,
+		&i.OmFileData,
+		&i.OmFileName,
+		&i.OmFileType,
+		&i.OmValidationStatus,
+		&i.OmQuestions,
+		&i.OmValidatedData,
+		&i.PropertyCompleteness,
+		&i.LeaseType,
+		&i.TenantCount,
+		&i.AnchorTenant,
+		&i.WeightedAvgLeaseYrs,
+		&i.CommercialSqft,
+		&i.CommercialMix,
+		&i.YearRenovated,
+		&i.Stories,
+		&i.Zoning,
+		&i.Construction,
+		&i.ParkingSpaces,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -230,8 +294,100 @@ func (q *Queries) DeletePipelineProperty(ctx context.Context, arg DeletePipeline
 	return result.RowsAffected(), nil
 }
 
+const FindOMDuplicates = `-- name: FindOMDuplicates :many
+SELECT
+    pp.id                                                                AS prop_id,
+    pp.pipeline_deal_id                                                  AS deal_id,
+    pd.name                                                              AS deal_name,
+    pp.address                                                           AS address,
+    coalesce(pp.om_data ->>          'omDate',                   '')    AS om_date,
+    coalesce(pp.om_data -> 'brokerContact' ->> 'name',           '')    AS broker_name,
+    coalesce(pp.om_data -> 'brokerContact' ->> 'company',        '')    AS broker_company,
+    coalesce(pp.om_data -> 'brokerContact' ->> 'email',          '')    AS broker_email,
+    pd.created_at                                                        AS deal_created_at
+FROM pipeline_properties pp
+JOIN pipeline_deals pd ON pp.pipeline_deal_id = pd.id
+WHERE pd.user_id   = $1::text
+  AND pp.om_data   IS NOT NULL
+  AND pd.status    NOT IN ('passed', 'closed')
+  AND (
+      -- Criterion 1: same broker email (strongest signal)
+      ($2::text  <> ''
+       AND coalesce(pp.om_data -> 'brokerContact' ->> 'email', '') = $2::text)
+   OR -- Criterion 2: same OM date AND same broker company (medium signal)
+      ($3::text       <> ''
+       AND $4::text <> ''
+       AND coalesce(pp.om_data ->> 'omDate',                          '') = $3::text
+       AND coalesce(pp.om_data -> 'brokerContact' ->> 'company',      '') = $4::text)
+   OR -- Criterion 3: same property description (medium signal)
+      ($5::text <> ''
+       AND lower(coalesce(pp.om_data ->> 'propertyDescription', ''))  = lower($5::text))
+  )
+ORDER BY pd.created_at DESC
+LIMIT 10
+`
+
+type FindOMDuplicatesParams struct {
+	UserID        string `json:"user_id"`
+	BrokerEmail   string `json:"broker_email"`
+	OmDate        string `json:"om_date"`
+	BrokerCompany string `json:"broker_company"`
+	PropertyDesc  string `json:"property_desc"`
+}
+
+type FindOMDuplicatesRow struct {
+	PropID        uuid.UUID   `json:"prop_id"`
+	DealID        uuid.UUID   `json:"deal_id"`
+	DealName      string      `json:"deal_name"`
+	Address       string      `json:"address"`
+	OmDate        interface{} `json:"om_date"`
+	BrokerName    interface{} `json:"broker_name"`
+	BrokerCompany interface{} `json:"broker_company"`
+	BrokerEmail   interface{} `json:"broker_email"`
+	DealCreatedAt time.Time   `json:"deal_created_at"`
+}
+
+// ADR-107: find potential duplicate deals by broker email, OM date+company, or property description.
+// Pass empty string ” for any criterion to skip it.
+// Results are limited to active (non-archived) deals, 10 max, newest first.
+func (q *Queries) FindOMDuplicates(ctx context.Context, arg FindOMDuplicatesParams) ([]FindOMDuplicatesRow, error) {
+	rows, err := q.db.Query(ctx, FindOMDuplicates,
+		arg.UserID,
+		arg.BrokerEmail,
+		arg.OmDate,
+		arg.BrokerCompany,
+		arg.PropertyDesc,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FindOMDuplicatesRow{}
+	for rows.Next() {
+		var i FindOMDuplicatesRow
+		if err := rows.Scan(
+			&i.PropID,
+			&i.DealID,
+			&i.DealName,
+			&i.Address,
+			&i.OmDate,
+			&i.BrokerName,
+			&i.BrokerCompany,
+			&i.BrokerEmail,
+			&i.DealCreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const GetPipelineDeal = `-- name: GetPipelineDeal :one
-SELECT id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, created_at, updated_at FROM pipeline_deals
+SELECT id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, created_at, updated_at FROM pipeline_deals
 WHERE id = $1 AND user_id = $2
 `
 
@@ -255,6 +411,7 @@ func (q *Queries) GetPipelineDeal(ctx context.Context, arg GetPipelineDealParams
 		&i.PortfolioExcluded,
 		&i.LastActivityAt,
 		&i.ClosedOutcome,
+		&i.InputComplete,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -262,7 +419,7 @@ func (q *Queries) GetPipelineDeal(ctx context.Context, arg GetPipelineDealParams
 }
 
 const GetPipelineProperty = `-- name: GetPipelineProperty :one
-SELECT pp.id, pp.pipeline_deal_id, pp.address, pp.city, pp.state, pp.zip, pp.property_type, pp.beds, pp.baths, pp.sqft, pp.year_built, pp.units, pp.asking_price, pp.target_price, pp.down_payment_pct, pp.financing_type, pp.interest_rate, pp.broker_rent, pp.system_rent, pp.current_occupancy, pp.expense_overrides, pp.source_type, pp.created_at, pp.updated_at FROM pipeline_properties pp
+SELECT pp.id, pp.pipeline_deal_id, pp.address, pp.city, pp.state, pp.zip, pp.property_type, pp.beds, pp.baths, pp.sqft, pp.year_built, pp.units, pp.asking_price, pp.target_price, pp.down_payment_pct, pp.financing_type, pp.interest_rate, pp.broker_rent, pp.system_rent, pp.current_occupancy, pp.expense_overrides, pp.unit_mix, pp.lot_sqft, pp.building_count, pp.notes, pp.source_type, pp.om_data, pp.broker_cap_rate, pp.om_file_path, pp.om_file_data, pp.om_file_name, pp.om_file_type, pp.om_validation_status, pp.om_questions, pp.om_validated_data, pp.property_completeness, pp.lease_type, pp.tenant_count, pp.anchor_tenant, pp.weighted_avg_lease_yrs, pp.commercial_sqft, pp.commercial_mix, pp.year_renovated, pp.stories, pp.zoning, pp.construction, pp.parking_spaces, pp.created_at, pp.updated_at FROM pipeline_properties pp
 JOIN pipeline_deals pd ON pd.id = pp.pipeline_deal_id
 WHERE pp.id = $1 AND pd.user_id = $2
 `
@@ -297,9 +454,68 @@ func (q *Queries) GetPipelineProperty(ctx context.Context, arg GetPipelineProper
 		&i.SystemRent,
 		&i.CurrentOccupancy,
 		&i.ExpenseOverrides,
+		&i.UnitMix,
+		&i.LotSqft,
+		&i.BuildingCount,
+		&i.Notes,
 		&i.SourceType,
+		&i.OmData,
+		&i.BrokerCapRate,
+		&i.OmFilePath,
+		&i.OmFileData,
+		&i.OmFileName,
+		&i.OmFileType,
+		&i.OmValidationStatus,
+		&i.OmQuestions,
+		&i.OmValidatedData,
+		&i.PropertyCompleteness,
+		&i.LeaseType,
+		&i.TenantCount,
+		&i.AnchorTenant,
+		&i.WeightedAvgLeaseYrs,
+		&i.CommercialSqft,
+		&i.CommercialMix,
+		&i.YearRenovated,
+		&i.Stories,
+		&i.Zoning,
+		&i.Construction,
+		&i.ParkingSpaces,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const GetPipelinePropertyOMValidation = `-- name: GetPipelinePropertyOMValidation :one
+SELECT pp.id, pp.om_validation_status, pp.om_questions, pp.om_validated_data, pp.om_data
+FROM pipeline_properties pp
+JOIN pipeline_deals pd ON pd.id = pp.pipeline_deal_id
+WHERE pp.id = $1 AND pd.user_id = $2
+`
+
+type GetPipelinePropertyOMValidationParams struct {
+	ID     uuid.UUID `json:"id"`
+	UserID string    `json:"user_id"`
+}
+
+type GetPipelinePropertyOMValidationRow struct {
+	ID                 uuid.UUID `json:"id"`
+	OmValidationStatus string    `json:"om_validation_status"`
+	OmQuestions        []byte    `json:"om_questions"`
+	OmValidatedData    []byte    `json:"om_validated_data"`
+	OmData             []byte    `json:"om_data"`
+}
+
+// ADR-106: read validation columns only (avoids pulling full om_data/file in list views).
+func (q *Queries) GetPipelinePropertyOMValidation(ctx context.Context, arg GetPipelinePropertyOMValidationParams) (GetPipelinePropertyOMValidationRow, error) {
+	row := q.db.QueryRow(ctx, GetPipelinePropertyOMValidation, arg.ID, arg.UserID)
+	var i GetPipelinePropertyOMValidationRow
+	err := row.Scan(
+		&i.ID,
+		&i.OmValidationStatus,
+		&i.OmQuestions,
+		&i.OmValidatedData,
+		&i.OmData,
 	)
 	return i, err
 }
@@ -488,8 +704,40 @@ func (q *Queries) GetPipelineStats(ctx context.Context, userID string) (GetPipel
 	return i, err
 }
 
+const GetPropertyOMFile = `-- name: GetPropertyOMFile :one
+SELECT om_file_path, om_file_data, om_file_name, om_file_type
+FROM pipeline_properties pp
+JOIN pipeline_deals pd ON pd.id = pp.pipeline_deal_id
+WHERE pp.id = $1 AND pd.user_id = $2
+`
+
+type GetPropertyOMFileParams struct {
+	ID     uuid.UUID `json:"id"`
+	UserID string    `json:"user_id"`
+}
+
+type GetPropertyOMFileRow struct {
+	OmFilePath pgtype.Text `json:"om_file_path"`
+	OmFileData []byte      `json:"om_file_data"`
+	OmFileName pgtype.Text `json:"om_file_name"`
+	OmFileType pgtype.Text `json:"om_file_type"`
+}
+
+// ADR-105: fetch only the file columns (avoid pulling BYTEA in normal property fetches).
+func (q *Queries) GetPropertyOMFile(ctx context.Context, arg GetPropertyOMFileParams) (GetPropertyOMFileRow, error) {
+	row := q.db.QueryRow(ctx, GetPropertyOMFile, arg.ID, arg.UserID)
+	var i GetPropertyOMFileRow
+	err := row.Scan(
+		&i.OmFilePath,
+		&i.OmFileData,
+		&i.OmFileName,
+		&i.OmFileType,
+	)
+	return i, err
+}
+
 const ListPipelineDeals = `-- name: ListPipelineDeals :many
-SELECT id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, created_at, updated_at FROM pipeline_deals
+SELECT id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, created_at, updated_at FROM pipeline_deals
 WHERE user_id = $1
   AND ($2::boolean = TRUE OR status NOT IN ('passed', 'closed'))
 ORDER BY
@@ -523,6 +771,7 @@ func (q *Queries) ListPipelineDeals(ctx context.Context, arg ListPipelineDealsPa
 			&i.PortfolioExcluded,
 			&i.LastActivityAt,
 			&i.ClosedOutcome,
+			&i.InputComplete,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -537,7 +786,7 @@ func (q *Queries) ListPipelineDeals(ctx context.Context, arg ListPipelineDealsPa
 }
 
 const ListPipelineProperties = `-- name: ListPipelineProperties :many
-SELECT pp.id, pp.pipeline_deal_id, pp.address, pp.city, pp.state, pp.zip, pp.property_type, pp.beds, pp.baths, pp.sqft, pp.year_built, pp.units, pp.asking_price, pp.target_price, pp.down_payment_pct, pp.financing_type, pp.interest_rate, pp.broker_rent, pp.system_rent, pp.current_occupancy, pp.expense_overrides, pp.source_type, pp.created_at, pp.updated_at FROM pipeline_properties pp
+SELECT pp.id, pp.pipeline_deal_id, pp.address, pp.city, pp.state, pp.zip, pp.property_type, pp.beds, pp.baths, pp.sqft, pp.year_built, pp.units, pp.asking_price, pp.target_price, pp.down_payment_pct, pp.financing_type, pp.interest_rate, pp.broker_rent, pp.system_rent, pp.current_occupancy, pp.expense_overrides, pp.unit_mix, pp.lot_sqft, pp.building_count, pp.notes, pp.source_type, pp.om_data, pp.broker_cap_rate, pp.om_file_path, pp.om_file_data, pp.om_file_name, pp.om_file_type, pp.om_validation_status, pp.om_questions, pp.om_validated_data, pp.property_completeness, pp.lease_type, pp.tenant_count, pp.anchor_tenant, pp.weighted_avg_lease_yrs, pp.commercial_sqft, pp.commercial_mix, pp.year_renovated, pp.stories, pp.zoning, pp.construction, pp.parking_spaces, pp.created_at, pp.updated_at FROM pipeline_properties pp
 JOIN pipeline_deals pd ON pd.id = pp.pipeline_deal_id
 WHERE pp.pipeline_deal_id = $1 AND pd.user_id = $2
 ORDER BY pp.created_at ASC
@@ -579,7 +828,32 @@ func (q *Queries) ListPipelineProperties(ctx context.Context, arg ListPipelinePr
 			&i.SystemRent,
 			&i.CurrentOccupancy,
 			&i.ExpenseOverrides,
+			&i.UnitMix,
+			&i.LotSqft,
+			&i.BuildingCount,
+			&i.Notes,
 			&i.SourceType,
+			&i.OmData,
+			&i.BrokerCapRate,
+			&i.OmFilePath,
+			&i.OmFileData,
+			&i.OmFileName,
+			&i.OmFileType,
+			&i.OmValidationStatus,
+			&i.OmQuestions,
+			&i.OmValidatedData,
+			&i.PropertyCompleteness,
+			&i.LeaseType,
+			&i.TenantCount,
+			&i.AnchorTenant,
+			&i.WeightedAvgLeaseYrs,
+			&i.CommercialSqft,
+			&i.CommercialMix,
+			&i.YearRenovated,
+			&i.Stories,
+			&i.Zoning,
+			&i.Construction,
+			&i.ParkingSpaces,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -593,6 +867,116 @@ func (q *Queries) ListPipelineProperties(ctx context.Context, arg ListPipelinePr
 	return items, nil
 }
 
+const MarkDealInputComplete = `-- name: MarkDealInputComplete :one
+UPDATE pipeline_deals SET
+    input_complete = true,
+    updated_at     = NOW()
+WHERE id = $1 AND user_id = $2
+RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, created_at, updated_at
+`
+
+type MarkDealInputCompleteParams struct {
+	ID     uuid.UUID `json:"id"`
+	UserID string    `json:"user_id"`
+}
+
+// ADR-107: mark a deal as input-complete (ready for analysis).
+func (q *Queries) MarkDealInputComplete(ctx context.Context, arg MarkDealInputCompleteParams) (PipelineDeal, error) {
+	row := q.db.QueryRow(ctx, MarkDealInputComplete, arg.ID, arg.UserID)
+	var i PipelineDeal
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Name,
+		&i.Source,
+		&i.Status,
+		&i.Notes,
+		&i.PropertyCount,
+		&i.MemoCount,
+		&i.PortfolioExcluded,
+		&i.LastActivityAt,
+		&i.ClosedOutcome,
+		&i.InputComplete,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const UpdateOMValidatedData = `-- name: UpdateOMValidatedData :one
+UPDATE pipeline_properties SET
+    om_validated_data      = $2,
+    om_validation_status   = CASE WHEN $3::boolean THEN 'validated' ELSE om_validation_status END,
+    updated_at             = NOW()
+WHERE id = $1
+RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, unit_mix, lot_sqft, building_count, notes, source_type, om_data, broker_cap_rate, om_file_path, om_file_data, om_file_name, om_file_type, om_validation_status, om_questions, om_validated_data, property_completeness, lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix, year_renovated, stories, zoning, construction, parking_spaces, created_at, updated_at
+`
+
+type UpdateOMValidatedDataParams struct {
+	ID              uuid.UUID `json:"id"`
+	OmValidatedData []byte    `json:"om_validated_data"`
+	Column3         bool      `json:"column_3"`
+}
+
+// ADR-108: merge user-edited fields into om_validated_data JSONB.
+// Sets om_validation_status when confirm=true.
+func (q *Queries) UpdateOMValidatedData(ctx context.Context, arg UpdateOMValidatedDataParams) (PipelineProperty, error) {
+	row := q.db.QueryRow(ctx, UpdateOMValidatedData, arg.ID, arg.OmValidatedData, arg.Column3)
+	var i PipelineProperty
+	err := row.Scan(
+		&i.ID,
+		&i.PipelineDealID,
+		&i.Address,
+		&i.City,
+		&i.State,
+		&i.Zip,
+		&i.PropertyType,
+		&i.Beds,
+		&i.Baths,
+		&i.Sqft,
+		&i.YearBuilt,
+		&i.Units,
+		&i.AskingPrice,
+		&i.TargetPrice,
+		&i.DownPaymentPct,
+		&i.FinancingType,
+		&i.InterestRate,
+		&i.BrokerRent,
+		&i.SystemRent,
+		&i.CurrentOccupancy,
+		&i.ExpenseOverrides,
+		&i.UnitMix,
+		&i.LotSqft,
+		&i.BuildingCount,
+		&i.Notes,
+		&i.SourceType,
+		&i.OmData,
+		&i.BrokerCapRate,
+		&i.OmFilePath,
+		&i.OmFileData,
+		&i.OmFileName,
+		&i.OmFileType,
+		&i.OmValidationStatus,
+		&i.OmQuestions,
+		&i.OmValidatedData,
+		&i.PropertyCompleteness,
+		&i.LeaseType,
+		&i.TenantCount,
+		&i.AnchorTenant,
+		&i.WeightedAvgLeaseYrs,
+		&i.CommercialSqft,
+		&i.CommercialMix,
+		&i.YearRenovated,
+		&i.Stories,
+		&i.Zoning,
+		&i.Construction,
+		&i.ParkingSpaces,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const UpdatePipelineDeal = `-- name: UpdatePipelineDeal :one
 UPDATE pipeline_deals SET
     name               = COALESCE($3::text, name),
@@ -601,9 +985,10 @@ UPDATE pipeline_deals SET
     notes              = COALESCE($6::text, notes),
     portfolio_excluded = COALESCE($7::boolean, portfolio_excluded),
     closed_outcome     = COALESCE($8::text, closed_outcome),
+    input_complete     = COALESCE($9::boolean, input_complete),
     updated_at         = NOW()
 WHERE id = $1 AND user_id = $2
-RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, created_at, updated_at
+RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, created_at, updated_at
 `
 
 type UpdatePipelineDealParams struct {
@@ -615,6 +1000,7 @@ type UpdatePipelineDealParams struct {
 	Notes             pgtype.Text `json:"notes"`
 	PortfolioExcluded pgtype.Bool `json:"portfolio_excluded"`
 	ClosedOutcome     pgtype.Text `json:"closed_outcome"`
+	InputComplete     pgtype.Bool `json:"input_complete"`
 }
 
 func (q *Queries) UpdatePipelineDeal(ctx context.Context, arg UpdatePipelineDealParams) (PipelineDeal, error) {
@@ -627,6 +1013,7 @@ func (q *Queries) UpdatePipelineDeal(ctx context.Context, arg UpdatePipelineDeal
 		arg.Notes,
 		arg.PortfolioExcluded,
 		arg.ClosedOutcome,
+		arg.InputComplete,
 	)
 	var i PipelineDeal
 	err := row.Scan(
@@ -641,6 +1028,7 @@ func (q *Queries) UpdatePipelineDeal(ctx context.Context, arg UpdatePipelineDeal
 		&i.PortfolioExcluded,
 		&i.LastActivityAt,
 		&i.ClosedOutcome,
+		&i.InputComplete,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -652,7 +1040,7 @@ UPDATE pipeline_deals SET
     status     = $3,
     updated_at = NOW()
 WHERE id = $1 AND user_id = $2
-RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, created_at, updated_at
+RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, created_at, updated_at
 `
 
 type UpdatePipelineDealStatusParams struct {
@@ -676,6 +1064,7 @@ func (q *Queries) UpdatePipelineDealStatus(ctx context.Context, arg UpdatePipeli
 		&i.PortfolioExcluded,
 		&i.LastActivityAt,
 		&i.ClosedOutcome,
+		&i.InputComplete,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -684,51 +1073,81 @@ func (q *Queries) UpdatePipelineDealStatus(ctx context.Context, arg UpdatePipeli
 
 const UpdatePipelineProperty = `-- name: UpdatePipelineProperty :one
 UPDATE pipeline_properties SET
-    address           = COALESCE($2::text, address),
-    city              = COALESCE($3::text, city),
-    state             = COALESCE($4::text, state),
-    zip               = COALESCE($5::text, zip),
-    property_type     = COALESCE($6::text, property_type),
-    beds              = COALESCE($7::numeric, beds),
-    baths             = COALESCE($8::numeric, baths),
-    sqft              = COALESCE($9::integer, sqft),
-    year_built        = COALESCE($10::integer, year_built),
-    units             = COALESCE($11::integer, units),
-    asking_price      = COALESCE($12::numeric, asking_price),
-    target_price      = COALESCE($13::numeric, target_price),
-    down_payment_pct  = COALESCE($14::numeric, down_payment_pct),
-    financing_type    = COALESCE($15::text, financing_type),
-    interest_rate     = COALESCE($16::numeric, interest_rate),
-    broker_rent       = COALESCE($17::numeric, broker_rent),
-    system_rent       = COALESCE($18::numeric, system_rent),
-    current_occupancy = COALESCE($19::numeric, current_occupancy),
-    expense_overrides = COALESCE($20::jsonb, expense_overrides),
-    updated_at        = NOW()
+    address                = COALESCE($2::text, address),
+    city                   = COALESCE($3::text, city),
+    state                  = COALESCE($4::text, state),
+    zip                    = COALESCE($5::text, zip),
+    property_type          = COALESCE($6::text, property_type),
+    beds                   = COALESCE($7::numeric, beds),
+    baths                  = COALESCE($8::numeric, baths),
+    sqft                   = COALESCE($9::integer, sqft),
+    year_built             = COALESCE($10::integer, year_built),
+    units                  = COALESCE($11::integer, units),
+    asking_price           = COALESCE($12::numeric, asking_price),
+    target_price           = COALESCE($13::numeric, target_price),
+    down_payment_pct       = COALESCE($14::numeric, down_payment_pct),
+    financing_type         = COALESCE($15::text, financing_type),
+    interest_rate          = COALESCE($16::numeric, interest_rate),
+    broker_rent            = COALESCE($17::numeric, broker_rent),
+    system_rent            = COALESCE($18::numeric, system_rent),
+    current_occupancy      = COALESCE($19::numeric, current_occupancy),
+    expense_overrides      = COALESCE($20::jsonb, expense_overrides),
+    unit_mix               = COALESCE($21::jsonb, unit_mix),
+    lot_sqft               = COALESCE($22::integer, lot_sqft),
+    building_count         = COALESCE($23::integer, building_count),
+    notes                  = COALESCE($24::text, notes),
+    lease_type             = COALESCE($25::text, lease_type),
+    tenant_count           = COALESCE($26::integer, tenant_count),
+    anchor_tenant          = COALESCE($27::text, anchor_tenant),
+    weighted_avg_lease_yrs = COALESCE($28::numeric, weighted_avg_lease_yrs),
+    commercial_sqft        = COALESCE($29::integer, commercial_sqft),
+    commercial_mix         = COALESCE($30::jsonb, commercial_mix),
+    year_renovated         = COALESCE($31::integer, year_renovated),
+    stories                = COALESCE($32::integer, stories),
+    zoning                 = COALESCE($33::text, zoning),
+    construction           = COALESCE($34::text, construction),
+    parking_spaces         = COALESCE($35::integer, parking_spaces),
+    updated_at             = NOW()
 WHERE id = $1
-RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, source_type, created_at, updated_at
+RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, unit_mix, lot_sqft, building_count, notes, source_type, om_data, broker_cap_rate, om_file_path, om_file_data, om_file_name, om_file_type, om_validation_status, om_questions, om_validated_data, property_completeness, lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix, year_renovated, stories, zoning, construction, parking_spaces, created_at, updated_at
 `
 
 type UpdatePipelinePropertyParams struct {
-	ID               uuid.UUID      `json:"id"`
-	Address          pgtype.Text    `json:"address"`
-	City             pgtype.Text    `json:"city"`
-	State            pgtype.Text    `json:"state"`
-	Zip              pgtype.Text    `json:"zip"`
-	PropertyType     pgtype.Text    `json:"property_type"`
-	Beds             pgtype.Numeric `json:"beds"`
-	Baths            pgtype.Numeric `json:"baths"`
-	Sqft             pgtype.Int4    `json:"sqft"`
-	YearBuilt        pgtype.Int4    `json:"year_built"`
-	Units            pgtype.Int4    `json:"units"`
-	AskingPrice      pgtype.Numeric `json:"asking_price"`
-	TargetPrice      pgtype.Numeric `json:"target_price"`
-	DownPaymentPct   pgtype.Numeric `json:"down_payment_pct"`
-	FinancingType    pgtype.Text    `json:"financing_type"`
-	InterestRate     pgtype.Numeric `json:"interest_rate"`
-	BrokerRent       pgtype.Numeric `json:"broker_rent"`
-	SystemRent       pgtype.Numeric `json:"system_rent"`
-	CurrentOccupancy pgtype.Numeric `json:"current_occupancy"`
-	ExpenseOverrides []byte         `json:"expense_overrides"`
+	ID                  uuid.UUID      `json:"id"`
+	Address             pgtype.Text    `json:"address"`
+	City                pgtype.Text    `json:"city"`
+	State               pgtype.Text    `json:"state"`
+	Zip                 pgtype.Text    `json:"zip"`
+	PropertyType        pgtype.Text    `json:"property_type"`
+	Beds                pgtype.Numeric `json:"beds"`
+	Baths               pgtype.Numeric `json:"baths"`
+	Sqft                pgtype.Int4    `json:"sqft"`
+	YearBuilt           pgtype.Int4    `json:"year_built"`
+	Units               pgtype.Int4    `json:"units"`
+	AskingPrice         pgtype.Numeric `json:"asking_price"`
+	TargetPrice         pgtype.Numeric `json:"target_price"`
+	DownPaymentPct      pgtype.Numeric `json:"down_payment_pct"`
+	FinancingType       pgtype.Text    `json:"financing_type"`
+	InterestRate        pgtype.Numeric `json:"interest_rate"`
+	BrokerRent          pgtype.Numeric `json:"broker_rent"`
+	SystemRent          pgtype.Numeric `json:"system_rent"`
+	CurrentOccupancy    pgtype.Numeric `json:"current_occupancy"`
+	ExpenseOverrides    []byte         `json:"expense_overrides"`
+	UnitMix             []byte         `json:"unit_mix"`
+	LotSqft             pgtype.Int4    `json:"lot_sqft"`
+	BuildingCount       pgtype.Int4    `json:"building_count"`
+	Notes               pgtype.Text    `json:"notes"`
+	LeaseType           pgtype.Text    `json:"lease_type"`
+	TenantCount         pgtype.Int4    `json:"tenant_count"`
+	AnchorTenant        pgtype.Text    `json:"anchor_tenant"`
+	WeightedAvgLeaseYrs pgtype.Numeric `json:"weighted_avg_lease_yrs"`
+	CommercialSqft      pgtype.Int4    `json:"commercial_sqft"`
+	CommercialMix       []byte         `json:"commercial_mix"`
+	YearRenovated       pgtype.Int4    `json:"year_renovated"`
+	Stories             pgtype.Int4    `json:"stories"`
+	Zoning              pgtype.Text    `json:"zoning"`
+	Construction        pgtype.Text    `json:"construction"`
+	ParkingSpaces       pgtype.Int4    `json:"parking_spaces"`
 }
 
 func (q *Queries) UpdatePipelineProperty(ctx context.Context, arg UpdatePipelinePropertyParams) (PipelineProperty, error) {
@@ -753,6 +1172,21 @@ func (q *Queries) UpdatePipelineProperty(ctx context.Context, arg UpdatePipeline
 		arg.SystemRent,
 		arg.CurrentOccupancy,
 		arg.ExpenseOverrides,
+		arg.UnitMix,
+		arg.LotSqft,
+		arg.BuildingCount,
+		arg.Notes,
+		arg.LeaseType,
+		arg.TenantCount,
+		arg.AnchorTenant,
+		arg.WeightedAvgLeaseYrs,
+		arg.CommercialSqft,
+		arg.CommercialMix,
+		arg.YearRenovated,
+		arg.Stories,
+		arg.Zoning,
+		arg.Construction,
+		arg.ParkingSpaces,
 	)
 	var i PipelineProperty
 	err := row.Scan(
@@ -777,9 +1211,222 @@ func (q *Queries) UpdatePipelineProperty(ctx context.Context, arg UpdatePipeline
 		&i.SystemRent,
 		&i.CurrentOccupancy,
 		&i.ExpenseOverrides,
+		&i.UnitMix,
+		&i.LotSqft,
+		&i.BuildingCount,
+		&i.Notes,
 		&i.SourceType,
+		&i.OmData,
+		&i.BrokerCapRate,
+		&i.OmFilePath,
+		&i.OmFileData,
+		&i.OmFileName,
+		&i.OmFileType,
+		&i.OmValidationStatus,
+		&i.OmQuestions,
+		&i.OmValidatedData,
+		&i.PropertyCompleteness,
+		&i.LeaseType,
+		&i.TenantCount,
+		&i.AnchorTenant,
+		&i.WeightedAvgLeaseYrs,
+		&i.CommercialSqft,
+		&i.CommercialMix,
+		&i.YearRenovated,
+		&i.Stories,
+		&i.Zoning,
+		&i.Construction,
+		&i.ParkingSpaces,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const UpdatePipelinePropertyOM = `-- name: UpdatePipelinePropertyOM :one
+UPDATE pipeline_properties SET
+    om_data         = COALESCE($2::jsonb,   om_data),
+    broker_cap_rate = COALESCE($3::numeric, broker_cap_rate),
+    om_file_path    = COALESCE($4::text, om_file_path),
+    om_file_data    = COALESCE($5::bytea, om_file_data),
+    om_file_name    = COALESCE($6::text, om_file_name),
+    om_file_type    = COALESCE($7::text, om_file_type),
+    updated_at      = NOW()
+WHERE id = $1
+RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, unit_mix, lot_sqft, building_count, notes, source_type, om_data, broker_cap_rate, om_file_path, om_file_data, om_file_name, om_file_type, om_validation_status, om_questions, om_validated_data, property_completeness, lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix, year_renovated, stories, zoning, construction, parking_spaces, created_at, updated_at
+`
+
+type UpdatePipelinePropertyOMParams struct {
+	ID            uuid.UUID      `json:"id"`
+	OmData        []byte         `json:"om_data"`
+	BrokerCapRate pgtype.Numeric `json:"broker_cap_rate"`
+	OmFilePath    pgtype.Text    `json:"om_file_path"`
+	OmFileData    []byte         `json:"om_file_data"`
+	OmFileName    pgtype.Text    `json:"om_file_name"`
+	OmFileType    pgtype.Text    `json:"om_file_type"`
+}
+
+// ADR-105: store parsed OM data + file reference for a property.
+// Uses COALESCE so callers can update only the fields they have.
+func (q *Queries) UpdatePipelinePropertyOM(ctx context.Context, arg UpdatePipelinePropertyOMParams) (PipelineProperty, error) {
+	row := q.db.QueryRow(ctx, UpdatePipelinePropertyOM,
+		arg.ID,
+		arg.OmData,
+		arg.BrokerCapRate,
+		arg.OmFilePath,
+		arg.OmFileData,
+		arg.OmFileName,
+		arg.OmFileType,
+	)
+	var i PipelineProperty
+	err := row.Scan(
+		&i.ID,
+		&i.PipelineDealID,
+		&i.Address,
+		&i.City,
+		&i.State,
+		&i.Zip,
+		&i.PropertyType,
+		&i.Beds,
+		&i.Baths,
+		&i.Sqft,
+		&i.YearBuilt,
+		&i.Units,
+		&i.AskingPrice,
+		&i.TargetPrice,
+		&i.DownPaymentPct,
+		&i.FinancingType,
+		&i.InterestRate,
+		&i.BrokerRent,
+		&i.SystemRent,
+		&i.CurrentOccupancy,
+		&i.ExpenseOverrides,
+		&i.UnitMix,
+		&i.LotSqft,
+		&i.BuildingCount,
+		&i.Notes,
+		&i.SourceType,
+		&i.OmData,
+		&i.BrokerCapRate,
+		&i.OmFilePath,
+		&i.OmFileData,
+		&i.OmFileName,
+		&i.OmFileType,
+		&i.OmValidationStatus,
+		&i.OmQuestions,
+		&i.OmValidatedData,
+		&i.PropertyCompleteness,
+		&i.LeaseType,
+		&i.TenantCount,
+		&i.AnchorTenant,
+		&i.WeightedAvgLeaseYrs,
+		&i.CommercialSqft,
+		&i.CommercialMix,
+		&i.YearRenovated,
+		&i.Stories,
+		&i.Zoning,
+		&i.Construction,
+		&i.ParkingSpaces,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const UpdatePipelinePropertyOMValidation = `-- name: UpdatePipelinePropertyOMValidation :one
+UPDATE pipeline_properties SET
+    om_validation_status = $2,
+    om_questions         = COALESCE($3::jsonb, om_questions),
+    om_validated_data    = COALESCE($4::jsonb, om_validated_data),
+    updated_at           = NOW()
+WHERE id = $1
+RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, unit_mix, lot_sqft, building_count, notes, source_type, om_data, broker_cap_rate, om_file_path, om_file_data, om_file_name, om_file_type, om_validation_status, om_questions, om_validated_data, property_completeness, lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix, year_renovated, stories, zoning, construction, parking_spaces, created_at, updated_at
+`
+
+type UpdatePipelinePropertyOMValidationParams struct {
+	ID                 uuid.UUID       `json:"id"`
+	OmValidationStatus string          `json:"om_validation_status"`
+	Column3            json.RawMessage `json:"column_3"`
+	Column4            json.RawMessage `json:"column_4"`
+}
+
+// ADR-106: write om validation status, questions, and merged validated data.
+func (q *Queries) UpdatePipelinePropertyOMValidation(ctx context.Context, arg UpdatePipelinePropertyOMValidationParams) (PipelineProperty, error) {
+	row := q.db.QueryRow(ctx, UpdatePipelinePropertyOMValidation,
+		arg.ID,
+		arg.OmValidationStatus,
+		arg.Column3,
+		arg.Column4,
+	)
+	var i PipelineProperty
+	err := row.Scan(
+		&i.ID,
+		&i.PipelineDealID,
+		&i.Address,
+		&i.City,
+		&i.State,
+		&i.Zip,
+		&i.PropertyType,
+		&i.Beds,
+		&i.Baths,
+		&i.Sqft,
+		&i.YearBuilt,
+		&i.Units,
+		&i.AskingPrice,
+		&i.TargetPrice,
+		&i.DownPaymentPct,
+		&i.FinancingType,
+		&i.InterestRate,
+		&i.BrokerRent,
+		&i.SystemRent,
+		&i.CurrentOccupancy,
+		&i.ExpenseOverrides,
+		&i.UnitMix,
+		&i.LotSqft,
+		&i.BuildingCount,
+		&i.Notes,
+		&i.SourceType,
+		&i.OmData,
+		&i.BrokerCapRate,
+		&i.OmFilePath,
+		&i.OmFileData,
+		&i.OmFileName,
+		&i.OmFileType,
+		&i.OmValidationStatus,
+		&i.OmQuestions,
+		&i.OmValidatedData,
+		&i.PropertyCompleteness,
+		&i.LeaseType,
+		&i.TenantCount,
+		&i.AnchorTenant,
+		&i.WeightedAvgLeaseYrs,
+		&i.CommercialSqft,
+		&i.CommercialMix,
+		&i.YearRenovated,
+		&i.Stories,
+		&i.Zoning,
+		&i.Construction,
+		&i.ParkingSpaces,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const UpdatePropertyCompleteness = `-- name: UpdatePropertyCompleteness :exec
+UPDATE pipeline_properties SET
+    property_completeness = $2,
+    updated_at            = NOW()
+WHERE id = $1
+`
+
+type UpdatePropertyCompletenessParams struct {
+	ID                   uuid.UUID `json:"id"`
+	PropertyCompleteness string    `json:"property_completeness"`
+}
+
+// ADR-107: update computed completeness status after create/update.
+func (q *Queries) UpdatePropertyCompleteness(ctx context.Context, arg UpdatePropertyCompletenessParams) error {
+	_, err := q.db.Exec(ctx, UpdatePropertyCompleteness, arg.ID, arg.PropertyCompleteness)
+	return err
 }

@@ -105,6 +105,9 @@ type AnalysisMetrics struct {
 	// Confidence / metadata
 	Confidence           float64 `json:"confidence,omitempty"`
 	DataDate             string  `json:"dataDate,omitempty"`
+	// DataSource is "ai-estimated" when structured sources had no price/rent data
+	// and AI estimation was used as fallback. Empty or "structured" otherwise.
+	DataSource           string  `json:"dataSource,omitempty"`
 }
 
 // AnalysisReportEnrichment holds structured data appended to GetAnalysisReport responses (ADR-100)

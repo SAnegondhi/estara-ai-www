@@ -25,6 +25,7 @@ import (
 	"github.com/estara-ai/www/internal/services/jobs/queue"
 	"github.com/estara-ai/www/internal/services/jobs/workers"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
+	"github.com/estara-ai/www/internal/services/market/estimation"
 	"github.com/estara-ai/www/internal/services/memo"
 	"github.com/estara-ai/www/internal/services/market/bls"
 	"github.com/estara-ai/www/internal/services/market/census"
@@ -58,6 +59,7 @@ type Services struct {
 	FrontierOptimizer    *optimization.FrontierOptimizer // ADR-088 Phase 9: Interactive workspace
 	InvestmentOptimizer  *optimization.Service           // ADR-088 Phase 12: Discovery+scoring pipeline for /run
 	MetroReader          *timeseries.MetroReader         // City snapshot + HUD FMR data
+	MarketEstimator      *estimation.AIEstimator         // AI fallback for missing price/rent data
 }
 
 // ServiceConfig holds configuration for creating services
@@ -311,6 +313,12 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 			Cache: services.HybridCache,
 		})
 		logger.Info("market trends service initialized")
+	}
+
+	// Create AI market estimator — used as fallback when structured sources have no price/rent data
+	if services.Anthropic != nil {
+		services.MarketEstimator = estimation.NewAIEstimator(services.Anthropic)
+		logger.Info("AI market estimator initialized")
 	}
 
 	// Create refresh service for event-driven refresh (ADR-087 Phase 8-9)

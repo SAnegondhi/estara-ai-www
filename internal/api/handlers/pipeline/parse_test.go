@@ -96,6 +96,17 @@ func TestParseExtractionJSON_OM1_StabilizedMultifamily(t *testing.T) {
 	assertNilFloat(t, "interestRate", result.InterestRate)
 	assertNilStr(t, "financingType", result.FinancingType)
 
+	// Beds/baths null for OM1 (stabilized MF — no per-unit-type breakdown stated)
+	assertNilFloat(t, "beds", result.Beds)
+	assertNilFloat(t, "baths", result.Baths)
+	// No unit mix in OM1 (income statement only, no rent roll by unit type)
+	if len(result.UnitMix) != 0 {
+		t.Errorf("expected empty UnitMix for OM1, got %d rows", len(result.UnitMix))
+	}
+	if result.LotSqft != nil {
+		t.Errorf("expected nil LotSqft for OM1, got %d", *result.LotSqft)
+	}
+
 	// Confidence
 	if result.Confidence["askingPrice"] != "high" {
 		t.Errorf("expected askingPrice confidence=high, got %q", result.Confidence["askingPrice"])
@@ -131,6 +142,13 @@ const om2JSON = `{
   "downPaymentPct": null,
   "interestRate": null,
   "financingType": null,
+  "unitMix": [
+    {"type": "studio", "count": 5, "beds": null, "baths": 1, "sqftPerUnit": 380, "rentCurrent": 450, "rentProForma": 575, "rentMarket": 750},
+    {"type": "1bd",    "count": 10, "beds": 1,   "baths": 1, "sqftPerUnit": 525, "rentCurrent": 525, "rentProForma": 640, "rentMarket": 800},
+    {"type": "2bd",    "count": 4,  "beds": 2,   "baths": 1, "sqftPerUnit": 720, "rentCurrent": 600, "rentProForma": 712, "rentMarket": 900}
+  ],
+  "lotSqft": 18500,
+  "buildingCount": 2,
   "confidence": {
     "address": "high",
     "city": "high",
@@ -144,7 +162,10 @@ const om2JSON = `{
     "brokerRentProForma": "high",
     "brokerRentMarket": "medium",
     "brokerCapRate": "high",
-    "vacancyRate": "high"
+    "vacancyRate": "high",
+    "unitMix": "high",
+    "lotSqft": "medium",
+    "buildingCount": "high"
   }
 }`
 
@@ -192,6 +213,45 @@ func TestParseExtractionJSON_OM2_ValueAdd_ThreeRentColumns(t *testing.T) {
 	if result.Confidence["brokerRentMarket"] != "medium" {
 		t.Errorf("expected brokerRentMarket confidence=medium, got %q", result.Confidence["brokerRentMarket"])
 	}
+
+	// Unit mix — 3 rows: studio, 1bd, 2bd (MF has no scalar beds/baths)
+	if len(result.UnitMix) != 3 {
+		t.Fatalf("expected 3 unitMix rows, got %d", len(result.UnitMix))
+	}
+	// Row 0: studio — beds must be nil, count=5
+	if result.UnitMix[0].Type != "studio" {
+		t.Errorf("unitMix[0].type: expected 'studio', got %q", result.UnitMix[0].Type)
+	}
+	if result.UnitMix[0].Count != 5 {
+		t.Errorf("unitMix[0].count: expected 5, got %d", result.UnitMix[0].Count)
+	}
+	if result.UnitMix[0].Beds != nil {
+		t.Errorf("unitMix[0].beds: expected nil for studio, got %v", result.UnitMix[0].Beds)
+	}
+	// Row 1: 1bd — beds=1, count=10
+	if result.UnitMix[1].Type != "1bd" {
+		t.Errorf("unitMix[1].type: expected '1bd', got %q", result.UnitMix[1].Type)
+	}
+	if result.UnitMix[1].Count != 10 {
+		t.Errorf("unitMix[1].count: expected 10, got %d", result.UnitMix[1].Count)
+	}
+	if result.UnitMix[1].Beds == nil || *result.UnitMix[1].Beds != 1 {
+		t.Errorf("unitMix[1].beds: expected 1, got %v", result.UnitMix[1].Beds)
+	}
+	// Row 2: 2bd — rentCurrent < rentProForma < rentMarket
+	if result.UnitMix[2].RentCurrent == nil || result.UnitMix[2].RentProForma == nil || result.UnitMix[2].RentMarket == nil {
+		t.Error("unitMix[2]: all rent fields must be non-nil")
+	} else {
+		if *result.UnitMix[2].RentCurrent >= *result.UnitMix[2].RentProForma {
+			t.Errorf("unitMix[2]: rentCurrent (%v) must be below rentProForma (%v)", *result.UnitMix[2].RentCurrent, *result.UnitMix[2].RentProForma)
+		}
+		if *result.UnitMix[2].RentProForma >= *result.UnitMix[2].RentMarket {
+			t.Errorf("unitMix[2]: rentProForma (%v) must be below rentMarket (%v)", *result.UnitMix[2].RentProForma, *result.UnitMix[2].RentMarket)
+		}
+	}
+	// Lot and building count
+	assertInt(t, "lotSqft", result.LotSqft, 18500)
+	assertInt(t, "buildingCount", result.BuildingCount, 2)
 }
 
 // ---------------------------------------------------------------------------

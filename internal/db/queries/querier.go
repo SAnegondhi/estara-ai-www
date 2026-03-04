@@ -295,6 +295,10 @@ type Querier interface {
 	ExpireIAPSubscriptions(ctx context.Context) error
 	ExpireIAPSubscriptionsRows(ctx context.Context) (int64, error)
 	FetchEvaluationsByIDs(ctx context.Context, arg FetchEvaluationsByIDsParams) ([]FetchEvaluationsByIDsRow, error)
+	// ADR-107: find potential duplicate deals by broker email, OM date+company, or property description.
+	// Pass empty string '' for any criterion to skip it.
+	// Results are limited to active (non-archived) deals, 10 max, newest first.
+	FindOMDuplicates(ctx context.Context, arg FindOMDuplicatesParams) ([]FindOMDuplicatesRow, error)
 	GetAIRequestAnalytics(ctx context.Context) (GetAIRequestAnalyticsRow, error)
 	// ADR-064: AI Scoring Cache Queries
 	// Retrieves cached AI scoring if not expired
@@ -433,6 +437,14 @@ type Querier interface {
 	GetPendingInvestorReports(ctx context.Context, limit int32) ([]InvestorReport, error)
 	GetPipelineDeal(ctx context.Context, arg GetPipelineDealParams) (PipelineDeal, error)
 	GetPipelineProperty(ctx context.Context, arg GetPipelinePropertyParams) (PipelineProperty, error)
+	// ADR-106: read validation columns only (avoids pulling full om_data/file in list views).
+	GetPipelinePropertyOMValidation(ctx context.Context, arg GetPipelinePropertyOMValidationParams) (GetPipelinePropertyOMValidationRow, error)
+	// ============================================================
+	// ADR-104: Retrospective Analytics
+	// ============================================================
+	// $1 = user_id TEXT
+	// $2 = days INT (0 = all time, otherwise last N days)
+	GetPipelineRetrospective(ctx context.Context, arg GetPipelineRetrospectiveParams) (GetPipelineRetrospectiveRow, error)
 	GetPipelineStats(ctx context.Context, userID string) (GetPipelineStatsRow, error)
 	GetPortfolioPropertiesByIDs(ctx context.Context, arg GetPortfolioPropertiesByIDsParams) ([]V2PortfolioProperty, error)
 	GetPortfolioProperty(ctx context.Context, arg GetPortfolioPropertyParams) (V2PortfolioProperty, error)
@@ -459,6 +471,8 @@ type Querier interface {
 	// ADR-061: Size-based FIFO cache for individual property reads
 	// Retrieves a single property from cache by its cache key
 	GetPropertyFromCache(ctx context.Context, cacheKey string) (PropertyCache, error)
+	// ADR-105: fetch only the file columns (avoid pulling BYTEA in normal property fetches).
+	GetPropertyOMFile(ctx context.Context, arg GetPropertyOMFileParams) (GetPropertyOMFileRow, error)
 	GetQuarterlyExpenses(ctx context.Context) ([]GetQuarterlyExpensesRow, error)
 	// Receipt Queries
 	GetReceiptByID(ctx context.Context, id string) (Receipt, error)
@@ -682,6 +696,8 @@ type Querier interface {
 	// Whitelist Management Queries
 	ListWhitelistedEmails(ctx context.Context, arg ListWhitelistedEmailsParams) ([]ListWhitelistedEmailsRow, error)
 	MarkBillingCycleProcessed(ctx context.Context, id string) error
+	// ADR-107: mark a deal as input-complete (ready for analysis).
+	MarkDealInputComplete(ctx context.Context, arg MarkDealInputCompleteParams) (PipelineDeal, error)
 	MarkEmailVerificationCodeVerified(ctx context.Context, id string) error
 	MarkPasswordResetTokenUsed(ctx context.Context, id string) error
 	MarkPasswordResetTokenUsedByToken(ctx context.Context, token string) error
@@ -757,12 +773,22 @@ type Querier interface {
 	UpdateInvoicePaid(ctx context.Context, arg UpdateInvoicePaidParams) error
 	UpdateInvoiceStatus(ctx context.Context, arg UpdateInvoiceStatusParams) error
 	UpdateInvoiceStatusByStripeID(ctx context.Context, arg UpdateInvoiceStatusByStripeIDParams) error
+	// ADR-108: merge user-edited fields into om_validated_data JSONB.
+	// Sets om_validation_status when confirm=true.
+	UpdateOMValidatedData(ctx context.Context, arg UpdateOMValidatedDataParams) (PipelineProperty, error)
 	UpdatePipelineDeal(ctx context.Context, arg UpdatePipelineDealParams) (PipelineDeal, error)
 	UpdatePipelineDealStatus(ctx context.Context, arg UpdatePipelineDealStatusParams) (PipelineDeal, error)
 	UpdatePipelineProperty(ctx context.Context, arg UpdatePipelinePropertyParams) (PipelineProperty, error)
+	// ADR-105: store parsed OM data + file reference for a property.
+	// Uses COALESCE so callers can update only the fields they have.
+	UpdatePipelinePropertyOM(ctx context.Context, arg UpdatePipelinePropertyOMParams) (PipelineProperty, error)
+	// ADR-106: write om validation status, questions, and merged validated data.
+	UpdatePipelinePropertyOMValidation(ctx context.Context, arg UpdatePipelinePropertyOMValidationParams) (PipelineProperty, error)
 	UpdatePortfolioProperty(ctx context.Context, arg UpdatePortfolioPropertyParams) (V2PortfolioProperty, error)
 	// Updates access timestamp and increments access count
 	UpdatePropertyCacheAccess(ctx context.Context, cacheKey string) error
+	// ADR-107: update computed completeness status after create/update.
+	UpdatePropertyCompleteness(ctx context.Context, arg UpdatePropertyCompletenessParams) error
 	UpdateRenewalNotificationDelivered(ctx context.Context, id string) error
 	UpdateRenewalNotificationOpened(ctx context.Context, id string) error
 	// Update latitude/longitude for a report

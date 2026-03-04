@@ -21,6 +21,23 @@ import (
 // ParseDocument — POST /api/pipeline/parse-document
 // ---------------------------------------------------------------------------
 
+// UnitMixRow captures a single unit-type row from a multifamily rent roll.
+// For a 19-unit apartment with studios, 1bd, and 2bd units, there would be
+// three rows — one per unit type — each with its own count, specs, and rents.
+type UnitMixRow struct {
+	Type          string   `json:"type"`           // studio|1bd|2bd|3bd|4bd+|penthouse|suite|floor|retail|commercial|other
+	Count         int      `json:"count"`          // Number of units of this type
+	Beds          *float64 `json:"beds"`           // Bedrooms per unit (null for studios/commercial/office)
+	Baths         *float64 `json:"baths"`          // Bathrooms per unit (null for office)
+	SqftPerUnit   *int     `json:"sqftPerUnit"`    // Sq ft per unit (not aggregate)
+	RentCurrent   *float64 `json:"rentCurrent"`    // Current monthly rent per unit (broker-stated)
+	RentProForma  *float64 `json:"rentProForma"`   // Pro forma monthly rent per unit (broker-projected)
+	RentMarket    *float64 `json:"rentMarket"`     // Market monthly rent per unit (comparable)
+	OccupancyPct  *float64 `json:"occupancyPct"`  // Current occupancy % for this unit type (0–100)
+	PricePerUnit  *float64 `json:"pricePerUnit"`  // Asking/sale price per unit (for condo/portfolio sales)
+	BuildingLabel *string  `json:"buildingLabel"` // Optional: building name/label for multi-building grouping
+}
+
 // parseDocumentResponse is the response returned to the client after parsing.
 type parseDocumentResponse struct {
 	// Fields extracted from the document. Null values were not found.
@@ -28,18 +45,22 @@ type parseDocumentResponse struct {
 	City         *string  `json:"city"`
 	State        *string  `json:"state"`
 	Zip          *string  `json:"zip"`
-	PropertyType *string  `json:"propertyType"` // sfh|multifamily|condo|townhouse|commercial|nnn|other
-	Beds         *float64 `json:"beds"`
-	Baths        *float64 `json:"baths"`
-	Sqft         *int     `json:"sqft"`
+	PropertyType *string  `json:"propertyType"` // sfh|multifamily|condo|townhouse|commercial|nnn|retail|mixed_use|industrial|warehouse|self_storage|student_housing|senior_housing|other
+	Beds         *float64 `json:"beds"`          // Null for MF when unitMix is populated
+	Baths        *float64 `json:"baths"`         // Null for MF when unitMix is populated
+	Sqft         *int     `json:"sqft"`          // Total building sq ft (all units combined)
 	YearBuilt    *int     `json:"yearBuilt"`
 	Units        *int     `json:"units"`
-	AskingPrice       *float64 `json:"askingPrice"`
-	BrokerRentCurrent  *float64 `json:"brokerRentCurrent"`  // Current in-place monthly rent (broker-stated)
-	BrokerRentProForma *float64 `json:"brokerRentProForma"` // Pro forma monthly rent (broker-projected)
-	BrokerRentMarket   *float64 `json:"brokerRentMarket"`   // Market monthly rent (broker-cited)
-	BrokerCapRate      *float64 `json:"brokerCapRate"`      // As a decimal (e.g. 0.065 for 6.5%)
-	VacancyRate  *float64 `json:"vacancyRate"`     // As a decimal
+	AskingPrice        *float64     `json:"askingPrice"`
+	BrokerRentCurrent  *float64     `json:"brokerRentCurrent"`  // Aggregate current in-place monthly rent
+	BrokerRentProForma *float64     `json:"brokerRentProForma"` // Aggregate pro forma monthly rent
+	BrokerRentMarket   *float64     `json:"brokerRentMarket"`   // Aggregate market monthly rent
+	BrokerCapRate      *float64     `json:"brokerCapRate"`      // As a decimal (e.g. 0.065 for 6.5%)
+	VacancyRate        *float64     `json:"vacancyRate"`        // As a decimal
+	// Per-unit-type breakdown for MF/condo. Null for SFH and non-unit properties.
+	UnitMix       []UnitMixRow `json:"unitMix"`
+	LotSqft       *int         `json:"lotSqft"`       // Land parcel area in sq ft
+	BuildingCount *int         `json:"buildingCount"` // Number of structures on the parcel
 	// Financing
 	DownPaymentPct *float64 `json:"downPaymentPct"` // As a decimal (e.g. 0.20)
 	InterestRate   *float64 `json:"interestRate"`   // As a decimal (e.g. 0.0725)
@@ -147,10 +168,24 @@ Rules:
 - Do not calculate cap rate from rent and price — only extract if explicitly stated as a cap rate.
 - For rent, extract the monthly figure. If stated as annual, divide by 12.
 - Rent disambiguation: many OMs contain multiple rent figures (current in-place, pro forma projected, market comparable). You MUST return them in separate fields — never conflate or average them.
-  - brokerRentCurrent: the actual current rent being collected today (in-place rents)
-  - brokerRentProForma: the broker's projected future rent after renovations or lease-up
-  - brokerRentMarket: market-rate comparable rents cited (not current, not projected — market context)
+  - brokerRentCurrent: the actual current rent being collected today (aggregate across all units)
+  - brokerRentProForma: the broker's projected future rent after renovations or lease-up (aggregate)
+  - brokerRentMarket: market-rate comparable rents cited (not current, not projected — market context, aggregate)
   - If the document has only one rent figure and does not distinguish type, put it in brokerRentCurrent and leave the others null.
+- Multifamily / condo / office unit mix: When the document contains a rent roll, unit-type table, or floor/suite schedule, extract the per-unit-type breakdown into the unitMix array. Each row represents one unit type or suite category.
+  - unitMix[].type: studio|1bd|2bd|3bd|4bd+|penthouse|suite|floor|retail|commercial|other
+  - unitMix[].rentCurrent/rentProForma/rentMarket: per-unit monthly rent (same disambiguation rules as top-level)
+  - unitMix[].sqftPerUnit: square footage per unit (not the aggregate)
+  - unitMix[].count: number of units of this type
+  - unitMix[].occupancyPct: current occupancy percentage for this unit type (0–100); extract only if stated per unit type, not just overall property occupancy
+  - unitMix[].pricePerUnit: asking or sale price per individual unit (extract for condo or portfolio unit sales; null for portfolio MF sales where one total price is given)
+  - unitMix[].buildingLabel: if the OM describes multiple buildings (e.g. "Building A", "Building B", "Phase 1"), use the building name/label as the grouping identifier for each row; null for single-building properties
+  - For MF with unitMix, leave top-level beds and baths null — they are meaningless scalars for a mixed unit building
+  - Top-level sqft is the total building square footage (all units combined; sum of count × sqftPerUnit if not stated)
+  - lotSqft is the land parcel area in sq ft — distinct from building sqft
+  - buildingCount is the number of structures on the parcel (common in garden-style or campus MF)
+  - Top-level brokerRentCurrent/ProForma/Market are the aggregate gross monthly income figures across all units
+  - unitMix is null for SFH, NNN commercial, and any property where no unit-type breakdown is stated
 - Prose-only documents: some OMs are written as narrative text with no financial tables (common for NNN commercial). For these, extract only what is explicitly stated in prose. Return null for any field not mentioned. Do NOT hallucinate expense breakdowns, unit mixes, or rent rolls that are not present.
 - Confidence levels: "high" = exact explicit statement, "medium" = clearly implied from context, "low" = uncertain or ambiguous.
 - Return ONLY valid JSON with no markdown, no explanation, no prose.`
@@ -164,18 +199,35 @@ CRITICAL: Return null for any field not explicitly present in the document. Do n
   "city": string | null,
   "state": string | null,              // 2-letter abbreviation
   "zip": string | null,
-  "propertyType": string | null,       // One of: sfh, multifamily, condo, townhouse, commercial, nnn, other
-  "beds": number | null,
-  "baths": number | null,
-  "sqft": number | null,
+  "propertyType": string | null,       // One of: sfh, multifamily, condo, townhouse, office, commercial, nnn, retail, mixed_use, industrial, warehouse, self_storage, student_housing, senior_housing, other
+  "beds": number | null,               // Null for MF when unitMix is populated
+  "baths": number | null,              // Null for MF when unitMix is populated
+  "sqft": number | null,               // Total building sq ft (all units combined)
   "yearBuilt": number | null,
-  "units": number | null,              // Number of rental units (use 1 for SFH)
+  "units": number | null,              // Total number of rental units
   "askingPrice": number | null,        // In USD, numeric only
-  "brokerRentCurrent": number | null,  // Current in-place monthly rent, broker-stated (NOT pro forma)
-  "brokerRentProForma": number | null, // Pro forma monthly rent after stabilization/renovation (null if not stated)
-  "brokerRentMarket": number | null,   // Market-rate comparable monthly rent cited in OM (null if not stated)
+  "brokerRentCurrent": number | null,  // Aggregate current in-place monthly rent (NOT pro forma)
+  "brokerRentProForma": number | null, // Aggregate pro forma monthly rent after stabilization (null if not stated)
+  "brokerRentMarket": number | null,   // Aggregate market-rate comparable monthly rent (null if not stated)
   "brokerCapRate": number | null,      // As decimal (e.g., 0.065 for 6.5%)
   "vacancyRate": number | null,        // As decimal (e.g., 0.05 for 5%)
+  "unitMix": [                         // Per-unit-type breakdown for MF/condo/office; null for SFH/NNN
+    {
+      "type": string,                  // studio|1bd|2bd|3bd|4bd+|penthouse|suite|floor|retail|commercial|other
+      "count": number,                 // Number of units of this type
+      "beds": number | null,           // Bedrooms per unit (null for studio/office/commercial)
+      "baths": number | null,          // Null for office/commercial
+      "sqftPerUnit": number | null,    // Sq ft per unit (not total)
+      "rentCurrent": number | null,    // Current monthly rent per unit
+      "rentProForma": number | null,   // Pro forma monthly rent per unit
+      "rentMarket": number | null,     // Market monthly rent per unit
+      "occupancyPct": number | null,   // Occupancy % for this unit type (0-100); null if not stated per type
+      "pricePerUnit": number | null,   // Sale/asking price per unit (condo/portfolio sales only)
+      "buildingLabel": string | null   // Building name if multi-building (e.g. "Building A"); null otherwise
+    }
+  ] | null,
+  "lotSqft": number | null,           // Land parcel area in sq ft (distinct from building sqft)
+  "buildingCount": number | null,     // Number of structures on the parcel
   "downPaymentPct": number | null,     // As decimal (e.g., 0.25 for 25%)
   "interestRate": number | null,       // As decimal (e.g., 0.0725 for 7.25%)
   "financingType": string | null,      // One of: conventional, cash, other
@@ -288,7 +340,7 @@ func (h *Handler) extractFromPDF(ctx context.Context, fileBytes []byte) (*parseD
 
 	reqBody := anthropicDocumentRequest{
 		Model:     "claude-sonnet-4-20250514",
-		MaxTokens: 2048,
+		MaxTokens: 4096, // unit mix tables can be verbose
 		System:    extractionSystemPrompt,
 		Messages: []anthropicDocumentMsg{
 			{
@@ -318,7 +370,7 @@ func (h *Handler) extractFromText(ctx context.Context, text string) (*parseDocum
 
 	reqBody := anthropicDocumentRequest{
 		Model:     "claude-sonnet-4-20250514",
-		MaxTokens: 2048,
+		MaxTokens: 4096, // unit mix tables can be verbose
 		System:    extractionSystemPrompt,
 		Messages: []anthropicDocumentMsg{
 			{
@@ -422,6 +474,9 @@ func parseExtractionJSON(rawJSON string) (*parseDocumentResponse, error) {
 		BrokerRentMarket   *float64          `json:"brokerRentMarket"`
 		BrokerCapRate      *float64          `json:"brokerCapRate"`
 		VacancyRate        *float64          `json:"vacancyRate"`
+		UnitMix            []UnitMixRow      `json:"unitMix"`
+		LotSqft            *int              `json:"lotSqft"`
+		BuildingCount      *int              `json:"buildingCount"`
 		DownPaymentPct     *float64          `json:"downPaymentPct"`
 		InterestRate       *float64          `json:"interestRate"`
 		FinancingType      *string           `json:"financingType"`
@@ -434,7 +489,8 @@ func parseExtractionJSON(rawJSON string) (*parseDocumentResponse, error) {
 	// extracted = true when at least one substantive field was found.
 	extracted := raw.Address != nil || raw.AskingPrice != nil ||
 		raw.BrokerRentCurrent != nil || raw.BrokerRentProForma != nil || raw.BrokerRentMarket != nil ||
-		raw.City != nil || raw.Beds != nil || raw.Sqft != nil || raw.BrokerCapRate != nil
+		raw.City != nil || raw.Beds != nil || raw.Sqft != nil || raw.BrokerCapRate != nil ||
+		len(raw.UnitMix) > 0
 
 	result := &parseDocumentResponse{
 		Address:            raw.Address,
@@ -453,6 +509,9 @@ func parseExtractionJSON(rawJSON string) (*parseDocumentResponse, error) {
 		BrokerRentMarket:   raw.BrokerRentMarket,
 		BrokerCapRate:      raw.BrokerCapRate,
 		VacancyRate:        raw.VacancyRate,
+		UnitMix:            raw.UnitMix,
+		LotSqft:            raw.LotSqft,
+		BuildingCount:      raw.BuildingCount,
 		DownPaymentPct:     raw.DownPaymentPct,
 		InterestRate:       raw.InterestRate,
 		FinancingType:      raw.FinancingType,

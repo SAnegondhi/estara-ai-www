@@ -35,7 +35,16 @@ UPDATE pipeline_deals SET
     notes              = COALESCE(sqlc.narg('notes')::text, notes),
     portfolio_excluded = COALESCE(sqlc.narg('portfolio_excluded')::boolean, portfolio_excluded),
     closed_outcome     = COALESCE(sqlc.narg('closed_outcome')::text, closed_outcome),
+    input_complete     = COALESCE(sqlc.narg('input_complete')::boolean, input_complete),
     updated_at         = NOW()
+WHERE id = $1 AND user_id = $2
+RETURNING *;
+
+-- name: MarkDealInputComplete :one
+-- ADR-107: mark a deal as input-complete (ready for analysis).
+UPDATE pipeline_deals SET
+    input_complete = true,
+    updated_at     = NOW()
 WHERE id = $1 AND user_id = $2
 RETURNING *;
 
@@ -124,16 +133,43 @@ INSERT INTO pipeline_properties (
     property_type, beds, baths, sqft, year_built, units,
     asking_price, target_price, down_payment_pct, financing_type, interest_rate,
     broker_rent, system_rent, current_occupancy,
-    expense_overrides, source_type,
+    expense_overrides, unit_mix, lot_sqft, building_count,
+    notes, source_type,
+    lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix,
+    year_renovated, stories, zoning, construction, parking_spaces,
     created_at, updated_at
 ) VALUES (
     gen_random_uuid(), $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10, $11,
     $12, $13, $14, $15, $16,
     $17, $18, $19,
-    $20, $21,
+    $20, $21, $22, $23,
+    $24, $25,
+    $26, $27, $28, $29, $30, $31,
+    $32, $33, $34, $35, $36,
     NOW(), NOW()
 ) RETURNING *;
+
+-- name: UpdatePipelinePropertyOM :one
+-- ADR-105: store parsed OM data + file reference for a property.
+-- Uses COALESCE so callers can update only the fields they have.
+UPDATE pipeline_properties SET
+    om_data         = COALESCE(sqlc.narg('om_data')::jsonb,   om_data),
+    broker_cap_rate = COALESCE(sqlc.narg('broker_cap_rate')::numeric, broker_cap_rate),
+    om_file_path    = COALESCE(sqlc.narg('om_file_path')::text, om_file_path),
+    om_file_data    = COALESCE(sqlc.narg('om_file_data')::bytea, om_file_data),
+    om_file_name    = COALESCE(sqlc.narg('om_file_name')::text, om_file_name),
+    om_file_type    = COALESCE(sqlc.narg('om_file_type')::text, om_file_type),
+    updated_at      = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: GetPropertyOMFile :one
+-- ADR-105: fetch only the file columns (avoid pulling BYTEA in normal property fetches).
+SELECT om_file_path, om_file_data, om_file_name, om_file_type
+FROM pipeline_properties pp
+JOIN pipeline_deals pd ON pd.id = pp.pipeline_deal_id
+WHERE pp.id = $1 AND pd.user_id = $2;
 
 -- name: GetPipelineProperty :one
 SELECT pp.* FROM pipeline_properties pp
@@ -148,26 +184,51 @@ ORDER BY pp.created_at ASC;
 
 -- name: UpdatePipelineProperty :one
 UPDATE pipeline_properties SET
-    address           = COALESCE(sqlc.narg('address')::text, address),
-    city              = COALESCE(sqlc.narg('city')::text, city),
-    state             = COALESCE(sqlc.narg('state')::text, state),
-    zip               = COALESCE(sqlc.narg('zip')::text, zip),
-    property_type     = COALESCE(sqlc.narg('property_type')::text, property_type),
-    beds              = COALESCE(sqlc.narg('beds')::numeric, beds),
-    baths             = COALESCE(sqlc.narg('baths')::numeric, baths),
-    sqft              = COALESCE(sqlc.narg('sqft')::integer, sqft),
-    year_built        = COALESCE(sqlc.narg('year_built')::integer, year_built),
-    units             = COALESCE(sqlc.narg('units')::integer, units),
-    asking_price      = COALESCE(sqlc.narg('asking_price')::numeric, asking_price),
-    target_price      = COALESCE(sqlc.narg('target_price')::numeric, target_price),
-    down_payment_pct  = COALESCE(sqlc.narg('down_payment_pct')::numeric, down_payment_pct),
-    financing_type    = COALESCE(sqlc.narg('financing_type')::text, financing_type),
-    interest_rate     = COALESCE(sqlc.narg('interest_rate')::numeric, interest_rate),
-    broker_rent       = COALESCE(sqlc.narg('broker_rent')::numeric, broker_rent),
-    system_rent       = COALESCE(sqlc.narg('system_rent')::numeric, system_rent),
-    current_occupancy = COALESCE(sqlc.narg('current_occupancy')::numeric, current_occupancy),
-    expense_overrides = COALESCE(sqlc.narg('expense_overrides')::jsonb, expense_overrides),
-    updated_at        = NOW()
+    address                = COALESCE(sqlc.narg('address')::text, address),
+    city                   = COALESCE(sqlc.narg('city')::text, city),
+    state                  = COALESCE(sqlc.narg('state')::text, state),
+    zip                    = COALESCE(sqlc.narg('zip')::text, zip),
+    property_type          = COALESCE(sqlc.narg('property_type')::text, property_type),
+    beds                   = COALESCE(sqlc.narg('beds')::numeric, beds),
+    baths                  = COALESCE(sqlc.narg('baths')::numeric, baths),
+    sqft                   = COALESCE(sqlc.narg('sqft')::integer, sqft),
+    year_built             = COALESCE(sqlc.narg('year_built')::integer, year_built),
+    units                  = COALESCE(sqlc.narg('units')::integer, units),
+    asking_price           = COALESCE(sqlc.narg('asking_price')::numeric, asking_price),
+    target_price           = COALESCE(sqlc.narg('target_price')::numeric, target_price),
+    down_payment_pct       = COALESCE(sqlc.narg('down_payment_pct')::numeric, down_payment_pct),
+    financing_type         = COALESCE(sqlc.narg('financing_type')::text, financing_type),
+    interest_rate          = COALESCE(sqlc.narg('interest_rate')::numeric, interest_rate),
+    broker_rent            = COALESCE(sqlc.narg('broker_rent')::numeric, broker_rent),
+    system_rent            = COALESCE(sqlc.narg('system_rent')::numeric, system_rent),
+    current_occupancy      = COALESCE(sqlc.narg('current_occupancy')::numeric, current_occupancy),
+    expense_overrides      = COALESCE(sqlc.narg('expense_overrides')::jsonb, expense_overrides),
+    unit_mix               = COALESCE(sqlc.narg('unit_mix')::jsonb, unit_mix),
+    lot_sqft               = COALESCE(sqlc.narg('lot_sqft')::integer, lot_sqft),
+    building_count         = COALESCE(sqlc.narg('building_count')::integer, building_count),
+    notes                  = COALESCE(sqlc.narg('notes')::text, notes),
+    lease_type             = COALESCE(sqlc.narg('lease_type')::text, lease_type),
+    tenant_count           = COALESCE(sqlc.narg('tenant_count')::integer, tenant_count),
+    anchor_tenant          = COALESCE(sqlc.narg('anchor_tenant')::text, anchor_tenant),
+    weighted_avg_lease_yrs = COALESCE(sqlc.narg('weighted_avg_lease_yrs')::numeric, weighted_avg_lease_yrs),
+    commercial_sqft        = COALESCE(sqlc.narg('commercial_sqft')::integer, commercial_sqft),
+    commercial_mix         = COALESCE(sqlc.narg('commercial_mix')::jsonb, commercial_mix),
+    year_renovated         = COALESCE(sqlc.narg('year_renovated')::integer, year_renovated),
+    stories                = COALESCE(sqlc.narg('stories')::integer, stories),
+    zoning                 = COALESCE(sqlc.narg('zoning')::text, zoning),
+    construction           = COALESCE(sqlc.narg('construction')::text, construction),
+    parking_spaces         = COALESCE(sqlc.narg('parking_spaces')::integer, parking_spaces),
+    updated_at             = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: UpdateOMValidatedData :one
+-- ADR-108: merge user-edited fields into om_validated_data JSONB.
+-- Sets om_validation_status when confirm=true.
+UPDATE pipeline_properties SET
+    om_validated_data      = $2,
+    om_validation_status   = CASE WHEN $3::boolean THEN 'validated' ELSE om_validation_status END,
+    updated_at             = NOW()
 WHERE id = $1
 RETURNING *;
 
@@ -177,6 +238,65 @@ USING pipeline_deals pd
 WHERE pp.id = $1
   AND pp.pipeline_deal_id = pd.id
   AND pd.user_id = $2;
+
+-- name: UpdatePipelinePropertyOMValidation :one
+-- ADR-106: write om validation status, questions, and merged validated data.
+UPDATE pipeline_properties SET
+    om_validation_status = $2,
+    om_questions         = COALESCE($3::jsonb, om_questions),
+    om_validated_data    = COALESCE($4::jsonb, om_validated_data),
+    updated_at           = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: GetPipelinePropertyOMValidation :one
+-- ADR-106: read validation columns only (avoids pulling full om_data/file in list views).
+SELECT pp.id, pp.om_validation_status, pp.om_questions, pp.om_validated_data, pp.om_data
+FROM pipeline_properties pp
+JOIN pipeline_deals pd ON pd.id = pp.pipeline_deal_id
+WHERE pp.id = $1 AND pd.user_id = $2;
+
+-- name: UpdatePropertyCompleteness :exec
+-- ADR-107: update computed completeness status after create/update.
+UPDATE pipeline_properties SET
+    property_completeness = $2,
+    updated_at            = NOW()
+WHERE id = $1;
+
+-- name: FindOMDuplicates :many
+-- ADR-107: find potential duplicate deals by broker email, OM date+company, or property description.
+-- Pass empty string '' for any criterion to skip it.
+-- Results are limited to active (non-archived) deals, 10 max, newest first.
+SELECT
+    pp.id                                                                AS prop_id,
+    pp.pipeline_deal_id                                                  AS deal_id,
+    pd.name                                                              AS deal_name,
+    pp.address                                                           AS address,
+    coalesce(pp.om_data ->>          'omDate',                   '')    AS om_date,
+    coalesce(pp.om_data -> 'brokerContact' ->> 'name',           '')    AS broker_name,
+    coalesce(pp.om_data -> 'brokerContact' ->> 'company',        '')    AS broker_company,
+    coalesce(pp.om_data -> 'brokerContact' ->> 'email',          '')    AS broker_email,
+    pd.created_at                                                        AS deal_created_at
+FROM pipeline_properties pp
+JOIN pipeline_deals pd ON pp.pipeline_deal_id = pd.id
+WHERE pd.user_id   = sqlc.arg('user_id')::text
+  AND pp.om_data   IS NOT NULL
+  AND pd.status    NOT IN ('passed', 'closed')
+  AND (
+      -- Criterion 1: same broker email (strongest signal)
+      (sqlc.arg('broker_email')::text  <> ''
+       AND coalesce(pp.om_data -> 'brokerContact' ->> 'email', '') = sqlc.arg('broker_email')::text)
+   OR -- Criterion 2: same OM date AND same broker company (medium signal)
+      (sqlc.arg('om_date')::text       <> ''
+       AND sqlc.arg('broker_company')::text <> ''
+       AND coalesce(pp.om_data ->> 'omDate',                          '') = sqlc.arg('om_date')::text
+       AND coalesce(pp.om_data -> 'brokerContact' ->> 'company',      '') = sqlc.arg('broker_company')::text)
+   OR -- Criterion 3: same property description (medium signal)
+      (sqlc.arg('property_desc')::text <> ''
+       AND lower(coalesce(pp.om_data ->> 'propertyDescription', ''))  = lower(sqlc.arg('property_desc')::text))
+  )
+ORDER BY pd.created_at DESC
+LIMIT 10;
 
 -- ============================================================
 -- ADR-104: Retrospective Analytics

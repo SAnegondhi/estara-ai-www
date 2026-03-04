@@ -167,23 +167,41 @@ type DecisionContext struct {
 	PipelineAlternatives string `json:"pipelineAlternatives"`
 }
 
+// UnitMixInput represents one unit type in a multi-family/mixed-use property.
+type UnitMixInput struct {
+	Type         string  `json:"type"`
+	Count        int     `json:"count"`
+	RentCurrent  int     `json:"rentCurrent,omitempty"`  // Monthly rent per unit (current in-place)
+	RentProForma int     `json:"rentProForma,omitempty"` // Monthly rent per unit (pro forma)
+	RentMarket   int     `json:"rentMarket,omitempty"`   // Monthly rent per unit (market comparable)
+	OccupancyPct float64 `json:"occupancyPct,omitempty"` // Current occupancy 0-100 for this type
+}
+
 // BatchPropertyInput represents property data from the client for memo generation.
 // Matches the discover handler's BatchPropertyInput.
 type BatchPropertyInput struct {
-	ID            string  `json:"id"`
-	Address       string  `json:"address"`
-	City          string  `json:"city"`
-	State         string  `json:"state"`
-	ZipCode       string  `json:"zipCode,omitempty"`
-	Price         int     `json:"price"`
-	Beds          int     `json:"beds,omitempty"`
-	Baths         float64 `json:"baths,omitempty"`
-	Sqft          int     `json:"sqft,omitempty"`
-	YearBuilt     int     `json:"yearBuilt,omitempty"`
-	EstimatedRent int     `json:"estimatedRent,omitempty"`
-	PropertyType  string  `json:"propertyType,omitempty"`
-	Latitude      float64 `json:"latitude,omitempty"`
-	Longitude     float64 `json:"longitude,omitempty"`
+	ID              string         `json:"id"`
+	Address         string         `json:"address"`
+	City            string         `json:"city"`
+	State           string         `json:"state"`
+	ZipCode         string         `json:"zipCode,omitempty"`
+	Price           int            `json:"price"`
+	TargetPrice     int            `json:"targetPrice,omitempty"`     // Fallback when Price is not set
+	Beds            int            `json:"beds,omitempty"`
+	Baths           float64        `json:"baths,omitempty"`
+	Sqft            int            `json:"sqft,omitempty"`
+	YearBuilt       int            `json:"yearBuilt,omitempty"`
+	Units           int            `json:"units,omitempty"`            // Total unit count (MF)
+	EstimatedRent   int            `json:"estimatedRent,omitempty"`
+	PropertyType    string         `json:"propertyType,omitempty"`
+	Latitude        float64        `json:"latitude,omitempty"`
+	Longitude       float64        `json:"longitude,omitempty"`
+	// Financing — user-provided from pipeline form; used in calculator instead of defaults
+	DownPaymentPct  float64        `json:"downPaymentPct,omitempty"`  // 0.0–1.0 fraction
+	InterestRate    float64        `json:"interestRate,omitempty"`    // Annual %, e.g. 6.75
+	FinancingType   string         `json:"financingType,omitempty"`   // conventional|fha|va|cash|bridge|etc.
+	CurrentOccupancy float64       `json:"currentOccupancy,omitempty"` // 0–100 %
+	UnitMix         []UnitMixInput `json:"unitMix,omitempty"`         // Per-unit-type breakdown
 }
 
 // GenerateOptions controls memo generation behaviour.

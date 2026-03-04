@@ -670,35 +670,62 @@ type PipelineDeal struct {
 	MemoCount         int32              `json:"memo_count"`
 	PortfolioExcluded bool               `json:"portfolio_excluded"`
 	LastActivityAt    pgtype.Timestamptz `json:"last_activity_at"`
+	ClosedOutcome     pgtype.Text        `json:"closed_outcome"`
+	InputComplete     bool               `json:"input_complete"`
 	CreatedAt         time.Time          `json:"created_at"`
 	UpdatedAt         time.Time          `json:"updated_at"`
 }
 
 type PipelineProperty struct {
-	ID               uuid.UUID      `json:"id"`
-	PipelineDealID   uuid.UUID      `json:"pipeline_deal_id"`
-	Address          string         `json:"address"`
-	City             pgtype.Text    `json:"city"`
-	State            pgtype.Text    `json:"state"`
-	Zip              pgtype.Text    `json:"zip"`
-	PropertyType     pgtype.Text    `json:"property_type"`
-	Beds             pgtype.Numeric `json:"beds"`
-	Baths            pgtype.Numeric `json:"baths"`
-	Sqft             pgtype.Int4    `json:"sqft"`
-	YearBuilt        pgtype.Int4    `json:"year_built"`
-	Units            pgtype.Int4    `json:"units"`
-	AskingPrice      pgtype.Numeric `json:"asking_price"`
-	TargetPrice      pgtype.Numeric `json:"target_price"`
-	DownPaymentPct   pgtype.Numeric `json:"down_payment_pct"`
-	FinancingType    pgtype.Text    `json:"financing_type"`
-	InterestRate     pgtype.Numeric `json:"interest_rate"`
-	BrokerRent       pgtype.Numeric `json:"broker_rent"`
-	SystemRent       pgtype.Numeric `json:"system_rent"`
-	CurrentOccupancy pgtype.Numeric `json:"current_occupancy"`
-	ExpenseOverrides []byte         `json:"expense_overrides"`
-	SourceType       string         `json:"source_type"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
+	ID                   uuid.UUID      `json:"id"`
+	PipelineDealID       uuid.UUID      `json:"pipeline_deal_id"`
+	Address              string         `json:"address"`
+	City                 pgtype.Text    `json:"city"`
+	State                pgtype.Text    `json:"state"`
+	Zip                  pgtype.Text    `json:"zip"`
+	PropertyType         pgtype.Text    `json:"property_type"`
+	Beds                 pgtype.Numeric `json:"beds"`
+	Baths                pgtype.Numeric `json:"baths"`
+	Sqft                 pgtype.Int4    `json:"sqft"`
+	YearBuilt            pgtype.Int4    `json:"year_built"`
+	Units                pgtype.Int4    `json:"units"`
+	AskingPrice          pgtype.Numeric `json:"asking_price"`
+	TargetPrice          pgtype.Numeric `json:"target_price"`
+	DownPaymentPct       pgtype.Numeric `json:"down_payment_pct"`
+	FinancingType        pgtype.Text    `json:"financing_type"`
+	InterestRate         pgtype.Numeric `json:"interest_rate"`
+	BrokerRent           pgtype.Numeric `json:"broker_rent"`
+	SystemRent           pgtype.Numeric `json:"system_rent"`
+	CurrentOccupancy     pgtype.Numeric `json:"current_occupancy"`
+	ExpenseOverrides     []byte         `json:"expense_overrides"`
+	UnitMix              []byte         `json:"unit_mix"`
+	LotSqft              pgtype.Int4    `json:"lot_sqft"`
+	BuildingCount        pgtype.Int4    `json:"building_count"`
+	Notes                pgtype.Text    `json:"notes"`
+	SourceType           string         `json:"source_type"`
+	OmData               []byte         `json:"om_data"`
+	BrokerCapRate        pgtype.Numeric `json:"broker_cap_rate"`
+	OmFilePath           pgtype.Text    `json:"om_file_path"`
+	OmFileData           []byte         `json:"om_file_data"`
+	OmFileName           pgtype.Text    `json:"om_file_name"`
+	OmFileType           pgtype.Text    `json:"om_file_type"`
+	OmValidationStatus   string         `json:"om_validation_status"`
+	OmQuestions          []byte         `json:"om_questions"`
+	OmValidatedData      []byte         `json:"om_validated_data"`
+	PropertyCompleteness string         `json:"property_completeness"`
+	LeaseType            pgtype.Text    `json:"lease_type"`
+	TenantCount          pgtype.Int4    `json:"tenant_count"`
+	AnchorTenant         pgtype.Text    `json:"anchor_tenant"`
+	WeightedAvgLeaseYrs  pgtype.Numeric `json:"weighted_avg_lease_yrs"`
+	CommercialSqft       pgtype.Int4    `json:"commercial_sqft"`
+	CommercialMix        []byte         `json:"commercial_mix"`
+	YearRenovated        pgtype.Int4    `json:"year_renovated"`
+	Stories              pgtype.Int4    `json:"stories"`
+	Zoning               pgtype.Text    `json:"zoning"`
+	Construction         pgtype.Text    `json:"construction"`
+	ParkingSpaces        pgtype.Int4    `json:"parking_spaces"`
+	CreatedAt            time.Time      `json:"created_at"`
+	UpdatedAt            time.Time      `json:"updated_at"`
 }
 
 // Size-based FIFO cache for individual property details (ADR-061)

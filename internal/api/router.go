@@ -106,7 +106,8 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 			WithPropertyFinder(svc.PropertyFinder).                // ADR-088 Phase 12
 			WithMarketData(svc.MarketData).                        // Quality-gate market benchmarks
 			WithMetroReader(svc.MetroReader).                      // HUD FMR by bedroom count
-			WithTrendsService(svc.TrendsService),                  // ADR-100: report enrichment (historical time series)
+			WithTrendsService(svc.TrendsService).                  // ADR-100: report enrichment (historical time series)
+			WithMarketEstimator(svc.MarketEstimator),              // AI fallback for missing price/rent data
 		Portfolio:     portfolio.NewHandler(store, cfg),
 		Pipeline:      pipeline.NewHandler(store, cfg),
 		Admin:         admin.NewHandler(store, redis, cfg, authMiddleware),
@@ -507,14 +508,20 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 
 		r.Get("/deals", handlers.Pipeline.ListDeals)
 		r.Post("/deals", handlers.Pipeline.CreateDeal)
+		r.Post("/deals/from-om", handlers.Pipeline.CreateDealFromOM)          // ADR-107: OM-first deal creation
+		r.Post("/check-duplicate-om", handlers.Pipeline.CheckOMDuplicate)  // ADR-107: duplicate detection before creation
 		r.Get("/deals/stats", handlers.Pipeline.GetStats)
 		r.Post("/parse-document", handlers.Pipeline.ParseDocument)       // ADR-102: broker OM parse
 		r.Get("/retrospective", handlers.Pipeline.GetRetrospective)      // ADR-104: acquisition retrospective
+		r.Post("/check-om", handlers.Pipeline.CheckOM)                   // ADR-107 (revised): wizard step 1
+		r.Post("/extract-om", handlers.Pipeline.ExtractOM)               // ADR-107 (revised): wizard step 2
 
 		r.Route("/deals/{dealId}", func(r chi.Router) {
 			r.Get("/", handlers.Pipeline.GetDeal)
 			r.Put("/", handlers.Pipeline.UpdateDeal)
 			r.Delete("/", handlers.Pipeline.DeleteDeal)
+			r.Put("/complete", handlers.Pipeline.MarkDealComplete)       // ADR-107 (revised): mark input-complete
+			r.Get("/om-extraction", handlers.Pipeline.GetOMExtraction)   // ADR-107: resume wizard from stored OM data
 
 			r.Post("/properties", handlers.Pipeline.AddProperty)
 			r.Get("/properties", handlers.Pipeline.ListProperties)
@@ -524,7 +531,16 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 				r.Put("/", handlers.Pipeline.UpdateProperty)
 				r.Delete("/", handlers.Pipeline.DeleteProperty)
 				r.Get("/rent-estimate", handlers.Pipeline.GetRentEstimate)
+				r.Post("/om-file", handlers.Pipeline.UploadOMFile)              // ADR-105: OM file upload + parse
+				r.Get("/om-file", handlers.Pipeline.GetOMFile)              // ADR-105: OM file download/stream
+				r.Post("/om-validate", handlers.Pipeline.ValidateOM)        // ADR-106: validate OM, generate questions
+				r.Put("/om-questions", handlers.Pipeline.AnswerOMQuestions) // ADR-106: answer validation questions
+				r.Get("/om-broker-report", handlers.Pipeline.GetOMBrokerReport) // ADR-106: broker information request
+				r.Patch("/om-validated", handlers.Pipeline.UpdateOMValidated)   // ADR-108: save user-edited OM fields
+				r.Post("/om-reextract", handlers.Pipeline.ReextractOM)          // ADR-108: re-run Pass 2 with corrected type
 			})
+
+			r.Post("/decision-memo", handlers.Pipeline.GeneratePipelineMemo) // ADR-105: pipeline memo SSE
 		})
 	})
 
