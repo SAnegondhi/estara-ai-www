@@ -775,6 +775,21 @@ func (h *Handler) CreateDealFromOM(w http.ResponseWriter, r *http.Request) {
 		h.logger.Warn("UpdatePipelinePropertyOM failed in CreateDealFromOM", "error", err)
 	}
 
+	// Compute and store property_completeness now that om_data is set.
+	// prop was returned before om_data was written, so we attach it here for the calculation.
+	propWithOM := prop
+	propWithOM.OmData = omDataJSON
+	if brokerCapRate != nil {
+		propWithOM.BrokerCapRate = numericFromFloat(brokerCapRate)
+	}
+	completeness := computePropertyCompleteness(propWithOM)
+	if cerr := h.store.Q().UpdatePropertyCompleteness(r.Context(), queries.UpdatePropertyCompletenessParams{
+		ID:                   prop.ID,
+		PropertyCompleteness: completeness,
+	}); cerr != nil {
+		h.logger.Warn("UpdatePropertyCompleteness failed in CreateDealFromOM", "error", cerr)
+	}
+
 	// Bump deal property count.
 	_ = h.store.Q().BumpPipelineDealActivity(r.Context(), deal.ID)
 
