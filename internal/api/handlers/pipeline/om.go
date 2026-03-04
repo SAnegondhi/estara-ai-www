@@ -2282,7 +2282,7 @@ func computeOMValidationIssues(d *omData) []omValidationIssue {
 	}
 
 	// OM Date required — establishes timing of projections.
-	if d.OmDate == nil {
+	if d.OmDate == nil || *d.OmDate == "" {
 		issues = append(issues, omValidationIssue{Field: "omDate", Message: "OM date not stated — required to establish timing of broker projections.", Severity: "required"})
 	}
 
@@ -2298,10 +2298,12 @@ func computeOMValidationIssues(d *omData) []omValidationIssue {
 
 	// Broker contact incomplete — name missing or no way to contact.
 	if d.BrokerContact != nil {
-		if d.BrokerContact.Name == nil {
+		if d.BrokerContact.Name == nil || *d.BrokerContact.Name == "" {
 			issues = append(issues, omValidationIssue{Field: "brokerContact.name", Message: "Broker name not stated — contact information incomplete.", Severity: "required"})
 		}
-		if d.BrokerContact.Phone == nil && d.BrokerContact.Email == nil {
+		phoneEmpty := d.BrokerContact.Phone == nil || *d.BrokerContact.Phone == ""
+		emailEmpty := d.BrokerContact.Email == nil || *d.BrokerContact.Email == ""
+		if phoneEmpty && emailEmpty {
 			issues = append(issues, omValidationIssue{Field: "brokerContact.contact", Message: "Broker has no phone or email — cannot follow up on this property.", Severity: "required"})
 		}
 	}
