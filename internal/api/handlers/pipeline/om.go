@@ -1701,8 +1701,8 @@ func (h *Handler) GeneratePipelineMemo(w http.ResponseWriter, r *http.Request) {
 	aiClient := anthropic.NewClient(anthropic.ClientConfig{
 		APIKey:    h.cfg.AI.AnthropicAPIKey,
 		Model:     "claude-sonnet-4-6",
-		MaxTokens: 8192,
-		Timeout:   240 * time.Second,
+		MaxTokens: 4096,
+		Timeout:   10 * time.Minute, // streaming session; context cancel handles client disconnect
 	})
 
 	streamCh, err := aiClient.Stream(r.Context(), "", prompt)
