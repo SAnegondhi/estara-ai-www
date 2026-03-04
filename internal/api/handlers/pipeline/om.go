@@ -2282,8 +2282,15 @@ func computeOMValidationIssues(d *omData) []omValidationIssue {
 	}
 
 	// OM Date required — establishes timing of projections.
+	// A quarter-only value (e.g. "Q4 2025") is not a real date and must be flagged.
 	if d.OmDate == nil || *d.OmDate == "" {
 		issues = append(issues, omValidationIssue{Field: "omDate", Message: "OM date not stated — required to establish timing of broker projections.", Severity: "required"})
+	} else if !omDateIsUsable(*d.OmDate) {
+		issues = append(issues, omValidationIssue{
+			Field:    "omDate",
+			Message:  fmt.Sprintf("OM date %q is not a specific date — quarter or year-only values are too imprecise; a month and year (e.g. \"December 2024\") is required.", *d.OmDate),
+			Severity: "required",
+		})
 	}
 
 	// Year Built required — distinct from Year Renovated.
@@ -2423,6 +2430,71 @@ func computeOMValidationIssues(d *omData) []omValidationIssue {
 	}
 
 	return issues
+}
+
+// omDateIsUsable returns true if s is a specific enough date to be useful (month+year minimum).
+// Quarter-only ("Q4 2025") and year-only ("2025") values return false.
+func omDateIsUsable(s string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(s))
+	// Reject quarter patterns: Q1–Q4 followed by a year.
+	if len(upper) >= 2 && upper[0] == 'Q' && upper[1] >= '1' && upper[1] <= '4' {
+		return false
+	}
+	// Reject bare 4-digit year.
+	trimmed := strings.TrimSpace(s)
+	if len(trimmed) == 4 {
+		allDigits := true
+		for _, c := range trimmed {
+			if c < '0' || c > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return false
+		}
+	}
+	// Try standard date formats (month+year minimum).
+	for _, f := range []string{
+		"January 2, 2006", "Jan 2, 2006",
+		"01/02/2006", "1/2/2006",
+		"2006-01-02",
+		"January 2006", "Jan 2006",
+		"2006-01",
+		"January, 2006",
+	} {
+		if _, err := time.Parse(f, trimmed); err == nil {
+			return true
+		}
+	}
+	// Fallback: accept if string contains a recognisable month name AND a 4-digit year.
+	lower := strings.ToLower(trimmed)
+	hasMonth := false
+	for _, m := range []string{
+		"january", "february", "march", "april", "may", "june",
+		"july", "august", "september", "october", "november", "december",
+		"jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+	} {
+		if strings.Contains(lower, m) {
+			hasMonth = true
+			break
+		}
+	}
+	hasYear := false
+	for i := 0; i+4 <= len(trimmed); i++ {
+		allD := true
+		for _, c := range trimmed[i : i+4] {
+			if c < '0' || c > '9' {
+				allD = false
+				break
+			}
+		}
+		if allD {
+			hasYear = true
+			break
+		}
+	}
+	return hasMonth && hasYear
 }
 
 // ReextractOM handles POST /api/pipeline/deals/{dealId}/properties/{propId}/om-reextract
