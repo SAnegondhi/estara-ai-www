@@ -1811,7 +1811,15 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 				label = "Offering Memorandum Data (validated + user-corrected)"
 			}
 			sb.WriteString(fmt.Sprintf("\n**%s**:\n```json\n", label))
-			sb.Write(omForMemo)
+			// Truncate large OM blobs to keep the prompt within a manageable token budget.
+			// Most critical fields (askingPrice, capRate, NOI, rentByUnitType) appear early in the JSON.
+			const maxOMBytes = 3000
+			if len(omForMemo) > maxOMBytes {
+				sb.Write(omForMemo[:maxOMBytes])
+				sb.WriteString("\n... [truncated for brevity]\n")
+			} else {
+				sb.Write(omForMemo)
+			}
 			sb.WriteString("\n```\n")
 		}
 
@@ -1955,7 +1963,7 @@ func (h *Handler) callClaudeForMemo(ctx context.Context, prompt string) (string,
 	httpReq.Header.Set("x-api-key", h.cfg.AI.AnthropicAPIKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := &http.Client{Timeout: 240 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("API call: %w", err)
