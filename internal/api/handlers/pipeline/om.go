@@ -1862,6 +1862,20 @@ func computeDealAnalytics(
 		if a.IODebtService > 0 {
 			a.IODSCR = noi / a.IODebtService
 		}
+	} else if hasInterestRate && !hasDownPayment && interestRate > 0 && noi > 0 {
+		// Interest rate known but no down payment — bridge/IO loan scenario.
+		// Assume 75% LTV (standard bridge). Flag as estimate.
+		assumedLTV := 0.75
+		loanAmt := askingPrice * assumedLTV
+		a.DSCRAvailable = true
+		a.LoanAmount = loanAmt
+		a.LTV = assumedLTV
+		a.Rate = interestRate
+		// IO only — no amortisation payment; AnnualDebtService stays 0
+		a.IODebtService = loanAmt * interestRate
+		if a.IODebtService > 0 {
+			a.IODSCR = noi / a.IODebtService
+		}
 	}
 
 	// Scorecard: price/unit, price/SF
@@ -2068,18 +2082,38 @@ func buildBrokerClaimsBlock(a dealAnalytics, om *omData) string {
 	var rows []claimRow
 
 	// 0. Financing feasibility (DSCR) — fires whenever financing data is present; not dependent on OM fields
-	if a.DSCRAvailable && a.AnnualDebtService > 0 {
+	if a.DSCRAvailable && (a.AnnualDebtService > 0 || a.IODebtService > 0) {
 		rating := "✓"
-		check := fmt.Sprintf("DSCR %.2fx (NOI $%.0f / annual debt service $%.0f at %.0f%% LTV, %.2f%% rate, 30yr am)",
-			a.DSCR, a.NOI, a.AnnualDebtService, a.LTV*100, a.Rate*100)
-		if a.DSCRBelow {
-			check += " — below 1.20x lender minimum"
-			rating = "❗"
-		} else if a.DSCRThin {
-			check += " — thin coverage (1.20–1.30x)"
-			rating = "⚠"
+		var check string
+		if a.AnnualDebtService > 0 {
+			// Full amortising DSCR
+			check = fmt.Sprintf("DSCR %.2fx (NOI $%.0f / debt service $%.0f at %.0f%% LTV, %.2f%% rate, 30yr am)",
+				a.DSCR, a.NOI, a.AnnualDebtService, a.LTV*100, a.Rate*100)
+			if a.DSCRBelow {
+				check += " — below 1.20x lender minimum"
+				rating = "❗"
+			} else if a.DSCRThin {
+				check += " — thin coverage (1.20–1.30x)"
+				rating = "⚠"
+			}
+			rows = append(rows, claimRow{"Financing (DSCR)", check, rating})
+		} else if a.IODebtService > 0 && a.IODSCR > 0 {
+			// IO-only (bridge loan or rate-only entry)
+			ltvLabel := fmt.Sprintf("%.0f%%", a.LTV*100)
+			if a.LTV == 0.75 {
+				ltvLabel = "75% (assumed — bridge)"
+			}
+			check = fmt.Sprintf("IO DSCR %.2fx (NOI $%.0f / IO interest $%.0f at %s LTV, %.2f%% rate)",
+				a.IODSCR, a.NOI, a.IODebtService, ltvLabel, a.Rate*100)
+			if a.IODSCR < 1.00 {
+				check += " — IO cash flow negative; deal requires rent growth or rent-up to service debt"
+				rating = "❗"
+			} else if a.IODSCR < 1.20 {
+				check += " — thin IO coverage; amortising refi will be worse"
+				rating = "⚠"
+			}
+			rows = append(rows, claimRow{"Financing (IO DSCR — bridge)", check, rating})
 		}
-		rows = append(rows, claimRow{"Financing (DSCR)", check, rating})
 	}
 
 	// 1. Cap rate integrity
@@ -2177,19 +2211,83 @@ func buildBrokerClaimsBlock(a dealAnalytics, om *omData) string {
 		}
 	}
 
-	// 5. Vacancy assumption
-	if om.VacancyPct != nil {
-		vp := *om.VacancyPct * 100
-		check := fmt.Sprintf("Stated: %.1f%%", vp)
-		rating := "✓"
-		if vp < 3 {
-			check += " — very low; verify against submarket occupancy"
-			rating = "⚠"
-		} else if vp < 5 {
-			check += " — below 5%; optimistic assumption"
-			rating = "⚠"
+	// 5. Vacancy — combine stated assumption with implied vacancy from income statement
+	{
+		var impliedVacancyPct float64
+		hasImplied := false
+		// Compute implied vacancy from GPR vs EGI (always reliable when both present)
+		gpr := 0.0
+		if om.GrossPotentialRentCurrent != nil {
+			gpr = *om.GrossPotentialRentCurrent
+		} else if om.GrossPotentialRent != nil {
+			gpr = *om.GrossPotentialRent
 		}
-		rows = append(rows, claimRow{"Vacancy assumption", check, rating})
+		egi := 0.0
+		if om.TotalEffectiveGrossIncome != nil {
+			egi = *om.TotalEffectiveGrossIncome
+		}
+		if gpr > 0 && egi > 0 && gpr > egi {
+			impliedVacancyPct = (1.0 - egi/gpr) * 100
+			hasImplied = true
+		}
+
+		if om.VacancyPct != nil || hasImplied {
+			rating := "✓"
+			var check string
+			statedVP := 0.0
+			if om.VacancyPct != nil {
+				statedVP = *om.VacancyPct * 100
+			}
+			if hasImplied && om.VacancyPct != nil {
+				delta := math.Abs(impliedVacancyPct - statedVP)
+				check = fmt.Sprintf("Stated: %.1f%%; implied from GPR/EGI: %.1f%%; discrepancy: %.1fpp",
+					statedVP, impliedVacancyPct, delta)
+				if delta > 8 {
+					check += " — income statement implies materially higher vacancy than stated"
+					rating = "❗"
+				} else if delta > 3 || statedVP < 3 {
+					rating = "⚠"
+				}
+			} else if hasImplied {
+				check = fmt.Sprintf("Implied from GPR $%.0f / EGI $%.0f: %.1f%% vacancy",
+					gpr, egi, impliedVacancyPct)
+				if impliedVacancyPct > 12 {
+					check += " — elevated vacancy; verify lease-up timeline"
+					rating = "⚠"
+				} else if impliedVacancyPct < 2 {
+					check += " — very low; verify in-place occupancy"
+					rating = "⚠"
+				}
+			} else {
+				check = fmt.Sprintf("Stated: %.1f%%", statedVP)
+				if statedVP < 3 {
+					check += " — very low; verify against submarket occupancy"
+					rating = "⚠"
+				} else if statedVP < 5 {
+					check += " — below 5%; optimistic assumption"
+					rating = "⚠"
+				}
+			}
+			rows = append(rows, claimRow{"Vacancy / occupancy", check, rating})
+		}
+	}
+
+	// 6. Unverifiable third-party market claims (CoStar, JLL, Yardi, etc.)
+	{
+		citationKeywords := []string{"CoStar", "Yardi", "JLL", "CBRE", "Marcus & Millichap",
+			"top 3", "top 5", "#1", "No. 1", "No.1", "ranked first", "fastest-growing", "best-performing"}
+		for _, h := range om.InvestmentHighlights {
+			for _, kw := range citationKeywords {
+				if strings.Contains(h, kw) {
+					check := fmt.Sprintf("Highlight cites '%s': \"%s\" — cannot be verified without current subscription data", kw, h)
+					if len(check) > 160 {
+						check = check[:157] + "…"
+					}
+					rows = append(rows, claimRow{"Unverifiable market claim", check, "⚠"})
+					break // one row per highlight max
+				}
+			}
+		}
 	}
 
 	if len(rows) == 0 {
@@ -2617,25 +2715,50 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 		}
 
 		// ADR-110 fix: inject DSCR as primary inline data point so Claude treats it as
-		// a first-class fact (not buried analytics commentary). This prevents Claude from
-		// softening the threshold breach into vague "thin cash flow" language.
-		if hasDownPayment && hasInterestRate && interestRate > 0 && resolvedNOI > 0 && askingPrice > 0 {
-			ltv := 1.0 - downPaymentPct
+		// a first-class fact (not buried analytics commentary).
+		if interestRate > 0 && resolvedNOI > 0 && askingPrice > 0 {
+			ltv := 0.0
+			ltvLabel := ""
+			if hasDownPayment {
+				ltv = 1.0 - downPaymentPct
+				ltvLabel = fmt.Sprintf("%.0f%%", ltv*100)
+			} else {
+				ltv = 0.75 // assumed bridge
+				ltvLabel = "75% (assumed)"
+			}
 			loanAmt := askingPrice * ltv
-			monthlyRate := interestRate / 12.0
-			n360 := math.Pow(1+monthlyRate, 360)
-			payment := loanAmt * (monthlyRate * n360) / (n360 - 1)
-			annualDS := payment * 12
-			if annualDS > 0 {
-				dscr := resolvedNOI / annualDS
-				dscrAlert := ""
-				if dscr < 1.20 {
-					dscrAlert = " — ⚠ BELOW STANDARD 1.20x LENDER MINIMUM: flag as Financing Risk"
-				} else if dscr < 1.30 {
-					dscrAlert = " — ⚠ THIN COVERAGE (1.20–1.30x): stress-test against rate increases"
+
+			if hasDownPayment && hasInterestRate {
+				// Full amortising DSCR
+				monthlyRate := interestRate / 12.0
+				n360 := math.Pow(1+monthlyRate, 360)
+				payment := loanAmt * (monthlyRate * n360) / (n360 - 1)
+				annualDS := payment * 12
+				if annualDS > 0 {
+					dscr := resolvedNOI / annualDS
+					dscrAlert := ""
+					if dscr < 1.20 {
+						dscrAlert = " — ⚠ BELOW STANDARD 1.20x LENDER MINIMUM: flag as Financing Risk"
+					} else if dscr < 1.30 {
+						dscrAlert = " — ⚠ THIN COVERAGE (1.20–1.30x): stress-test against rate increases"
+					}
+					sb.WriteString(fmt.Sprintf("\n**FINANCING FEASIBILITY**: DSCR **%.2fx** (NOI $%.0f / debt service $%.0f at %s LTV, %.2f%% rate, 30yr am)%s\n",
+						dscr, resolvedNOI, annualDS, ltvLabel, interestRate*100, dscrAlert))
 				}
-				sb.WriteString(fmt.Sprintf("\n**FINANCING FEASIBILITY**: DSCR **%.2fx** (NOI $%.0f / annual debt service $%.0f at %.0f%% LTV, %.2f%% rate, 30yr am)%s\n",
-					dscr, resolvedNOI, annualDS, ltv*100, interestRate*100, dscrAlert))
+			} else {
+				// IO-only (bridge loan or rate-only entry)
+				ioDS := loanAmt * interestRate
+				if ioDS > 0 {
+					ioDSCR := resolvedNOI / ioDS
+					dscrAlert := ""
+					if ioDSCR < 1.00 {
+						dscrAlert = " — ⚠ IO CASH FLOW NEGATIVE: deal requires rent-up before break-even"
+					} else if ioDSCR < 1.20 {
+						dscrAlert = " — ⚠ THIN IO COVERAGE: amortising refi will further compress DSCR"
+					}
+					sb.WriteString(fmt.Sprintf("\n**FINANCING FEASIBILITY**: IO DSCR **%.2fx** (NOI $%.0f / interest $%.0f at %s LTV, %.2f%% IO rate — bridge structure)%s\n",
+						ioDSCR, resolvedNOI, ioDS, ltvLabel, interestRate*100, dscrAlert))
+				}
 			}
 		}
 
