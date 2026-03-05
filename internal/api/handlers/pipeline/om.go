@@ -1934,7 +1934,7 @@ func buildAnalyticsPromptBlock(a dealAnalytics) string {
 	if a.AskingPrice <= 0 {
 		return ""
 	}
-	// Require at least 3 computable scorecard rows to avoid a mostly-empty block.
+	// Require at least 2 computable scorecard rows to avoid a mostly-empty block.
 	scorecardRows := 0
 	if a.PricePerUnit != nil { scorecardRows++ }
 	if a.PricePerSF != nil { scorecardRows++ }
@@ -1943,7 +1943,7 @@ func buildAnalyticsPromptBlock(a dealAnalytics) string {
 	if a.ImpliedCapRate != nil { scorecardRows++ }
 	if a.ExitValueEst != nil { scorecardRows++ }
 	if a.DSCRAvailable { scorecardRows++ }
-	if scorecardRows < 3 && !a.DSCRAvailable && !a.VintageCapEx && !a.HasRecon {
+	if scorecardRows < 2 && !a.DSCRAvailable && !a.VintageCapEx && !a.HasRecon {
 		return ""
 	}
 
@@ -2290,11 +2290,12 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 	sb.WriteString("Instead, use hedged general language: 'markets of this type typically...', ")
 	sb.WriteString("'investors in this asset class generally look for...', 'cap rate compression in this sector has historically...'. ")
 	sb.WriteString("If referencing a market trend, attribute it conditionally: 'if vacancy in this submarket is above X%, this suggests...'\n\n")
-	sb.WriteString("DSCR INSTRUCTION: The DEAL ANALYTICS block contains pre-computed DSCR. In the Financial Snapshot section, ")
-	sb.WriteString("always discuss DSCR explicitly when it is provided. If DSCR < 1.20x, open the Financial Snapshot with a bold warning: ")
+	sb.WriteString("DSCR INSTRUCTION: A FINANCING FEASIBILITY line above the unit mix provides the pre-computed DSCR. ")
+	sb.WriteString("You MUST state the DSCR ratio verbatim (e.g. 'DSCR: 1.11x') in the Financial Snapshot — do NOT paraphrase it as 'thin cash flow' or omit the number. ")
+	sb.WriteString("If DSCR < 1.20x, the Financial Snapshot MUST open with this exact bold warning (fill in actual numbers): ")
 	sb.WriteString("'⚠ Financing Risk: DSCR of X.XXx is below the standard 1.20x lender minimum. This deal likely requires interest-only terms, ")
 	sb.WriteString("a renovation escrow, or a price reduction to qualify for conventional financing.' ")
-	sb.WriteString("If DSCR is 1.20–1.30x, flag as 'thin coverage — stress-test against higher rates.'\n\n")
+	sb.WriteString("If DSCR is 1.20–1.30x, label it 'thin coverage — stress-test against higher rates.' in Financial Snapshot.\n\n")
 	sb.WriteString("RENOVATION RECONCILIATION: If the Deal Analytics shows a reconciliation gap flagged with ⚠ RECONCILIATION GAP, ")
 	sb.WriteString("include it as a ❗-rated Risk Factor: state the gap amount and percentage, and frame it as ")
 	sb.WriteString("'This is a common location for broker optimism — verify renovation scope, unit count, and achievable post-renovation rents independently.'\n\n")
@@ -2317,6 +2318,11 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 	sb.WriteString("Do not alter the ratings.\n\n")
 	sb.WriteString("SENSITIVITY INSTRUCTION: If an ESTARA SENSITIVITY SCENARIO block is provided, include that table verbatim ")
 	sb.WriteString("in the Estara Sensitivity Scenario section. Write one conclusion sentence using the hint provided.\n\n")
+	sb.WriteString("SUBMARKET NUANCE: Do not default to generic university-proximity framing for multifamily properties. ")
+	sb.WriteString("Assess the actual likely tenant profile based on property type, unit mix, and rent levels. ")
+	sb.WriteString("A property with 2BR+ units at $900–$1,200/mo near a medical center or mid-size city downtown suggests working professionals, not students. ")
+	sb.WriteString("Identify the most plausible demand driver (medical workers, young professionals, workforce housing, student, etc.) and use it throughout. ")
+	sb.WriteString("If unable to determine the profile from available data, name that as a due diligence question, not an assumption.\n\n")
 	sb.WriteString("---\n\n")
 	sb.WriteString(fmt.Sprintf("# Deal: %s\n\n", dealName))
 	sb.WriteString(fmt.Sprintf("**Properties in deal**: %d\n\n", len(props)))
@@ -2530,6 +2536,29 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 			resolvedNOISource = "estimated"
 		}
 
+		// ADR-110 fix: inject DSCR as primary inline data point so Claude treats it as
+		// a first-class fact (not buried analytics commentary). This prevents Claude from
+		// softening the threshold breach into vague "thin cash flow" language.
+		if hasDownPayment && hasInterestRate && interestRate > 0 && resolvedNOI > 0 && askingPrice > 0 {
+			ltv := 1.0 - downPaymentPct
+			loanAmt := askingPrice * ltv
+			monthlyRate := interestRate / 12.0
+			n360 := math.Pow(1+monthlyRate, 360)
+			payment := loanAmt * (monthlyRate * n360) / (n360 - 1)
+			annualDS := payment * 12
+			if annualDS > 0 {
+				dscr := resolvedNOI / annualDS
+				dscrAlert := ""
+				if dscr < 1.20 {
+					dscrAlert = " — ⚠ BELOW STANDARD 1.20x LENDER MINIMUM: flag as Financing Risk"
+				} else if dscr < 1.30 {
+					dscrAlert = " — ⚠ THIN COVERAGE (1.20–1.30x): stress-test against rate increases"
+				}
+				sb.WriteString(fmt.Sprintf("\n**FINANCING FEASIBILITY**: DSCR **%.2fx** (NOI $%.0f / annual debt service $%.0f at %.0f%% LTV, %.2f%% rate, 30yr am)%s\n",
+					dscr, resolvedNOI, annualDS, ltv*100, interestRate*100, dscrAlert))
+			}
+		}
+
 		// ---------- Manual unit mix (ADR-109 fallback chain) ----------
 		// Use prop.UnitMix first; fall back to om.RentByUnitType.
 		type unitRow struct {
@@ -2646,6 +2675,19 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 			if om.ClaimedRenovationNOIUplift != nil {
 				claimedNOIUplift = *om.ClaimedRenovationNOIUplift
 				hasClaimedUplift = true
+			} else if resolvedNOI > 0 {
+				// ADR-110 fix: derive claimed NOI uplift from proforma NOI when field not extracted
+				// (deals extracted before ADR-110 won't have ClaimedRenovationNOIUplift populated)
+				var proformaNOI float64
+				if om.NOIProforma != nil && *om.NOIProforma > resolvedNOI {
+					proformaNOI = *om.NOIProforma
+				} else if om.BrokerNOIStabilized != nil && *om.BrokerNOIStabilized > resolvedNOI {
+					proformaNOI = *om.BrokerNOIStabilized
+				}
+				if proformaNOI > 0 {
+					claimedNOIUplift = proformaNOI - resolvedNOI
+					hasClaimedUplift = true
+				}
 			}
 		}
 
@@ -2656,8 +2698,14 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 		if p.Sqft.Valid {
 			sqftVal = p.Sqft.Int32
 		}
+		var hasYearBuilt bool
 		if p.YearBuilt.Valid {
 			yearBuiltVal = p.YearBuilt.Int32
+			hasYearBuilt = true
+		} else if hasOMForProp && om.YearBuilt != nil && *om.YearBuilt > 0 {
+			// ADR-110 fix: fall back to OM-extracted year built when property column is empty
+			yearBuiltVal = int32(*om.YearBuilt)
+			hasYearBuilt = true
 		}
 
 		analytics := computeDealAnalytics(
@@ -2667,7 +2715,7 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 			resolvedNOI, resolvedNOISource,
 			unitsVal, p.Units.Valid,
 			sqftVal, p.Sqft.Valid,
-			yearBuiltVal, p.YearBuilt.Valid,
+			yearBuiltVal, hasYearBuilt,
 			brokerCapRate, p.BrokerCapRate.Valid,
 			annualRentGap,
 			omEGI, omTotalExpenses, hasExpenseData,
