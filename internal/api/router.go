@@ -136,6 +136,9 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		handlers.Market.SetAggregator(svc.MarketData)
 		handlers.Pipeline.SetAggregator(svc.MarketData) // ADR-101: rent estimates
 	}
+	if svc.UnifiedMarket != nil {
+		handlers.Pipeline.SetMarketService(svc.UnifiedMarket) // ADR-076: unified market context for memos
+	}
 	if svc.FREDService != nil {
 		handlers.Market.SetFREDService(svc.FREDService)
 	}

@@ -18,15 +18,17 @@ import (
 	dbstore "github.com/estara-ai/www/internal/db"
 	"github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
+	"github.com/estara-ai/www/internal/services/market/unified"
 	"github.com/estara-ai/www/pkg/httputil"
 )
 
 // Handler handles pipeline-related HTTP requests.
 type Handler struct {
-	store      *dbstore.Store
-	cfg        *config.Config
-	aggregator *aggregator.Aggregator
-	logger     *slog.Logger
+	store         *dbstore.Store
+	cfg           *config.Config
+	aggregator    *aggregator.Aggregator
+	marketService *unified.Service
+	logger        *slog.Logger
 }
 
 // NewHandler creates a new pipeline handler.
@@ -41,6 +43,11 @@ func NewHandler(store *dbstore.Store, cfg *config.Config) *Handler {
 // SetAggregator injects the market aggregator for rent estimate lookups.
 func (h *Handler) SetAggregator(a *aggregator.Aggregator) {
 	h.aggregator = a
+}
+
+// SetMarketService injects the unified market data service for memo generation.
+func (h *Handler) SetMarketService(ms *unified.Service) {
+	h.marketService = ms
 }
 
 // ---------------------------------------------------------------------------

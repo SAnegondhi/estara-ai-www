@@ -26,6 +26,7 @@ import (
 	"github.com/estara-ai/www/internal/services/jobs/workers"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
 	"github.com/estara-ai/www/internal/services/market/estimation"
+	"github.com/estara-ai/www/internal/services/market/unified"
 	"github.com/estara-ai/www/internal/services/memo"
 	"github.com/estara-ai/www/internal/services/market/bls"
 	"github.com/estara-ai/www/internal/services/market/census"
@@ -60,6 +61,7 @@ type Services struct {
 	InvestmentOptimizer  *optimization.Service           // ADR-088 Phase 12: Discovery+scoring pipeline for /run
 	MetroReader          *timeseries.MetroReader         // City snapshot + HUD FMR data
 	MarketEstimator      *estimation.AIEstimator         // AI fallback for missing price/rent data
+	UnifiedMarket        *unified.Service               // Unified market data service (ADR-076): aggregator + Haiku fallback
 }
 
 // ServiceConfig holds configuration for creating services
@@ -319,6 +321,17 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 	if services.Anthropic != nil {
 		services.MarketEstimator = estimation.NewAIEstimator(services.Anthropic)
 		logger.Info("AI market estimator initialized")
+	}
+
+	// Create unified market data service (ADR-076 extension).
+	// Aggregator first (Zillow/FRED/DB, 3-tier cached 7d TTL), then dedicated Haiku fallback
+	// for cities not covered by structured sources. All features use this as the single entry
+	// point for location market data — returns a ForPrompt() block ready for any AI prompt.
+	services.UnifiedMarket = unified.New(services.MarketData, cfg.Config.AI.AnthropicAPIKey)
+	if services.UnifiedMarket.IsConfigured() {
+		logger.Info("unified market service initialized")
+	} else {
+		logger.Warn("unified market service: no data sources configured")
 	}
 
 	// Create refresh service for event-driven refresh (ADR-087 Phase 8-9)

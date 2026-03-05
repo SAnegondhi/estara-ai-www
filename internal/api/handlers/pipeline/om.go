@@ -22,6 +22,7 @@ import (
 
 	"github.com/estara-ai/www/internal/db/queries"
 	anthropic "github.com/estara-ai/www/internal/services/ai/anthropic"
+	"github.com/estara-ai/www/internal/services/market/unified"
 	"github.com/estara-ai/www/pkg/httputil"
 )
 
@@ -1700,8 +1701,12 @@ func (h *Handler) GeneratePipelineMemo(w http.ResponseWriter, r *http.Request) {
 
 	sendEvent("progress", `{"phase":"Building memo context...","pct":10}`)
 
+	// Fetch market data for each unique city/state concurrently.
+	// Non-fatal: a nil entry means no market data available for that location.
+	marketData := fetchMarketDataForProps(r.Context(), h.marketService, props)
+
 	// Build the memo prompt.
-	prompt := buildPipelineMemoPrompt(deal.Name, props)
+	prompt := buildPipelineMemoPrompt(deal.Name, props, marketData)
 
 	sendEvent("progress", `{"phase":"Generating decision memo...","pct":30}`)
 
@@ -2436,7 +2441,63 @@ func buildSensitivityBlock(a dealAnalytics, om *omData, brokerCapRate float64) s
 //
 // ADR-109: preamble protocol, type-aware analysis blocks, fallback chains.
 // ADR-110: Go-side pre-computed analytics, broker claim verification, sensitivity scenario.
-func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) string {
+// fetchMarketDataForProps fetches unified market data for all unique city/state pairs
+// across the given properties. Results are keyed by "city|state" (lower-case). Non-fatal:
+// missing data for a location is represented by a nil map value.
+func fetchMarketDataForProps(ctx context.Context, ms *unified.Service, props []queries.PipelineProperty) map[string]*unified.LocationMarketData {
+	if ms == nil || !ms.IsConfigured() {
+		return nil
+	}
+
+	type locationKey struct{ city, state string }
+
+	// Collect unique locations.
+	seen := make(map[locationKey]bool)
+	var locs []locationKey
+	for _, p := range props {
+		if p.City.Valid && p.State.Valid && p.City.String != "" && p.State.String != "" {
+			k := locationKey{
+				city:  strings.ToLower(strings.TrimSpace(p.City.String)),
+				state: strings.ToLower(strings.TrimSpace(p.State.String)),
+			}
+			if !seen[k] {
+				seen[k] = true
+				locs = append(locs, k)
+			}
+		}
+	}
+	if len(locs) == 0 {
+		return nil
+	}
+
+	type result struct {
+		key  string
+		data *unified.LocationMarketData
+	}
+	ch := make(chan result, len(locs))
+
+	for _, loc := range locs {
+		loc := loc // capture
+		go func() {
+			data := ms.Get(ctx, loc.city, loc.state)
+			ch <- result{key: loc.city + "|" + loc.state, data: data}
+		}()
+	}
+
+	out := make(map[string]*unified.LocationMarketData, len(locs))
+	for range locs {
+		r := <-ch
+		out[r.key] = r.data // nil is valid (no data available)
+	}
+	return out
+}
+
+// marketKey returns the map key used in fetchMarketDataForProps.
+func marketKey(city, state string) string {
+	return strings.ToLower(strings.TrimSpace(city)) + "|" + strings.ToLower(strings.TrimSpace(state))
+}
+
+func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty, marketData map[string]*unified.LocationMarketData) string {
 	var sb strings.Builder
 
 	// Preamble protocol: instruct Claude to output structured metadata before narrative.
@@ -2571,6 +2632,15 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 		if p.CurrentOccupancy.Valid {
 			f, _ := p.CurrentOccupancy.Float64Value()
 			sb.WriteString(fmt.Sprintf("**Occupancy**: %.0f%%\n", f.Float64*100))
+		}
+
+		// Independent market context — from Zillow/FRED DB or Haiku estimation fallback.
+		// Injected per-property so Claude can cross-reference broker claims against
+		// independent data for this specific city/state.
+		if p.City.Valid && p.State.Valid && marketData != nil {
+			if md := marketData[marketKey(p.City.String, p.State.String)]; md != nil {
+				sb.WriteString(md.ForPrompt())
+			}
 		}
 
 		// Pricing
