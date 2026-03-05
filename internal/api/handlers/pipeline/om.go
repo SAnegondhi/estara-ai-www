@@ -2653,7 +2653,14 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty, 
 		if p.City.Valid && p.State.Valid && marketData != nil {
 			if md := marketData[marketKey(p.City.String, p.State.String)]; md != nil {
 				sb.WriteString(md.ForPrompt())
+			} else {
+				sb.WriteString(fmt.Sprintf("\n⚠ **No independent market data available for %s, %s** — neither the Zillow/FRED database nor the AI estimation fallback returned figures for this location. ",
+					p.City.String, p.State.String))
+				sb.WriteString("The rent sanity check, cap rate sanity check, and market context anchoring required by the MARKET CONTEXT INSTRUCTION cannot be performed. ")
+				sb.WriteString("Note this gap explicitly in the Market & Location section and flag it as a due diligence item: the investor should independently source comparable rent and cap rate data for this market before proceeding.\n")
 			}
+		} else if (!p.City.Valid || !p.State.Valid) && marketData != nil {
+			sb.WriteString("\n⚠ **No city/state on record for this property — independent market data lookup skipped.**\n")
 		}
 
 		// Pricing
