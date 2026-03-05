@@ -35,6 +35,7 @@ import (
 	"github.com/estara-ai/www/internal/services/property/finder"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
 	"github.com/estara-ai/www/internal/services/market/economics"
+	"github.com/estara-ai/www/internal/services/market/estimation"
 	"github.com/estara-ai/www/internal/services/market/timeseries"
 	"github.com/estara-ai/www/internal/services/market/trends"
 	"github.com/estara-ai/www/internal/services/pdf"
@@ -65,6 +66,8 @@ type Handler struct {
 	metroReader *timeseries.MetroReader
 	// ADR-100: Market trends service for historical time series in report enrichment
 	trendsService *trends.Service
+	// AI fallback estimator — used when aggregator returns no price/rent data
+	marketEstimator *estimation.AIEstimator
 }
 
 // NewHandler creates a new AI handler
@@ -126,6 +129,13 @@ func (h *Handler) WithMetroReader(mr *timeseries.MetroReader) *Handler {
 // WithTrendsService injects the market trends service for ADR-100 report enrichment.
 func (h *Handler) WithTrendsService(svc *trends.Service) *Handler {
 	h.trendsService = svc
+	return h
+}
+
+// WithMarketEstimator injects the AI estimator used as fallback when structured
+// market data sources return no price/rent data for a location.
+func (h *Handler) WithMarketEstimator(e *estimation.AIEstimator) *Handler {
+	h.marketEstimator = e
 	return h
 }
 
@@ -3424,9 +3434,13 @@ func (h *Handler) buildReportEnrichment(ctx context.Context, location string) *a
 		if h.marketData != nil && city != "" {
 			md, err := h.marketData.GetMarketData(ctx, city, state)
 			if err != nil {
-				h.logger.Warn("report enrichment: aggregator fetch failed", "location", location, "error", err)
-			} else {
-				m := &agents.AnalysisMetrics{
+				h.logger.Warn("report enrichment: aggregator fetch failed, will try AI estimation", "location", location, "error", err)
+			}
+
+			// Build metrics from structured data (may be zero-valued when err != nil)
+			var m *agents.AnalysisMetrics
+			if err == nil {
+				m = &agents.AnalysisMetrics{
 					MedianHomePrice:      md.MedianHomePrice,
 					MedianRent:           md.MedianRent,
 					CapRate:              md.CapRate,
@@ -3440,12 +3454,41 @@ func (h *Handler) buildReportEnrichment(ctx context.Context, location string) *a
 					Confidence:           md.Confidence,
 					DataDate:             md.DataDate.Format("2006-01-02"),
 				}
-				if md.MedianHomePrice > 0 && md.MedianRent > 0 {
-					m.PriceToRentRatio = float64(md.MedianHomePrice) / (float64(md.MedianRent) * 12)
-					m.GrossYield = (float64(md.MedianRent) * 12) / float64(md.MedianHomePrice) * 100
-				}
 				if md.MedianDaysOnMarket != nil {
 					m.DaysOnMarket = *md.MedianDaysOnMarket
+				}
+			}
+
+			// AI fallback: city not in DB (err != nil) or structured data returned no price/rent
+			needsEstimation := h.marketEstimator != nil && (err != nil || (m != nil && m.MedianHomePrice == 0 && m.MedianRent == 0))
+			if needsEstimation {
+				h.logger.Info("report enrichment: trying AI estimation for missing price/rent", "location", location)
+				estimated, estErr := h.marketEstimator.EstimateMarketData(ctx, city, state)
+				if estErr != nil {
+					h.logger.Warn("report enrichment: AI estimation failed", "location", location, "error", estErr)
+				} else {
+					if m == nil {
+						m = &agents.AnalysisMetrics{}
+					}
+					m.MedianHomePrice = estimated.MedianHomePrice
+					m.MedianRent = estimated.MedianRent
+					m.CapRate = estimated.CapRate
+					m.PriceChangeYoY = estimated.YearOverYearPct
+					m.Confidence = estimated.Confidence
+					m.DataSource = "ai-estimated"
+					h.logger.Info("report enrichment: AI estimation succeeded",
+						"location", location,
+						"medianHomePrice", estimated.MedianHomePrice,
+						"medianRent", estimated.MedianRent,
+						"confidence", estimated.Confidence,
+					)
+				}
+			}
+
+			if m != nil {
+				if m.MedianHomePrice > 0 && m.MedianRent > 0 {
+					m.PriceToRentRatio = float64(m.MedianHomePrice) / (float64(m.MedianRent) * 12)
+					m.GrossYield = (float64(m.MedianRent) * 12) / float64(m.MedianHomePrice) * 100
 				}
 				r.metrics = m
 			}

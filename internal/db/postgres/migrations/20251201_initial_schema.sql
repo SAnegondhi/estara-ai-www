@@ -1574,6 +1574,9 @@ CREATE TABLE IF NOT EXISTS pipeline_properties (
     system_rent       NUMERIC,
     current_occupancy NUMERIC,
     expense_overrides JSONB,
+    unit_mix          JSONB,     -- per-unit-type breakdown for MF/condo (ADR-102)
+    lot_sqft          INTEGER,   -- land parcel area in sq ft (separate from building sqft)
+    building_count    INTEGER,   -- number of structures on the parcel
     source_type       TEXT NOT NULL DEFAULT 'manual',
     -- source_type: manual | address_lookup | document_upload | discover_duplicate
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
