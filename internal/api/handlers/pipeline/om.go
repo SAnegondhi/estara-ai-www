@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -926,6 +927,10 @@ type omData struct {
 	AdditionalMetrics  []omKeyValue `json:"additionalMetrics,omitempty"`
 	AdditionalSections []omSection  `json:"additionalSections,omitempty"`
 
+	// Renovation economics — ADR-110
+	RenovationCost             *float64 `json:"renovationCost,omitempty"`             // total renovation budget in dollars
+	ClaimedRenovationNOIUplift *float64 `json:"claimedRenovationNOIUplift,omitempty"` // incremental NOI increase from renovation (not absolute post-reno NOI)
+
 	// File metadata
 	OmFileSizeBytes *int64  `json:"omFileSizeBytes"`
 	OmParsedAt      *string `json:"omParsedAt"`
@@ -1149,6 +1154,8 @@ const omExtractionUserPrompt = `Extract all information from this Offering Memor
   "yearOneCashOnCash": number | null,
   "fiveYearIRR": number | null,
   "assumableDebt": number | null,
+  "renovationCost": number | null,
+  "claimedRenovationNOIUplift": number | null,
   "marketOverviewText": string | null,
   "additionalMetrics": [{"label": string, "value": string}, ...] | null,
   "additionalSections": [{"title": string, "content": string}, ...] | null
@@ -1217,7 +1224,8 @@ TYPE-SPECIFIC INSTRUCTIONS — MULTIFAMILY / STUDENT HOUSING:
 4. Return metrics: cashOnCashCurrent (Year 1 CoC), cashOnCashStabilized, fiveYearIRR, grm.
 5. Assumable debt: populate assumableDebtDetail (balance, interestRate, maturityDate, loanType) if stated.
 6. Value-add: populate valueAdd (lowEstimate, highEstimate, unrenovatedUnits, costPerUnit) if stated.
-7. Broker market section: populate brokerMarket (vacancyRate, rentGrowthYoY, jobGrowth, medianHHI, walkScore, capRateComprBps, submarketName, dataSource).`
+7. Broker market section: populate brokerMarket (vacancyRate, rentGrowthYoY, jobGrowth, medianHHI, walkScore, capRateComprBps, submarketName, dataSource).
+8. Renovation economics: if the OM states a total renovation cost or per-unit budget, populate renovationCost (total dollars; multiply per-unit × unit count if stated per unit). If the OM states an expected NOI increase from renovation (e.g. "Year 2 NOI", "post-renovation NOI"), populate claimedRenovationNOIUplift as the INCREMENTAL NOI increase only — not the absolute stabilised NOI. If the OM only states a stabilised NOI without calling it a renovation uplift, leave claimedRenovationNOIUplift null.`
 	case "nnn", "retail", "office":
 		typeBlock = `
 TYPE-SPECIFIC INSTRUCTIONS — NNN / RETAIL / OFFICE:
@@ -1701,7 +1709,7 @@ func (h *Handler) GeneratePipelineMemo(w http.ResponseWriter, r *http.Request) {
 	aiClient := anthropic.NewClient(anthropic.ClientConfig{
 		APIKey:    h.cfg.AI.AnthropicAPIKey,
 		Model:     "claude-sonnet-4-6",
-		MaxTokens: 4096,
+		MaxTokens: 12288, // ADR-110: increased to accommodate deal analytics + broker claims + sensitivity sections
 		Timeout:   10 * time.Minute, // streaming session; context cancel handles client disconnect
 	})
 
@@ -1745,12 +1753,518 @@ func (h *Handler) GeneratePipelineMemo(w http.ResponseWriter, r *http.Request) {
 	sendEvent("complete", string(memoJSON))
 }
 
+// ---------------------------------------------------------------------------
+// ADR-110: Deal Analytics — Go-side pre-computation injected into memo prompt.
+// Arithmetic is done in Go (deterministic); Claude explains the implications.
+// ---------------------------------------------------------------------------
+
+// dealAnalytics holds pre-computed financial metrics for a single property.
+// Nil pointer fields indicate insufficient data for that metric.
+type dealAnalytics struct {
+	AskingPrice float64
+
+	// DSCR (30yr amortisation standard)
+	DSCRAvailable    bool
+	LoanAmount       float64
+	LTV              float64 // e.g. 0.80
+	Rate             float64 // annual decimal
+	AnnualDebtService float64
+	DSCR             float64
+	DSCRBelow        bool    // < 1.20x — standard lender minimum
+	DSCRThin         bool    // 1.20–1.30x — thin coverage
+	IODebtService    float64 // interest-only annual service
+	IODSCR           float64
+	NOI              float64
+	NOISource        string // "P&L"|"current"|"broker"|"estimated"
+
+	// Scorecard
+	PricePerUnit   *float64
+	PricePerSF     *float64
+	AnnualRentGap  *float64 // Σ(count × (market−current) × 12)
+	ExpenseRatio   *float64 // TotalExpenses / EGI (decimal)
+	ImpliedCapRate *float64 // NOI / askingPrice
+	ExitValueEst   *float64 // NOI / (capRate + 0.005)
+
+	// Vintage CapEx
+	VintageCapEx  bool
+	AgeYears      int
+	Units         int32
+	CapExLow      float64 // total ($5k/unit × units)
+	CapExHigh     float64 // total ($12k/unit × units)
+	CapExLowUnit  float64 // per unit
+	CapExHighUnit float64 // per unit
+
+	// Renovation reconciliation
+	HasRecon          bool
+	RentUpliftRevenue float64 // Σ(count × (market−current) × 12)
+	RentUpliftNOI     float64 // × 0.65
+	ClaimedNOIUplift  float64
+	ReconGap          float64 // claimed − estimated
+	ReconGapPct       float64 // gap / claimed × 100
+	ReconGapHigh      bool    // |gap| > 15%
+}
+
+// computeDealAnalytics calculates all pre-computable financial metrics for one property.
+func computeDealAnalytics(
+	askingPrice, downPaymentPct, interestRate float64,
+	hasDownPayment, hasInterestRate bool,
+	noi float64, noiSource string,
+	units int32, hasUnits bool,
+	sqft int32, hasSqft bool,
+	yearBuilt int32, hasYearBuilt bool,
+	brokerCapRate float64, hasCapRate bool,
+	rentGap float64,
+	egi, totalExpenses float64, hasExpenseData bool,
+	claimedNOIUplift float64, hasClaimedUplift bool,
+) dealAnalytics {
+	a := dealAnalytics{
+		AskingPrice: askingPrice,
+		NOI:         noi,
+		NOISource:   noiSource,
+	}
+	if askingPrice <= 0 {
+		return a
+	}
+
+	// DSCR — 30yr fixed amortisation
+	if hasDownPayment && hasInterestRate && interestRate > 0 && noi > 0 {
+		ltv := 1.0 - downPaymentPct
+		loanAmt := askingPrice * ltv
+		monthlyRate := interestRate / 12.0
+		n360 := math.Pow(1+monthlyRate, 360)
+		payment := loanAmt * (monthlyRate * n360) / (n360 - 1)
+		annualDS := payment * 12
+		a.DSCRAvailable = true
+		a.LoanAmount = loanAmt
+		a.LTV = ltv
+		a.Rate = interestRate
+		a.AnnualDebtService = annualDS
+		if annualDS > 0 {
+			a.DSCR = noi / annualDS
+			a.DSCRBelow = a.DSCR < 1.20
+			a.DSCRThin = a.DSCR >= 1.20 && a.DSCR < 1.30
+		}
+		// Interest-only scenario
+		a.IODebtService = loanAmt * interestRate
+		if a.IODebtService > 0 {
+			a.IODSCR = noi / a.IODebtService
+		}
+	} else if hasDownPayment && noi > 0 {
+		// Down payment known but no interest rate — IO only at assumed 7%
+		ltv := 1.0 - downPaymentPct
+		loanAmt := askingPrice * ltv
+		assumedRate := 0.07
+		a.DSCRAvailable = true
+		a.LoanAmount = loanAmt
+		a.LTV = ltv
+		a.Rate = assumedRate
+		a.IODebtService = loanAmt * assumedRate
+		if a.IODebtService > 0 {
+			a.IODSCR = noi / a.IODebtService
+		}
+	}
+
+	// Scorecard: price/unit, price/SF
+	if hasUnits && units > 0 {
+		v := askingPrice / float64(units)
+		a.PricePerUnit = &v
+		a.Units = units
+	}
+	if hasSqft && sqft > 0 {
+		v := askingPrice / float64(sqft)
+		a.PricePerSF = &v
+	}
+
+	// Annual rent gap (MF value-add upside)
+	if rentGap > 0 {
+		a.AnnualRentGap = &rentGap
+	}
+
+	// Expense ratio
+	if hasExpenseData && egi > 0 && totalExpenses > 0 {
+		v := totalExpenses / egi
+		a.ExpenseRatio = &v
+	}
+
+	// Implied cap rate + exit value
+	if noi > 0 {
+		v := noi / askingPrice
+		a.ImpliedCapRate = &v
+		exitCap := v + 0.005
+		if hasCapRate && brokerCapRate > 0 {
+			exitCap = brokerCapRate + 0.005
+		}
+		exitVal := noi / exitCap
+		a.ExitValueEst = &exitVal
+	}
+
+	// Vintage CapEx
+	if hasYearBuilt && yearBuilt > 0 {
+		age := time.Now().Year() - int(yearBuilt)
+		if age > 40 && hasUnits && units > 0 {
+			a.VintageCapEx = true
+			a.AgeYears = age
+			a.Units = units
+			a.CapExLowUnit = 5000
+			a.CapExHighUnit = 12000
+			a.CapExLow = float64(units) * 5000
+			a.CapExHigh = float64(units) * 12000
+		}
+	}
+
+	// Renovation reconciliation
+	if rentGap > 0 && hasClaimedUplift && claimedNOIUplift > 0 {
+		a.HasRecon = true
+		a.RentUpliftRevenue = rentGap
+		a.RentUpliftNOI = rentGap * 0.65
+		a.ClaimedNOIUplift = claimedNOIUplift
+		a.ReconGap = claimedNOIUplift - a.RentUpliftNOI
+		if claimedNOIUplift != 0 {
+			a.ReconGapPct = a.ReconGap / claimedNOIUplift * 100
+		}
+		a.ReconGapHigh = math.Abs(a.ReconGapPct) > 15
+	}
+
+	return a
+}
+
+// buildAnalyticsPromptBlock formats dealAnalytics as literal structured text for Claude.
+// Claude is told to use these numbers verbatim and explain their investment implications.
+func buildAnalyticsPromptBlock(a dealAnalytics) string {
+	if a.AskingPrice <= 0 {
+		return ""
+	}
+	// Require at least 3 computable scorecard rows to avoid a mostly-empty block.
+	scorecardRows := 0
+	if a.PricePerUnit != nil { scorecardRows++ }
+	if a.PricePerSF != nil { scorecardRows++ }
+	if a.AnnualRentGap != nil { scorecardRows++ }
+	if a.ExpenseRatio != nil { scorecardRows++ }
+	if a.ImpliedCapRate != nil { scorecardRows++ }
+	if a.ExitValueEst != nil { scorecardRows++ }
+	if a.DSCRAvailable { scorecardRows++ }
+	if scorecardRows < 3 && !a.DSCRAvailable && !a.VintageCapEx && !a.HasRecon {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n**DEAL ANALYTICS** (pre-computed — use these numbers verbatim; do not alter them; explain their investment implications):\n")
+
+	// Debt Service / DSCR
+	if a.DSCRAvailable {
+		sb.WriteString("\nDebt Service Analysis:\n")
+		if a.AnnualDebtService > 0 {
+			sb.WriteString(fmt.Sprintf("- Loan: $%.0f (%.0f%% LTV, %.2f%% rate, 30yr amortisation)\n",
+				a.LoanAmount, a.LTV*100, a.Rate*100))
+			sb.WriteString(fmt.Sprintf("- Annual debt service: $%.0f\n", a.AnnualDebtService))
+			sb.WriteString(fmt.Sprintf("- Year-1 NOI (%s): $%.0f\n", a.NOISource, a.NOI))
+			dscrLabel := "adequate"
+			if a.DSCRBelow {
+				dscrLabel = "⚠ BELOW 1.20x LENDER THRESHOLD"
+			} else if a.DSCRThin {
+				dscrLabel = "⚠ THIN (1.20–1.30x) — stress-test against rate increases"
+			}
+			sb.WriteString(fmt.Sprintf("- DSCR: %.2fx — %s\n", a.DSCR, dscrLabel))
+		} else {
+			// IO-only (no amortisation rate available)
+			sb.WriteString(fmt.Sprintf("- Loan: $%.0f (%.0f%% LTV, rate not provided — using %.0f%% for IO estimate)\n",
+				a.LoanAmount, a.LTV*100, a.Rate*100))
+		}
+		if a.IODebtService > 0 && a.IODSCR > 0 {
+			sb.WriteString(fmt.Sprintf("- IO scenario: annual interest $%.0f → IO DSCR %.2fx\n", a.IODebtService, a.IODSCR))
+		}
+	}
+
+	// Deal Scorecard table
+	if scorecardRows >= 3 {
+		sb.WriteString("\nDeal Scorecard:\n")
+		sb.WriteString("| Metric | Value | Note |\n")
+		sb.WriteString("|--------|-------|------|\n")
+		if a.ImpliedCapRate != nil {
+			sb.WriteString(fmt.Sprintf("| Going-in Cap Rate | %.2f%% | Implied: NOI / asking price |\n", *a.ImpliedCapRate*100))
+		}
+		if a.PricePerUnit != nil {
+			sb.WriteString(fmt.Sprintf("| Price / Unit | $%.0f | — |\n", *a.PricePerUnit))
+		}
+		if a.PricePerSF != nil {
+			sb.WriteString(fmt.Sprintf("| Price / SF | $%.2f | — |\n", *a.PricePerSF))
+		}
+		if a.AnnualRentGap != nil {
+			sb.WriteString(fmt.Sprintf("| Annual Rent Gap (upside) | $%.0f/yr | Market minus current × units × 12 |\n", *a.AnnualRentGap))
+		}
+		if a.ExpenseRatio != nil {
+			benchmark := "Benchmark: 35–50% for MF; 25–35% for NNN"
+			sb.WriteString(fmt.Sprintf("| Expense Ratio | %.1f%% of EGI | %s |\n", *a.ExpenseRatio*100, benchmark))
+		}
+		if a.DSCRAvailable && a.AnnualDebtService > 0 {
+			sb.WriteString(fmt.Sprintf("| DSCR | %.2fx | Min lender threshold: 1.20x |\n", a.DSCR))
+		}
+		if a.ExitValueEst != nil {
+			sb.WriteString(fmt.Sprintf("| Exit Value Est. | $%.0f | At going-in cap + 50bps |\n", *a.ExitValueEst))
+		}
+	}
+
+	// Vintage CapEx
+	if a.VintageCapEx {
+		builtYear := time.Now().Year() - a.AgeYears
+		sb.WriteString(fmt.Sprintf("\nVintage CapEx (built %d, age %d years, %d units):\n", builtYear, a.AgeYears, a.Units))
+		sb.WriteString(fmt.Sprintf("- Industry estimate: $%.0f–$%.0f over 5 years ($%.0f–$%.0f/unit)\n",
+			a.CapExLow, a.CapExHigh, a.CapExLowUnit, a.CapExHighUnit))
+		sb.WriteString("- This capital is ADDITIONAL to purchase price — include in total capital required\n")
+	}
+
+	// Renovation reconciliation
+	if a.HasRecon {
+		sb.WriteString("\nRenovation Economics Check:\n")
+		sb.WriteString(fmt.Sprintf("- Rent uplift revenue (from unit mix): $%.0f/yr\n", a.RentUpliftRevenue))
+		sb.WriteString(fmt.Sprintf("- Estimated NOI uplift (×0.65 expense ratio): $%.0f/yr\n", a.RentUpliftNOI))
+		sb.WriteString(fmt.Sprintf("- OM claimed NOI uplift: $%.0f/yr\n", a.ClaimedNOIUplift))
+		if a.ReconGapHigh {
+			sb.WriteString(fmt.Sprintf("- ⚠ RECONCILIATION GAP: $%.0f (%.1f%% of claimed) — investigate renovation scope and expense assumptions\n",
+				a.ReconGap, a.ReconGapPct))
+		} else {
+			sb.WriteString(fmt.Sprintf("- Gap: $%.0f (%.1f%%) — within acceptable range\n", a.ReconGap, a.ReconGapPct))
+		}
+	}
+
+	return sb.String()
+}
+
+// buildBrokerClaimsBlock produces a pre-populated broker claim verification table.
+// Each row is Go-computed from structured OM data; Claude adds one explanation sentence per row.
+// Gated on OM data — returns "" when called without reliable OM figures.
+func buildBrokerClaimsBlock(a dealAnalytics, om *omData) string {
+	type claimRow struct {
+		Claim     string
+		DataCheck string
+		Rating    string // "✓" | "⚠" | "❗"
+	}
+	var rows []claimRow
+
+	// 1. Cap rate integrity
+	if a.ImpliedCapRate != nil && om.CapRate != nil && *om.CapRate > 0 {
+		statedPct := *om.CapRate * 100
+		impliedPct := *a.ImpliedCapRate * 100
+		deltaBps := (impliedPct - statedPct) * 100
+		check := fmt.Sprintf("Stated: %.2f%%; implied (NOI/price): %.2f%%; delta: %.0f bps", statedPct, impliedPct, deltaBps)
+		rating := "✓"
+		if math.Abs(deltaBps) > 75 {
+			rating = "❗"
+		} else if math.Abs(deltaBps) > 25 {
+			rating = "⚠"
+		}
+		// Flag "pro forma" label applied to in-place NOI
+		if om.CapRateProForma != nil && math.Abs(*om.CapRateProForma-*om.CapRate) < 0.0005 {
+			check += " (pro forma label may apply to in-place NOI — verify)"
+			if rating == "✓" {
+				rating = "⚠"
+			}
+		}
+		rows = append(rows, claimRow{"Cap rate integrity", check, rating})
+	}
+
+	// 2. NOI integrity (summary vs P&L)
+	if om.NOISummaryStated != nil && om.NOIComputedFromStatement != nil {
+		delta := *om.NOISummaryStated - *om.NOIComputedFromStatement
+		pct := 0.0
+		if *om.NOIComputedFromStatement != 0 {
+			pct = delta / *om.NOIComputedFromStatement * 100
+		}
+		check := fmt.Sprintf("Summary: $%.0f; P&L computed: $%.0f; delta: $%.0f (%.1f%%)",
+			*om.NOISummaryStated, *om.NOIComputedFromStatement, delta, pct)
+		rating := "✓"
+		if math.Abs(pct) > 15 {
+			rating = "❗"
+		} else if math.Abs(pct) > 5 {
+			rating = "⚠"
+		}
+		rows = append(rows, claimRow{"NOI (summary vs P&L)", check, rating})
+	}
+
+	// 3. Expense ratio benchmark
+	if a.ExpenseRatio != nil {
+		ratio := *a.ExpenseRatio * 100
+		check := fmt.Sprintf("%.1f%% of EGI", ratio)
+		rating := "✓"
+		if ratio < 30 {
+			check += " — below 30%; expenses may be understated"
+			rating = "⚠"
+		} else if ratio > 55 {
+			check += " — above 55%; verify expense categories"
+			rating = "⚠"
+		}
+		rows = append(rows, claimRow{"Expense ratio", check, rating})
+	}
+
+	// 4. Renovation NOI uplift reconciliation
+	if a.HasRecon {
+		check := fmt.Sprintf("Rent-math estimate: $%.0f NOI uplift; OM claims: $%.0f; gap: %.1f%%",
+			a.RentUpliftNOI, a.ClaimedNOIUplift, a.ReconGapPct)
+		rating := "✓"
+		if math.Abs(a.ReconGapPct) > 15 {
+			rating = "❗"
+		} else if math.Abs(a.ReconGapPct) > 8 {
+			rating = "⚠"
+		}
+		rows = append(rows, claimRow{"Renovation NOI uplift", check, rating})
+	}
+
+	// 5. Vacancy assumption
+	if om.VacancyPct != nil {
+		vp := *om.VacancyPct * 100
+		check := fmt.Sprintf("Stated: %.1f%%", vp)
+		rating := "✓"
+		if vp < 3 {
+			check += " — very low; verify against submarket occupancy"
+			rating = "⚠"
+		} else if vp < 5 {
+			check += " — below 5%; optimistic assumption"
+			rating = "⚠"
+		}
+		rows = append(rows, claimRow{"Vacancy assumption", check, rating})
+	}
+
+	if len(rows) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n**BROKER CLAIM VERIFICATION** (pre-computed — include this table verbatim in the Broker Claim Verification section; add one explanation sentence per row):\n")
+	sb.WriteString("| Claim | Data Check | Rating |\n")
+	sb.WriteString("|-------|-----------|--------|\n")
+	for _, r := range rows {
+		sb.WriteString(fmt.Sprintf("| %s | %s | %s |\n", r.Claim, r.DataCheck, r.Rating))
+	}
+
+	// Overall credibility
+	redCount, yellowCount := 0, 0
+	for _, r := range rows {
+		switch r.Rating {
+		case "❗":
+			redCount++
+		case "⚠":
+			yellowCount++
+		}
+	}
+	overall := "High"
+	if redCount >= 2 {
+		overall = "Low"
+	} else if redCount == 1 || yellowCount >= 2 {
+		overall = "Medium"
+	} else if yellowCount >= 1 {
+		overall = "Medium"
+	}
+	sb.WriteString(fmt.Sprintf("\n**Overall Broker Credibility**: %s\n", overall))
+	return sb.String()
+}
+
+// buildSensitivityBlock produces the Estara conservative sensitivity scenario as literal text.
+// Claude is told to include it verbatim and write a conclusion sentence.
+func buildSensitivityBlock(a dealAnalytics, om *omData, brokerCapRate float64) string {
+	if a.AskingPrice <= 0 || a.NOI <= 0 {
+		return ""
+	}
+
+	// Get EGI and total expenses from OM
+	egi := 0.0
+	totalExpenses := 0.0
+	if om.TotalEffectiveGrossIncome != nil {
+		egi = *om.TotalEffectiveGrossIncome
+	}
+	if om.TotalExpenses != nil {
+		totalExpenses = *om.TotalExpenses
+	} else if len(om.ExpenseItems) > 0 {
+		for _, e := range om.ExpenseItems {
+			totalExpenses += e.Amount
+		}
+	}
+
+	brokerNOI := a.NOI
+	conservNOI := brokerNOI
+
+	if egi > 0 {
+		conservEGI := egi * 0.98 // −2pp vacancy
+		conservExp := totalExpenses * 1.10
+		if totalExpenses > 0 {
+			conservNOI = conservEGI - conservExp
+		} else {
+			// Estimate expenses at 40% of EGI if not available
+			conservNOI = conservEGI - (egi*0.40)*1.10
+		}
+	} else {
+		// No EGI — reduce NOI by 12% as blended conservative assumption
+		conservNOI = brokerNOI * 0.88
+	}
+
+	goingInCap := brokerCapRate
+	if goingInCap <= 0 && a.ImpliedCapRate != nil {
+		goingInCap = *a.ImpliedCapRate
+	}
+	conservGoingInCap := 0.0
+	if conservNOI > 0 && a.AskingPrice > 0 {
+		conservGoingInCap = conservNOI / a.AskingPrice
+	}
+	exitCap := goingInCap + 0.005
+	brokerExitValue := 0.0
+	if exitCap > 0 && brokerNOI > 0 {
+		brokerExitValue = brokerNOI / exitCap
+	}
+	conservExitValue := 0.0
+	if exitCap > 0 && conservNOI > 0 {
+		conservExitValue = conservNOI / exitCap
+	}
+	conservDSCR := 0.0
+	if a.DSCRAvailable && a.AnnualDebtService > 0 {
+		conservDSCR = conservNOI / a.AnnualDebtService
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n**ESTARA SENSITIVITY SCENARIO** (include this table verbatim in the Estara Sensitivity Scenario section; write one conclusion sentence after):\n")
+	sb.WriteString("Conservative assumptions: vacancy +2pp, operating expenses +10%, exit cap +50bps\n")
+	sb.WriteString("| Metric | Broker | Conservative | Assumption |\n")
+	sb.WriteString("|--------|--------|--------------|------------|\n")
+	if egi > 0 {
+		sb.WriteString(fmt.Sprintf("| EGI | $%.0f | $%.0f | After +2pp vacancy |\n", egi, egi*0.98))
+	}
+	if totalExpenses > 0 {
+		sb.WriteString(fmt.Sprintf("| Operating Expenses | $%.0f | $%.0f | +10%% on broker figure |\n", totalExpenses, totalExpenses*1.10))
+	}
+	sb.WriteString(fmt.Sprintf("| NOI | $%.0f | $%.0f | Conservative EGI − expenses |\n", brokerNOI, conservNOI))
+	if goingInCap > 0 {
+		sb.WriteString(fmt.Sprintf("| Going-in Cap | %.2f%% | %.2f%% | At conservative NOI / price |\n", goingInCap*100, conservGoingInCap*100))
+	}
+	if exitCap > 0 {
+		sb.WriteString(fmt.Sprintf("| Exit Cap | %.2f%% | %.2f%% | +50bps expansion assumed |\n", exitCap*100, exitCap*100))
+	}
+	if brokerExitValue > 0 {
+		sb.WriteString(fmt.Sprintf("| Exit Value | $%.0f | $%.0f | NOI / exit cap |\n", brokerExitValue, conservExitValue))
+	}
+	if a.DSCRAvailable && a.AnnualDebtService > 0 {
+		sb.WriteString(fmt.Sprintf("| DSCR | %.2fx | %.2fx | At conservative NOI |\n", a.DSCR, conservDSCR))
+	}
+
+	// Conclusion hint for Claude
+	conclusion := "the deal works on conservative assumptions"
+	if conservDSCR > 0 && conservDSCR < 1.05 {
+		conclusion = "DSCR falls to %.2fx on conservative assumptions — lender concessions or additional equity likely required"
+		conclusion = fmt.Sprintf(conclusion, conservDSCR)
+	} else if conservNOI <= 0 {
+		conclusion = "conservative NOI turns negative — the deal is highly sensitive to broker's expense and vacancy assumptions"
+	} else if conservGoingInCap > 0 && goingInCap > 0 && conservGoingInCap < goingInCap*0.85 {
+		conclusion = "conservative cap rate is materially lower — value creation is sensitive to accurate expense underwriting"
+	}
+	sb.WriteString(fmt.Sprintf("\n**Conservative conclusion hint**: %s. Write one sentence expanding on this.\n", conclusion))
+
+	return sb.String()
+}
+
 // buildPipelineMemoPrompt constructs the Claude prompt for a pipeline decision memo.
 // The memo is an investor decision document — it helps the investor decide whether to
 // proceed with a deal. It is NOT a critique of any offering memorandum. OM data (when
 // present) is one input among many; manual-entry deals are equally valid.
 //
 // ADR-109: preamble protocol, type-aware analysis blocks, fallback chains.
+// ADR-110: Go-side pre-computed analytics, broker claim verification, sensitivity scenario.
 func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) string {
 	var sb strings.Builder
 
@@ -1776,6 +2290,33 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 	sb.WriteString("Instead, use hedged general language: 'markets of this type typically...', ")
 	sb.WriteString("'investors in this asset class generally look for...', 'cap rate compression in this sector has historically...'. ")
 	sb.WriteString("If referencing a market trend, attribute it conditionally: 'if vacancy in this submarket is above X%, this suggests...'\n\n")
+	sb.WriteString("DSCR INSTRUCTION: The DEAL ANALYTICS block contains pre-computed DSCR. In the Financial Snapshot section, ")
+	sb.WriteString("always discuss DSCR explicitly when it is provided. If DSCR < 1.20x, open the Financial Snapshot with a bold warning: ")
+	sb.WriteString("'⚠ Financing Risk: DSCR of X.XXx is below the standard 1.20x lender minimum. This deal likely requires interest-only terms, ")
+	sb.WriteString("a renovation escrow, or a price reduction to qualify for conventional financing.' ")
+	sb.WriteString("If DSCR is 1.20–1.30x, flag as 'thin coverage — stress-test against higher rates.'\n\n")
+	sb.WriteString("RENOVATION RECONCILIATION: If the Deal Analytics shows a reconciliation gap flagged with ⚠ RECONCILIATION GAP, ")
+	sb.WriteString("include it as a ❗-rated Risk Factor: state the gap amount and percentage, and frame it as ")
+	sb.WriteString("'This is a common location for broker optimism — verify renovation scope, unit count, and achievable post-renovation rents independently.'\n\n")
+	sb.WriteString("CAP RATE LABEL: If the Broker Claim Verification table flags a cap rate label issue (pro forma label on in-place NOI), ")
+	sb.WriteString("call it out explicitly in the Financial Snapshot: ")
+	sb.WriteString("'The cap rate labeled [pro forma/stabilised] in the OM matches the in-place NOI math. Either the label is incorrect or the NOI figure is mixed — clarify with the seller.'\n\n")
+	sb.WriteString("TAX CLAIM: If any property tax advantage is mentioned in the OM or investor notes (CAUV, agricultural exemption, ")
+	sb.WriteString("homestead exemption, green certification credit, historic tax credit, etc.), assess whether it plausibly applies to ")
+	sb.WriteString("this property type and state. Be specific: CAUV applies to Ohio agricultural land, not urban multifamily or commercial. ")
+	sb.WriteString("If inapplicable, flag it as marketing language and explain what does apply.\n\n")
+	sb.WriteString("CAPEX QUANTIFICATION: If Vintage CapEx data is present in DEAL ANALYTICS, include it in Risk Factors: ")
+	sb.WriteString("'Vintage CapEx (built XXXX, age XX years): Industry benchmark is $5,000–$12,000/unit over 5 years ")
+	sb.WriteString("($X–$X total for this property). This capital is not shown in the OM's investment summary and must be ")
+	sb.WriteString("factored into total capital required.' Do not qualify this as speculation — it is an industry benchmark range.\n\n")
+	sb.WriteString("SCORECARD INSTRUCTION: The Deal Analytics block contains a pre-computed Deal Scorecard table. ")
+	sb.WriteString("Reproduce it as the FIRST element of the Financial Snapshot section, before any narrative. ")
+	sb.WriteString("Do not alter any values. After the table, explain each metric briefly in prose.\n\n")
+	sb.WriteString("CLAIMS TABLE INSTRUCTION: If a BROKER CLAIM VERIFICATION block is provided, include that table verbatim ")
+	sb.WriteString("in the Broker Claim Verification section. Add exactly one explanation sentence per row after the table. ")
+	sb.WriteString("Do not alter the ratings.\n\n")
+	sb.WriteString("SENSITIVITY INSTRUCTION: If an ESTARA SENSITIVITY SCENARIO block is provided, include that table verbatim ")
+	sb.WriteString("in the Estara Sensitivity Scenario section. Write one conclusion sentence using the hint provided.\n\n")
 	sb.WriteString("---\n\n")
 	sb.WriteString(fmt.Sprintf("# Deal: %s\n\n", dealName))
 	sb.WriteString(fmt.Sprintf("**Properties in deal**: %d\n\n", len(props)))
@@ -1842,16 +2383,26 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 			sb.WriteString(fmt.Sprintf("- Stated Cap Rate: %.2f%%\n", brokerCapRate*100))
 		}
 
-		// Financing assumptions
-		if p.DownPaymentPct.Valid || p.InterestRate.Valid {
+		// Financing assumptions — extract to variables for analytics (ADR-110)
+		var downPaymentPct, interestRate float64
+		var hasDownPayment, hasInterestRate bool
+		if p.DownPaymentPct.Valid {
+			f, _ := p.DownPaymentPct.Float64Value()
+			downPaymentPct = f.Float64
+			hasDownPayment = true
+		}
+		if p.InterestRate.Valid {
+			f, _ := p.InterestRate.Float64Value()
+			interestRate = f.Float64
+			hasInterestRate = true
+		}
+		if hasDownPayment || hasInterestRate {
 			sb.WriteString("\n**Financing Assumptions**\n")
-			if p.DownPaymentPct.Valid {
-				f, _ := p.DownPaymentPct.Float64Value()
-				sb.WriteString(fmt.Sprintf("- Down Payment: %.0f%%\n", f.Float64*100))
+			if hasDownPayment {
+				sb.WriteString(fmt.Sprintf("- Down Payment: %.0f%%\n", downPaymentPct*100))
 			}
-			if p.InterestRate.Valid {
-				f, _ := p.InterestRate.Float64Value()
-				sb.WriteString(fmt.Sprintf("- Interest Rate: %.2f%%\n", f.Float64*100))
+			if hasInterestRate {
+				sb.WriteString(fmt.Sprintf("- Interest Rate: %.2f%%\n", interestRate*100))
 			}
 		}
 
@@ -1859,6 +2410,10 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 		if p.Notes.Valid && p.Notes.String != "" {
 			sb.WriteString(fmt.Sprintf("\n**Investor Notes**: %s\n", p.Notes.String))
 		}
+
+		// ADR-110: resolved NOI for analytics (filled inside OM block or estimated below)
+		var resolvedNOI float64
+		var resolvedNOISource string
 
 		// ---------- OM data extraction (fallback chain) ----------
 		omForMemo := p.OmData
@@ -1928,17 +2483,23 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 				sb.WriteString(fmt.Sprintf("- Total Expenses: $%.0f/yr\n", *om.TotalExpenses))
 			}
 
-			// NOI — prefer computed-from-statement for accuracy
+			// NOI — prefer computed-from-statement for accuracy; capture to resolvedNOI for analytics
 			switch {
 			case om.NOIComputedFromStatement != nil:
+				resolvedNOI = *om.NOIComputedFromStatement
+				resolvedNOISource = "P&L"
 				sb.WriteString(fmt.Sprintf("- NOI (computed from P&L): $%.0f/yr\n", *om.NOIComputedFromStatement))
 				if om.NOISummaryStated != nil && *om.NOISummaryStated != *om.NOIComputedFromStatement {
 					sb.WriteString(fmt.Sprintf("- NOI (stated on cover): $%.0f/yr  [delta vs computed: $%.0f]\n",
 						*om.NOISummaryStated, *om.NOISummaryStated-*om.NOIComputedFromStatement))
 				}
 			case om.NOICurrent != nil:
+				resolvedNOI = *om.NOICurrent
+				resolvedNOISource = "current"
 				sb.WriteString(fmt.Sprintf("- Year-1 NOI: $%.0f/yr\n", *om.NOICurrent))
 			case om.BrokerNOI != nil:
+				resolvedNOI = *om.BrokerNOI
+				resolvedNOISource = "broker"
 				sb.WriteString(fmt.Sprintf("- Broker NOI: $%.0f/yr\n", *om.BrokerNOI))
 			}
 			if om.BrokerNOIStabilized != nil {
@@ -1961,6 +2522,12 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 				}
 				sb.WriteString(fmt.Sprintf("- Property description: %s\n", desc))
 			}
+		}
+
+		// ADR-110: if no OM NOI, fall back to rent estimate
+		if resolvedNOI == 0 && brokerRentMonthly > 0 {
+			resolvedNOI = brokerRentMonthly * 12 * 0.65
+			resolvedNOISource = "estimated"
 		}
 
 		// ---------- Manual unit mix (ADR-109 fallback chain) ----------
@@ -1999,6 +2566,16 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 				})
 			}
 			hasUnitMix = len(unitMixRows) > 0
+		}
+
+		// ADR-110: compute annual rent gap from unit mix rows
+		var annualRentGap float64
+		for _, u := range unitMixRows {
+			if u.RentCurrent != nil && u.RentMarket != nil && u.Count > 0 {
+				if *u.RentMarket > *u.RentCurrent {
+					annualRentGap += (*u.RentMarket - *u.RentCurrent) * float64(u.Count) * 12
+				}
+			}
 		}
 
 		// ---------- Manual commercial mix (ADR-109 fallback chain) ----------
@@ -2044,6 +2621,70 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 			sb.WriteString(typeBlock)
 		}
 
+		// ---------- ADR-110: Deal Analytics (Go-computed, injected as literal text) ----------
+		var omEGI, omTotalExpenses float64
+		var hasExpenseData bool
+		var claimedNOIUplift float64
+		var hasClaimedUplift bool
+		if hasOMForProp {
+			if om.TotalEffectiveGrossIncome != nil {
+				omEGI = *om.TotalEffectiveGrossIncome
+			}
+			if om.TotalExpenses != nil {
+				omTotalExpenses = *om.TotalExpenses
+				if omEGI > 0 {
+					hasExpenseData = true
+				}
+			} else if len(om.ExpenseItems) > 0 {
+				for _, e := range om.ExpenseItems {
+					omTotalExpenses += e.Amount
+				}
+				if omEGI > 0 {
+					hasExpenseData = true
+				}
+			}
+			if om.ClaimedRenovationNOIUplift != nil {
+				claimedNOIUplift = *om.ClaimedRenovationNOIUplift
+				hasClaimedUplift = true
+			}
+		}
+
+		var unitsVal, sqftVal, yearBuiltVal int32
+		if p.Units.Valid {
+			unitsVal = p.Units.Int32
+		}
+		if p.Sqft.Valid {
+			sqftVal = p.Sqft.Int32
+		}
+		if p.YearBuilt.Valid {
+			yearBuiltVal = p.YearBuilt.Int32
+		}
+
+		analytics := computeDealAnalytics(
+			askingPrice,
+			downPaymentPct, interestRate,
+			hasDownPayment, hasInterestRate,
+			resolvedNOI, resolvedNOISource,
+			unitsVal, p.Units.Valid,
+			sqftVal, p.Sqft.Valid,
+			yearBuiltVal, p.YearBuilt.Valid,
+			brokerCapRate, p.BrokerCapRate.Valid,
+			annualRentGap,
+			omEGI, omTotalExpenses, hasExpenseData,
+			claimedNOIUplift, hasClaimedUplift,
+		)
+		if block := buildAnalyticsPromptBlock(analytics); block != "" {
+			sb.WriteString(block)
+		}
+		if hasOMForProp {
+			if claimsBlock := buildBrokerClaimsBlock(analytics, &om); claimsBlock != "" {
+				sb.WriteString(claimsBlock)
+			}
+			if sensBlock := buildSensitivityBlock(analytics, &om, brokerCapRate); sensBlock != "" {
+				sb.WriteString(sensBlock)
+			}
+		}
+
 		// OM reference instruction for Executive Summary (only if OM uploaded).
 		if hasOMForProp && om.OmDate != nil && *om.OmDate != "" {
 			sb.WriteString(fmt.Sprintf("\n[OM reference: When writing the Executive Summary, open with: "+
@@ -2083,6 +2724,15 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 		sb.WriteString("### Appendix: Offering Document Notes\n")
 		sb.WriteString("Brief observations on data quality and any figures that warrant independent verification. ")
 		sb.WriteString("Keep this section short — it is an appendix, not the focus of the memo.\n\n")
+
+		sb.WriteString("### Broker Claim Verification\n")
+		sb.WriteString("If a BROKER CLAIM VERIFICATION block was provided in the property data above, include that table verbatim here. ")
+		sb.WriteString("Add exactly one explanation sentence after each row to explain what the rating means for the investor. ")
+		sb.WriteString("End with the Overall Broker Credibility rating and one sentence of context.\n\n")
+
+		sb.WriteString("### Estara Sensitivity Scenario\n")
+		sb.WriteString("If an ESTARA SENSITIVITY SCENARIO block was provided in the property data above, include that table verbatim here. ")
+		sb.WriteString("Use the conservative conclusion hint provided to write one clear sentence about what this scenario means for the investment decision.\n\n")
 	}
 
 	sb.WriteString("---\n")
