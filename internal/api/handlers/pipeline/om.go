@@ -2463,11 +2463,20 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 	sb.WriteString("If referencing a market trend, attribute it conditionally: 'if vacancy in this submarket is above X%, this suggests...'\n\n")
 	sb.WriteString("DSCR INSTRUCTION: A FINANCING FEASIBILITY line above the unit mix provides the pre-computed DSCR. ")
 	sb.WriteString("You MUST state the DSCR ratio verbatim (e.g. 'DSCR: 1.11x') in the Financial Snapshot — do NOT paraphrase it as 'thin cash flow' or omit the number. ")
-	sb.WriteString("If DSCR < 1.20x, the Financial Snapshot MUST open with this exact bold warning (fill in actual numbers): ")
+	sb.WriteString("After stating the ratio, you MUST include exactly this sentence (fill in actual values): ")
+	sb.WriteString("'This implies a DSCR of X.XXx, which is [above / below] the standard 1.20x lender minimum.' ")
+	sb.WriteString("Do not substitute any other phrasing for this sentence. It must appear verbatim with the computed ratio.\n")
+	sb.WriteString("If DSCR < 1.20x, the Financial Snapshot MUST ALSO open with this exact bold warning (fill in actual numbers): ")
 	sb.WriteString("'⚠ Financing Risk: DSCR of X.XXx is below the standard 1.20x lender minimum. This deal likely requires interest-only terms, ")
 	sb.WriteString("a renovation escrow, or a price reduction to qualify for conventional financing.' ")
 	sb.WriteString("If DSCR is 1.20–1.30x, label it 'thin coverage — stress-test against higher rates.' in Financial Snapshot.\n\n")
-	sb.WriteString("RENOVATION RECONCILIATION: If the Deal Analytics shows a reconciliation gap flagged with ⚠ RECONCILIATION GAP, ")
+	sb.WriteString("RENOVATION MATH INSTRUCTION: When unit mix data is present (current rent and market rent per unit type), ")
+	sb.WriteString("you MUST compute and show this calculation in the Financial Snapshot:\n")
+	sb.WriteString("  'Rent uplift: Σ(units × monthly rent increase) × 12 = $X annual revenue uplift → NOI uplift = $X × 0.65 = $Y'\n")
+	sb.WriteString("If the OM or property data states a stabilized NOI higher than in-place NOI, compare:\n")
+	sb.WriteString("  'Rent-math supports $Y NOI uplift; OM implies $Z uplift — gap of $W (P%%).'\n")
+	sb.WriteString("Flag gaps > 15%% as ⚠ in the Broker Claim Verification table renovation row.\n")
+	sb.WriteString("If the Deal Analytics shows a reconciliation gap flagged with ⚠ RECONCILIATION GAP, ")
 	sb.WriteString("include it as a ❗-rated Risk Factor: state the gap amount and percentage, and frame it as ")
 	sb.WriteString("'This is a common location for broker optimism — verify renovation scope, unit count, and achievable post-renovation rents independently.'\n\n")
 	sb.WriteString("CAP RATE LABEL: If the Broker Claim Verification table flags a cap rate label issue (pro forma label on in-place NOI), ")
@@ -2484,6 +2493,13 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 	sb.WriteString("SCORECARD INSTRUCTION: The Deal Analytics block contains a pre-computed Deal Scorecard table. ")
 	sb.WriteString("Reproduce it as the FIRST element of the Financial Snapshot section, before any narrative. ")
 	sb.WriteString("Do not alter any values. After the table, explain each metric briefly in prose.\n\n")
+	sb.WriteString("DEAL QUALITY SCORE INSTRUCTION: Immediately after the Deal Scorecard prose explanation, output a **Deal Quality Score** table:\n")
+	sb.WriteString("| Dimension | Score (1–10) | Rationale |\n")
+	sb.WriteString("|-----------|--------------|----------|\n")
+	sb.WriteString("Five dimensions (one row each): Market Quality, Asset Quality, Value-Add Thesis, Financial Structure, Risk-Adjusted Entry.\n")
+	sb.WriteString("Score each 1–10 (1=poor, 10=exceptional). Keep Rationale to one short phrase (≤12 words).\n")
+	sb.WriteString("End the table with a final row: **Overall** | **X.X / 10** | [one sentence verdict].\n")
+	sb.WriteString("Score honestly — a mediocre deal should score 4–5. Do not inflate scores.\n\n")
 	sb.WriteString("CLAIMS TABLE INSTRUCTION: The Broker Claim Verification section MUST contain a single markdown table with 4–6 rows. ")
 	sb.WriteString("Build it as follows:\n")
 	sb.WriteString("  STEP 1 — Copy any pre-computed rows from the BROKER CLAIM VERIFICATION block above verbatim (do not alter ratings or numbers).\n")
@@ -2904,8 +2920,21 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 		}
 
 		var unitsVal, sqftVal, yearBuiltVal int32
+		hasUnitsForAnalytics := p.Units.Valid
 		if p.Units.Valid {
 			unitsVal = p.Units.Int32
+		} else if hasOMForProp && len(om.RentByUnitType) > 0 {
+			// ADR-110 fix: derive unit count from OM rent roll for Price/Unit scorecard
+			var omUnitCount int32
+			for _, u := range om.RentByUnitType {
+				if u.Count != nil {
+					omUnitCount += int32(*u.Count)
+				}
+			}
+			if omUnitCount > 0 {
+				unitsVal = omUnitCount
+				hasUnitsForAnalytics = true
+			}
 		}
 		if p.Sqft.Valid {
 			sqftVal = p.Sqft.Int32
@@ -2925,7 +2954,7 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 			downPaymentPct, interestRate,
 			hasDownPayment, hasInterestRate,
 			resolvedNOI, resolvedNOISource,
-			unitsVal, p.Units.Valid,
+			unitsVal, hasUnitsForAnalytics,
 			sqftVal, p.Sqft.Valid,
 			yearBuiltVal, hasYearBuilt,
 			brokerCapRate, p.BrokerCapRate.Valid,
@@ -2959,6 +2988,13 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 	sb.WriteString("---\n\n")
 	sb.WriteString("## Required Memo Sections\n\n")
 	sb.WriteString("Write the Investment Decision Memo with these sections:\n\n")
+	sb.WriteString("### IC Brief\n")
+	sb.WriteString("One-page summary. Exactly four bullet lines — no prose, no additional content:\n")
+	sb.WriteString("- **Deal**: [property type] | [city, state] | [asking price]\n")
+	sb.WriteString("- **Thesis**: [two sentences — what must be true for this deal to work]\n")
+	sb.WriteString("- **Top 3 Risks**: (1) [risk rated H/M/L] (2) [risk rated H/M/L] (3) [risk rated H/M/L]\n")
+	sb.WriteString("- **Recommendation**: [Proceed / Negotiate / Pass] — [price target or key condition]\n")
+	sb.WriteString("This section stands alone as the summary. The full memo follows immediately after.\n\n")
 	sb.WriteString("### Executive Summary\n")
 	sb.WriteString("2-3 sentences. What is this deal and what is the core investment question the investor needs to answer. ")
 	sb.WriteString("If an OM reference instruction is provided above, open with that sentence.\n\n")
