@@ -1976,31 +1976,57 @@ func buildAnalyticsPromptBlock(a dealAnalytics) string {
 	}
 
 	// Deal Scorecard table
-	if scorecardRows >= 3 {
+	if scorecardRows >= 2 {
 		sb.WriteString("\nDeal Scorecard:\n")
-		sb.WriteString("| Metric | Value | Note |\n")
-		sb.WriteString("|--------|-------|------|\n")
+		sb.WriteString("| Metric | Value | Assessment | Note |\n")
+		sb.WriteString("|--------|-------|------------|------|\n")
 		if a.ImpliedCapRate != nil {
-			sb.WriteString(fmt.Sprintf("| Going-in Cap Rate | %.2f%% | Implied: NOI / asking price |\n", *a.ImpliedCapRate*100))
+			capAssessment := "—" // market-dependent; flag only if very compressed
+			if *a.ImpliedCapRate < 0.04 {
+				capAssessment = "⚠"
+			}
+			sb.WriteString(fmt.Sprintf("| Going-in Cap Rate | %.2f%% | %s | Implied: NOI / asking price |\n", *a.ImpliedCapRate*100, capAssessment))
 		}
 		if a.PricePerUnit != nil {
-			sb.WriteString(fmt.Sprintf("| Price / Unit | $%.0f | — |\n", *a.PricePerUnit))
+			sb.WriteString(fmt.Sprintf("| Price / Unit | $%.0f | — | Benchmark varies by market |\n", *a.PricePerUnit))
 		}
-		if a.PricePerSF != nil {
-			sb.WriteString(fmt.Sprintf("| Price / SF | $%.2f | — |\n", *a.PricePerSF))
+		// Show Price/SF only for commercial (no unit count). Price/unit is the primary MF metric.
+		if a.PricePerSF != nil && a.PricePerUnit == nil {
+			sb.WriteString(fmt.Sprintf("| Price / SF | $%.2f | — | — |\n", *a.PricePerSF))
 		}
 		if a.AnnualRentGap != nil {
-			sb.WriteString(fmt.Sprintf("| Annual Rent Gap (upside) | $%.0f/yr | Market minus current × units × 12 |\n", *a.AnnualRentGap))
+			rentAssessment := "✓"
+			if *a.AnnualRentGap == 0 {
+				rentAssessment = "—"
+			}
+			sb.WriteString(fmt.Sprintf("| Annual Rent Gap | $%.0f/yr | %s | Rent-math: (market − current) × units × 12 |\n", *a.AnnualRentGap, rentAssessment))
 		}
 		if a.ExpenseRatio != nil {
-			benchmark := "Benchmark: 35–50% for MF; 25–35% for NNN"
-			sb.WriteString(fmt.Sprintf("| Expense Ratio | %.1f%% of EGI | %s |\n", *a.ExpenseRatio*100, benchmark))
+			ratio := *a.ExpenseRatio * 100
+			expAssessment := "✓"
+			if ratio < 30 || ratio > 55 {
+				expAssessment = "⚠"
+			}
+			sb.WriteString(fmt.Sprintf("| Expense Ratio | %.1f%% EGI | %s | Flag if <30%% (understated) or >55%% (high) |\n", ratio, expAssessment))
 		}
 		if a.DSCRAvailable && a.AnnualDebtService > 0 {
-			sb.WriteString(fmt.Sprintf("| DSCR | %.2fx | Min lender threshold: 1.20x |\n", a.DSCR))
+			dscrAssessment := "✓"
+			if a.DSCRBelow {
+				dscrAssessment = "❗"
+			} else if a.DSCRThin {
+				dscrAssessment = "⚠"
+			}
+			sb.WriteString(fmt.Sprintf("| DSCR | %.2fx | %s | Lender minimum: 1.20x |\n", a.DSCR, dscrAssessment))
 		}
 		if a.ExitValueEst != nil {
-			sb.WriteString(fmt.Sprintf("| Exit Value Est. | $%.0f | At going-in cap + 50bps |\n", *a.ExitValueEst))
+			exitRatio := *a.ExitValueEst / a.AskingPrice
+			exitAssessment := "✓"
+			if exitRatio < 0.90 {
+				exitAssessment = "❗"
+			} else if exitRatio < 1.00 {
+				exitAssessment = "⚠"
+			}
+			sb.WriteString(fmt.Sprintf("| Exit Value Est. | $%.0f | %s | At going-in cap + 50bps; ask $%.0f |\n", *a.ExitValueEst, exitAssessment, a.AskingPrice))
 		}
 	}
 
@@ -2040,6 +2066,21 @@ func buildBrokerClaimsBlock(a dealAnalytics, om *omData) string {
 		Rating    string // "✓" | "⚠" | "❗"
 	}
 	var rows []claimRow
+
+	// 0. Financing feasibility (DSCR) — fires whenever financing data is present; not dependent on OM fields
+	if a.DSCRAvailable && a.AnnualDebtService > 0 {
+		rating := "✓"
+		check := fmt.Sprintf("DSCR %.2fx (NOI $%.0f / annual debt service $%.0f at %.0f%% LTV, %.2f%% rate, 30yr am)",
+			a.DSCR, a.NOI, a.AnnualDebtService, a.LTV*100, a.Rate*100)
+		if a.DSCRBelow {
+			check += " — below 1.20x lender minimum"
+			rating = "❗"
+		} else if a.DSCRThin {
+			check += " — thin coverage (1.20–1.30x)"
+			rating = "⚠"
+		}
+		rows = append(rows, claimRow{"Financing (DSCR)", check, rating})
+	}
 
 	// 1. Cap rate integrity
 	if a.ImpliedCapRate != nil && om.CapRate != nil && *om.CapRate > 0 {
@@ -2098,15 +2139,42 @@ func buildBrokerClaimsBlock(a dealAnalytics, om *omData) string {
 
 	// 4. Renovation NOI uplift reconciliation
 	if a.HasRecon {
-		check := fmt.Sprintf("Rent-math estimate: $%.0f NOI uplift; OM claims: $%.0f; gap: %.1f%%",
-			a.RentUpliftNOI, a.ClaimedNOIUplift, a.ReconGapPct)
+		check := fmt.Sprintf("Rent-math NOI estimate: $%.0f (rent gap $%.0f × 0.65); OM implies $%.0f uplift; gap: $%.0f (%.1f%%)",
+			a.RentUpliftNOI, a.RentUpliftRevenue, a.ClaimedNOIUplift, math.Abs(a.ReconGap), math.Abs(a.ReconGapPct))
 		rating := "✓"
 		if math.Abs(a.ReconGapPct) > 15 {
 			rating = "❗"
 		} else if math.Abs(a.ReconGapPct) > 8 {
 			rating = "⚠"
 		}
-		rows = append(rows, claimRow{"Renovation NOI uplift", check, rating})
+		rows = append(rows, claimRow{"Renovation math (uplift reconciliation)", check, rating})
+	} else if a.AnnualRentGap != nil && *a.AnnualRentGap > 0 && a.NOI > 0 {
+		// Fallback: fires when rent gap exists but claimedNOIUplift wasn't extracted.
+		// Compare rent-math NOI uplift against any proforma NOI the OM states.
+		var proformaNOI float64
+		if om.BrokerNOIStabilized != nil && *om.BrokerNOIStabilized > a.NOI {
+			proformaNOI = *om.BrokerNOIStabilized
+		} else if om.NOIProforma != nil && *om.NOIProforma > a.NOI {
+			proformaNOI = *om.NOIProforma
+		}
+		if proformaNOI > 0 {
+			rentMathUplift := *a.AnnualRentGap * 0.65
+			impliedUplift := proformaNOI - a.NOI
+			gap := impliedUplift - rentMathUplift
+			gapPct := 0.0
+			if impliedUplift != 0 {
+				gapPct = gap / impliedUplift * 100
+			}
+			check := fmt.Sprintf("Rent-math NOI uplift: $%.0f (rent gap $%.0f × 0.65); stabilized NOI implies $%.0f uplift; gap: $%.0f (%.1f%%)",
+				rentMathUplift, *a.AnnualRentGap, impliedUplift, math.Abs(gap), math.Abs(gapPct))
+			rating := "✓"
+			if math.Abs(gapPct) > 15 {
+				rating = "❗"
+			} else if math.Abs(gapPct) > 8 {
+				rating = "⚠"
+			}
+			rows = append(rows, claimRow{"Renovation math (rent-math vs stabilized NOI)", check, rating})
+		}
 	}
 
 	// 5. Vacancy assumption
@@ -2221,8 +2289,13 @@ func buildSensitivityBlock(a dealAnalytics, om *omData, brokerCapRate float64) s
 	var sb strings.Builder
 	sb.WriteString("\n**ESTARA SENSITIVITY SCENARIO** (include this table verbatim in the Estara Sensitivity Scenario section; write one conclusion sentence after):\n")
 	sb.WriteString("Conservative assumptions: vacancy +2pp, operating expenses +10%, exit cap +50bps\n")
-	sb.WriteString("| Metric | Broker | Conservative | Assumption |\n")
-	sb.WriteString("|--------|--------|--------------|------------|\n")
+	sb.WriteString("| Metric | Broker | Estara Conservative | Assumption |\n")
+	sb.WriteString("|--------|--------|---------------------|------------|\n")
+	// Renovation cost: broker stated vs. Estara conservative (+20% contingency)
+	if om.RenovationCost != nil && *om.RenovationCost > 0 {
+		sb.WriteString(fmt.Sprintf("| Renovation Cost | $%.0f | $%.0f | +20%% contingency on broker budget |\n",
+			*om.RenovationCost, *om.RenovationCost*1.20))
+	}
 	if egi > 0 {
 		sb.WriteString(fmt.Sprintf("| EGI | $%.0f | $%.0f | After +2pp vacancy |\n", egi, egi*0.98))
 	}
@@ -2234,7 +2307,7 @@ func buildSensitivityBlock(a dealAnalytics, om *omData, brokerCapRate float64) s
 		sb.WriteString(fmt.Sprintf("| Going-in Cap | %.2f%% | %.2f%% | At conservative NOI / price |\n", goingInCap*100, conservGoingInCap*100))
 	}
 	if exitCap > 0 {
-		sb.WriteString(fmt.Sprintf("| Exit Cap | %.2f%% | %.2f%% | +50bps expansion assumed |\n", exitCap*100, exitCap*100))
+		sb.WriteString(fmt.Sprintf("| Exit Cap | %.2f%% | %.2f%% | Broker +50bps expansion |\n", exitCap*100-0.5, exitCap*100))
 	}
 	if brokerExitValue > 0 {
 		sb.WriteString(fmt.Sprintf("| Exit Value | $%.0f | $%.0f | NOI / exit cap |\n", brokerExitValue, conservExitValue))
@@ -2318,6 +2391,13 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 	sb.WriteString("Do not alter the ratings.\n\n")
 	sb.WriteString("SENSITIVITY INSTRUCTION: If an ESTARA SENSITIVITY SCENARIO block is provided, include that table verbatim ")
 	sb.WriteString("in the Estara Sensitivity Scenario section. Write one conclusion sentence using the hint provided.\n\n")
+	sb.WriteString("INVESTMENT SUMMARY INSTRUCTION: Before the Executive Summary, output a structured **Investment Summary** block in exactly this format (fill from available data; use '—' if unknown):\n")
+	sb.WriteString("  - **Deal**: [property type] | [city, state] | [asking price]\n")
+	sb.WriteString("  - **Execution**: [primary value-creation mechanism — e.g., 'value-add via rent roll renovation', 'NNN cash flow', 'vacant-to-leased turnover']\n")
+	sb.WriteString("  - **Capital**: [acquisition price] + [renovation cost if stated, else '—'] = [total capital required]\n")
+	sb.WriteString("  - **NOI upside**: [in-place NOI] → [stabilized NOI or rent-math estimate] (delta ≈ [amount])\n")
+	sb.WriteString("  - **Risk-adjusted view**: [one phrase — e.g., 'Proceed if price reduced to $X', 'Pass at ask price', 'Negotiate renovation escrow']\n")
+	sb.WriteString("Keep each line to one line; no prose. This block must appear BEFORE the Executive Summary heading.\n\n")
 	sb.WriteString("SUBMARKET NUANCE: Do not default to generic university-proximity framing for multifamily properties. ")
 	sb.WriteString("Assess the actual likely tenant profile based on property type, unit mix, and rent levels. ")
 	sb.WriteString("A property with 2BR+ units at $900–$1,200/mo near a medical center or mid-size city downtown suggests working professionals, not students. ")
