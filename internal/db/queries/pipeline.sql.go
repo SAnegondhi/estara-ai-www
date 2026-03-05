@@ -52,7 +52,7 @@ INSERT INTO pipeline_deals (
     gen_random_uuid(), $1, $2, $3, 'under_review', $4,
     0, 0, $5, NULL,
     NOW(), NOW()
-) RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, created_at, updated_at
+) RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, memo_text, created_at, updated_at
 `
 
 type CreatePipelineDealParams struct {
@@ -89,6 +89,7 @@ func (q *Queries) CreatePipelineDeal(ctx context.Context, arg CreatePipelineDeal
 		&i.LastActivityAt,
 		&i.ClosedOutcome,
 		&i.InputComplete,
+		&i.MemoText,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -387,7 +388,7 @@ func (q *Queries) FindOMDuplicates(ctx context.Context, arg FindOMDuplicatesPara
 }
 
 const GetPipelineDeal = `-- name: GetPipelineDeal :one
-SELECT id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, created_at, updated_at FROM pipeline_deals
+SELECT id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, memo_text, created_at, updated_at FROM pipeline_deals
 WHERE id = $1 AND user_id = $2
 `
 
@@ -412,6 +413,7 @@ func (q *Queries) GetPipelineDeal(ctx context.Context, arg GetPipelineDealParams
 		&i.LastActivityAt,
 		&i.ClosedOutcome,
 		&i.InputComplete,
+		&i.MemoText,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -737,7 +739,7 @@ func (q *Queries) GetPropertyOMFile(ctx context.Context, arg GetPropertyOMFilePa
 }
 
 const ListPipelineDeals = `-- name: ListPipelineDeals :many
-SELECT id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, created_at, updated_at FROM pipeline_deals
+SELECT id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, memo_text, created_at, updated_at FROM pipeline_deals
 WHERE user_id = $1
   AND ($2::boolean = TRUE OR status NOT IN ('passed', 'closed'))
 ORDER BY
@@ -772,6 +774,7 @@ func (q *Queries) ListPipelineDeals(ctx context.Context, arg ListPipelineDealsPa
 			&i.LastActivityAt,
 			&i.ClosedOutcome,
 			&i.InputComplete,
+			&i.MemoText,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -872,7 +875,7 @@ UPDATE pipeline_deals SET
     input_complete = true,
     updated_at     = NOW()
 WHERE id = $1 AND user_id = $2
-RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, created_at, updated_at
+RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, memo_text, created_at, updated_at
 `
 
 type MarkDealInputCompleteParams struct {
@@ -897,10 +900,29 @@ func (q *Queries) MarkDealInputComplete(ctx context.Context, arg MarkDealInputCo
 		&i.LastActivityAt,
 		&i.ClosedOutcome,
 		&i.InputComplete,
+		&i.MemoText,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const SavePipelineDealMemoText = `-- name: SavePipelineDealMemoText :exec
+UPDATE pipeline_deals SET
+    memo_text  = $2,
+    updated_at = NOW()
+WHERE id = $1
+`
+
+type SavePipelineDealMemoTextParams struct {
+	ID       uuid.UUID   `json:"id"`
+	MemoText pgtype.Text `json:"memo_text"`
+}
+
+// ADR-109: persist generated decision memo text (overwrites previous).
+func (q *Queries) SavePipelineDealMemoText(ctx context.Context, arg SavePipelineDealMemoTextParams) error {
+	_, err := q.db.Exec(ctx, SavePipelineDealMemoText, arg.ID, arg.MemoText)
+	return err
 }
 
 const UpdateOMValidatedData = `-- name: UpdateOMValidatedData :one
@@ -988,7 +1010,7 @@ UPDATE pipeline_deals SET
     input_complete     = COALESCE($9::boolean, input_complete),
     updated_at         = NOW()
 WHERE id = $1 AND user_id = $2
-RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, created_at, updated_at
+RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, memo_text, created_at, updated_at
 `
 
 type UpdatePipelineDealParams struct {
@@ -1029,6 +1051,7 @@ func (q *Queries) UpdatePipelineDeal(ctx context.Context, arg UpdatePipelineDeal
 		&i.LastActivityAt,
 		&i.ClosedOutcome,
 		&i.InputComplete,
+		&i.MemoText,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1040,7 +1063,7 @@ UPDATE pipeline_deals SET
     status     = $3,
     updated_at = NOW()
 WHERE id = $1 AND user_id = $2
-RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, created_at, updated_at
+RETURNING id, user_id, name, source, status, notes, property_count, memo_count, portfolio_excluded, last_activity_at, closed_outcome, input_complete, memo_text, created_at, updated_at
 `
 
 type UpdatePipelineDealStatusParams struct {
@@ -1065,6 +1088,7 @@ func (q *Queries) UpdatePipelineDealStatus(ctx context.Context, arg UpdatePipeli
 		&i.LastActivityAt,
 		&i.ClosedOutcome,
 		&i.InputComplete,
+		&i.MemoText,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

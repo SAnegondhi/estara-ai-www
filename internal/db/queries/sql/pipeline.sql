@@ -70,6 +70,13 @@ UPDATE pipeline_deals SET
     updated_at       = NOW()
 WHERE id = $1;
 
+-- name: SavePipelineDealMemoText :exec
+-- ADR-109: persist generated decision memo text (overwrites previous).
+UPDATE pipeline_deals SET
+    memo_text  = $2,
+    updated_at = NOW()
+WHERE id = $1;
+
 -- name: DeletePipelineDeal :execrows
 DELETE FROM pipeline_deals WHERE id = $1 AND user_id = $2;
 

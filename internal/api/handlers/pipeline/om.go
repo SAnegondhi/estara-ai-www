@@ -1730,8 +1730,12 @@ func (h *Handler) GeneratePipelineMemo(w http.ResponseWriter, r *http.Request) {
 
 	memo := memoBuf.String()
 
-	// Bump memo count on the deal.
+	// Bump memo count and persist memo text on the deal.
 	_ = h.store.Q().BumpPipelineDealMemoCount(r.Context(), dealID)
+	_ = h.store.Q().SavePipelineDealMemoText(r.Context(), queries.SavePipelineDealMemoTextParams{
+		ID:       dealID,
+		MemoText: pgtype.Text{String: memo, Valid: true},
+	})
 
 	// Send the complete event with the full memo.
 	memoJSON, _ := json.Marshal(map[string]any{
@@ -1742,19 +1746,36 @@ func (h *Handler) GeneratePipelineMemo(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildPipelineMemoPrompt constructs the Claude prompt for a pipeline decision memo.
-// buildPipelineMemoPrompt constructs the Claude prompt for a pipeline decision memo.
 // The memo is an investor decision document — it helps the investor decide whether to
 // proceed with a deal. It is NOT a critique of any offering memorandum. OM data (when
 // present) is one input among many; manual-entry deals are equally valid.
+//
+// ADR-109: preamble protocol, type-aware analysis blocks, fallback chains.
 func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) string {
 	var sb strings.Builder
 
+	// Preamble protocol: instruct Claude to output structured metadata before narrative.
 	sb.WriteString("You are Estara's Investment Analyst. Generate a professional Investment Decision Memo ")
 	sb.WriteString("to help an investor decide whether to proceed with a pipeline deal.\n\n")
 	sb.WriteString("ROLE: Decision support. Frame everything as factors for the investor to weigh — ")
 	sb.WriteString("not as advice. Use probabilistic language: \"may\", \"could\", \"data indicates\".\n\n")
+	sb.WriteString("PREAMBLE PROTOCOL: Before writing any section headings, output EXACTLY these 3 lines:\n")
+	sb.WriteString("VERDICT: Proceed|Negotiate|Pass\n")
+	sb.WriteString("RISK: Low|Medium|High\n")
+	sb.WriteString("KEY_UNCERTAINTY: [one sentence describing the single most important unknown]\n\n")
+	sb.WriteString("After those 3 lines, write the memo sections starting with ### Executive Summary.\n\n")
 	sb.WriteString("IMPORTANT: This memo is about the INVESTMENT OPPORTUNITY, not about any document. ")
 	sb.WriteString("If OM data is available it is one data source; if not, work with what you have.\n\n")
+	sb.WriteString("P&L INSTRUCTION: When 'Operating expenses (from P&L)' are provided, you MUST use them in the ")
+	sb.WriteString("Financial Snapshot section. List each line item, compute the total, and compare to the stated NOI. ")
+	sb.WriteString("If NOI (computed from P&L) and NOI (stated on cover) differ, call out the delta and assess what it means. ")
+	sb.WriteString("Do NOT write 'no P&L available' or 'limited financial detail' when expense items are present.\n\n")
+	sb.WriteString("CITATIONS INSTRUCTION: Do NOT cite specific named reports, rankings, indices, or publications ")
+	sb.WriteString("(e.g. 'CBRE H1 2025 Columbus Office Report', 'CoStar Q3 2024 Retail Rankings', 'JLL Industrial Index'). ")
+	sb.WriteString("You have no access to live market data and any specific citation you generate may be fabricated. ")
+	sb.WriteString("Instead, use hedged general language: 'markets of this type typically...', ")
+	sb.WriteString("'investors in this asset class generally look for...', 'cap rate compression in this sector has historically...'. ")
+	sb.WriteString("If referencing a market trend, attribute it conditionally: 'if vacancy in this submarket is above X%, this suggests...'\n\n")
 	sb.WriteString("---\n\n")
 	sb.WriteString(fmt.Sprintf("# Deal: %s\n\n", dealName))
 	sb.WriteString(fmt.Sprintf("**Properties in deal**: %d\n\n", len(props)))
@@ -1769,8 +1790,11 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 		if p.City.Valid && p.State.Valid {
 			sb.WriteString(fmt.Sprintf("**Location**: %s, %s\n", p.City.String, p.State.String))
 		}
+
+		propType := ""
 		if p.PropertyType.Valid {
-			sb.WriteString(fmt.Sprintf("**Type**: %s\n", p.PropertyType.String))
+			propType = p.PropertyType.String
+			sb.WriteString(fmt.Sprintf("**Type**: %s\n", propType))
 		}
 		if p.Units.Valid {
 			sb.WriteString(fmt.Sprintf("**Units**: %d\n", p.Units.Int32))
@@ -1788,9 +1812,11 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 
 		// Pricing
 		sb.WriteString("\n**Pricing**\n")
+		askingPrice := 0.0
 		if p.AskingPrice.Valid {
 			f, _ := p.AskingPrice.Float64Value()
-			sb.WriteString(fmt.Sprintf("- Asking Price: $%.0f\n", f.Float64))
+			askingPrice = f.Float64
+			sb.WriteString(fmt.Sprintf("- Asking Price: $%.0f\n", askingPrice))
 		}
 		if p.TargetPrice.Valid {
 			f, _ := p.TargetPrice.Float64Value()
@@ -1799,18 +1825,23 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 
 		// Income / returns
 		sb.WriteString("\n**Income & Returns**\n")
+		brokerRentMonthly := 0.0
 		if p.BrokerRent.Valid {
 			f, _ := p.BrokerRent.Float64Value()
-			sb.WriteString(fmt.Sprintf("- Stated Monthly Rent: $%.0f\n", f.Float64))
+			brokerRentMonthly = f.Float64
+			sb.WriteString(fmt.Sprintf("- Stated Monthly Rent: $%.0f\n", brokerRentMonthly))
 		}
 		if p.SystemRent.Valid {
 			f, _ := p.SystemRent.Float64Value()
 			sb.WriteString(fmt.Sprintf("- System Rent Estimate: $%.0f/mo\n", f.Float64))
 		}
+		brokerCapRate := 0.0
 		if p.BrokerCapRate.Valid {
 			f, _ := p.BrokerCapRate.Float64Value()
-			sb.WriteString(fmt.Sprintf("- Stated Cap Rate: %.2f%%\n", f.Float64*100))
+			brokerCapRate = f.Float64
+			sb.WriteString(fmt.Sprintf("- Stated Cap Rate: %.2f%%\n", brokerCapRate*100))
 		}
+
 		// Financing assumptions
 		if p.DownPaymentPct.Valid || p.InterestRate.Valid {
 			sb.WriteString("\n**Financing Assumptions**\n")
@@ -1829,105 +1860,224 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 			sb.WriteString(fmt.Sprintf("\n**Investor Notes**: %s\n", p.Notes.String))
 		}
 
-		// Extract key financials from OM data if available — used for appendix only.
+		// ---------- OM data extraction (fallback chain) ----------
 		omForMemo := p.OmData
 		if len(p.OmValidatedData) > 0 && string(p.OmValidatedData) != "null" {
 			omForMemo = p.OmValidatedData
 		}
+
+		var om omData
+		hasOMForProp := false
 		if len(omForMemo) > 2 && string(omForMemo) != "null" {
-			hasOMData = true
-			// Extract a compact summary of OM financials rather than dumping raw JSON.
-			var om struct {
-				AskingPrice          *float64 `json:"askingPrice"`
-				BrokerNOI            *float64 `json:"brokerNOI"`
-				BrokerNOIStabilized  *float64 `json:"brokerNOIStabilized"`
-				CapRate              *float64 `json:"capRate"`
-				CapRateProForma      *float64 `json:"capRateProForma"`
-				Occupancy            *float64 `json:"occupancy"`
-				TotalExpenses        *float64 `json:"totalExpenses"`
-				PropertyDescription  *string  `json:"propertyDescription"`
-				InvestmentHighlights []string `json:"investmentHighlights"`
-				RentByUnitType       []struct {
-					UnitType    *string  `json:"unitType"`
-					Count       *int     `json:"count"`
-					RentCurrent *float64 `json:"rentCurrent"`
-					RentMarket  *float64 `json:"rentMarket"`
-				} `json:"rentByUnitType"`
-				OmDate *string `json:"omDate"`
-			}
 			if jerr := json.Unmarshal(omForMemo, &om); jerr == nil {
-				sb.WriteString("\n**Additional data from offering document**\n")
-				if om.OmDate != nil && *om.OmDate != "" {
-					sb.WriteString(fmt.Sprintf("- Document date: %s\n", *om.OmDate))
-				}
-				if om.BrokerNOI != nil {
-					sb.WriteString(fmt.Sprintf("- Year-1 NOI (document): $%.0f\n", *om.BrokerNOI))
-				}
-				if om.BrokerNOIStabilized != nil {
-					sb.WriteString(fmt.Sprintf("- Stabilized NOI (document): $%.0f\n", *om.BrokerNOIStabilized))
-				}
-				if om.TotalExpenses != nil {
-					sb.WriteString(fmt.Sprintf("- Total Expenses (document): $%.0f\n", *om.TotalExpenses))
-				}
-				if om.CapRateProForma != nil {
-					sb.WriteString(fmt.Sprintf("- Pro Forma Cap Rate (document): %.2f%%\n", *om.CapRateProForma*100))
-				}
-				if om.Occupancy != nil {
-					sb.WriteString(fmt.Sprintf("- Occupancy (document): %.0f%%\n", *om.Occupancy*100))
-				}
-				if len(om.RentByUnitType) > 0 {
-					sb.WriteString("- Rent roll summary:\n")
-					for _, u := range om.RentByUnitType {
-						ut := "unit"
-						if u.UnitType != nil {
-							ut = *u.UnitType
-						}
-						line := fmt.Sprintf("  - %s", ut)
-						if u.Count != nil {
-							line += fmt.Sprintf(" (%d units)", *u.Count)
-						}
-						if u.RentCurrent != nil {
-							line += fmt.Sprintf(": current $%.0f/mo", *u.RentCurrent)
-						}
-						if u.RentMarket != nil {
-							line += fmt.Sprintf(", market $%.0f/mo", *u.RentMarket)
-						}
-						sb.WriteString(line + "\n")
-					}
-				}
-				if om.PropertyDescription != nil && *om.PropertyDescription != "" {
-					desc := *om.PropertyDescription
-					if len(desc) > 300 {
-						desc = desc[:300] + "…"
-					}
-					sb.WriteString(fmt.Sprintf("- Property description: %s\n", desc))
+				hasOMForProp = true
+				hasOMData = true
+			}
+		}
+
+		if hasOMForProp {
+			// Update propType from OM if not in structured column.
+			if propType == "" && om.PropertyType != nil {
+				propType = *om.PropertyType
+			}
+
+			sb.WriteString("\n**Data from Offering Document**\n")
+			if om.OmDate != nil && *om.OmDate != "" {
+				sb.WriteString(fmt.Sprintf("- Document date: %s\n", *om.OmDate))
+			}
+
+			// ---------- Full P&L (ADR-108 structured fields) ----------
+			// Income side
+			if om.GrossPotentialRentCurrent != nil {
+				sb.WriteString(fmt.Sprintf("- Gross Potential Rent (current): $%.0f/yr\n", *om.GrossPotentialRentCurrent))
+			}
+			if om.GrossPotentialRentProforma != nil {
+				sb.WriteString(fmt.Sprintf("- Gross Potential Rent (pro forma): $%.0f/yr\n", *om.GrossPotentialRentProforma))
+			}
+			// Legacy GPR fallback
+			if om.GrossPotentialRentCurrent == nil && om.GrossPotentialRentProforma == nil && om.GrossPotentialRent != nil {
+				sb.WriteString(fmt.Sprintf("- Gross Potential Rent: $%.0f/yr\n", *om.GrossPotentialRent))
+			}
+			if om.VacancyPct != nil {
+				sb.WriteString(fmt.Sprintf("- Vacancy assumption: %.1f%%\n", *om.VacancyPct*100))
+			}
+			if len(om.OtherIncomeItems) > 0 {
+				sb.WriteString("- Other income:\n")
+				for _, oi := range om.OtherIncomeItems {
+					sb.WriteString(fmt.Sprintf("  - %s: $%.0f/yr\n", oi.Label, oi.Amount))
 				}
 			}
+			if om.TotalEffectiveGrossIncome != nil {
+				sb.WriteString(fmt.Sprintf("- Effective Gross Income (EGI): $%.0f/yr\n", *om.TotalEffectiveGrossIncome))
+			}
+
+			// Expense side — prefer structured ExpenseItems over legacy TotalExpenses
+			if len(om.ExpenseItems) > 0 {
+				sb.WriteString("- Operating expenses (from P&L):\n")
+				for _, ei := range om.ExpenseItems {
+					if ei.PctOfEGI != nil {
+						sb.WriteString(fmt.Sprintf("  - %s: $%.0f/yr (%.1f%% of EGI)\n", ei.Label, ei.Amount, *ei.PctOfEGI*100))
+					} else {
+						sb.WriteString(fmt.Sprintf("  - %s: $%.0f/yr\n", ei.Label, ei.Amount))
+					}
+				}
+				if om.ExpenseRatioPct != nil {
+					sb.WriteString(fmt.Sprintf("- Total expense ratio: %.1f%% of EGI\n", *om.ExpenseRatioPct*100))
+				}
+			} else if om.TotalExpenses != nil {
+				sb.WriteString(fmt.Sprintf("- Total Expenses: $%.0f/yr\n", *om.TotalExpenses))
+			}
+
+			// NOI — prefer computed-from-statement for accuracy
+			switch {
+			case om.NOIComputedFromStatement != nil:
+				sb.WriteString(fmt.Sprintf("- NOI (computed from P&L): $%.0f/yr\n", *om.NOIComputedFromStatement))
+				if om.NOISummaryStated != nil && *om.NOISummaryStated != *om.NOIComputedFromStatement {
+					sb.WriteString(fmt.Sprintf("- NOI (stated on cover): $%.0f/yr  [delta vs computed: $%.0f]\n",
+						*om.NOISummaryStated, *om.NOISummaryStated-*om.NOIComputedFromStatement))
+				}
+			case om.NOICurrent != nil:
+				sb.WriteString(fmt.Sprintf("- Year-1 NOI: $%.0f/yr\n", *om.NOICurrent))
+			case om.BrokerNOI != nil:
+				sb.WriteString(fmt.Sprintf("- Broker NOI: $%.0f/yr\n", *om.BrokerNOI))
+			}
+			if om.BrokerNOIStabilized != nil {
+				sb.WriteString(fmt.Sprintf("- Stabilized NOI: $%.0f/yr\n", *om.BrokerNOIStabilized))
+			}
+
+			if om.CapRateProForma != nil {
+				sb.WriteString(fmt.Sprintf("- Pro Forma Cap Rate: %.2f%%\n", *om.CapRateProForma*100))
+			}
+			if len(om.InvestmentHighlights) > 0 {
+				sb.WriteString("- Investment highlights:\n")
+				for _, h := range om.InvestmentHighlights {
+					sb.WriteString(fmt.Sprintf("  - %s\n", h))
+				}
+			}
+			if om.PropertyDescription != "" {
+				desc := om.PropertyDescription
+				if len(desc) > 300 {
+					desc = desc[:300] + "…"
+				}
+				sb.WriteString(fmt.Sprintf("- Property description: %s\n", desc))
+			}
+		}
+
+		// ---------- Manual unit mix (ADR-109 fallback chain) ----------
+		// Use prop.UnitMix first; fall back to om.RentByUnitType.
+		type unitRow struct {
+			UnitType    string   `json:"type"`
+			Count       int      `json:"count"`
+			RentCurrent *float64 `json:"rentCurrent"`
+			RentProForma *float64 `json:"rentProForma"`
+			RentMarket  *float64 `json:"rentMarket"`
+		}
+		var unitMixRows []unitRow
+		if len(p.UnitMix) > 2 && string(p.UnitMix) != "null" {
+			_ = json.Unmarshal(p.UnitMix, &unitMixRows)
+		}
+
+		hasUnitMix := len(unitMixRows) > 0
+		if !hasUnitMix && hasOMForProp && len(om.RentByUnitType) > 0 {
+			for _, u := range om.RentByUnitType {
+				cnt := 0
+				if u.Count != nil { cnt = *u.Count }
+				// rentMarket is a string in omData — parse to float if possible.
+				var mktRent *float64
+				if u.RentMarket != nil {
+					var v float64
+					if _, err := fmt.Sscanf(*u.RentMarket, "%f", &v); err == nil {
+						mktRent = &v
+					}
+				}
+				unitMixRows = append(unitMixRows, unitRow{
+					UnitType:    u.UnitType,
+					Count:       cnt,
+					RentCurrent: coalesceFloat(u.RentCurrent, u.RentCurrentAvg),
+					RentProForma: coalesceFloat(u.RentProForma, u.RentProFormaAvg),
+					RentMarket:  mktRent,
+				})
+			}
+			hasUnitMix = len(unitMixRows) > 0
+		}
+
+		// ---------- Manual commercial mix (ADR-109 fallback chain) ----------
+		type cmTenantRow struct {
+			TenantName       string   `json:"tenantName"`
+			Sqft             *float64 `json:"sqft"`
+			AnnualRent       *float64 `json:"annualRent"`
+			LeaseType        *string  `json:"leaseType"`
+			LeaseExpiry      *string  `json:"leaseExpiry"`
+			AnnualRentBumpPct *float64 `json:"annualRentBumpPct"`
+		}
+		var commercialMixRows []cmTenantRow
+		if len(p.CommercialMix) > 2 && string(p.CommercialMix) != "null" {
+			_ = json.Unmarshal(p.CommercialMix, &commercialMixRows)
+		}
+
+		hasCommercialMix := len(commercialMixRows) > 0
+		if !hasCommercialMix && hasOMForProp && len(om.TenantSchedule) > 0 {
+			for _, t := range om.TenantSchedule {
+				var expiry *string
+				if t.LeaseExpiry != nil { expiry = t.LeaseExpiry }
+				var lt *string
+				if t.LeaseType != nil { lt = t.LeaseType }
+				var bump *float64
+				if t.AnnualRentBumpPct != nil { bump = t.AnnualRentBumpPct }
+				row := cmTenantRow{
+					TenantName:       t.TenantName,
+					Sqft:             t.SquareFeet,
+					AnnualRent:       t.AnnualRent,
+					LeaseType:        lt,
+					LeaseExpiry:      expiry,
+					AnnualRentBumpPct: bump,
+				}
+				commercialMixRows = append(commercialMixRows, row)
+			}
+			hasCommercialMix = len(commercialMixRows) > 0
+		}
+
+		// ---------- Type-specific analysis blocks ----------
+		typeBlock := buildTypeSpecificMemoBlock(propType, askingPrice, brokerCapRate, brokerRentMonthly,
+			unitMixRows, hasUnitMix, commercialMixRows, hasCommercialMix, &om, hasOMForProp)
+		if typeBlock != "" {
+			sb.WriteString(typeBlock)
+		}
+
+		// OM reference instruction for Executive Summary (only if OM uploaded).
+		if hasOMForProp && om.OmDate != nil && *om.OmDate != "" {
+			sb.WriteString(fmt.Sprintf("\n[OM reference: When writing the Executive Summary, open with: "+
+				"\"This memo is prepared in connection with the offering memorandum for %s dated %s.\"]\n",
+				p.Address, *om.OmDate))
 		}
 
 		sb.WriteString("\n")
 	}
 
-	// Memo structure instructions
+	// ---------- Memo structure instructions ----------
 	sb.WriteString("---\n\n")
-	sb.WriteString("## Memo Structure\n\n")
+	sb.WriteString("## Required Memo Sections\n\n")
 	sb.WriteString("Write the Investment Decision Memo with these sections:\n\n")
 	sb.WriteString("### Executive Summary\n")
-	sb.WriteString("2-3 sentences. What is this deal and what is the core investment question the investor needs to answer.\n\n")
+	sb.WriteString("2-3 sentences. What is this deal and what is the core investment question the investor needs to answer. ")
+	sb.WriteString("If an OM reference instruction is provided above, open with that sentence.\n\n")
 	sb.WriteString("### Investment Thesis\n")
 	sb.WriteString("What would need to be true for this to be a compelling investment. The value drivers and upside case.\n\n")
 	sb.WriteString("### Financial Snapshot\n")
 	sb.WriteString("Key numbers: pricing, income, cap rate, estimated cash flow. ")
 	sb.WriteString("If both stated rent and system rent estimate are available, note the variance and what it implies for underwriting. ")
-	sb.WriteString("If financing assumptions are present, sketch the debt service and cash-on-cash range.\n\n")
+	sb.WriteString("If financing assumptions are present, sketch the debt service and cash-on-cash range. ")
+	sb.WriteString("Incorporate the type-specific analysis blocks provided above — do not repeat data already stated, synthesise it.\n\n")
 	sb.WriteString("### Market & Location\n")
 	sb.WriteString("What the location tells us about demand, rent growth potential, and exit optionality. Be specific about the city/market if stated.\n\n")
 	sb.WriteString("### Risk Factors\n")
-	sb.WriteString("3-5 specific risks. Rate each Low / Medium / High. Include market risk, property risk, financing risk, and execution risk as applicable.\n\n")
+	sb.WriteString("3-5 specific risks. Rate each Low / Medium / High. Include market risk, property risk, financing risk, and execution risk as applicable. ")
+	sb.WriteString("Incorporate the type-specific risk signals provided above into your analysis.\n\n")
 	sb.WriteString("### Decision Criteria\n")
 	sb.WriteString("The 2-3 things the investor needs to verify or negotiate before proceeding. Frame as questions, not directives.\n\n")
 	sb.WriteString("### Verdict\n")
-	sb.WriteString("One of: **Proceed** / **Negotiate** / **Pass** — with a concise rationale and any specific conditions.\n\n")
+	sb.WriteString("One of: **Proceed** / **Negotiate** / **Pass** — with a concise rationale and any specific conditions. ")
+	sb.WriteString("This must match the VERDICT line in your preamble.\n\n")
 
 	if hasOMData {
 		sb.WriteString("### Appendix: Offering Document Notes\n")
@@ -1938,6 +2088,231 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty) 
 	sb.WriteString("---\n")
 	sb.WriteString("Write in professional prose. Use headers and brief bullet points where appropriate. ")
 	sb.WriteString("Cite specific numbers. Be direct — this memo should be actionable in under 5 minutes of reading.")
+
+	return sb.String()
+}
+
+// coalesceFloat returns the first non-nil float64 pointer.
+func coalesceFloat(a, b *float64) *float64 {
+	if a != nil { return a }
+	return b
+}
+
+// buildTypeSpecificMemoBlock returns type-dispatched analysis instructions for Claude.
+func buildTypeSpecificMemoBlock(
+	propType string,
+	askingPrice, brokerCapRate, brokerRentMonthly float64,
+	unitMixRows interface{ /* []unitRow - use any */ },
+	hasUnitMix bool,
+	commercialMixRows interface{},
+	hasCommercialMix bool,
+	om *omData,
+	hasOMData bool,
+) string {
+	// Re-assert concrete types via closures since Go generics not used here.
+	type unitRow struct {
+		UnitType    string   `json:"type"`
+		Count       int      `json:"count"`
+		RentCurrent *float64 `json:"rentCurrent"`
+		RentProForma *float64 `json:"rentProForma"`
+		RentMarket  *float64 `json:"rentMarket"`
+	}
+	type cmTenantRow struct {
+		TenantName       string   `json:"tenantName"`
+		Sqft             *float64 `json:"sqft"`
+		AnnualRent       *float64 `json:"annualRent"`
+		LeaseType        *string  `json:"leaseType"`
+		LeaseExpiry      *string  `json:"leaseExpiry"`
+		AnnualRentBumpPct *float64 `json:"annualRentBumpPct"`
+	}
+	// Marshal + unmarshal to convert interface{} to concrete slices.
+	var umRows []unitRow
+	if b, err := json.Marshal(unitMixRows); err == nil {
+		_ = json.Unmarshal(b, &umRows)
+	}
+	var cmRows []cmTenantRow
+	if b, err := json.Marshal(commercialMixRows); err == nil {
+		_ = json.Unmarshal(b, &cmRows)
+	}
+
+	var sb strings.Builder
+
+	switch propType {
+	case "multifamily", "student_housing":
+		if !hasUnitMix { return "" }
+		sb.WriteString("\n**MULTIFAMILY ANALYSIS CONTEXT** (incorporate into Financial Snapshot and Risk Factors):\n")
+		// Compute value-add upside.
+		totalUpside := 0.0
+		for _, u := range umRows {
+			if u.RentCurrent != nil && u.RentMarket != nil && u.Count > 0 {
+				upliftPerUnit := *u.RentMarket - *u.RentCurrent
+				if upliftPerUnit > 0 {
+					totalUpside += upliftPerUnit * float64(u.Count) * 12
+				}
+			}
+		}
+		if totalUpside > 0 {
+			sb.WriteString(fmt.Sprintf("- Rent roll upside: $%.0f/yr annualised value-add potential across all unit types\n", totalUpside))
+		}
+		// Per-unit-type breakdown.
+		for _, u := range umRows {
+			line := fmt.Sprintf("- %s (%d units)", u.UnitType, u.Count)
+			if u.RentCurrent != nil { line += fmt.Sprintf(": current $%.0f/mo", *u.RentCurrent) }
+			if u.RentMarket != nil  { line += fmt.Sprintf(", market $%.0f/mo", *u.RentMarket) }
+			if u.RentCurrent == nil { line += " — market rent absent, flag for due diligence" }
+			sb.WriteString(line + "\n")
+		}
+		// Vacancy flags.
+		if hasOMData && om.VacancyPct != nil {
+			vp := *om.VacancyPct * 100
+			if vp < 5 {
+				sb.WriteString(fmt.Sprintf("- Vacancy assumption of %.1f%% is optimistic — verify against submarket\n", vp))
+			} else if vp > 15 {
+				sb.WriteString(fmt.Sprintf("- Vacancy assumption of %.1f%% signals distressed occupancy — investigate cause\n", vp))
+			}
+		}
+		// Management fee flag.
+		if hasOMData && om.EffectiveGrossIncome != nil && om.EffectiveGrossIncome != nil {
+			egi := *om.EffectiveGrossIncome
+			// Check expense items for management fee.
+			for _, exp := range om.ExpenseItems {
+				if strings.Contains(strings.ToLower(exp.Label), "manag") && egi > 0 {
+					mgmtPct := exp.Amount / egi * 100
+					if mgmtPct < 8 {
+						sb.WriteString(fmt.Sprintf(
+							"- Management fee appears understated at %.1f%% of EGI — restate at 9%% ($%.0f/yr impact)\n",
+							mgmtPct, egi*0.01))
+					}
+				}
+			}
+		}
+		// NOI integrity cross-check.
+		if hasOMData && om.NOISummaryStated != nil && om.NOIComputedFromStatement != nil {
+			delta := *om.NOISummaryStated - *om.NOIComputedFromStatement
+			if delta != 0 {
+				sb.WriteString(fmt.Sprintf(
+					"- NOI integrity: summary states $%.0f vs P&L computes $%.0f (delta $%.0f) — investigate\n",
+					*om.NOISummaryStated, *om.NOIComputedFromStatement, delta))
+			}
+		}
+
+	case "nnn", "retail", "office", "commercial":
+		if !hasCommercialMix { return "" }
+		sb.WriteString("\n**COMMERCIAL / NNN ANALYSIS CONTEXT** (incorporate into Financial Snapshot and Risk Factors):\n")
+		// WALR computation.
+		now := time.Now()
+		var weightedSum, rentSum float64
+		for _, t := range cmRows {
+			if t.AnnualRent == nil || *t.AnnualRent <= 0 || t.LeaseExpiry == nil { continue }
+			expiry, err := parseLeaseExpiry(*t.LeaseExpiry)
+			if err != nil { continue }
+			yrs := expiry.Sub(now).Hours() / (365.25 * 24)
+			if yrs < 0 { yrs = 0 }
+			weightedSum += *t.AnnualRent * yrs
+			rentSum += *t.AnnualRent
+		}
+		walr := 0.0
+		if rentSum > 0 { walr = weightedSum / rentSum }
+		if walr > 0 {
+			riskLabel := "acceptable"
+			if walr < 3 {
+				riskLabel = "HIGH — near-term rollover risk"
+			} else if walr < 5 {
+				riskLabel = "MEDIUM"
+			}
+			sb.WriteString(fmt.Sprintf("- WALR: %.1f years — re-leasing risk: %s\n", walr, riskLabel))
+		}
+		// Per-tenant analysis.
+		var totalAnnualRent, totalSF float64
+		for _, t := range cmRows {
+			line := fmt.Sprintf("- %s", t.TenantName)
+			if t.Sqft != nil { line += fmt.Sprintf(": %.0f SF", *t.Sqft); totalSF += *t.Sqft }
+			if t.AnnualRent != nil { line += fmt.Sprintf(", $%.0f/yr", *t.AnnualRent); totalAnnualRent += *t.AnnualRent }
+			if t.LeaseType != nil  { line += fmt.Sprintf(", %s", *t.LeaseType) }
+			if t.LeaseExpiry != nil {
+				expiry, err := parseLeaseExpiry(*t.LeaseExpiry)
+				if err == nil {
+					yrs := expiry.Sub(now).Hours() / (365.25 * 24)
+					line += fmt.Sprintf(", expires %s", *t.LeaseExpiry)
+					if yrs < 3 {
+						line += " ⚠ expires within 36 months"
+					}
+				}
+			}
+			if t.AnnualRentBumpPct != nil {
+				line += fmt.Sprintf(", %.1f%%/yr bump", *t.AnnualRentBumpPct*100)
+			}
+			sb.WriteString(line + "\n")
+		}
+		// Cap rate integrity.
+		if brokerCapRate > 0 && askingPrice > 0 && totalAnnualRent > 0 {
+			// Estimate NOI as totalAnnualRent × 0.70 (30% expense ratio) if no direct NOI.
+			estimatedNOI := totalAnnualRent * 0.70
+			impliedCapRate := estimatedNOI / askingPrice
+			statedCapRate := brokerCapRate
+			deltaBps := (impliedCapRate - statedCapRate) * 10000
+			if deltaBps != 0 {
+				sb.WriteString(fmt.Sprintf(
+					"- Cap rate: stated %.2f%% vs implied %.2f%% from tenant schedule (delta %.0f bps) — verify expense assumptions\n",
+					statedCapRate*100, impliedCapRate*100, deltaBps))
+			}
+		}
+		if totalSF > 0 {
+			sb.WriteString(fmt.Sprintf("- Total leased area: %.0f SF\n", totalSF))
+		}
+
+	case "industrial", "warehouse":
+		sb.WriteString("\n**INDUSTRIAL / WAREHOUSE ANALYSIS CONTEXT** (incorporate into Financial Snapshot and Risk Factors):\n")
+		if hasCommercialMix {
+			sb.WriteString("- Tenant information available — assess lease term and rollover risk\n")
+			for _, t := range cmRows {
+				line := fmt.Sprintf("- Tenant: %s", t.TenantName)
+				if t.AnnualRent != nil { line += fmt.Sprintf(", $%.0f/yr", *t.AnnualRent) }
+				if t.LeaseExpiry != nil { line += fmt.Sprintf(", expires %s", *t.LeaseExpiry) }
+				sb.WriteString(line + "\n")
+			}
+		} else {
+			sb.WriteString("- No tenant data — assess as vacant industrial: underwrite time-to-lease risk\n")
+		}
+		sb.WriteString("- Assess replacement cost vs asking price/SF to identify margin of safety\n")
+		sb.WriteString("- Note lot SF vs building SF for expansion optionality or excess land value\n")
+
+	case "mixed_use":
+		hasMFBlock := hasUnitMix
+		hasCMBlock := hasCommercialMix
+		if !hasMFBlock && !hasCMBlock { return "" }
+		sb.WriteString("\n**MIXED-USE ANALYSIS CONTEXT** (apply both lenses below, then synthesise):\n")
+		if hasMFBlock {
+			sb.WriteString("Residential Component:\n")
+			for _, u := range umRows {
+				line := fmt.Sprintf("- %s (%d units)", u.UnitType, u.Count)
+				if u.RentCurrent != nil { line += fmt.Sprintf(": $%.0f/mo", *u.RentCurrent) }
+				if u.RentMarket != nil  { line += fmt.Sprintf(", market $%.0f/mo", *u.RentMarket) }
+				sb.WriteString(line + "\n")
+			}
+		}
+		if hasCMBlock {
+			sb.WriteString("Commercial Component:\n")
+			for _, t := range cmRows {
+				line := fmt.Sprintf("- %s", t.TenantName)
+				if t.AnnualRent != nil { line += fmt.Sprintf(": $%.0f/yr", *t.AnnualRent) }
+				if t.LeaseExpiry != nil { line += fmt.Sprintf(", expires %s", *t.LeaseExpiry) }
+				sb.WriteString(line + "\n")
+			}
+		}
+		sb.WriteString("- Synthesise: assess income diversification benefit vs complexity premium\n")
+
+	case "sfh", "condo", "townhouse":
+		sb.WriteString("\n**RESIDENTIAL INVESTMENT CONTEXT** (incorporate into Financial Snapshot):\n")
+		if brokerRentMonthly > 0 {
+			sb.WriteString(fmt.Sprintf("- Stated rent: $%.0f/mo\n", brokerRentMonthly))
+		}
+		if askingPrice > 0 && brokerRentMonthly > 0 {
+			grm := askingPrice / (brokerRentMonthly * 12)
+			sb.WriteString(fmt.Sprintf("- Gross rent multiplier: %.1f× — assess against local residential market\n", grm))
+		}
+		sb.WriteString("- Assess long-term appreciation drivers and rental demand depth for this market\n")
+	}
 
 	return sb.String()
 }

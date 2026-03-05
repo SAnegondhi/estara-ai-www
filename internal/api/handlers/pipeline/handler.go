@@ -3,6 +3,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -254,6 +255,7 @@ type pipelineDealResponse struct {
 	LastActivityAt    *time.Time `json:"lastActivityAt"`
 	ClosedOutcome     *string    `json:"closedOutcome"`
 	InputComplete     bool       `json:"inputComplete"`
+	MemoText          *string    `json:"memoText"`  // ADR-109: persisted generated decision memo
 	CreatedAt         time.Time  `json:"createdAt"`
 	UpdatedAt         time.Time  `json:"updatedAt"`
 }
@@ -277,6 +279,7 @@ func mapDealToResponse(d queries.PipelineDeal) pipelineDealResponse {
 		LastActivityAt:    lastActivityAt,
 		ClosedOutcome:     textToPtr(d.ClosedOutcome),
 		InputComplete:     d.InputComplete,
+		MemoText:          textToPtr(d.MemoText),
 		CreatedAt:         d.CreatedAt,
 		UpdatedAt:         d.UpdatedAt,
 	}
@@ -451,8 +454,21 @@ func computePropertyCompleteness(prop queries.PipelineProperty) string {
 		hasUnitMixRent = len(om.RentByUnitType) > 0
 	}
 
-	// Tenant schedule for NNN/retail/office.
-	hasTenants := hasOMData && len(om.TenantSchedule) > 0
+	// Commercial mix rows from manual entry (ADR-109).
+	type commercialTenantRow struct {
+		TenantName string   `json:"tenantName"`
+		AnnualRent *float64 `json:"annualRent"`
+	}
+	hasCommercialMixRows := false
+	if len(prop.CommercialMix) > 2 && string(prop.CommercialMix) != "null" {
+		var cmRows []commercialTenantRow
+		if jerr := json.Unmarshal(prop.CommercialMix, &cmRows); jerr == nil {
+			hasCommercialMixRows = len(cmRows) > 0
+		}
+	}
+
+	// Tenant schedule for NNN/retail/office: manual entry OR om_data.
+	hasTenants := hasCommercialMixRows || (hasOMData && len(om.TenantSchedule) > 0)
 
 	// Property type: structured column OR om.PropertyType (from Pass 1 classification).
 	pType := ""
@@ -475,7 +491,7 @@ func computePropertyCompleteness(prop queries.PipelineProperty) string {
 	case "warehouse", "industrial":
 		sufficient = hasAskingPrice && hasSqft
 	case "mixed_use":
-		sufficient = hasAskingPrice && (hasUnits || hasSqft)
+		sufficient = hasAskingPrice && (hasUnits || hasSqft || hasUnitMixRent || hasCommercialMixRows || hasBrokerRent)
 	case "self_storage":
 		sufficient = hasAskingPrice && (hasSqft || hasNOIProxy)
 	case "portfolio":
@@ -497,6 +513,62 @@ func computePropertyCompleteness(prop queries.PipelineProperty) string {
 		return "complete"
 	}
 	return "sufficient"
+}
+
+// computeWALR calculates the Weighted Average Lease Remaining (in years) from a
+// commercial_mix JSON array. Returns 0 if no parseable data.
+// Formula: Σ(annualRent_i × remainingYears_i) / Σ(annualRent_i)
+func computeWALR(commercialMixJSON []byte) float64 {
+	if len(commercialMixJSON) <= 2 || string(commercialMixJSON) == "null" {
+		return 0
+	}
+	type cmTenant struct {
+		AnnualRent  *float64 `json:"annualRent"`
+		LeaseExpiry *string  `json:"leaseExpiry"`
+	}
+	var tenants []cmTenant
+	if err := json.Unmarshal(commercialMixJSON, &tenants); err != nil {
+		return 0
+	}
+	now := time.Now()
+	var weightedSum, rentSum float64
+	for _, t := range tenants {
+		if t.AnnualRent == nil || *t.AnnualRent <= 0 || t.LeaseExpiry == nil || *t.LeaseExpiry == "" {
+			continue
+		}
+		// Parse MM/YYYY or YYYY-MM-DD or YYYY-MM
+		expiry, err := parseLeaseExpiry(*t.LeaseExpiry)
+		if err != nil {
+			continue
+		}
+		remainingYears := expiry.Sub(now).Hours() / (365.25 * 24)
+		if remainingYears < 0 {
+			remainingYears = 0
+		}
+		weightedSum += *t.AnnualRent * remainingYears
+		rentSum += *t.AnnualRent
+	}
+	if rentSum == 0 {
+		return 0
+	}
+	return weightedSum / rentSum
+}
+
+// parseLeaseExpiry attempts to parse lease expiry in formats: MM/YYYY, YYYY-MM-DD, YYYY-MM.
+func parseLeaseExpiry(s string) (time.Time, error) {
+	// MM/YYYY
+	if len(s) == 7 && s[2] == '/' {
+		return time.Parse("01/2006", s)
+	}
+	// YYYY-MM-DD
+	if len(s) == 10 {
+		return time.Parse("2006-01-02", s)
+	}
+	// YYYY-MM
+	if len(s) == 7 && s[4] == '-' {
+		return time.Parse("2006-01", s)
+	}
+	return time.Time{}, fmt.Errorf("unparseable lease expiry: %s", s)
 }
 
 // getUserID extracts the authenticated user ID from the request context.

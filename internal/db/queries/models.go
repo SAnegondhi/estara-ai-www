@@ -672,6 +672,7 @@ type PipelineDeal struct {
 	LastActivityAt    pgtype.Timestamptz `json:"last_activity_at"`
 	ClosedOutcome     pgtype.Text        `json:"closed_outcome"`
 	InputComplete     bool               `json:"input_complete"`
+	MemoText          pgtype.Text        `json:"memo_text"`
 	CreatedAt         time.Time          `json:"created_at"`
 	UpdatedAt         time.Time          `json:"updated_at"`
 }

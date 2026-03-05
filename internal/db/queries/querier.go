@@ -715,6 +715,8 @@ type Querier interface {
 	// Investment Planning queries
 	// Save completed investment planning job as a scenario (upsert to handle duplicate keys)
 	SaveInvestmentPlanScenario(ctx context.Context, arg SaveInvestmentPlanScenarioParams) (AnalysisCache, error)
+	// ADR-109: persist generated decision memo text (overwrites previous).
+	SavePipelineDealMemoText(ctx context.Context, arg SavePipelineDealMemoTextParams) error
 	SearchAdminAuditLogsByDetailsText(ctx context.Context, arg SearchAdminAuditLogsByDetailsTextParams) ([]SearchAdminAuditLogsByDetailsTextRow, error)
 	SearchAnalysisJobsByUser(ctx context.Context, arg SearchAnalysisJobsByUserParams) ([]SearchAnalysisJobsByUserRow, error)
 	SearchUserScenarios(ctx context.Context, arg SearchUserScenariosParams) ([]Scenario, error)

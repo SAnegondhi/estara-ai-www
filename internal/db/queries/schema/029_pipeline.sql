@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS pipeline_deals (
     last_activity_at TIMESTAMPTZ,
     closed_outcome   TEXT,
     input_complete   BOOLEAN NOT NULL DEFAULT false, -- ADR-107: deal ready for analysis
+    memo_text        TEXT,                           -- ADR-109: persisted generated decision memo
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
