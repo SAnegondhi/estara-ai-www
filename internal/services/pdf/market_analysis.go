@@ -80,20 +80,23 @@ func BuildMarketAnalysisPDF(ctx context.Context, data MarketAnalysisPDFData) ([]
 		charts, _ := buildTimeSeriesCharts(ctx, data.TimeSeries, location)
 		if len(charts) > 0 {
 			y = AddSectionHeading(pdf, page, theme, "Historical Trends (5 Years)", y+2)
-			chartWidth := (page.Width - page.MarginLeft - page.MarginRight - 10) / 2
+			fullWidth := page.Width - page.MarginLeft - page.MarginRight
+			halfWidth := (fullWidth - 10) / 2
 			chartHeight := 60.0
 			y, _ = EnsureSpace(pdf, page, y+4, chartHeight+12)
+			// Home values (left) + Rent values (right) — side by side
 			if len(charts) > 0 {
-				_ = AddImageFromBase64(pdf, "home_values", charts[0], page.MarginLeft, y, chartWidth, chartHeight)
+				_ = AddImageFromBase64(pdf, "home_values", charts[0], page.MarginLeft, y, halfWidth, chartHeight)
 			}
 			if len(charts) > 1 {
-				_ = AddImageFromBase64(pdf, "rent_values", charts[1], page.MarginLeft+chartWidth+10, y, chartWidth, chartHeight)
+				_ = AddImageFromBase64(pdf, "rent_values", charts[1], page.MarginLeft+halfWidth+10, y, halfWidth, chartHeight)
 			}
 			y += chartHeight + 8
+			// Mortgage rate chart — full width (rate spike is the most compelling signal)
 			if len(charts) > 2 {
-				y, _ = EnsureSpace(pdf, page, y, chartHeight+12)
-				_ = AddImageFromBase64(pdf, "mortgage_rates", charts[2], page.MarginLeft, y, chartWidth, chartHeight)
-				y += chartHeight + 8
+				y, _ = EnsureSpace(pdf, page, y, chartHeight+16)
+				_ = AddImageFromBase64(pdf, "mortgage_rates", charts[2], page.MarginLeft, y, fullWidth, chartHeight+8)
+				y += chartHeight + 16
 			}
 		}
 	}
@@ -180,11 +183,12 @@ func buildStructuredMetricsGrid(m *MarketAnalysisMetrics) []MetricItem {
 		items = append(items, MetricItem{Label: "Median Home Price", Value: fmt.Sprintf("$%s", formatInt(m.MedianHomePrice))})
 	}
 	if m.MedianRent > 0 {
-		items = append(items, MetricItem{Label: "Median Rent/mo", Value: fmt.Sprintf("$%s", formatInt(m.MedianRent))})
+		// Label source to prevent mismatch confusion with AI-reported ZORI figures
+		items = append(items, MetricItem{Label: "Median Rent/mo (ZORI)", Value: fmt.Sprintf("$%s", formatInt(m.MedianRent))})
 	}
-	if m.CapRate > 0 {
-		items = append(items, MetricItem{Label: "Cap Rate", Value: fmt.Sprintf("%.1f%%", m.CapRate)})
-	}
+	// Cap rate is intentionally omitted: the V2 analysis prompt states there are no
+	// observed cap rates in the data — showing a derived cap rate here conflicts with
+	// the AI report's gross yield figure and confuses readers (critique fix #3).
 	if m.GrossYield > 0 {
 		items = append(items, MetricItem{Label: "Gross Yield", Value: fmt.Sprintf("%.1f%%", m.GrossYield)})
 	}
@@ -201,7 +205,9 @@ func buildStructuredMetricsGrid(m *MarketAnalysisMetrics) []MetricItem {
 		items = append(items, MetricItem{Label: "Rent YoY", Value: fmt.Sprintf("%+.1f%%", m.RentChangeYoY)})
 	}
 	if m.VacancyRate > 0 {
-		items = append(items, MetricItem{Label: "Vacancy Rate", Value: fmt.Sprintf("%.1f%%", m.VacancyRate)})
+		// Vacancy rate comes from FRED national rental vacancy (RRVRUSQ156N), not city-specific.
+		// Label it clearly so it doesn't contradict AI report notes about missing local vacancy data.
+		items = append(items, MetricItem{Label: "Rental Vacancy (National)", Value: fmt.Sprintf("%.1f%%", m.VacancyRate)})
 	}
 	if m.UnemploymentRate > 0 {
 		items = append(items, MetricItem{Label: "Unemployment", Value: fmt.Sprintf("%.1f%%", m.UnemploymentRate)})

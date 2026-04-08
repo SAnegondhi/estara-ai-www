@@ -24,7 +24,7 @@ CREATE TABLE metro_time_series (
 );
 
 CREATE INDEX metro_time_series_metro_name_idx ON metro_time_series(metro_name);
-CREATE INDEX metro_time_series_metro_region_id_idx ON metro_time_series(metro_region_id);
+-- metro_time_series_metro_region_id_idx removed: superseded by UNIQUE metro_time_series_metro_region_id_key
 CREATE INDEX metro_time_series_state_name_idx ON metro_time_series(state_name);
 
 -- City market cache (aggregated market data per city)
@@ -215,7 +215,7 @@ CREATE TABLE city_states (
     updated_at TIMESTAMP
 );
 
-CREATE INDEX city_states_city_lower_idx ON city_states(city_lower);
-CREATE INDEX city_states_state_id_idx ON city_states(state_id);
+-- city_states_city_lower_idx removed: superseded by city_states_city_lower_state_id_idx (city_lower, state_id)
+-- city_states_state_id_idx removed: superseded by city_states_state_id_city_lower_idx (state_id, city_lower)
 CREATE INDEX city_states_population_idx ON city_states(population DESC);
 CREATE INDEX city_states_city_lower_state_id_idx ON city_states(city_lower, state_id);

@@ -25,6 +25,8 @@ import (
 	"github.com/estara-ai/www/internal/services/jobs/queue"
 	"github.com/estara-ai/www/internal/services/jobs/workers"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
+	"github.com/estara-ai/www/internal/services/market/estimation"
+	"github.com/estara-ai/www/internal/services/market/unified"
 	"github.com/estara-ai/www/internal/services/memo"
 	"github.com/estara-ai/www/internal/services/market/bls"
 	"github.com/estara-ai/www/internal/services/market/census"
@@ -58,6 +60,8 @@ type Services struct {
 	FrontierOptimizer    *optimization.FrontierOptimizer // ADR-088 Phase 9: Interactive workspace
 	InvestmentOptimizer  *optimization.Service           // ADR-088 Phase 12: Discovery+scoring pipeline for /run
 	MetroReader          *timeseries.MetroReader         // City snapshot + HUD FMR data
+	MarketEstimator      *estimation.AIEstimator         // AI fallback for missing price/rent data
+	UnifiedMarket        *unified.Service               // Unified market data service (ADR-076): aggregator + Haiku fallback
 }
 
 // ServiceConfig holds configuration for creating services
@@ -313,6 +317,23 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 		logger.Info("market trends service initialized")
 	}
 
+	// Create AI market estimator — used as fallback when structured sources have no price/rent data
+	if services.Anthropic != nil {
+		services.MarketEstimator = estimation.NewAIEstimator(services.Anthropic)
+		logger.Info("AI market estimator initialized")
+	}
+
+	// Create unified market data service (ADR-076 extension).
+	// Aggregator first (Zillow/FRED/DB, 3-tier cached 7d TTL), then dedicated Haiku fallback
+	// for cities not covered by structured sources. All features use this as the single entry
+	// point for location market data — returns a ForPrompt() block ready for any AI prompt.
+	services.UnifiedMarket = unified.New(services.MarketData, cfg.Config.AI.AnthropicAPIKey)
+	if services.UnifiedMarket.IsConfigured() {
+		logger.Info("unified market service initialized")
+	} else {
+		logger.Warn("unified market service: no data sources configured")
+	}
+
 	// Create refresh service for event-driven refresh (ADR-087 Phase 8-9)
 	if cfg.DB != nil && cfg.DB.Main != nil && services.MarketData != nil && services.EconomicsAggregator != nil && metroReader != nil {
 		mainQueries := queries.New(cfg.DB.Main)
@@ -381,10 +402,12 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 			// Build V2 dependencies if all required services are available
 			if metroReader != nil && services.EconomicsAggregator != nil {
 				// DataPayloadBuilder assembles DATA_PAYLOAD from existing services
+				// ADR-111 Phase 2: BLS service passed for MSA-level unemployment lookup
 				orchCfg.PayloadBuilder = prompts.NewDataPayloadBuilder(
 					services.MarketData,
 					services.EconomicsAggregator,
 					metroReader,
+					services.BLSService,
 				)
 
 				// MarketContextService provides Stage 1 context enrichment (Sonnet + web search)

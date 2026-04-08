@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS v2_evaluations (
     chat_session_id TEXT,
     discovery_session_id TEXT,
     market_context JSONB,
+    pipeline_property_id UUID,
+    pipeline_deal_id UUID,
     status "V2EvaluationStatus" NOT NULL DEFAULT 'DRAFT',
     created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP(3) NOT NULL

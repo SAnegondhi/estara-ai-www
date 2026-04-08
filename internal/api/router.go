@@ -18,6 +18,7 @@ import (
 	"github.com/estara-ai/www/internal/api/handlers/iap"
 	"github.com/estara-ai/www/internal/api/handlers/location"
 	"github.com/estara-ai/www/internal/api/handlers/market"
+	"github.com/estara-ai/www/internal/api/handlers/pipeline"
 	"github.com/estara-ai/www/internal/api/handlers/portfolio"
 	"github.com/estara-ai/www/internal/api/handlers/public"
 	"github.com/estara-ai/www/internal/api/handlers/report"
@@ -49,6 +50,7 @@ type Handlers struct {
 	Discover      *discover.Handler
 	AI            *ai.Handler
 	Portfolio     *portfolio.Handler
+	Pipeline      *pipeline.Handler
 	Admin         *admin.Handler
 	Cron          *cron.Handler
 	Location      *location.Handler
@@ -104,8 +106,10 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 			WithPropertyFinder(svc.PropertyFinder).                // ADR-088 Phase 12
 			WithMarketData(svc.MarketData).                        // Quality-gate market benchmarks
 			WithMetroReader(svc.MetroReader).                      // HUD FMR by bedroom count
-			WithTrendsService(svc.TrendsService),                  // ADR-100: report enrichment (historical time series)
+			WithTrendsService(svc.TrendsService).                  // ADR-100: report enrichment (historical time series)
+			WithMarketEstimator(svc.MarketEstimator),              // AI fallback for missing price/rent data
 		Portfolio:     portfolio.NewHandler(store, cfg),
+		Pipeline:      pipeline.NewHandler(store, cfg),
 		Admin:         admin.NewHandler(store, redis, cfg, authMiddleware),
 		Cron:          cron.NewHandler(store, redis, cfg),
 		Location:      location.NewHandler(store, redis, cfg, svc.GeoLocation),
@@ -130,6 +134,10 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 	// Inject services into market handler if available
 	if svc.MarketData != nil {
 		handlers.Market.SetAggregator(svc.MarketData)
+		handlers.Pipeline.SetAggregator(svc.MarketData) // ADR-101: rent estimates
+	}
+	if svc.UnifiedMarket != nil {
+		handlers.Pipeline.SetMarketService(svc.UnifiedMarket) // ADR-076: unified market context for memos
 	}
 	if svc.FREDService != nil {
 		handlers.Market.SetFREDService(svc.FREDService)
@@ -494,6 +502,50 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Post("/{id}/adjustments", handlers.Portfolio.CreateAdjustment)
 		r.Get("/{id}/baseline-changes", handlers.Portfolio.GetBaselineChanges)
 		r.Post("/{id}/baseline-changes", handlers.Portfolio.CreateBaselineChange)
+	})
+
+	// ADR-101/ADR-102/ADR-104: Investment Pipeline
+	r.Route("/api/pipeline", func(r chi.Router) {
+		r.Use(authMiddleware.Authenticate)
+		r.Use(rateLimiter.Limit)
+
+		r.Get("/deals", handlers.Pipeline.ListDeals)
+		r.Post("/deals", handlers.Pipeline.CreateDeal)
+		r.Post("/deals/from-om", handlers.Pipeline.CreateDealFromOM)          // ADR-107: OM-first deal creation
+		r.Post("/check-duplicate-om", handlers.Pipeline.CheckOMDuplicate)  // ADR-107: duplicate detection before creation
+		r.Get("/deals/stats", handlers.Pipeline.GetStats)
+		r.Post("/parse-document", handlers.Pipeline.ParseDocument)       // ADR-102: broker OM parse
+		r.Get("/retrospective", handlers.Pipeline.GetRetrospective)      // ADR-104: acquisition retrospective
+		r.Post("/check-om", handlers.Pipeline.CheckOM)                   // ADR-107 (revised): wizard step 1
+		r.Post("/extract-om", handlers.Pipeline.ExtractOM)               // ADR-107 (revised): wizard step 2
+		r.Post("/validate-address", handlers.Pipeline.ValidateAddress)   // ADR-112: async address geocoding
+
+		r.Route("/deals/{dealId}", func(r chi.Router) {
+			r.Get("/", handlers.Pipeline.GetDeal)
+			r.Put("/", handlers.Pipeline.UpdateDeal)
+			r.Delete("/", handlers.Pipeline.DeleteDeal)
+			r.Put("/complete", handlers.Pipeline.MarkDealComplete)       // ADR-107 (revised): mark input-complete
+			r.Get("/om-extraction", handlers.Pipeline.GetOMExtraction)   // ADR-107: resume wizard from stored OM data
+
+			r.Post("/properties", handlers.Pipeline.AddProperty)
+			r.Get("/properties", handlers.Pipeline.ListProperties)
+
+			r.Route("/properties/{propId}", func(r chi.Router) {
+				r.Get("/", handlers.Pipeline.GetProperty)
+				r.Put("/", handlers.Pipeline.UpdateProperty)
+				r.Delete("/", handlers.Pipeline.DeleteProperty)
+				r.Get("/rent-estimate", handlers.Pipeline.GetRentEstimate)
+				r.Post("/om-file", handlers.Pipeline.UploadOMFile)              // ADR-105: OM file upload + parse
+				r.Get("/om-file", handlers.Pipeline.GetOMFile)              // ADR-105: OM file download/stream
+				r.Post("/om-validate", handlers.Pipeline.ValidateOM)        // ADR-106: validate OM, generate questions
+				r.Put("/om-questions", handlers.Pipeline.AnswerOMQuestions) // ADR-106: answer validation questions
+				r.Get("/om-broker-report", handlers.Pipeline.GetOMBrokerReport) // ADR-106: broker information request
+				r.Patch("/om-validated", handlers.Pipeline.UpdateOMValidated)   // ADR-108: save user-edited OM fields
+				r.Post("/om-reextract", handlers.Pipeline.ReextractOM)          // ADR-108: re-run Pass 2 with corrected type
+			})
+
+			r.Post("/decision-memo", handlers.Pipeline.GeneratePipelineMemo) // ADR-105: pipeline memo SSE
+		})
 	})
 
 	// Investor Reports

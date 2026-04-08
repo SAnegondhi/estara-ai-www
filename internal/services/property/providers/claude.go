@@ -168,8 +168,44 @@ func (p *ClaudeWebSearchProvider) GetProperty(ctx context.Context, propertyID st
 	return nil, fmt.Errorf("single property lookup not supported for Claude web search provider")
 }
 
+// commercialTypeLabel maps a CRE PropertyType to a human-readable search term.
+func commercialTypeLabel(pt PropertyType) string {
+	switch pt {
+	case PropertyTypeNNN:
+		return "NNN net lease triple net"
+	case PropertyTypeRetail:
+		return "retail strip center"
+	case PropertyTypeOffice:
+		return "office building"
+	case PropertyTypeIndustrial:
+		return "industrial flex"
+	case PropertyTypeWarehouse:
+		return "warehouse distribution"
+	case PropertyTypeSelfStorage:
+		return "self storage facility"
+	case PropertyTypeMixedUse:
+		return "mixed use"
+	case PropertyTypeMultiFamilyCRE:
+		return "apartment complex multifamily"
+	case PropertyTypeStudentHousing:
+		return "student housing"
+	case PropertyTypeSeniorHousing:
+		return "senior housing assisted living"
+	default:
+		return "commercial real estate"
+	}
+}
+
 // buildSearchPrompt creates the prompt for Claude
 func (p *ClaudeWebSearchProvider) buildSearchPrompt(params SearchParams) string {
+	if IsCommercialPropertyType(params.PropertyType) {
+		return p.buildCommercialSearchPrompt(params)
+	}
+	return p.buildResidentialSearchPrompt(params)
+}
+
+// buildResidentialSearchPrompt creates the prompt for residential property searches.
+func (p *ClaudeWebSearchProvider) buildResidentialSearchPrompt(params SearchParams) string {
 	var prompt strings.Builder
 
 	prompt.WriteString(fmt.Sprintf("Search for real estate investment properties for sale with the following criteria:\n\nLocation: %s, %s", params.City, params.State))
@@ -278,6 +314,87 @@ CRITICAL REQUIREMENTS:
 	return prompt.String()
 }
 
+// buildCommercialSearchPrompt creates the prompt for CRE property searches (LoopNet/Crexi).
+func (p *ClaudeWebSearchProvider) buildCommercialSearchPrompt(params SearchParams) string {
+	typeLabel := commercialTypeLabel(params.PropertyType)
+
+	priceFilter := ""
+	if params.MinPrice > 0 && params.MaxPrice > 0 {
+		priceFilter = fmt.Sprintf("\nPrice Range: $%d to $%d", params.MinPrice, params.MaxPrice)
+	} else if params.MinPrice > 0 {
+		priceFilter = fmt.Sprintf("\nMinimum Price: $%d", params.MinPrice)
+	} else if params.MaxPrice > 0 {
+		priceFilter = fmt.Sprintf("\nMaximum Price: $%d", params.MaxPrice)
+	}
+
+	return fmt.Sprintf(`Search for commercial real estate investment properties for sale with the following criteria:
+
+Location: %s, %s
+Property Type: %s%s
+
+YOU MUST USE web_search TO FIND ACTUAL COMMERCIAL PROPERTY LISTINGS. Search these queries IN ORDER:
+
+1. "site:loopnet.com %s %s %s for sale"
+2. "site:crexi.com %s %s %s for sale"
+3. "site:loopnet.com %s %s %s investment property"
+4. "site:crexi.com %s %s commercial real estate for sale"
+5. "site:commercialcafe.com %s %s %s for sale"
+
+I need ACTUAL LISTINGS with REAL STREET ADDRESSES from LoopNet or Crexi. For each property extract:
+- Property address (street number and name)
+- Asking price
+- Cap rate (if listed)
+- NOI (net operating income, if listed)
+- Square footage
+- Year built
+- Listing URL
+- Source (LoopNet or Crexi)
+
+If NOI is not listed but cap rate is, compute: noi = price * capRate / 100
+If neither cap rate nor NOI is listed, use a 6.5%% market cap rate: noi = price * 0.065
+
+Return ALL properties you can find in this JSON format:
+
+{
+  "properties": [
+    {
+      "address": "1234 Commerce Blvd",
+      "city": "%s",
+      "state": "%s",
+      "price": 2500000,
+      "capRate": 6.5,
+      "noi": 162500,
+      "squareFeet": 8000,
+      "yearBuilt": 1998,
+      "propertyType": "%s",
+      "listingUrl": "https://www.loopnet.com/...",
+      "source": "LoopNet",
+      "aiComment": "Cap rate 6.5%%. NOI $162,500/yr. Strong %s market."
+    }
+  ],
+  "marketInsights": "CRE market conditions for %s, %s"
+}
+
+CRITICAL REQUIREMENTS:
+1. SEARCH AGGRESSIVELY - use ALL your web searches to find real commercial listings
+2. Each property MUST have: address (real street address), price (numeric), listingUrl
+3. capRate and noi are KEY fields — extract from listing or compute as described above
+4. Return WHATEVER properties you CAN find - even if only 1 or 2
+5. ONLY include properties with ACTIVE listing status - actually on sale right now
+6. EXCLUDE any properties that are: pending, contingent, under contract, sold, off-market`,
+		params.City, params.State, typeLabel, priceFilter,
+		params.City, params.State, typeLabel,
+		params.City, params.State, typeLabel,
+		params.City, params.State, typeLabel,
+		params.City, params.State,
+		params.City, params.State, typeLabel,
+		params.City, params.State,
+		string(params.PropertyType),
+		typeLabel,
+		params.City, params.State,
+	)
+}
+
 // parseResponse extracts properties from Claude's response
 func (p *ClaudeWebSearchProvider) parseResponse(resp *anthropic.MessageResponse) ([]Property, int) {
 	var rawText strings.Builder
@@ -348,17 +465,37 @@ func (p *ClaudeWebSearchProvider) parseResponse(resp *anthropic.MessageResponse)
 		}
 
 		// Add investment metrics from Claude
-		if cp.RentEstimate > 0 {
-			prop.EstimatedRent = cp.RentEstimate
-		}
-		if cp.CapRate > 0 {
-			prop.EstimatedCapRate = cp.CapRate
-		}
-		if cp.YieldEstimate > 0 {
-			prop.GrossYield = cp.YieldEstimate
-		}
-		if cp.NOI > 0 {
-			prop.NOI = cp.NOI
+		// For CRE types, NOI is the income input for Frontier (EstimatedRent = annual NOI).
+		if IsCommercialPropertyType(prop.PropertyType) {
+			noi := cp.NOI
+			if noi == 0 && cp.CapRate > 0 {
+				noi = int(float64(cp.Price) * cp.CapRate / 100)
+			}
+			if noi == 0 {
+				noi = int(float64(cp.Price) * 0.065) // 6.5% fallback cap rate
+			}
+			prop.NOI = noi
+			prop.EstimatedRent = noi // annual NOI is the income proxy for Frontier
+			if cp.CapRate > 0 {
+				prop.EstimatedCapRate = cp.CapRate
+			} else if cp.Price > 0 {
+				prop.EstimatedCapRate = float64(noi) / float64(cp.Price) * 100
+			}
+			prop.Beds = 0
+			prop.Baths = 0
+		} else {
+			if cp.RentEstimate > 0 {
+				prop.EstimatedRent = cp.RentEstimate
+			}
+			if cp.CapRate > 0 {
+				prop.EstimatedCapRate = cp.CapRate
+			}
+			if cp.YieldEstimate > 0 {
+				prop.GrossYield = cp.YieldEstimate
+			}
+			if cp.NOI > 0 {
+				prop.NOI = cp.NOI
+			}
 		}
 
 		// Calculate price per sqft
@@ -410,7 +547,7 @@ func (p *ClaudeWebSearchProvider) mapPropertyType(ptype string) PropertyType {
 	}
 
 	switch strings.ToLower(ptype) {
-	case "house", "single-family", "single family":
+	case "house", "single-family", "single family", "single_family":
 		return PropertyTypeSingleFamily
 	case "condo", "condominium":
 		return PropertyTypeCondo
@@ -420,6 +557,27 @@ func (p *ClaudeWebSearchProvider) mapPropertyType(ptype string) PropertyType {
 		return PropertyTypeMultiFamily
 	case "land", "lot":
 		return PropertyTypeLand
+	// CRE types
+	case "multifamily_cre", "apartment complex", "apartment_complex":
+		return PropertyTypeMultiFamilyCRE
+	case "nnn", "triple net", "triple_net", "net lease":
+		return PropertyTypeNNN
+	case "retail", "retail strip center", "strip center":
+		return PropertyTypeRetail
+	case "office", "office building":
+		return PropertyTypeOffice
+	case "industrial", "industrial flex", "flex":
+		return PropertyTypeIndustrial
+	case "warehouse", "warehouse distribution", "distribution":
+		return PropertyTypeWarehouse
+	case "self_storage", "self storage", "storage":
+		return PropertyTypeSelfStorage
+	case "mixed_use", "mixed use":
+		return PropertyTypeMixedUse
+	case "student_housing", "student housing":
+		return PropertyTypeStudentHousing
+	case "senior_housing", "senior housing", "assisted living":
+		return PropertyTypeSeniorHousing
 	default:
 		return PropertyTypeOther
 	}

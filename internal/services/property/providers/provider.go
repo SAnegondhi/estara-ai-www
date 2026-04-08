@@ -15,7 +15,32 @@ const (
 	PropertyTypeMultiFamily  PropertyType = "multi_family"
 	PropertyTypeLand         PropertyType = "land"
 	PropertyTypeOther        PropertyType = "other"
+
+	// Commercial / CRE types — searched via Claude (LoopNet/Crexi)
+	PropertyTypeMultiFamilyCRE  PropertyType = "multifamily_cre"   // 5+ unit apartment complexes
+	PropertyTypeNNN             PropertyType = "nnn"
+	PropertyTypeRetail          PropertyType = "retail"
+	PropertyTypeOffice          PropertyType = "office"
+	PropertyTypeIndustrial      PropertyType = "industrial"
+	PropertyTypeWarehouse       PropertyType = "warehouse"
+	PropertyTypeSelfStorage     PropertyType = "self_storage"
+	PropertyTypeMixedUse        PropertyType = "mixed_use"
+	PropertyTypeStudentHousing  PropertyType = "student_housing"
+	PropertyTypeSeniorHousing   PropertyType = "senior_housing"
 )
+
+// IsCommercialPropertyType returns true for CRE types that require commercial listing
+// sources (LoopNet/Crexi) rather than residential APIs (HasData/BrightData).
+func IsCommercialPropertyType(pt PropertyType) bool {
+	switch pt {
+	case PropertyTypeMultiFamilyCRE, PropertyTypeNNN, PropertyTypeRetail,
+		PropertyTypeOffice, PropertyTypeIndustrial, PropertyTypeWarehouse,
+		PropertyTypeSelfStorage, PropertyTypeMixedUse,
+		PropertyTypeStudentHousing, PropertyTypeSeniorHousing:
+		return true
+	}
+	return false
+}
 
 // ListingStatus represents the status of a property listing
 type ListingStatus string

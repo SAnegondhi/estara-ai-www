@@ -13,6 +13,7 @@ import (
 	"github.com/estara-ai/www/internal/services/investment/optimization"
 	"github.com/estara-ai/www/pkg/httputil"
 	"github.com/estara-ai/www/pkg/sse"
+	"github.com/google/uuid"
 )
 
 // ============================================================
@@ -23,7 +24,7 @@ import (
 // It accepts pre-scored properties and runs the full frontier generation pipeline
 // with real-time SSE progress updates.
 type FrontierAnalyzeRequest struct {
-	ScoredProperties []investment.ScoredProperty        `json:"scoredProperties" validate:"required,min=1"`
+	ScoredProperties []investment.ScoredProperty        `json:"scoredProperties"`
 	Profile          investment.InvestorProfile          `json:"profile"          validate:"required"`
 	Params           investment.InvestmentPlanningParams `json:"params"           validate:"required"`
 	// ADR-091: Pinned cohort semantics for user-selected property sources.
@@ -38,6 +39,9 @@ type FrontierAnalyzeRequest struct {
 	// BuildCohorts. Used by the Discovery Session source when the user enables filter controls.
 	// ADR-091 Phase 5.
 	Filters *investment.PropertyFilters `json:"filters,omitempty"`
+	// ADR-103: PipelineDealID — when set, the backend fetches this deal's pipeline properties
+	// and uses them as the scored property pool (all treated as pinned, bypassing quality filters).
+	PipelineDealID string `json:"pipelineDealId,omitempty"`
 }
 
 // FrontierRecalculateRequest is the request body for POST /api/ai/frontier/recalculate.
@@ -132,10 +136,59 @@ func (h *Handler) RunFrontierAnalysis(w http.ResponseWriter, r *http.Request) {
 	if mortgageRate == 0 {
 		mortgageRate = 0.075
 	}
+	// ADR-103: if a pipeline deal ID is specified, fetch its properties and use them as the
+	// scored property pool (all treated as pinned — bypasses quality filters, same semantics
+	// as pinned evaluations).
+	if req.PipelineDealID != "" && h.store != nil {
+		dealID, err := uuid.Parse(req.PipelineDealID)
+		if err != nil {
+			httputil.BadRequest(w, "invalid pipelineDealId")
+			return
+		}
+		mapped, skipped := h.mapPipelinePropertiesToScored(ctx, dealID, user.UserID)
+		if skipped > 0 {
+			h.logger.Warn("pipeline properties skipped (missing city/state or price)",
+				"pipeline_deal_id", req.PipelineDealID,
+				"skipped", skipped,
+				"included", len(mapped),
+			)
+		}
+		if len(mapped) == 0 {
+			_ = sseWriter.WriteError("no valid pipeline properties found (city, state, and price are required)")
+			return
+		}
+
+		// Discover comparable peers (non-pinned) so Frontier can build Configs 1 & 2.
+		// Peers are comparable in type + price (±40%). Commercial types search LoopNet/Crexi
+		// via Claude; residential types use the normal HasData/BrightData priority chain.
+		peers := h.discoverPipelinePeers(ctx, mapped)
+		if len(peers) > 0 {
+			h.logger.Info("pipeline peer discovery",
+				"pipeline_deal_id", req.PipelineDealID,
+				"peers_found", len(peers),
+			)
+		}
+
+		// Peers first (non-pinned pool for Configs 1/2), then deal properties (pinned below).
+		allScored := append(peers, mapped...)
+		req.ScoredProperties = allScored
+
+		// All pipeline deal properties are pinned — they form Config 0 verbatim.
+		for _, sp := range mapped {
+			req.PinnedPropertyIDs = append(req.PinnedPropertyIDs, sp.Property.ID)
+		}
+	}
+
 	// ADR-091: build pinnedIDs set from request (evaluations/memos path).
 	pinnedIDs := make(map[string]bool, len(req.PinnedPropertyIDs))
 	for _, id := range req.PinnedPropertyIDs {
 		pinnedIDs[id] = true
+	}
+
+	// Require at least one property (pipeline or pre-scored).
+	if len(req.ScoredProperties) == 0 {
+		_ = sseWriter.WriteError("scoredProperties is required (provide at least one property or a pipelineDealId)")
+		return
 	}
 
 	// ADR-091: if a discovery seed session is specified, fetch its full property pool and

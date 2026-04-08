@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -482,6 +483,7 @@ type EvaluationChatSession struct {
 	InvestorProfile    []byte           `json:"investor_profile"`
 	PortfolioSnapshot  []byte           `json:"portfolio_snapshot"`
 	DiscoverySessionID pgtype.Text      `json:"discovery_session_id"`
+	PipelineDealID     pgtype.UUID      `json:"pipeline_deal_id"`
 	CreatedAt          pgtype.Timestamp `json:"created_at"`
 	UpdatedAt          pgtype.Timestamp `json:"updated_at"`
 }
@@ -655,6 +657,114 @@ type PasswordSetupToken struct {
 	ExpiresAt time.Time          `json:"expires_at"`
 	UsedAt    pgtype.Timestamptz `json:"used_at"`
 	CreatedAt time.Time          `json:"created_at"`
+}
+
+type PipelineDeal struct {
+	ID                uuid.UUID          `json:"id"`
+	UserID            string             `json:"user_id"`
+	Name              string             `json:"name"`
+	Source            string             `json:"source"`
+	Status            string             `json:"status"`
+	Notes             pgtype.Text        `json:"notes"`
+	PropertyCount     int32              `json:"property_count"`
+	MemoCount         int32              `json:"memo_count"`
+	PortfolioExcluded bool               `json:"portfolio_excluded"`
+	LastActivityAt    pgtype.Timestamptz `json:"last_activity_at"`
+	ClosedOutcome     pgtype.Text        `json:"closed_outcome"`
+	InputComplete     bool               `json:"input_complete"`
+	MemoText          pgtype.Text        `json:"memo_text"`
+	CreatedAt         time.Time          `json:"created_at"`
+	UpdatedAt         time.Time          `json:"updated_at"`
+}
+
+type PipelineProperty struct {
+	ID                         uuid.UUID      `json:"id"`
+	PipelineDealID             uuid.UUID      `json:"pipeline_deal_id"`
+	Address                    string         `json:"address"`
+	City                       pgtype.Text    `json:"city"`
+	State                      pgtype.Text    `json:"state"`
+	Zip                        pgtype.Text    `json:"zip"`
+	PropertyType               pgtype.Text    `json:"property_type"`
+	Beds                       pgtype.Numeric `json:"beds"`
+	Baths                      pgtype.Numeric `json:"baths"`
+	Sqft                       pgtype.Int4    `json:"sqft"`
+	YearBuilt                  pgtype.Int4    `json:"year_built"`
+	Units                      pgtype.Int4    `json:"units"`
+	AskingPrice                pgtype.Numeric `json:"asking_price"`
+	TargetPrice                pgtype.Numeric `json:"target_price"`
+	DownPaymentPct             pgtype.Numeric `json:"down_payment_pct"`
+	FinancingType              pgtype.Text    `json:"financing_type"`
+	InterestRate               pgtype.Numeric `json:"interest_rate"`
+	BrokerRent                 pgtype.Numeric `json:"broker_rent"`
+	SystemRent                 pgtype.Numeric `json:"system_rent"`
+	CurrentOccupancy           pgtype.Numeric `json:"current_occupancy"`
+	ExpenseOverrides           []byte         `json:"expense_overrides"`
+	UnitMix                    []byte         `json:"unit_mix"`
+	LotSqft                    pgtype.Int4    `json:"lot_sqft"`
+	BuildingCount              pgtype.Int4    `json:"building_count"`
+	Notes                      pgtype.Text    `json:"notes"`
+	SourceType                 string         `json:"source_type"`
+	OmData                     []byte         `json:"om_data"`
+	BrokerCapRate              pgtype.Numeric `json:"broker_cap_rate"`
+	OmFilePath                 pgtype.Text    `json:"om_file_path"`
+	OmFileData                 []byte         `json:"om_file_data"`
+	OmFileName                 pgtype.Text    `json:"om_file_name"`
+	OmFileType                 pgtype.Text    `json:"om_file_type"`
+	OmValidationStatus         string         `json:"om_validation_status"`
+	OmQuestions                []byte         `json:"om_questions"`
+	OmValidatedData            []byte         `json:"om_validated_data"`
+	PropertyCompleteness       string         `json:"property_completeness"`
+	LeaseType                  pgtype.Text    `json:"lease_type"`
+	TenantCount                pgtype.Int4    `json:"tenant_count"`
+	AnchorTenant               pgtype.Text    `json:"anchor_tenant"`
+	WeightedAvgLeaseYrs        pgtype.Numeric `json:"weighted_avg_lease_yrs"`
+	CommercialSqft             pgtype.Int4    `json:"commercial_sqft"`
+	CommercialMix              []byte         `json:"commercial_mix"`
+	YearRenovated              pgtype.Int4    `json:"year_renovated"`
+	Stories                    pgtype.Int4    `json:"stories"`
+	Zoning                     pgtype.Text    `json:"zoning"`
+	Construction               pgtype.Text    `json:"construction"`
+	ParkingSpaces              pgtype.Int4    `json:"parking_spaces"`
+	Description                pgtype.Text    `json:"description"`
+	Parking                    pgtype.Text    `json:"parking"`
+	BrokerNoi                  pgtype.Numeric `json:"broker_noi"`
+	BrokerNoiStabilized        pgtype.Numeric `json:"broker_noi_stabilized"`
+	GrossPotentialRent         pgtype.Numeric `json:"gross_potential_rent"`
+	EffectiveGrossIncome       pgtype.Numeric `json:"effective_gross_income"`
+	VacancyPct                 pgtype.Numeric `json:"vacancy_pct"`
+	VacancyLabel               pgtype.Text    `json:"vacancy_label"`
+	ExpenseItems               []byte         `json:"expense_items"`
+	OmDate                     pgtype.Text    `json:"om_date"`
+	BrokerContact              []byte         `json:"broker_contact"`
+	Latitude                   pgtype.Numeric `json:"latitude"`
+	Longitude                  pgtype.Numeric `json:"longitude"`
+	Broker5yrIrr               pgtype.Numeric `json:"broker_5yr_irr"`
+	BrokerYr1Coc               pgtype.Numeric `json:"broker_yr1_coc"`
+	LoanTermYears              pgtype.Int4    `json:"loan_term_years"`
+	BrokerGrm                  pgtype.Numeric `json:"broker_grm"`
+	BrokerDscr                 pgtype.Numeric `json:"broker_dscr"`
+	AssumableDebtBalance       pgtype.Numeric `json:"assumable_debt_balance"`
+	AssumableDebtTerm          pgtype.Numeric `json:"assumable_debt_term"`
+	CapRateProForma            pgtype.Numeric `json:"cap_rate_pro_forma"`
+	BuildingClass              pgtype.Text    `json:"building_class"`
+	HoaMonthly                 pgtype.Numeric `json:"hoa_monthly"`
+	ClearHeightFt              pgtype.Numeric `json:"clear_height_ft"`
+	LoadingDocks               pgtype.Int4    `json:"loading_docks"`
+	OfficePct                  pgtype.Numeric `json:"office_pct"`
+	Sprinklered                pgtype.Text    `json:"sprinklered"`
+	TotalStorageUnits          pgtype.Int4    `json:"total_storage_units"`
+	ClimateControlledPct       pgtype.Numeric `json:"climate_controlled_pct"`
+	AssumableDebtRate          pgtype.Numeric `json:"assumable_debt_rate"`
+	InvestmentHighlights       []byte         `json:"investment_highlights"`
+	OtherIncomeItems           []byte         `json:"other_income_items"`
+	RenovationCost             pgtype.Numeric `json:"renovation_cost"`
+	ClaimedRenovationNoiUplift pgtype.Numeric `json:"claimed_renovation_noi_uplift"`
+	ValueAddData               []byte         `json:"value_add_data"`
+	BuildingAmenities          []string       `json:"building_amenities"`
+	MarketOverviewText         pgtype.Text    `json:"market_overview_text"`
+	ExtractionIssues           []byte         `json:"extraction_issues"`
+	CreatedAt                  time.Time      `json:"created_at"`
+	UpdatedAt                  time.Time      `json:"updated_at"`
 }
 
 // Size-based FIFO cache for individual property details (ADR-061)
@@ -967,6 +1077,8 @@ type V2Evaluation struct {
 	ChatSessionID      pgtype.Text      `json:"chat_session_id"`
 	DiscoverySessionID pgtype.Text      `json:"discovery_session_id"`
 	MarketContext      []byte           `json:"market_context"`
+	PipelinePropertyID pgtype.UUID      `json:"pipeline_property_id"`
+	PipelineDealID     pgtype.UUID      `json:"pipeline_deal_id"`
 	Status             interface{}      `json:"status"`
 	CreatedAt          pgtype.Timestamp `json:"created_at"`
 	UpdatedAt          pgtype.Timestamp `json:"updated_at"`

@@ -38,6 +38,10 @@ type AnalysisJobResponse struct {
 	Success   bool   `json:"success"`
 	JobID     string `json:"jobId"`
 	StreamURL string `json:"streamUrl"`
+	// Cached is true when a valid cached result was found. The client should
+	// fetch the report directly via cacheKey instead of subscribing to SSE.
+	Cached   bool   `json:"cached,omitempty"`
+	CacheKey string `json:"cacheKey,omitempty"`
 }
 
 // AnalysisJobDetail holds detailed job information
@@ -105,6 +109,9 @@ type AnalysisMetrics struct {
 	// Confidence / metadata
 	Confidence           float64 `json:"confidence,omitempty"`
 	DataDate             string  `json:"dataDate,omitempty"`
+	// DataSource is "ai-estimated" when structured sources had no price/rent data
+	// and AI estimation was used as fallback. Empty or "structured" otherwise.
+	DataSource           string  `json:"dataSource,omitempty"`
 }
 
 // AnalysisReportEnrichment holds structured data appended to GetAnalysisReport responses (ADR-100)

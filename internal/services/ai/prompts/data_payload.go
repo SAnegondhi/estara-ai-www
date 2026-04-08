@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/estara-ai/www/internal/services/market/aggregator"
+	"github.com/estara-ai/www/internal/services/market/bls"
 	"github.com/estara-ai/www/internal/services/market/economics"
 	"github.com/estara-ai/www/internal/services/market/timeseries"
 )
@@ -65,6 +66,8 @@ type DataPayload struct {
 
 	// Labor market (from economics aggregator — BLS + FRED)
 	UnemploymentRate        float64
+	MetroUnemploymentRate   float64 // MSA-level from BLS LAUS (0 if not available)
+	UnemploymentLevel       string  // "metro" or "state" — for XML label
 	NationalUnemployment    float64
 	LaborForceParticipation float64
 	StateEmployment         float64 // thousands
@@ -134,21 +137,29 @@ type DataPayloadBuilder struct {
 	market    *aggregator.Aggregator
 	economics *economics.Aggregator
 	metro     *timeseries.MetroReader
+	bls       *bls.Service // BLS service for MSA-level unemployment (ADR-111 Phase 2)
 	logger    *slog.Logger
 }
 
-// NewDataPayloadBuilder creates a new builder
+// NewDataPayloadBuilder creates a new builder.
+// The optional blsSvc parameter enables MSA-level unemployment lookup via BLS LAUS
+// (ADR-111 Phase 2). If nil, UnemploymentRate falls back to state-level from economics.
 func NewDataPayloadBuilder(
 	market *aggregator.Aggregator,
 	econ *economics.Aggregator,
 	metro *timeseries.MetroReader,
+	blsSvc ...*bls.Service,
 ) *DataPayloadBuilder {
-	return &DataPayloadBuilder{
+	b := &DataPayloadBuilder{
 		market:    market,
 		economics: econ,
 		metro:     metro,
 		logger:    slog.Default().With("component", "data_payload_builder"),
 	}
+	if len(blsSvc) > 0 {
+		b.bls = blsSvc[0]
+	}
+	return b
 }
 
 // BuildPayload fetches all data in parallel and assembles into DataPayload
@@ -255,14 +266,26 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 			mu.Unlock()
 		}
 
-		// Forecast growth from metro ZHVF (only available at metro level)
+		// Forecast growth from metro ZHVF (only available at metro level).
+		// ZHVF data stores a forecast growth rate directly (e.g. 2.7 means 2.7%),
+		// NOT a forecasted dollar value — do NOT compute (zhvf - zhvi) / zhvi.
 		mapping, err := b.metro.GetCityMetroMapping(ctx, city, state)
 		if err == nil && mapping.MetroRegionID > 0 {
 			metroData, mErr := b.metro.GetLatestDataByID(ctx, mapping.MetroRegionID)
-			if mErr == nil && metroData.ZHVI > 0 && metroData.ZHVIForecast > 0 {
-				mu.Lock()
-				p.ForecastGrowth = ((metroData.ZHVIForecast - metroData.ZHVI) / metroData.ZHVI) * 100
-				mu.Unlock()
+			if mErr == nil && metroData.ZHVIForecast != 0 {
+				// Sanity check: reject values outside plausible annual forecast range.
+				// Values outside ±50% indicate a data type mismatch or corrupt entry.
+				forecast := metroData.ZHVIForecast
+				if forecast >= -50 && forecast <= 50 {
+					mu.Lock()
+					p.ForecastGrowth = forecast
+					mu.Unlock()
+				} else {
+					slog.Warn("ZHVF forecast value out of plausible range — suppressing",
+						"metro_region_id", mapping.MetroRegionID,
+						"zhvf_raw", forecast,
+					)
+				}
 			}
 		}
 	}()
@@ -319,6 +342,22 @@ func (b *DataPayloadBuilder) BuildPayload(ctx context.Context, city, state strin
 		p.ZipMinZORI = summary.MinZORI
 		p.ZipMaxZORI = summary.MaxZORI
 		p.RealSources = append(p.RealSources, "Zillow zip-level data")
+	}()
+
+	// 6. Metro-level unemployment from BLS LAUS (ADR-111 Phase 2)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if b.bls == nil {
+			return
+		}
+		rate, err := b.bls.GetMetroUnemployment(ctx, city, state)
+		mu.Lock()
+		defer mu.Unlock()
+		if err == nil && rate > 0 {
+			p.MetroUnemploymentRate = rate
+			p.UnemploymentLevel = "metro"
+		}
 	}()
 
 	wg.Wait()
@@ -497,7 +536,11 @@ func (b *DataPayloadBuilder) FormatAsXML(p *DataPayload) string {
 	sb.WriteString("  </DEMOGRAPHICS>\n")
 
 	sb.WriteString("\n  <LABOR_MARKET>\n")
-	writeXMLField(&sb, "state_unemployment_rate", fmtPct(p.UnemploymentRate), "BLS", "high", p.UnemploymentRate > 0)
+	if p.UnemploymentLevel == "metro" && p.MetroUnemploymentRate > 0 {
+		writeXMLField(&sb, "metro_unemployment_rate", fmtPct(p.MetroUnemploymentRate), "BLS LAUS MSA", "high", true)
+	}
+	// Always show state unemployment too if available
+	writeXMLField(&sb, "state_unemployment_rate", fmtPct(p.UnemploymentRate), "BLS LAUS", "high", p.UnemploymentRate > 0)
 	writeXMLField(&sb, "national_unemployment_rate", fmtPct(p.NationalUnemployment), "FRED", "high", p.NationalUnemployment > 0)
 	writeXMLField(&sb, "labor_force_participation", fmtPct(p.LaborForceParticipation), "BLS", "high", p.LaborForceParticipation > 0)
 	writeXMLField(&sb, "state_employment", fmt.Sprintf("%.1fK", p.StateEmployment), "BLS", "high", p.StateEmployment > 0)

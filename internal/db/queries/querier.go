@@ -7,6 +7,7 @@ package queries
 import (
 	"context"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -21,6 +22,8 @@ type Querier interface {
 	// Only fetch fields needed for preview generation (not full metricsData/narrativeData)
 	BatchGetAnalysisCacheByKeys(ctx context.Context, keys []string) ([]BatchGetAnalysisCacheByKeysRow, error)
 	BulkToggleCronJobsByIDs(ctx context.Context, arg BulkToggleCronJobsByIDsParams) ([]CronJobConfig, error)
+	BumpPipelineDealActivity(ctx context.Context, pipelineDealID uuid.UUID) error
+	BumpPipelineDealMemoCount(ctx context.Context, id uuid.UUID) error
 	CancelIAPSubscriptions(ctx context.Context, userid string) error
 	CancelInsightAccess(ctx context.Context, id string) (InsightAccess, error)
 	CancelSubscription(ctx context.Context, arg CancelSubscriptionParams) error
@@ -167,6 +170,15 @@ type Querier interface {
 	CreatePasswordResetToken(ctx context.Context, arg CreatePasswordResetTokenParams) (PasswordResetToken, error)
 	// Password Setup Token Queries (ADR-085)
 	CreatePasswordSetupToken(ctx context.Context, arg CreatePasswordSetupTokenParams) (PasswordSetupToken, error)
+	// ADR-101: Investment Pipeline queries
+	// ============================================================
+	// PIPELINE DEALS
+	// ============================================================
+	CreatePipelineDeal(ctx context.Context, arg CreatePipelineDealParams) (PipelineDeal, error)
+	// ============================================================
+	// PIPELINE PROPERTIES
+	// ============================================================
+	CreatePipelineProperty(ctx context.Context, arg CreatePipelinePropertyParams) (PipelineProperty, error)
 	CreatePortfolioProperty(ctx context.Context, arg CreatePortfolioPropertyParams) (V2PortfolioProperty, error)
 	// Create a new portfolio snapshot
 	CreatePortfolioSnapshot(ctx context.Context, arg CreatePortfolioSnapshotParams) (V2PortfolioSnapshot, error)
@@ -252,6 +264,8 @@ type Querier interface {
 	DeleteOldestPropertyCache(ctx context.Context, limit int32) (int64, error)
 	DeletePasswordResetTokenByToken(ctx context.Context, token string) error
 	DeletePasswordResetTokensByUser(ctx context.Context, userid string) error
+	DeletePipelineDeal(ctx context.Context, arg DeletePipelineDealParams) (int64, error)
+	DeletePipelineProperty(ctx context.Context, arg DeletePipelinePropertyParams) (int64, error)
 	// Delete all snapshots for a user (for regeneration)
 	DeletePortfolioSnapshots(ctx context.Context, userID string) error
 	// Deletes all cache entries for a specific provider
@@ -281,6 +295,10 @@ type Querier interface {
 	ExpireIAPSubscriptions(ctx context.Context) error
 	ExpireIAPSubscriptionsRows(ctx context.Context) (int64, error)
 	FetchEvaluationsByIDs(ctx context.Context, arg FetchEvaluationsByIDsParams) ([]FetchEvaluationsByIDsRow, error)
+	// ADR-107: find potential duplicate deals by broker email, OM date+company, or property description.
+	// Pass empty string '' for any criterion to skip it.
+	// Results are limited to active (non-archived) deals, 10 max, newest first.
+	FindOMDuplicates(ctx context.Context, arg FindOMDuplicatesParams) ([]FindOMDuplicatesRow, error)
 	GetAIRequestAnalytics(ctx context.Context) (GetAIRequestAnalyticsRow, error)
 	// ADR-064: AI Scoring Cache Queries
 	// Retrieves cached AI scoring if not expired
@@ -417,6 +435,17 @@ type Querier interface {
 	GetPasswordResetTokensByUser(ctx context.Context, arg GetPasswordResetTokensByUserParams) ([]PasswordResetToken, error)
 	GetPasswordSetupToken(ctx context.Context, token string) (PasswordSetupToken, error)
 	GetPendingInvestorReports(ctx context.Context, limit int32) ([]InvestorReport, error)
+	GetPipelineDeal(ctx context.Context, arg GetPipelineDealParams) (PipelineDeal, error)
+	GetPipelineProperty(ctx context.Context, arg GetPipelinePropertyParams) (PipelineProperty, error)
+	// ADR-106: read validation columns only (avoids pulling full om_data/file in list views).
+	GetPipelinePropertyOMValidation(ctx context.Context, arg GetPipelinePropertyOMValidationParams) (GetPipelinePropertyOMValidationRow, error)
+	// ============================================================
+	// ADR-104: Retrospective Analytics
+	// ============================================================
+	// $1 = user_id TEXT
+	// $2 = days INT (0 = all time, otherwise last N days)
+	GetPipelineRetrospective(ctx context.Context, arg GetPipelineRetrospectiveParams) (GetPipelineRetrospectiveRow, error)
+	GetPipelineStats(ctx context.Context, userID string) (GetPipelineStatsRow, error)
 	GetPortfolioPropertiesByIDs(ctx context.Context, arg GetPortfolioPropertiesByIDsParams) ([]V2PortfolioProperty, error)
 	GetPortfolioProperty(ctx context.Context, arg GetPortfolioPropertyParams) (V2PortfolioProperty, error)
 	// Portfolio Snapshots SQLC Queries
@@ -442,6 +471,8 @@ type Querier interface {
 	// ADR-061: Size-based FIFO cache for individual property reads
 	// Retrieves a single property from cache by its cache key
 	GetPropertyFromCache(ctx context.Context, cacheKey string) (PropertyCache, error)
+	// ADR-105: fetch only the file columns (avoid pulling BYTEA in normal property fetches).
+	GetPropertyOMFile(ctx context.Context, arg GetPropertyOMFileParams) (GetPropertyOMFileRow, error)
 	GetQuarterlyExpenses(ctx context.Context) ([]GetQuarterlyExpensesRow, error)
 	// Receipt Queries
 	GetReceiptByID(ctx context.Context, id string) (Receipt, error)
@@ -596,6 +627,8 @@ type Querier interface {
 	ListMarketAnalysisHistory(ctx context.Context, arg ListMarketAnalysisHistoryParams) ([]ListMarketAnalysisHistoryRow, error)
 	ListMarketHistory(ctx context.Context) ([]MarketHistory, error)
 	ListPendingEarlyAccess(ctx context.Context, limit int32) ([]EarlyAccess, error)
+	ListPipelineDeals(ctx context.Context, arg ListPipelineDealsParams) ([]PipelineDeal, error)
+	ListPipelineProperties(ctx context.Context, arg ListPipelinePropertiesParams) ([]PipelineProperty, error)
 	// Fetch most accessed reports (popular nationwide)
 	ListPopularReports(ctx context.Context, arg ListPopularReportsParams) ([]MarketAnalysisReport, error)
 	// V2 Portfolio Properties Queries
@@ -663,6 +696,8 @@ type Querier interface {
 	// Whitelist Management Queries
 	ListWhitelistedEmails(ctx context.Context, arg ListWhitelistedEmailsParams) ([]ListWhitelistedEmailsRow, error)
 	MarkBillingCycleProcessed(ctx context.Context, id string) error
+	// ADR-107: mark a deal as input-complete (ready for analysis).
+	MarkDealInputComplete(ctx context.Context, arg MarkDealInputCompleteParams) (PipelineDeal, error)
 	MarkEmailVerificationCodeVerified(ctx context.Context, id string) error
 	MarkPasswordResetTokenUsed(ctx context.Context, id string) error
 	MarkPasswordResetTokenUsedByToken(ctx context.Context, token string) error
@@ -680,6 +715,8 @@ type Querier interface {
 	// Investment Planning queries
 	// Save completed investment planning job as a scenario (upsert to handle duplicate keys)
 	SaveInvestmentPlanScenario(ctx context.Context, arg SaveInvestmentPlanScenarioParams) (AnalysisCache, error)
+	// ADR-109: persist generated decision memo text (overwrites previous).
+	SavePipelineDealMemoText(ctx context.Context, arg SavePipelineDealMemoTextParams) error
 	SearchAdminAuditLogsByDetailsText(ctx context.Context, arg SearchAdminAuditLogsByDetailsTextParams) ([]SearchAdminAuditLogsByDetailsTextRow, error)
 	SearchAnalysisJobsByUser(ctx context.Context, arg SearchAnalysisJobsByUserParams) ([]SearchAnalysisJobsByUserRow, error)
 	SearchUserScenarios(ctx context.Context, arg SearchUserScenariosParams) ([]Scenario, error)
@@ -738,9 +775,24 @@ type Querier interface {
 	UpdateInvoicePaid(ctx context.Context, arg UpdateInvoicePaidParams) error
 	UpdateInvoiceStatus(ctx context.Context, arg UpdateInvoiceStatusParams) error
 	UpdateInvoiceStatusByStripeID(ctx context.Context, arg UpdateInvoiceStatusByStripeIDParams) error
+	// ADR-108: merge user-edited fields into om_validated_data JSONB.
+	// Sets om_validation_status when confirm=true.
+	UpdateOMValidatedData(ctx context.Context, arg UpdateOMValidatedDataParams) (PipelineProperty, error)
+	UpdatePipelineDeal(ctx context.Context, arg UpdatePipelineDealParams) (PipelineDeal, error)
+	UpdatePipelineDealStatus(ctx context.Context, arg UpdatePipelineDealStatusParams) (PipelineDeal, error)
+	UpdatePipelineProperty(ctx context.Context, arg UpdatePipelinePropertyParams) (PipelineProperty, error)
+	// ADR-105: store parsed OM data + file reference for a property.
+	// Uses COALESCE so callers can update only the fields they have.
+	UpdatePipelinePropertyOM(ctx context.Context, arg UpdatePipelinePropertyOMParams) (PipelineProperty, error)
+	// ADR-106: write om validation status, questions, and merged validated data.
+	UpdatePipelinePropertyOMValidation(ctx context.Context, arg UpdatePipelinePropertyOMValidationParams) (PipelineProperty, error)
 	UpdatePortfolioProperty(ctx context.Context, arg UpdatePortfolioPropertyParams) (V2PortfolioProperty, error)
 	// Updates access timestamp and increments access count
 	UpdatePropertyCacheAccess(ctx context.Context, cacheKey string) error
+	// ADR-107: update computed completeness status after create/update.
+	UpdatePropertyCompleteness(ctx context.Context, arg UpdatePropertyCompletenessParams) error
+	// Pass 3: store validation issues after async OM re-read.
+	UpdatePropertyExtractionIssues(ctx context.Context, arg UpdatePropertyExtractionIssuesParams) error
 	UpdateRenewalNotificationDelivered(ctx context.Context, id string) error
 	UpdateRenewalNotificationOpened(ctx context.Context, id string) error
 	// Update latitude/longitude for a report

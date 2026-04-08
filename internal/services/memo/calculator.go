@@ -49,33 +49,71 @@ type scenarioParams struct {
 	RateAdjust       float64 // refi rate adjustment (bps, for downside)
 }
 
+// deriveRentFromUnitMix computes the total monthly rent from a unit mix,
+// preferring current rent, falling back to pro forma, then market.
+func deriveRentFromUnitMix(mix []UnitMixInput) int {
+	total := 0
+	for _, u := range mix {
+		r := u.RentCurrent
+		if r == 0 {
+			r = u.RentProForma
+		}
+		if r == 0 {
+			r = u.RentMarket
+		}
+		total += r * u.Count
+	}
+	return total
+}
+
 // Compute calculates all financial metrics for one property.
 func (c *Calculator) Compute(input CalculationInput) *CalculationOutput {
 	prop := input.Property
-	if prop.Price <= 0 || prop.EstimatedRent <= 0 {
+
+	// Resolve effective price — prefer Price, fall back to TargetPrice
+	effectivePrice := prop.Price
+	if effectivePrice <= 0 && prop.TargetPrice > 0 {
+		effectivePrice = prop.TargetPrice
+	}
+
+	// Resolve effective rent — prefer EstimatedRent, fall back to unit mix aggregate
+	effectiveRent := prop.EstimatedRent
+	if effectiveRent <= 0 && len(prop.UnitMix) > 0 {
+		effectiveRent = deriveRentFromUnitMix(prop.UnitMix)
+	}
+
+	if effectivePrice <= 0 || effectiveRent <= 0 {
 		return nil
 	}
 
-	// Financing assumptions
+	// Financing — use user-provided values when available, else fall back to defaults
 	downPaymentPct := 0.25
+	if prop.DownPaymentPct > 0 && prop.DownPaymentPct <= 1.0 {
+		downPaymentPct = prop.DownPaymentPct
+	}
+
+	// Interest rate priority: user-provided → FRED current rate → hardcoded fallback
 	mortgageRate := input.MortgageRate
+	if prop.InterestRate > 0 && prop.InterestRate < 30 {
+		mortgageRate = prop.InterestRate
+	}
 	if mortgageRate <= 0 {
 		mortgageRate = 7.0
 	}
 	loanTermYears := 30
 
-	price := float64(prop.Price)
+	price := float64(effectivePrice)
 	downPayment := price * downPaymentPct
 	loanAmount := price - downPayment
-	monthlyRent := float64(prop.EstimatedRent)
+	monthlyRent := float64(effectiveRent)
 
 	// Calculate expenses via expenses.Calculator
 	expInput := expenses.PropertyInput{
-		Price:         prop.Price,
+		Price:         effectivePrice,
 		State:         prop.State,
 		City:          prop.City,
 		YearBuilt:     prop.YearBuilt,
-		EstimatedRent: prop.EstimatedRent,
+		EstimatedRent: effectiveRent,
 		PropertyType:  prop.PropertyType,
 	}
 	if input.MarketVacancy > 0 {
@@ -111,7 +149,7 @@ func (c *Calculator) Compute(input CalculationInput) *CalculationOutput {
 	rentGrowthRate := c.resolveRentGrowthRate(input)
 
 	// 10-year projections
-	projections := c.project10Year(price, monthlyRent, opex.TotalAnnual, annualDebtService, appreciationRate, rentGrowthRate, 0.025, downPayment, loanAmount, mortgageRate/100, loanTermYears)
+	projections := c.project10Year(price, monthlyRent, opex.TotalAnnual, annualDebtService, appreciationRate, rentGrowthRate, 0.025, loanAmount, mortgageRate/100, loanTermYears)
 
 	// 5-year IRR (approximation)
 	irr5Yr := c.approximateIRR(projections[:5], downPayment)
@@ -128,12 +166,12 @@ func (c *Calculator) Compute(input CalculationInput) *CalculationOutput {
 	}
 
 	kf := KeyFinancials{
-		PurchasePrice:    prop.Price,
+		PurchasePrice:    effectivePrice,
 		DownPayment:      int(downPayment),
 		LoanAmount:       int(loanAmount),
 		InterestRate:     mortgageRate,
 		MonthlyPayment:   math.Round(monthlyPayment*100) / 100,
-		MonthlyRent:      prop.EstimatedRent,
+		MonthlyRent:      effectiveRent,
 		NOI:              math.Round(noi*100) / 100,
 		CapRate:          math.Round(capRate*100) / 100,
 		CashOnCashYr1:    math.Round(cashOnCashYr1*100) / 100,
@@ -162,7 +200,7 @@ func (c *Calculator) Compute(input CalculationInput) *CalculationOutput {
 func (c *Calculator) project10Year(
 	price, monthlyRent, annualExpenses, annualDebtService float64,
 	appreciationRate, rentGrowthRate, expenseGrowthRate float64,
-	downPayment, loanAmount, annualRate float64,
+	loanAmount, annualRate float64,
 	loanTermYears int,
 ) []YearCashFlow {
 	projections := make([]YearCashFlow, 10)
@@ -356,7 +394,7 @@ func (c *Calculator) computeScenarios(
 		projections := c.project10Year(
 			price, monthlyRent, nonVacancyExpenses+(monthlyRent*12*s.VacancyRate),
 			annualDS, s.AppreciationRate, s.RentGrowthRate, s.ExpenseGrowth,
-			downPayment, loanAmount, rate, loanTermYears,
+			loanAmount, rate, loanTermYears,
 		)
 
 		irr5 := c.approximateIRR(projections[:5], downPayment)

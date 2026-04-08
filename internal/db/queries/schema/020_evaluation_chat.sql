@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS evaluation_chat_sessions (
     investor_profile JSONB,
     portfolio_snapshot JSONB,
     discovery_session_id TEXT,
+    pipeline_deal_id UUID,
     created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP(3) NOT NULL
 );

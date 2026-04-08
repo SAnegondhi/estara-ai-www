@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +36,7 @@ import (
 	"github.com/estara-ai/www/internal/services/property/finder"
 	"github.com/estara-ai/www/internal/services/market/aggregator"
 	"github.com/estara-ai/www/internal/services/market/economics"
+	"github.com/estara-ai/www/internal/services/market/estimation"
 	"github.com/estara-ai/www/internal/services/market/timeseries"
 	"github.com/estara-ai/www/internal/services/market/trends"
 	"github.com/estara-ai/www/internal/services/pdf"
@@ -65,6 +67,8 @@ type Handler struct {
 	metroReader *timeseries.MetroReader
 	// ADR-100: Market trends service for historical time series in report enrichment
 	trendsService *trends.Service
+	// AI fallback estimator — used when aggregator returns no price/rent data
+	marketEstimator *estimation.AIEstimator
 }
 
 // NewHandler creates a new AI handler
@@ -126,6 +130,13 @@ func (h *Handler) WithMetroReader(mr *timeseries.MetroReader) *Handler {
 // WithTrendsService injects the market trends service for ADR-100 report enrichment.
 func (h *Handler) WithTrendsService(svc *trends.Service) *Handler {
 	h.trendsService = svc
+	return h
+}
+
+// WithMarketEstimator injects the AI estimator used as fallback when structured
+// market data sources return no price/rent data for a location.
+func (h *Handler) WithMarketEstimator(e *estimation.AIEstimator) *Handler {
+	h.marketEstimator = e
 	return h
 }
 
@@ -797,6 +808,13 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			// ADR-091: discovery session that supplied the property pool — used as
 			// discoverySeedSessionId when this chat session is the source for Frontier.
 			"discoverySessionId": row.DiscoverySessionID.String,
+			// ADR-101: pipeline deal context (empty string when not a Pipeline session)
+			"pipelineDealId": func() string {
+				if row.PipelineDealID.Valid {
+					return uuid.UUID(row.PipelineDealID.Bytes).String()
+				}
+				return ""
+			}(),
 		}
 
 		// Add last message if exists
@@ -3036,15 +3054,21 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Batch fetch all cache entries to avoid N+1 queries
-	cacheKeys := make([]string, len(dbReports))
+	// Batch fetch all cache entries to avoid N+1 queries.
+	// market_analysis_reports.cache_key uses "market_analysis:{loc}" format, but
+	// analysis_cache.key uses "analysis_{sanitized_loc}" format (client-generated).
+	// Derive the analysis_cache key from each report's location to find the actual content.
+	analysisCacheKeys := make([]string, len(dbReports))
+	reportToAnalysisKey := make(map[string]string, len(dbReports)) // report.CacheKey → analysis_cache.key
 	for i, report := range dbReports {
-		cacheKeys[i] = report.CacheKey
+		aKey := locationToAnalysisCacheKey(report.Location)
+		analysisCacheKeys[i] = aKey
+		reportToAnalysisKey[report.CacheKey] = aKey
 	}
 
 	cacheMap := make(map[string]queries.BatchGetAnalysisCacheByKeysRow)
-	if len(cacheKeys) > 0 {
-		cachedItems, err := h.store.Q().BatchGetAnalysisCacheByKeys(ctx, cacheKeys)
+	if len(analysisCacheKeys) > 0 {
+		cachedItems, err := h.store.Q().BatchGetAnalysisCacheByKeys(ctx, analysisCacheKeys)
 		if err == nil {
 			for _, cached := range cachedItems {
 				cacheMap[cached.Key] = cached
@@ -3056,7 +3080,10 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 	for _, report := range dbReports {
 		item := AnalysisHistoryItem{
 			ID:       report.ID,
-			CacheKey: report.CacheKey,
+			// Return the analysis_cache key (client-generated format) so callers can
+			// fetch the report directly. market_analysis_reports.cache_key uses a
+			// different format ("market_analysis:loc") than analysis_cache.key ("analysis_loc").
+			CacheKey: locationToAnalysisCacheKey(report.Location),
 			Location: report.Location,
 			Status:   report.Status,
 		}
@@ -3068,9 +3095,9 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 			item.CreatedAt = report.CreatedAt.Format(time.RFC3339)
 		}
 
-		// ADR-087: Report content is still in analysis_cache
-		// Use batch-fetched cache data
-		if cachedData, found := cacheMap[report.CacheKey]; found {
+		// ADR-087: Report content is in analysis_cache under the client-generated key
+		analysisCacheKey := reportToAnalysisKey[report.CacheKey]
+		if cachedData, found := cacheMap[analysisCacheKey]; found {
 			content := string(cachedData.Content)
 			fullReport := ""
 			if cachedData.FullReport.Valid {
@@ -3246,16 +3273,37 @@ func (h *Handler) GetAnalysisContext(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// extractExecutiveSummary extracts the first paragraph under "## Executive Summary"
-// from markdown content. Falls back to the first 300 chars if not found.
+// locationToAnalysisCacheKey converts a location string to the analysis_cache key format
+// used by the client: "analysis_" + all non-alphanumeric chars replaced with "_".
+// Matches the client-side sanitizeKey: loc.toLowerCase().replace(/[^a-z0-9]/g, '_')
+// Example: "Columbus, OH" → "analysis_columbus__oh"
+var nonAlphanumRe = regexp.MustCompile(`[^a-z0-9]`)
+
+func locationToAnalysisCacheKey(location string) string {
+	return "analysis_" + nonAlphanumRe.ReplaceAllString(strings.ToLower(location), "_")
+}
+
+// extractExecutiveSummary extracts the first paragraph under an Executive Summary heading
+// from markdown content. Handles both "## Executive Summary" and "## 1. Executive Summary"
+// (numbered section format from the V2 prompt). Falls back to the first 300 chars if not found.
 func extractExecutiveSummary(content string) string {
 	if content == "" {
 		return ""
 	}
 
-	// Look for Executive Summary heading (case-insensitive)
+	// Look for Executive Summary heading (case-insensitive); handle numbered sections
 	lower := strings.ToLower(content)
 	idx := strings.Index(lower, "## executive summary")
+	if idx == -1 {
+		// Numbered section: "## 1. Executive Summary", "## 2. Executive Summary", etc.
+		if i := strings.Index(lower, "executive summary"); i != -1 {
+			// Walk back to find the "##" prefix on the same line
+			lineStart := strings.LastIndex(lower[:i], "\n") + 1
+			if strings.HasPrefix(strings.TrimSpace(lower[lineStart:i]), "##") {
+				idx = lineStart
+			}
+		}
+	}
 	if idx == -1 {
 		// Fallback: first 300 chars of content
 		if len(content) > 300 {
@@ -3417,9 +3465,13 @@ func (h *Handler) buildReportEnrichment(ctx context.Context, location string) *a
 		if h.marketData != nil && city != "" {
 			md, err := h.marketData.GetMarketData(ctx, city, state)
 			if err != nil {
-				h.logger.Warn("report enrichment: aggregator fetch failed", "location", location, "error", err)
-			} else {
-				m := &agents.AnalysisMetrics{
+				h.logger.Warn("report enrichment: aggregator fetch failed, will try AI estimation", "location", location, "error", err)
+			}
+
+			// Build metrics from structured data (may be zero-valued when err != nil)
+			var m *agents.AnalysisMetrics
+			if err == nil {
+				m = &agents.AnalysisMetrics{
 					MedianHomePrice:      md.MedianHomePrice,
 					MedianRent:           md.MedianRent,
 					CapRate:              md.CapRate,
@@ -3433,12 +3485,41 @@ func (h *Handler) buildReportEnrichment(ctx context.Context, location string) *a
 					Confidence:           md.Confidence,
 					DataDate:             md.DataDate.Format("2006-01-02"),
 				}
-				if md.MedianHomePrice > 0 && md.MedianRent > 0 {
-					m.PriceToRentRatio = float64(md.MedianHomePrice) / (float64(md.MedianRent) * 12)
-					m.GrossYield = (float64(md.MedianRent) * 12) / float64(md.MedianHomePrice) * 100
-				}
 				if md.MedianDaysOnMarket != nil {
 					m.DaysOnMarket = *md.MedianDaysOnMarket
+				}
+			}
+
+			// AI fallback: city not in DB (err != nil) or structured data returned no price/rent
+			needsEstimation := h.marketEstimator != nil && (err != nil || (m != nil && m.MedianHomePrice == 0 && m.MedianRent == 0))
+			if needsEstimation {
+				h.logger.Info("report enrichment: trying AI estimation for missing price/rent", "location", location)
+				estimated, estErr := h.marketEstimator.EstimateMarketData(ctx, city, state)
+				if estErr != nil {
+					h.logger.Warn("report enrichment: AI estimation failed", "location", location, "error", estErr)
+				} else {
+					if m == nil {
+						m = &agents.AnalysisMetrics{}
+					}
+					m.MedianHomePrice = estimated.MedianHomePrice
+					m.MedianRent = estimated.MedianRent
+					m.CapRate = estimated.CapRate
+					m.PriceChangeYoY = estimated.YearOverYearPct
+					m.Confidence = estimated.Confidence
+					m.DataSource = "ai-estimated"
+					h.logger.Info("report enrichment: AI estimation succeeded",
+						"location", location,
+						"medianHomePrice", estimated.MedianHomePrice,
+						"medianRent", estimated.MedianRent,
+						"confidence", estimated.Confidence,
+					)
+				}
+			}
+
+			if m != nil {
+				if m.MedianHomePrice > 0 && m.MedianRent > 0 {
+					m.PriceToRentRatio = float64(m.MedianHomePrice) / (float64(m.MedianRent) * 12)
+					m.GrossYield = (float64(m.MedianRent) * 12) / float64(m.MedianHomePrice) * 100
 				}
 				r.metrics = m
 			}
