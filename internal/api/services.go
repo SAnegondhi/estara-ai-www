@@ -402,10 +402,12 @@ func NewServices(ctx context.Context, cfg ServiceConfig) (*Services, error) {
 			// Build V2 dependencies if all required services are available
 			if metroReader != nil && services.EconomicsAggregator != nil {
 				// DataPayloadBuilder assembles DATA_PAYLOAD from existing services
+				// ADR-111 Phase 2: BLS service passed for MSA-level unemployment lookup
 				orchCfg.PayloadBuilder = prompts.NewDataPayloadBuilder(
 					services.MarketData,
 					services.EconomicsAggregator,
 					metroReader,
+					services.BLSService,
 				)
 
 				// MarketContextService provides Stage 1 context enrichment (Sonnet + web search)

@@ -16,12 +16,13 @@ RULES:
 - PRIORITY items MUST be web-searched. Do NOT skip them or mark as UNVERIFIED without attempting a search.`
 
 // BuildMarketContextUserPrompt creates the Stage 1 user prompt for market context enrichment.
-// The prompt now includes 6 categories (up from 4) with explicit PRIORITY markers on
-// critical numeric data that investors need for underwriting decisions.
+// The prompt includes 8 categories with explicit PRIORITY markers on critical numeric data
+// that investors need for underwriting decisions (ADR-111 Phase 1: added categories 7 and 8,
+// improved search strategies for bond ratings and STR ordinances, increased searches to 18).
 func BuildMarketContextUserPrompt(city, state string) string {
 	return fmt.Sprintf(`For the real estate investment market: %s, %s
 
-Use web search to verify specific data points. You have up to 12 web searches — use them
+Use web search to verify specific data points. You have up to 18 web searches — use them
 strategically on PRIORITY items first, then fill in remaining categories.
 
 Items marked [PRIORITY] MUST be web-searched. Do not skip them.
@@ -36,12 +37,13 @@ Items marked [PRIORITY] MUST be web-searched. Do not skip them.
    - Known recent assessment or tax bill changes (last 2 years)
 
 2. REGULATORY_ENVIRONMENT:
-   - State rent control status (banned / allowed / in effect)
-   - Local rent stabilization or rent control ordinances (if any)
-   - Eviction process: judicial vs non-judicial, typical timeline
+   - [PRIORITY] STR ordinance — search in this order: (1) "%s short-term rental ordinance 2024 2025", (2) "site:municode.com %s short-term rental", (3) "%s Airbnb regulations permit license"
+   - STR specifics if found: registration required Y/N, owner-occupancy requirement Y/N, density cap per block/building, prohibited zones, nightly/annual night cap, penalty amount
+   - [PRIORITY] State rent control preemption — search "%s state rent control preemption law investor"
+   - Local rent stabilization or rent control ordinance currently in effect (city AND county level)
+   - Eviction process: judicial (court order required) or non-judicial; typical timeline in months
    - Landlord licensing or rental registration requirements
    - Security deposit limits and rules
-   - Short-term rental (Airbnb) regulations
    - Any pending legislation affecting rental property investors
 
 3. INSURANCE_CONTEXT:
@@ -53,11 +55,12 @@ Items marked [PRIORITY] MUST be web-searched. Do not skip them.
    - Any disaster declarations in last 3 years affecting this market
 
 4. FISCAL_CONTEXT:
-   - State credit rating (Moody's / S&P / Fitch)
-   - Municipal/county credit rating if known
-   - Pension funding ratio (state level)
-   - Known fiscal pressures (unfunded liabilities, structural deficits)
-   - Bond ratings trend (stable / negative outlook / improving)
+   - [PRIORITY] Municipal/city bond rating — search in this order: (1) "site:emma.msrb.org %s %s bond rating", (2) "%s %s municipal bond rating Moody's OR S&P OR Fitch 2024 2025"
+   - [PRIORITY] State credit rating — search "%s state credit rating Moody's S&P Fitch 2024 2025"
+   - Rating outlook for city and state (stable / positive watch / negative watch)
+   - [PRIORITY] Pension funding ratio — search "%s state pension funded ratio GASB 2024"
+   - Known fiscal pressures (structural deficits, unfunded liabilities, recent downgrades)
+   - Bond ratings trend (stable / improving / deteriorating)
 
 5. ECONOMIC_INDICATORS:
    - [PRIORITY] Current unemployment rate for the metro area or county — search for "%s %s unemployment rate"
@@ -71,6 +74,22 @@ Items marked [PRIORITY] MUST be web-searched. Do not skip them.
    - Any construction moratoriums or growth boundaries
    - New housing starts trend (increasing/stable/declining)
 
+7. LANDLORD_TENANT_LAW:
+   - [PRIORITY] Just cause eviction requirement — search "%s %s just cause eviction law landlord investor"
+   - Does this state or city require just cause for eviction of month-to-month tenants? Y/N
+   - Relocation assistance required: when triggered (no-fault, renovation, owner move-in, redevelopment), dollar amount if specified
+   - Owner move-in (OMI) eviction: allowed Y/N, notice period required (days), per-building frequency limit
+   - Source-of-income protection: prohibited from rejecting Section 8 / housing voucher holders Y/N
+   - Required lease disclosures specific to this state
+   - Security deposit: maximum limit (months of rent), interest-bearing requirement Y/N, return timeline (days)
+
+8. REAL_ESTATE_INVESTMENT_RESTRICTIONS:
+   - [PRIORITY] Pending state legislation affecting investors — search "%s 2025 landlord legislation rent control eviction investor"
+   - Corporate or institutional landlord restrictions (any state bills limiting bulk investor purchases of SFH?)
+   - Anti-algorithmic rent pricing legislation pending in this state (RealPage-type bills)
+   - Condo conversion restrictions relevant to multifamily-to-condo strategy
+   - Owner-occupancy requirements that restrict investor purchase (specific zones, HOA rules)
+
 Format each category as:
 CATEGORY_NAME:
   key: value
@@ -80,9 +99,17 @@ CATEGORY_NAME:
 Mark verified items as: key: SOURCED — [url] value
 Mark uncertain items as: key: UNVERIFIED — [brief reason]`,
 		city, state,
-		city, state, // property tax search
-		city, state, // insurance search
-		city, state, // unemployment search
+		city, state,       // property tax search
+		city, city, city,  // STR ordinance searches (3 search strings)
+		state,             // rent control preemption search
+		city, state,       // insurance search
+		city, state,       // EMMA bond rating search
+		city, state,       // municipal bond rating search
+		state,             // state credit rating search
+		state,             // pension funded ratio search
+		city, state,       // unemployment search
 		city, state, city, state, // building permits search
+		city, state,       // just cause eviction search
+		state,             // pending legislation search
 	)
 }

@@ -215,6 +215,15 @@ func (o *Orchestrator) SearchWithOptions(ctx context.Context, params providers.S
 		return nil, fmt.Errorf("no property providers available")
 	}
 
+	// For commercial/CRE types, route exclusively to Claude (HasData/BrightData only
+	// index residential Zillow listings — CRE is listed on LoopNet/Crexi).
+	if providers.IsCommercialPropertyType(params.PropertyType) {
+		enabledProviders = filterToProvider(enabledProviders, "claude")
+		if len(enabledProviders) == 0 {
+			return nil, fmt.Errorf("commercial property search requires Claude provider (not enabled or not configured)")
+		}
+	}
+
 	var result *providers.SearchResult
 	var lastErr error
 
@@ -826,6 +835,17 @@ func (o *Orchestrator) getEnabledProviders() []providers.Provider {
 		}
 	}
 	return enabled
+}
+
+// filterToProvider returns only providers matching the given name.
+func filterToProvider(all []providers.Provider, name string) []providers.Provider {
+	var out []providers.Provider
+	for _, p := range all {
+		if p.Name() == name {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // buildCacheKey creates a cache key for the search parameters

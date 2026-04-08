@@ -273,6 +273,25 @@ func (s *Service) ForceRefreshNational(ctx context.Context) (*BLSData, error) {
 	return s.fetchNationalData(ctx)
 }
 
+// GetMetroUnemployment fetches MSA-level unemployment rate from BLS LAUS.
+// Returns 0 and an error if the CBSA is not in the metro map or the fetch fails.
+func (s *Service) GetMetroUnemployment(ctx context.Context, city, state string) (float64, error) {
+	cbsa := GetMetroCBSA(city, state)
+	if cbsa == "" {
+		return 0, fmt.Errorf("no CBSA mapping for %s, %s", city, state)
+	}
+	seriesID := "LAUSMSA" + cbsa + "03"
+	series, err := s.fetchSeries(ctx, []string{seriesID})
+	if err != nil {
+		return 0, fmt.Errorf("BLS LAUS fetch failed for %s: %w", seriesID, err)
+	}
+	rate := s.getLatestValue(series, seriesID)
+	if rate == 0 {
+		return 0, fmt.Errorf("BLS LAUS returned no data for %s", seriesID)
+	}
+	return rate, nil
+}
+
 // fetchNationalData fetches national indicators from BLS API
 func (s *Service) fetchNationalData(ctx context.Context) (*BLSData, error) {
 	s.logger.Info("fetching BLS national data")

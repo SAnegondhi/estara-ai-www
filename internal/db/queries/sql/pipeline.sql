@@ -144,6 +144,18 @@ INSERT INTO pipeline_properties (
     notes, source_type,
     lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix,
     year_renovated, stories, zoning, construction, parking_spaces,
+    broker_cap_rate,
+    description, parking, broker_noi, broker_noi_stabilized,
+    gross_potential_rent, effective_gross_income, vacancy_pct, vacancy_label,
+    expense_items, om_date, broker_contact, latitude, longitude,
+    broker_5yr_irr, broker_yr1_coc, loan_term_years,
+    broker_grm, broker_dscr, assumable_debt_balance, assumable_debt_term, cap_rate_pro_forma,
+    building_class, hoa_monthly,
+    clear_height_ft, loading_docks, office_pct, sprinklered,
+    total_storage_units, climate_controlled_pct,
+    assumable_debt_rate, investment_highlights,
+    other_income_items, renovation_cost, claimed_renovation_noi_uplift,
+    value_add_data, building_amenities, market_overview_text,
     created_at, updated_at
 ) VALUES (
     gen_random_uuid(), $1, $2, $3, $4, $5,
@@ -154,6 +166,18 @@ INSERT INTO pipeline_properties (
     $24, $25,
     $26, $27, $28, $29, $30, $31,
     $32, $33, $34, $35, $36,
+    $37,
+    $38, $39, $40, $41,
+    $42, $43, $44, $45,
+    $46, $47, $48, $49, $50,
+    $51, $52, $53,
+    $54, $55, $56, $57, $58,
+    $59, $60,
+    $61, $62, $63, $64,
+    $65, $66,
+    $67, $68,
+    $69, $70, $71,
+    $72, $73, $74,
     NOW(), NOW()
 ) RETURNING *;
 
@@ -225,6 +249,44 @@ UPDATE pipeline_properties SET
     zoning                 = COALESCE(sqlc.narg('zoning')::text, zoning),
     construction           = COALESCE(sqlc.narg('construction')::text, construction),
     parking_spaces         = COALESCE(sqlc.narg('parking_spaces')::integer, parking_spaces),
+    description            = COALESCE(sqlc.narg('description')::text, description),
+    parking                = COALESCE(sqlc.narg('parking')::text, parking),
+    broker_noi             = COALESCE(sqlc.narg('broker_noi')::numeric, broker_noi),
+    broker_noi_stabilized  = COALESCE(sqlc.narg('broker_noi_stabilized')::numeric, broker_noi_stabilized),
+    gross_potential_rent   = COALESCE(sqlc.narg('gross_potential_rent')::numeric, gross_potential_rent),
+    effective_gross_income = COALESCE(sqlc.narg('effective_gross_income')::numeric, effective_gross_income),
+    vacancy_pct            = COALESCE(sqlc.narg('vacancy_pct')::numeric, vacancy_pct),
+    vacancy_label          = COALESCE(sqlc.narg('vacancy_label')::text, vacancy_label),
+    expense_items          = COALESCE(sqlc.narg('expense_items')::jsonb, expense_items),
+    om_date                = COALESCE(sqlc.narg('om_date')::text, om_date),
+    broker_contact         = COALESCE(sqlc.narg('broker_contact')::jsonb, broker_contact),
+    latitude               = COALESCE(sqlc.narg('latitude')::numeric, latitude),
+    longitude              = COALESCE(sqlc.narg('longitude')::numeric, longitude),
+    broker_5yr_irr         = COALESCE(sqlc.narg('broker_5yr_irr')::numeric, broker_5yr_irr),
+    broker_yr1_coc         = COALESCE(sqlc.narg('broker_yr1_coc')::numeric, broker_yr1_coc),
+    loan_term_years        = COALESCE(sqlc.narg('loan_term_years')::integer, loan_term_years),
+    broker_cap_rate        = COALESCE(sqlc.narg('broker_cap_rate')::numeric, broker_cap_rate),
+    broker_grm             = COALESCE(sqlc.narg('broker_grm')::numeric, broker_grm),
+    broker_dscr            = COALESCE(sqlc.narg('broker_dscr')::numeric, broker_dscr),
+    assumable_debt_balance = COALESCE(sqlc.narg('assumable_debt_balance')::numeric, assumable_debt_balance),
+    assumable_debt_term    = COALESCE(sqlc.narg('assumable_debt_term')::numeric, assumable_debt_term),
+    cap_rate_pro_forma     = COALESCE(sqlc.narg('cap_rate_pro_forma')::numeric, cap_rate_pro_forma),
+    building_class         = COALESCE(sqlc.narg('building_class')::text, building_class),
+    hoa_monthly            = COALESCE(sqlc.narg('hoa_monthly')::numeric, hoa_monthly),
+    clear_height_ft        = COALESCE(sqlc.narg('clear_height_ft')::numeric, clear_height_ft),
+    loading_docks          = COALESCE(sqlc.narg('loading_docks')::integer, loading_docks),
+    office_pct             = COALESCE(sqlc.narg('office_pct')::numeric, office_pct),
+    sprinklered            = COALESCE(sqlc.narg('sprinklered')::text, sprinklered),
+    total_storage_units    = COALESCE(sqlc.narg('total_storage_units')::integer, total_storage_units),
+    climate_controlled_pct = COALESCE(sqlc.narg('climate_controlled_pct')::numeric, climate_controlled_pct),
+    assumable_debt_rate    = COALESCE(sqlc.narg('assumable_debt_rate')::numeric, assumable_debt_rate),
+    investment_highlights  = COALESCE(sqlc.narg('investment_highlights')::jsonb, investment_highlights),
+    other_income_items     = COALESCE(sqlc.narg('other_income_items')::jsonb, other_income_items),
+    renovation_cost        = COALESCE(sqlc.narg('renovation_cost')::numeric, renovation_cost),
+    claimed_renovation_noi_uplift = COALESCE(sqlc.narg('claimed_renovation_noi_uplift')::numeric, claimed_renovation_noi_uplift),
+    value_add_data         = COALESCE(sqlc.narg('value_add_data')::jsonb, value_add_data),
+    building_amenities     = COALESCE(sqlc.narg('building_amenities')::text[], building_amenities),
+    market_overview_text   = COALESCE(sqlc.narg('market_overview_text')::text, market_overview_text),
     updated_at             = NOW()
 WHERE id = $1
 RETURNING *;
@@ -268,6 +330,13 @@ WHERE pp.id = $1 AND pd.user_id = $2;
 UPDATE pipeline_properties SET
     property_completeness = $2,
     updated_at            = NOW()
+WHERE id = $1;
+
+-- name: UpdatePropertyExtractionIssues :exec
+-- Pass 3: store validation issues after async OM re-read.
+UPDATE pipeline_properties SET
+    extraction_issues = $2,
+    updated_at        = NOW()
 WHERE id = $1;
 
 -- name: FindOMDuplicates :many

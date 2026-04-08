@@ -17,6 +17,7 @@ import (
 	"github.com/estara-ai/www/internal/services/property/providers"
 	"github.com/estara-ai/www/pkg/httputil"
 	"github.com/estara-ai/www/pkg/sse"
+	"github.com/google/uuid"
 )
 
 // ============================================================
@@ -63,6 +64,11 @@ type FrontierRunRequest struct {
 	// RadiusMiles: suburb expansion radius in miles (auto-discover only). 0/omitted = no expansion.
 	// ADR-097: when set, expands each location to nearby cities with pop >= 25K.
 	RadiusMiles int `json:"radiusMiles,omitempty"`
+	// PipelineDealID: when set, fetch this deal's pipeline properties and use them as the
+	// pinned property pool (Config 0). Peer discovery finds comparable CRE/residential
+	// properties for Configs 1/2. Skips Phases 1-2 (property search + AI scoring).
+	// ADR-114: type-aware peer discovery — CRE types route to Claude/LoopNet/Crexi.
+	PipelineDealID string `json:"pipelineDealId,omitempty"`
 }
 
 // RunFrontierPipeline is the Phase 12 full-pipeline endpoint.
@@ -98,9 +104,9 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate property source: either locations or a discovery session ID must be provided
-	if req.DiscoverySessionID == "" && len(req.Locations) == 0 {
-		httputil.BadRequest(w, "either locations or discoverySessionId is required")
+	// Validate property source: pipeline deal, discovery session, or locations required
+	if req.PipelineDealID == "" && req.DiscoverySessionID == "" && len(req.Locations) == 0 {
+		httputil.BadRequest(w, "either pipelineDealId, discoverySessionId, or locations is required")
 		return
 	}
 
@@ -134,6 +140,135 @@ func (h *Handler) RunFrontierPipeline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	emitStatus("running", "Starting frontier pipeline")
+
+	// ----------------------------------------------------------------
+	// ADR-114: Pipeline deal fast path — skip Phases 1-2 entirely.
+	// Map pinned deal properties + discover CRE/residential peers, then
+	// jump straight to BuildCohorts + frontier generation.
+	// ----------------------------------------------------------------
+	if req.PipelineDealID != "" {
+		dealID, parseErr := uuid.Parse(req.PipelineDealID)
+		if parseErr != nil {
+			_ = sseWriter.WriteError("invalid pipelineDealId")
+			return
+		}
+
+		emitProgress(10, "Loading pipeline deal properties")
+		mapped, skipped := h.mapPipelinePropertiesToScored(ctx, dealID, user.UserID)
+		if skipped > 0 {
+			h.logger.Warn("pipeline properties skipped (missing city/state or price)",
+				"pipeline_deal_id", req.PipelineDealID,
+				"skipped", skipped,
+				"included", len(mapped),
+			)
+		}
+		if len(mapped) == 0 {
+			_ = sseWriter.WriteError("no valid pipeline properties found (city, state, and price are required)")
+			return
+		}
+
+		emitProgress(25, "Discovering comparable peers")
+		peers := h.discoverPipelinePeers(ctx, mapped)
+		if len(peers) > 0 {
+			h.logger.Info("pipeline peer discovery",
+				"pipeline_deal_id", req.PipelineDealID,
+				"peers_found", len(peers),
+			)
+		}
+
+		// Peers (non-pinned pool) + deal properties (to be pinned).
+		allScored := append(peers, mapped...)
+		pinnedIDs := make(map[string]bool, len(mapped))
+		for _, sp := range mapped {
+			pinnedIDs[sp.Property.ID] = true
+		}
+
+		emitProgress(60, "Building frontier cohorts")
+		cohorts := investment.BuildCohorts(
+			allScored,
+			pinnedIDs,
+			investment.InvestmentStrategy(req.Strategy),
+			investment.RiskTolerance(req.RiskTolerance),
+			req.Budget,
+			req.MortgageRate,
+			req.DownPaymentPct,
+		)
+		if len(cohorts) == 0 {
+			_ = sseWriter.WriteError("no affordable properties found for the given budget")
+			return
+		}
+
+		emitProgress(62, "Running frontier analysis")
+		frontierDone := make(chan struct{})
+		var frontierOnce sync.Once
+		stopFrontier := func() { frontierOnce.Do(func() { close(frontierDone) }) }
+		defer stopFrontier()
+		go func() {
+			ticker := time.NewTicker(1500 * time.Millisecond)
+			defer ticker.Stop()
+			pct := 65.0
+			for {
+				select {
+				case <-frontierDone:
+					return
+				case <-ticker.C:
+					if pct < 95 {
+						pct += 5
+					}
+					emitProgress(pct, "Computing efficient frontier")
+				}
+			}
+		}()
+
+		progress := func(phase int, totalPhases int, message string) {
+			pct := 62 + float64(phase)/float64(totalPhases)*35
+			_ = sseWriter.WriteEventJSON("progress", sse.ProgressEvent{
+				Stage:    fmt.Sprintf("phase_%d", phase),
+				Progress: pct,
+				Message:  message,
+			})
+		}
+
+		frontierPoints, frontierErr := h.frontierOptimizer.GenerateFrontier(
+			ctx,
+			cohorts,
+			investment.InvestorProfile{
+				RiskTolerance:    investment.RiskTolerance(req.RiskTolerance),
+				Strategy:         investment.InvestmentStrategy(req.Strategy),
+				AvailableCapital: req.Budget,
+			},
+			investment.InvestmentPlanningParams{
+				MortgageRate:   req.MortgageRate,
+				DownPaymentPct: req.DownPaymentPct,
+			},
+			optimization.ProgressFunc(progress),
+		)
+		stopFrontier()
+
+		if frontierErr != nil {
+			h.logger.Error("frontier analysis failed (pipeline path)",
+				"pipeline_deal_id", req.PipelineDealID,
+				"error", frontierErr,
+			)
+			_ = sseWriter.WriteError("frontier analysis failed: " + frontierErr.Error())
+			return
+		}
+
+		duration := time.Since(startTime)
+		_ = sseWriter.WriteComplete(FrontierAnalyzeResponse{
+			FrontierPoints: frontierPoints,
+			GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
+			DurationMs:     duration.Milliseconds(),
+		})
+
+		h.logger.Info("frontier analysis complete (pipeline path)",
+			"pipeline_deal_id", req.PipelineDealID,
+			"peers_found", len(peers),
+			"configs", len(frontierPoints),
+			"duration_ms", duration.Milliseconds(),
+		)
+		return
+	}
 
 	// ----------------------------------------------------------------
 	// Phase 1: Property Discovery (0–30%)

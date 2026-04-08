@@ -71,6 +71,48 @@ CREATE TABLE IF NOT EXISTS pipeline_properties (
     zoning                  TEXT,
     construction            TEXT,
     parking_spaces          INTEGER,
+    -- ADR-112: new deal wizard fields
+    description             TEXT,
+    parking                 TEXT,
+    broker_noi              NUMERIC,
+    broker_noi_stabilized   NUMERIC,
+    gross_potential_rent    NUMERIC,
+    effective_gross_income  NUMERIC,
+    vacancy_pct             NUMERIC,
+    vacancy_label           TEXT,
+    expense_items           JSONB,
+    om_date                 TEXT,
+    broker_contact          JSONB,
+    latitude                NUMERIC,
+    longitude               NUMERIC,
+    broker_5yr_irr          NUMERIC,
+    broker_yr1_coc          NUMERIC,
+    loan_term_years         INTEGER,
+    -- ADR-112 Addendum: broker-stated metrics (Tab 2)
+    broker_grm              NUMERIC,
+    broker_dscr             NUMERIC,
+    assumable_debt_balance  NUMERIC,
+    assumable_debt_term     NUMERIC,
+    cap_rate_pro_forma      NUMERIC,
+    -- ADR-112 Addendum: type-specific physical fields (Tab 1)
+    building_class          TEXT,          -- multifamily: A/B/C/D
+    hoa_monthly             NUMERIC,       -- residential: HOA fee $/month
+    clear_height_ft         NUMERIC,       -- industrial: clear height in feet
+    loading_docks           INTEGER,       -- industrial: loading dock count
+    office_pct              NUMERIC,       -- industrial: % GLA that is office (0-100)
+    sprinklered             TEXT,          -- industrial: 'yes' | 'no'
+    total_storage_units     INTEGER,       -- self_storage: total rentable units
+    climate_controlled_pct  NUMERIC,       -- self_storage: % climate-controlled (0-100)
+    assumable_debt_rate     NUMERIC,       -- assumable debt interest rate (decimal, e.g. 0.045)
+    investment_highlights   JSONB,         -- broker OM highlight bullets (string[])
+    -- ADR-113: progressive disclosure fields
+    other_income_items          JSONB,     -- [{label, amount}] laundry, parking, storage, etc.
+    renovation_cost             NUMERIC,   -- total renovation budget ($)
+    claimed_renovation_noi_uplift NUMERIC, -- broker's claimed NOI uplift from renovation ($)
+    value_add_data              JSONB,     -- {lowEstimate, highEstimate, unrenovatedUnits, costPerUnit, ...}
+    building_amenities          TEXT[],    -- ["Pool", "Gym", "In-Unit W/D", ...]
+    market_overview_text        TEXT,      -- broker's market narrative / context
+    extraction_issues           JSONB,     -- Pass 3 validation: [{field,tab,severity,omSays,message}]
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

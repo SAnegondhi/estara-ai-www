@@ -103,6 +103,53 @@ type createPropertyRequest struct {
 	WeightedAvgLeaseYrs *float64        `json:"weightedAvgLeaseYrs"`
 	CommercialSqft      *int32          `json:"commercialSqft"`
 	CommercialMix       json.RawMessage `json:"commercialMix"`
+	// ADR-108: physical detail fields (also on create)
+	YearRenovated        *int32          `json:"yearRenovated"`
+	Stories              *int32          `json:"stories"`
+	Zoning               string          `json:"zoning"`
+	Construction         string          `json:"construction"`
+	ParkingSpaces        *int32          `json:"parkingSpaces"`
+	BrokerCapRate        *float64        `json:"brokerCapRate"`
+	// ADR-112: new deal wizard fields
+	Description          string          `json:"description"`
+	Parking              string          `json:"parking"`
+	BrokerNOI            *float64        `json:"brokerNoi"`
+	BrokerNOIStabilized  *float64        `json:"brokerNoiStabilized"`
+	GrossPotentialRent   *float64        `json:"grossPotentialRent"`
+	EffectiveGrossIncome *float64        `json:"effectiveGrossIncome"`
+	VacancyPct           *float64        `json:"vacancyPct"`
+	VacancyLabel         string          `json:"vacancyLabel"`
+	ExpenseItems         json.RawMessage `json:"expenseItems"`
+	OMDate               string          `json:"omDate"`
+	BrokerContact        json.RawMessage `json:"brokerContact"`
+	Latitude             *float64        `json:"latitude"`
+	Longitude            *float64        `json:"longitude"`
+	Broker5YrIRR         *float64        `json:"broker5YrIrr"`
+	BrokerYr1CoC         *float64        `json:"brokerYr1Coc"`
+	LoanTermYears        *int32          `json:"loanTermYears"`
+	// ADR-112 Addendum: broker-stated metrics + type-specific physical fields
+	BrokerGRM             *float64        `json:"brokerGrm"`
+	BrokerDSCR            *float64        `json:"brokerDscr"`
+	AssumableDebtBalance  *float64        `json:"assumableDebtBalance"`
+	AssumableDebtTerm     *float64        `json:"assumableDebtTerm"`
+	AssumableDebtRate     *float64        `json:"assumableDebtRate"`
+	CapRateProForma       *float64        `json:"capRateProForma"`
+	BuildingClass         string          `json:"buildingClass"`
+	HOAMonthly            *float64        `json:"hoa"`
+	ClearHeightFt         *float64        `json:"clearHeight"`
+	LoadingDocks          *int32          `json:"loadingDocks"`
+	OfficePct             *float64        `json:"officePct"`
+	Sprinklered           string          `json:"sprinklered"`
+	TotalStorageUnits     *int32          `json:"totalStorageUnits"`
+	ClimateControlledPct  *float64        `json:"climateControlledPct"`
+	InvestmentHighlights  json.RawMessage `json:"investmentHighlights"`
+	// ADR-113: progressive disclosure fields
+	OtherIncomeItems            json.RawMessage `json:"otherIncomeItems"`
+	RenovationCost              *float64        `json:"renovationCost"`
+	ClaimedRenovationNOIUplift  *float64        `json:"claimedRenovationNoiUplift"`
+	ValueAddData                json.RawMessage `json:"valueAddData"`
+	BuildingAmenities           []string        `json:"buildingAmenities"`
+	MarketOverviewText          string          `json:"marketOverviewText"`
 }
 
 type updatePropertyRequest struct {
@@ -136,6 +183,53 @@ type updatePropertyRequest struct {
 	WeightedAvgLeaseYrs *float64         `json:"weightedAvgLeaseYrs"`
 	CommercialSqft      *int32           `json:"commercialSqft"`
 	CommercialMix       *json.RawMessage `json:"commercialMix"`
+	// ADR-108: physical detail fields
+	YearRenovated       *int32           `json:"yearRenovated"`
+	Stories             *int32           `json:"stories"`
+	Zoning              *string          `json:"zoning"`
+	Construction        *string          `json:"construction"`
+	ParkingSpaces       *int32           `json:"parkingSpaces"`
+	// ADR-112: new deal wizard fields
+	Description          *string          `json:"description"`
+	Parking              *string          `json:"parking"`
+	BrokerNOI            *float64         `json:"brokerNoi"`
+	BrokerNOIStabilized  *float64         `json:"brokerNoiStabilized"`
+	GrossPotentialRent   *float64         `json:"grossPotentialRent"`
+	EffectiveGrossIncome *float64         `json:"effectiveGrossIncome"`
+	VacancyPct           *float64         `json:"vacancyPct"`
+	VacancyLabel         *string          `json:"vacancyLabel"`
+	ExpenseItems         *json.RawMessage `json:"expenseItems"`
+	OMDate               *string          `json:"omDate"`
+	BrokerContact        *json.RawMessage `json:"brokerContact"`
+	Latitude             *float64         `json:"latitude"`
+	Longitude            *float64         `json:"longitude"`
+	Broker5YrIRR         *float64         `json:"broker5YrIrr"`
+	BrokerYr1CoC         *float64         `json:"brokerYr1Coc"`
+	LoanTermYears        *int32           `json:"loanTermYears"`
+	// ADR-112 Addendum: broker-stated metrics + type-specific physical fields
+	BrokerCapRate         *float64         `json:"brokerCapRate"`
+	BrokerGRM             *float64         `json:"brokerGrm"`
+	BrokerDSCR            *float64         `json:"brokerDscr"`
+	AssumableDebtBalance  *float64         `json:"assumableDebtBalance"`
+	AssumableDebtTerm     *float64         `json:"assumableDebtTerm"`
+	AssumableDebtRate     *float64         `json:"assumableDebtRate"`
+	CapRateProForma       *float64         `json:"capRateProForma"`
+	BuildingClass         *string          `json:"buildingClass"`
+	HOAMonthly            *float64         `json:"hoa"`
+	ClearHeightFt         *float64         `json:"clearHeight"`
+	LoadingDocks          *int32           `json:"loadingDocks"`
+	OfficePct             *float64         `json:"officePct"`
+	Sprinklered           *string          `json:"sprinklered"`
+	TotalStorageUnits     *int32           `json:"totalStorageUnits"`
+	ClimateControlledPct  *float64         `json:"climateControlledPct"`
+	InvestmentHighlights  *json.RawMessage `json:"investmentHighlights"`
+	// ADR-113: progressive disclosure fields
+	OtherIncomeItems            *json.RawMessage `json:"otherIncomeItems"`
+	RenovationCost              *float64         `json:"renovationCost"`
+	ClaimedRenovationNOIUplift  *float64         `json:"claimedRenovationNoiUplift"`
+	ValueAddData                *json.RawMessage `json:"valueAddData"`
+	BuildingAmenities           []string         `json:"buildingAmenities"`
+	MarketOverviewText          *string          `json:"marketOverviewText"`
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +436,47 @@ type pipelinePropertyResponse struct {
 	Zoning               *string         `json:"zoning"`
 	Construction         *string         `json:"construction"`
 	ParkingSpaces        *int32          `json:"parkingSpaces"`
+	// ADR-112: new deal wizard fields
+	Description          *string         `json:"description"`
+	Parking              *string         `json:"parking"`
+	BrokerNOI            *float64        `json:"brokerNoi"`
+	BrokerNOIStabilized  *float64        `json:"brokerNoiStabilized"`
+	GrossPotentialRent   *float64        `json:"grossPotentialRent"`
+	EffectiveGrossIncome *float64        `json:"effectiveGrossIncome"`
+	VacancyPct           *float64        `json:"vacancyPct"`
+	VacancyLabel         *string         `json:"vacancyLabel"`
+	ExpenseItems         json.RawMessage `json:"expenseItems"`
+	OMDate               *string         `json:"omDate"`
+	BrokerContact        json.RawMessage `json:"brokerContact"`
+	Latitude             *float64        `json:"latitude"`
+	Longitude            *float64        `json:"longitude"`
+	Broker5YrIRR         *float64        `json:"broker5YrIrr"`
+	BrokerYr1CoC         *float64        `json:"brokerYr1Coc"`
+	LoanTermYears        *int32          `json:"loanTermYears"`
+	// ADR-112 Addendum
+	BrokerGRM             *float64        `json:"brokerGrm"`
+	BrokerDSCR            *float64        `json:"brokerDscr"`
+	AssumableDebtBalance  *float64        `json:"assumableDebtBalance"`
+	AssumableDebtTerm     *float64        `json:"assumableDebtTerm"`
+	AssumableDebtRate     *float64        `json:"assumableDebtRate"`
+	CapRateProForma       *float64        `json:"capRateProForma"`
+	BuildingClass         *string         `json:"buildingClass"`
+	HOAMonthly            *float64        `json:"hoa"`
+	ClearHeightFt         *float64        `json:"clearHeight"`
+	LoadingDocks          *int32          `json:"loadingDocks"`
+	OfficePct             *float64        `json:"officePct"`
+	Sprinklered           *string         `json:"sprinklered"`
+	TotalStorageUnits     *int32          `json:"totalStorageUnits"`
+	ClimateControlledPct  *float64        `json:"climateControlledPct"`
+	InvestmentHighlights  json.RawMessage `json:"investmentHighlights"`
+	// ADR-113: progressive disclosure fields
+	OtherIncomeItems            json.RawMessage `json:"otherIncomeItems"`
+	RenovationCost              *float64        `json:"renovationCost"`
+	ClaimedRenovationNOIUplift  *float64        `json:"claimedRenovationNoiUplift"`
+	ValueAddData                json.RawMessage `json:"valueAddData"`
+	BuildingAmenities           []string        `json:"buildingAmenities"`
+	MarketOverviewText          *string         `json:"marketOverviewText"`
+	ExtractionIssues            json.RawMessage `json:"extractionIssues"`
 	CreatedAt            time.Time       `json:"createdAt"`
 	UpdatedAt            time.Time       `json:"updatedAt"`
 }
@@ -394,9 +529,87 @@ func mapPropertyToResponse(p queries.PipelineProperty) pipelinePropertyResponse 
 		Zoning:               textToPtr(p.Zoning),
 		Construction:         textToPtr(p.Construction),
 		ParkingSpaces:        int4ToPtr(p.ParkingSpaces),
-		CreatedAt:            p.CreatedAt,
-		UpdatedAt:            p.UpdatedAt,
+		Description:          textToPtr(p.Description),
+		Parking:              textToPtr(p.Parking),
+		BrokerNOI:            numericToFloat(p.BrokerNoi),
+		BrokerNOIStabilized:  numericToFloat(p.BrokerNoiStabilized),
+		GrossPotentialRent:   numericToFloat(p.GrossPotentialRent),
+		EffectiveGrossIncome: numericToFloat(p.EffectiveGrossIncome),
+		VacancyPct:           numericToFloat(p.VacancyPct),
+		VacancyLabel:         textToPtr(p.VacancyLabel),
+		ExpenseItems:         rawJSONOrNil(p.ExpenseItems),
+		OMDate:               textToPtr(p.OmDate),
+		BrokerContact:        rawJSONOrNil(p.BrokerContact),
+		Latitude:             numericToFloat(p.Latitude),
+		Longitude:            numericToFloat(p.Longitude),
+		Broker5YrIRR:         numericToFloat(p.Broker5yrIrr),
+		BrokerYr1CoC:         numericToFloat(p.BrokerYr1Coc),
+		LoanTermYears:        int4ToPtr(p.LoanTermYears),
+		BrokerGRM:            numericToFloat(p.BrokerGrm),
+		BrokerDSCR:           numericToFloat(p.BrokerDscr),
+		AssumableDebtBalance: numericToFloat(p.AssumableDebtBalance),
+		AssumableDebtTerm:    numericToFloat(p.AssumableDebtTerm),
+		AssumableDebtRate:    numericToFloat(p.AssumableDebtRate),
+		CapRateProForma:      numericToFloat(p.CapRateProForma),
+		BuildingClass:        textToPtr(p.BuildingClass),
+		HOAMonthly:           numericToFloat(p.HoaMonthly),
+		ClearHeightFt:        numericToFloat(p.ClearHeightFt),
+		LoadingDocks:         int4ToPtr(p.LoadingDocks),
+		OfficePct:            numericToFloat(p.OfficePct),
+		Sprinklered:          textToPtr(p.Sprinklered),
+		TotalStorageUnits:    int4ToPtr(p.TotalStorageUnits),
+		ClimateControlledPct: numericToFloat(p.ClimateControlledPct),
+		InvestmentHighlights:       rawJSONOrNil(p.InvestmentHighlights),
+		OtherIncomeItems:           rawJSONOrNil(p.OtherIncomeItems),
+		RenovationCost:             numericToFloat(p.RenovationCost),
+		ClaimedRenovationNOIUplift: numericToFloat(p.ClaimedRenovationNoiUplift),
+		ValueAddData:               rawJSONOrNil(p.ValueAddData),
+		BuildingAmenities:          p.BuildingAmenities,
+		MarketOverviewText:         textToPtr(p.MarketOverviewText),
+		ExtractionIssues:           rawJSONOrNil(filteredExtractionIssues(p)),
+		CreatedAt:                  p.CreatedAt,
+		UpdatedAt:                  p.UpdatedAt,
 	}
+}
+
+// filteredExtractionIssues removes issues whose flagged field is already populated
+// in the property — so the client never shows stale warnings for data that was
+// subsequently filled in without an explicit save.
+func filteredExtractionIssues(p queries.PipelineProperty) []byte {
+	if len(p.ExtractionIssues) == 0 {
+		return nil
+	}
+	var issues []omExtractionIssue
+	if err := json.Unmarshal(p.ExtractionIssues, &issues); err != nil || len(issues) == 0 {
+		return nil
+	}
+
+	// Field name → "is populated?" check against the DB columns.
+	populated := map[string]bool{
+		"buildingSqft":              p.Sqft.Valid,
+		"buildingCount":             p.BuildingCount.Valid,
+		"totalUnits":                p.Units.Valid,
+		"rentRollUnitCount":         p.Units.Valid,
+		"stories":                   p.Stories.Valid,
+		"yearBuilt":                 p.YearBuilt.Valid,
+		"askingPrice":               p.AskingPrice.Valid,
+		"capRate":                   p.BrokerCapRate.Valid,
+		"brokerNOI":                 p.BrokerNoi.Valid,
+		"grossPotentialRentCurrent": p.GrossPotentialRent.Valid,
+		"vacancyPct":                p.VacancyPct.Valid,
+	}
+
+	var active []omExtractionIssue
+	for _, iss := range issues {
+		if !populated[iss.Field] {
+			active = append(active, iss)
+		}
+	}
+	if len(active) == 0 {
+		return nil
+	}
+	out, _ := json.Marshal(active)
+	return out
 }
 
 // computePropertyCompleteness returns the completeness level for a property.
@@ -908,6 +1121,49 @@ func (h *Handler) AddProperty(w http.ResponseWriter, r *http.Request) {
 		WeightedAvgLeaseYrs: numericFromFloat(req.WeightedAvgLeaseYrs),
 		CommercialSqft:      int4FromPtr(req.CommercialSqft),
 		CommercialMix:       req.CommercialMix,
+		YearRenovated:       int4FromPtr(req.YearRenovated),
+		Stories:             int4FromPtr(req.Stories),
+		Zoning:              textVal(req.Zoning),
+		Construction:        textVal(req.Construction),
+		ParkingSpaces:       int4FromPtr(req.ParkingSpaces),
+		BrokerCapRate:       numericFromFloat(req.BrokerCapRate),
+		Description:         textVal(req.Description),
+		Parking:             textVal(req.Parking),
+		BrokerNoi:           numericFromFloat(req.BrokerNOI),
+		BrokerNoiStabilized: numericFromFloat(req.BrokerNOIStabilized),
+		GrossPotentialRent:  numericFromFloat(req.GrossPotentialRent),
+		EffectiveGrossIncome: numericFromFloat(req.EffectiveGrossIncome),
+		VacancyPct:          numericFromFloat(req.VacancyPct),
+		VacancyLabel:        textVal(req.VacancyLabel),
+		ExpenseItems:        req.ExpenseItems,
+		OmDate:              textVal(req.OMDate),
+		BrokerContact:       req.BrokerContact,
+		Latitude:            numericFromFloat(req.Latitude),
+		Longitude:           numericFromFloat(req.Longitude),
+		Broker5yrIrr:        numericFromFloat(req.Broker5YrIRR),
+		BrokerYr1Coc:        numericFromFloat(req.BrokerYr1CoC),
+		LoanTermYears:       int4FromPtr(req.LoanTermYears),
+		BrokerGrm:           numericFromFloat(req.BrokerGRM),
+		BrokerDscr:          numericFromFloat(req.BrokerDSCR),
+		AssumableDebtBalance: numericFromFloat(req.AssumableDebtBalance),
+		AssumableDebtTerm:   numericFromFloat(req.AssumableDebtTerm),
+		AssumableDebtRate:   numericFromFloat(req.AssumableDebtRate),
+		CapRateProForma:     numericFromFloat(req.CapRateProForma),
+		BuildingClass:       textVal(req.BuildingClass),
+		HoaMonthly:          numericFromFloat(req.HOAMonthly),
+		ClearHeightFt:       numericFromFloat(req.ClearHeightFt),
+		LoadingDocks:        int4FromPtr(req.LoadingDocks),
+		OfficePct:           numericFromFloat(req.OfficePct),
+		Sprinklered:         textVal(req.Sprinklered),
+		TotalStorageUnits:          int4FromPtr(req.TotalStorageUnits),
+		ClimateControlledPct:       numericFromFloat(req.ClimateControlledPct),
+		InvestmentHighlights:       req.InvestmentHighlights,
+		OtherIncomeItems:           req.OtherIncomeItems,
+		RenovationCost:             numericFromFloat(req.RenovationCost),
+		ClaimedRenovationNoiUplift: numericFromFloat(req.ClaimedRenovationNOIUplift),
+		ValueAddData:               req.ValueAddData,
+		BuildingAmenities:          req.BuildingAmenities,
+		MarketOverviewText:         textVal(req.MarketOverviewText),
 	})
 	if err != nil {
 		h.logger.Error("CreatePipelineProperty failed", "error", err)
@@ -1027,6 +1283,27 @@ func (h *Handler) UpdateProperty(w http.ResponseWriter, r *http.Request) {
 		commercialMix = *req.CommercialMix
 	}
 
+	var expenseItems []byte
+	if req.ExpenseItems != nil {
+		expenseItems = *req.ExpenseItems
+	}
+	var brokerContact []byte
+	if req.BrokerContact != nil {
+		brokerContact = *req.BrokerContact
+	}
+	var investmentHighlights []byte
+	if req.InvestmentHighlights != nil {
+		investmentHighlights = *req.InvestmentHighlights
+	}
+	var otherIncomeItems []byte
+	if req.OtherIncomeItems != nil {
+		otherIncomeItems = *req.OtherIncomeItems
+	}
+	var valueAddData []byte
+	if req.ValueAddData != nil {
+		valueAddData = *req.ValueAddData
+	}
+
 	prop, err := h.store.Q().UpdatePipelineProperty(r.Context(), queries.UpdatePipelinePropertyParams{
 		ID:                  propID,
 		Address:             textFromPtr(req.Address),
@@ -1058,6 +1335,49 @@ func (h *Handler) UpdateProperty(w http.ResponseWriter, r *http.Request) {
 		WeightedAvgLeaseYrs: numericFromFloatPtr(req.WeightedAvgLeaseYrs),
 		CommercialSqft:      int4FromPtr(req.CommercialSqft),
 		CommercialMix:       commercialMix,
+		YearRenovated:       int4FromPtr(req.YearRenovated),
+		Stories:             int4FromPtr(req.Stories),
+		Zoning:              textFromPtr(req.Zoning),
+		Construction:        textFromPtr(req.Construction),
+		ParkingSpaces:       int4FromPtr(req.ParkingSpaces),
+		Description:         textFromPtr(req.Description),
+		Parking:             textFromPtr(req.Parking),
+		BrokerNoi:           numericFromFloatPtr(req.BrokerNOI),
+		BrokerNoiStabilized: numericFromFloatPtr(req.BrokerNOIStabilized),
+		GrossPotentialRent:  numericFromFloatPtr(req.GrossPotentialRent),
+		EffectiveGrossIncome: numericFromFloatPtr(req.EffectiveGrossIncome),
+		VacancyPct:          numericFromFloatPtr(req.VacancyPct),
+		VacancyLabel:        textFromPtr(req.VacancyLabel),
+		ExpenseItems:        expenseItems,
+		OmDate:              textFromPtr(req.OMDate),
+		BrokerContact:       brokerContact,
+		Latitude:            numericFromFloatPtr(req.Latitude),
+		Longitude:           numericFromFloatPtr(req.Longitude),
+		Broker5yrIrr:        numericFromFloatPtr(req.Broker5YrIRR),
+		BrokerYr1Coc:        numericFromFloatPtr(req.BrokerYr1CoC),
+		LoanTermYears:       int4FromPtr(req.LoanTermYears),
+		BrokerCapRate:       numericFromFloatPtr(req.BrokerCapRate),
+		BrokerGrm:           numericFromFloatPtr(req.BrokerGRM),
+		BrokerDscr:          numericFromFloatPtr(req.BrokerDSCR),
+		AssumableDebtBalance: numericFromFloatPtr(req.AssumableDebtBalance),
+		AssumableDebtTerm:   numericFromFloatPtr(req.AssumableDebtTerm),
+		AssumableDebtRate:   numericFromFloatPtr(req.AssumableDebtRate),
+		CapRateProForma:     numericFromFloatPtr(req.CapRateProForma),
+		BuildingClass:       textFromPtr(req.BuildingClass),
+		HoaMonthly:          numericFromFloatPtr(req.HOAMonthly),
+		ClearHeightFt:       numericFromFloatPtr(req.ClearHeightFt),
+		LoadingDocks:        int4FromPtr(req.LoadingDocks),
+		OfficePct:           numericFromFloatPtr(req.OfficePct),
+		Sprinklered:         textFromPtr(req.Sprinklered),
+		TotalStorageUnits:          int4FromPtr(req.TotalStorageUnits),
+		ClimateControlledPct:       numericFromFloatPtr(req.ClimateControlledPct),
+		InvestmentHighlights:       investmentHighlights,
+		OtherIncomeItems:           otherIncomeItems,
+		RenovationCost:             numericFromFloatPtr(req.RenovationCost),
+		ClaimedRenovationNoiUplift: numericFromFloatPtr(req.ClaimedRenovationNOIUplift),
+		ValueAddData:               valueAddData,
+		BuildingAmenities:          req.BuildingAmenities,
+		MarketOverviewText:         textFromPtr(req.MarketOverviewText),
 	})
 	if err != nil {
 		h.logger.Error("UpdatePipelineProperty failed", "error", err)
@@ -1072,6 +1392,13 @@ func (h *Handler) UpdateProperty(w http.ResponseWriter, r *http.Request) {
 		PropertyCompleteness: completeness,
 	})
 	prop.PropertyCompleteness = completeness
+
+	// Clear extraction issues on save — user has reviewed and corrected the data.
+	_ = h.store.Q().UpdatePropertyExtractionIssues(r.Context(), queries.UpdatePropertyExtractionIssuesParams{
+		ID:               prop.ID,
+		ExtractionIssues: nil,
+	})
+	prop.ExtractionIssues = nil
 
 	httputil.Success(w, mapPropertyToResponse(prop))
 }

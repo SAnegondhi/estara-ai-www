@@ -518,6 +518,7 @@ func NewRouter(ctx context.Context, routerCfg RouterConfig) chi.Router {
 		r.Get("/retrospective", handlers.Pipeline.GetRetrospective)      // ADR-104: acquisition retrospective
 		r.Post("/check-om", handlers.Pipeline.CheckOM)                   // ADR-107 (revised): wizard step 1
 		r.Post("/extract-om", handlers.Pipeline.ExtractOM)               // ADR-107 (revised): wizard step 2
+		r.Post("/validate-address", handlers.Pipeline.ValidateAddress)   // ADR-112: async address geocoding
 
 		r.Route("/deals/{dealId}", func(r chi.Router) {
 			r.Get("/", handlers.Pipeline.GetDeal)

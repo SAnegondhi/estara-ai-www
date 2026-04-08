@@ -25,7 +25,7 @@ const (
 	cacheTTL        = 90 * 24 * time.Hour // 90 days
 	memTTL          = 24 * time.Hour      // 24h in-memory
 	redisTTL        = 90 * 24 * time.Hour // 90 days in Redis
-	maxWebSearches  = 12
+	maxWebSearches  = 18
 	maxTokens       = 4000
 )
 
@@ -207,7 +207,11 @@ func (s *MarketContextService) fetchFromAI(ctx context.Context, city, state stri
 
 // checkQuality logs warnings if categories are missing or lack sourced entries
 func (s *MarketContextService) checkQuality(city, state, text string) {
-	categories := []string{"PROPERTY_TAX_SYSTEM", "REGULATORY_ENVIRONMENT", "INSURANCE_CONTEXT", "FISCAL_CONTEXT", "ECONOMIC_INDICATORS", "SUPPLY_PIPELINE"}
+	categories := []string{
+		"PROPERTY_TAX_SYSTEM", "REGULATORY_ENVIRONMENT", "INSURANCE_CONTEXT",
+		"FISCAL_CONTEXT", "ECONOMIC_INDICATORS", "SUPPLY_PIPELINE",
+		"LANDLORD_TENANT_LAW", "REAL_ESTATE_INVESTMENT_RESTRICTIONS",
+	}
 	lower := strings.ToLower(text)
 	missing := 0
 	for _, cat := range categories {

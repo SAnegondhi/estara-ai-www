@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -3053,15 +3054,21 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Batch fetch all cache entries to avoid N+1 queries
-	cacheKeys := make([]string, len(dbReports))
+	// Batch fetch all cache entries to avoid N+1 queries.
+	// market_analysis_reports.cache_key uses "market_analysis:{loc}" format, but
+	// analysis_cache.key uses "analysis_{sanitized_loc}" format (client-generated).
+	// Derive the analysis_cache key from each report's location to find the actual content.
+	analysisCacheKeys := make([]string, len(dbReports))
+	reportToAnalysisKey := make(map[string]string, len(dbReports)) // report.CacheKey → analysis_cache.key
 	for i, report := range dbReports {
-		cacheKeys[i] = report.CacheKey
+		aKey := locationToAnalysisCacheKey(report.Location)
+		analysisCacheKeys[i] = aKey
+		reportToAnalysisKey[report.CacheKey] = aKey
 	}
 
 	cacheMap := make(map[string]queries.BatchGetAnalysisCacheByKeysRow)
-	if len(cacheKeys) > 0 {
-		cachedItems, err := h.store.Q().BatchGetAnalysisCacheByKeys(ctx, cacheKeys)
+	if len(analysisCacheKeys) > 0 {
+		cachedItems, err := h.store.Q().BatchGetAnalysisCacheByKeys(ctx, analysisCacheKeys)
 		if err == nil {
 			for _, cached := range cachedItems {
 				cacheMap[cached.Key] = cached
@@ -3073,7 +3080,10 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 	for _, report := range dbReports {
 		item := AnalysisHistoryItem{
 			ID:       report.ID,
-			CacheKey: report.CacheKey,
+			// Return the analysis_cache key (client-generated format) so callers can
+			// fetch the report directly. market_analysis_reports.cache_key uses a
+			// different format ("market_analysis:loc") than analysis_cache.key ("analysis_loc").
+			CacheKey: locationToAnalysisCacheKey(report.Location),
 			Location: report.Location,
 			Status:   report.Status,
 		}
@@ -3085,9 +3095,9 @@ func (h *Handler) GetAnalysisHistory(w http.ResponseWriter, r *http.Request) {
 			item.CreatedAt = report.CreatedAt.Format(time.RFC3339)
 		}
 
-		// ADR-087: Report content is still in analysis_cache
-		// Use batch-fetched cache data
-		if cachedData, found := cacheMap[report.CacheKey]; found {
+		// ADR-087: Report content is in analysis_cache under the client-generated key
+		analysisCacheKey := reportToAnalysisKey[report.CacheKey]
+		if cachedData, found := cacheMap[analysisCacheKey]; found {
 			content := string(cachedData.Content)
 			fullReport := ""
 			if cachedData.FullReport.Valid {
@@ -3263,16 +3273,37 @@ func (h *Handler) GetAnalysisContext(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// extractExecutiveSummary extracts the first paragraph under "## Executive Summary"
-// from markdown content. Falls back to the first 300 chars if not found.
+// locationToAnalysisCacheKey converts a location string to the analysis_cache key format
+// used by the client: "analysis_" + all non-alphanumeric chars replaced with "_".
+// Matches the client-side sanitizeKey: loc.toLowerCase().replace(/[^a-z0-9]/g, '_')
+// Example: "Columbus, OH" → "analysis_columbus__oh"
+var nonAlphanumRe = regexp.MustCompile(`[^a-z0-9]`)
+
+func locationToAnalysisCacheKey(location string) string {
+	return "analysis_" + nonAlphanumRe.ReplaceAllString(strings.ToLower(location), "_")
+}
+
+// extractExecutiveSummary extracts the first paragraph under an Executive Summary heading
+// from markdown content. Handles both "## Executive Summary" and "## 1. Executive Summary"
+// (numbered section format from the V2 prompt). Falls back to the first 300 chars if not found.
 func extractExecutiveSummary(content string) string {
 	if content == "" {
 		return ""
 	}
 
-	// Look for Executive Summary heading (case-insensitive)
+	// Look for Executive Summary heading (case-insensitive); handle numbered sections
 	lower := strings.ToLower(content)
 	idx := strings.Index(lower, "## executive summary")
+	if idx == -1 {
+		// Numbered section: "## 1. Executive Summary", "## 2. Executive Summary", etc.
+		if i := strings.Index(lower, "executive summary"); i != -1 {
+			// Walk back to find the "##" prefix on the same line
+			lineStart := strings.LastIndex(lower[:i], "\n") + 1
+			if strings.HasPrefix(strings.TrimSpace(lower[lineStart:i]), "##") {
+				idx = lineStart
+			}
+		}
+	}
 	if idx == -1 {
 		// Fallback: first 300 chars of content
 		if len(content) > 300 {

@@ -38,6 +38,10 @@ type AnalysisJobResponse struct {
 	Success   bool   `json:"success"`
 	JobID     string `json:"jobId"`
 	StreamURL string `json:"streamUrl"`
+	// Cached is true when a valid cached result was found. The client should
+	// fetch the report directly via cacheKey instead of subscribing to SSE.
+	Cached   bool   `json:"cached,omitempty"`
+	CacheKey string `json:"cacheKey,omitempty"`
 }
 
 // AnalysisJobDetail holds detailed job information

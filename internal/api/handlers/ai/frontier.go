@@ -157,8 +157,23 @@ func (h *Handler) RunFrontierAnalysis(w http.ResponseWriter, r *http.Request) {
 			_ = sseWriter.WriteError("no valid pipeline properties found (city, state, and price are required)")
 			return
 		}
-		req.ScoredProperties = mapped
-		// All pipeline properties are pinned — they form Config 0 verbatim.
+
+		// Discover comparable peers (non-pinned) so Frontier can build Configs 1 & 2.
+		// Peers are comparable in type + price (±40%). Commercial types search LoopNet/Crexi
+		// via Claude; residential types use the normal HasData/BrightData priority chain.
+		peers := h.discoverPipelinePeers(ctx, mapped)
+		if len(peers) > 0 {
+			h.logger.Info("pipeline peer discovery",
+				"pipeline_deal_id", req.PipelineDealID,
+				"peers_found", len(peers),
+			)
+		}
+
+		// Peers first (non-pinned pool for Configs 1/2), then deal properties (pinned below).
+		allScored := append(peers, mapped...)
+		req.ScoredProperties = allScored
+
+		// All pipeline deal properties are pinned — they form Config 0 verbatim.
 		for _, sp := range mapped {
 			req.PinnedPropertyIDs = append(req.PinnedPropertyIDs, sp.Property.ID)
 		}

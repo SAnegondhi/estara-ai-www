@@ -791,6 +791,8 @@ type Querier interface {
 	UpdatePropertyCacheAccess(ctx context.Context, cacheKey string) error
 	// ADR-107: update computed completeness status after create/update.
 	UpdatePropertyCompleteness(ctx context.Context, arg UpdatePropertyCompletenessParams) error
+	// Pass 3: store validation issues after async OM re-read.
+	UpdatePropertyExtractionIssues(ctx context.Context, arg UpdatePropertyExtractionIssuesParams) error
 	UpdateRenewalNotificationDelivered(ctx context.Context, id string) error
 	UpdateRenewalNotificationOpened(ctx context.Context, id string) error
 	// Update latitude/longitude for a report

@@ -107,6 +107,18 @@ INSERT INTO pipeline_properties (
     notes, source_type,
     lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix,
     year_renovated, stories, zoning, construction, parking_spaces,
+    broker_cap_rate,
+    description, parking, broker_noi, broker_noi_stabilized,
+    gross_potential_rent, effective_gross_income, vacancy_pct, vacancy_label,
+    expense_items, om_date, broker_contact, latitude, longitude,
+    broker_5yr_irr, broker_yr1_coc, loan_term_years,
+    broker_grm, broker_dscr, assumable_debt_balance, assumable_debt_term, cap_rate_pro_forma,
+    building_class, hoa_monthly,
+    clear_height_ft, loading_docks, office_pct, sprinklered,
+    total_storage_units, climate_controlled_pct,
+    assumable_debt_rate, investment_highlights,
+    other_income_items, renovation_cost, claimed_renovation_noi_uplift,
+    value_add_data, building_amenities, market_overview_text,
     created_at, updated_at
 ) VALUES (
     gen_random_uuid(), $1, $2, $3, $4, $5,
@@ -117,47 +129,97 @@ INSERT INTO pipeline_properties (
     $24, $25,
     $26, $27, $28, $29, $30, $31,
     $32, $33, $34, $35, $36,
+    $37,
+    $38, $39, $40, $41,
+    $42, $43, $44, $45,
+    $46, $47, $48, $49, $50,
+    $51, $52, $53,
+    $54, $55, $56, $57, $58,
+    $59, $60,
+    $61, $62, $63, $64,
+    $65, $66,
+    $67, $68,
+    $69, $70, $71,
+    $72, $73, $74,
     NOW(), NOW()
-) RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, unit_mix, lot_sqft, building_count, notes, source_type, om_data, broker_cap_rate, om_file_path, om_file_data, om_file_name, om_file_type, om_validation_status, om_questions, om_validated_data, property_completeness, lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix, year_renovated, stories, zoning, construction, parking_spaces, created_at, updated_at
+) RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, unit_mix, lot_sqft, building_count, notes, source_type, om_data, broker_cap_rate, om_file_path, om_file_data, om_file_name, om_file_type, om_validation_status, om_questions, om_validated_data, property_completeness, lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix, year_renovated, stories, zoning, construction, parking_spaces, description, parking, broker_noi, broker_noi_stabilized, gross_potential_rent, effective_gross_income, vacancy_pct, vacancy_label, expense_items, om_date, broker_contact, latitude, longitude, broker_5yr_irr, broker_yr1_coc, loan_term_years, broker_grm, broker_dscr, assumable_debt_balance, assumable_debt_term, cap_rate_pro_forma, building_class, hoa_monthly, clear_height_ft, loading_docks, office_pct, sprinklered, total_storage_units, climate_controlled_pct, assumable_debt_rate, investment_highlights, other_income_items, renovation_cost, claimed_renovation_noi_uplift, value_add_data, building_amenities, market_overview_text, extraction_issues, created_at, updated_at
 `
 
 type CreatePipelinePropertyParams struct {
-	PipelineDealID      uuid.UUID      `json:"pipeline_deal_id"`
-	Address             string         `json:"address"`
-	City                pgtype.Text    `json:"city"`
-	State               pgtype.Text    `json:"state"`
-	Zip                 pgtype.Text    `json:"zip"`
-	PropertyType        pgtype.Text    `json:"property_type"`
-	Beds                pgtype.Numeric `json:"beds"`
-	Baths               pgtype.Numeric `json:"baths"`
-	Sqft                pgtype.Int4    `json:"sqft"`
-	YearBuilt           pgtype.Int4    `json:"year_built"`
-	Units               pgtype.Int4    `json:"units"`
-	AskingPrice         pgtype.Numeric `json:"asking_price"`
-	TargetPrice         pgtype.Numeric `json:"target_price"`
-	DownPaymentPct      pgtype.Numeric `json:"down_payment_pct"`
-	FinancingType       pgtype.Text    `json:"financing_type"`
-	InterestRate        pgtype.Numeric `json:"interest_rate"`
-	BrokerRent          pgtype.Numeric `json:"broker_rent"`
-	SystemRent          pgtype.Numeric `json:"system_rent"`
-	CurrentOccupancy    pgtype.Numeric `json:"current_occupancy"`
-	ExpenseOverrides    []byte         `json:"expense_overrides"`
-	UnitMix             []byte         `json:"unit_mix"`
-	LotSqft             pgtype.Int4    `json:"lot_sqft"`
-	BuildingCount       pgtype.Int4    `json:"building_count"`
-	Notes               pgtype.Text    `json:"notes"`
-	SourceType          string         `json:"source_type"`
-	LeaseType           pgtype.Text    `json:"lease_type"`
-	TenantCount         pgtype.Int4    `json:"tenant_count"`
-	AnchorTenant        pgtype.Text    `json:"anchor_tenant"`
-	WeightedAvgLeaseYrs pgtype.Numeric `json:"weighted_avg_lease_yrs"`
-	CommercialSqft      pgtype.Int4    `json:"commercial_sqft"`
-	CommercialMix       []byte         `json:"commercial_mix"`
-	YearRenovated       pgtype.Int4    `json:"year_renovated"`
-	Stories             pgtype.Int4    `json:"stories"`
-	Zoning              pgtype.Text    `json:"zoning"`
-	Construction        pgtype.Text    `json:"construction"`
-	ParkingSpaces       pgtype.Int4    `json:"parking_spaces"`
+	PipelineDealID             uuid.UUID      `json:"pipeline_deal_id"`
+	Address                    string         `json:"address"`
+	City                       pgtype.Text    `json:"city"`
+	State                      pgtype.Text    `json:"state"`
+	Zip                        pgtype.Text    `json:"zip"`
+	PropertyType               pgtype.Text    `json:"property_type"`
+	Beds                       pgtype.Numeric `json:"beds"`
+	Baths                      pgtype.Numeric `json:"baths"`
+	Sqft                       pgtype.Int4    `json:"sqft"`
+	YearBuilt                  pgtype.Int4    `json:"year_built"`
+	Units                      pgtype.Int4    `json:"units"`
+	AskingPrice                pgtype.Numeric `json:"asking_price"`
+	TargetPrice                pgtype.Numeric `json:"target_price"`
+	DownPaymentPct             pgtype.Numeric `json:"down_payment_pct"`
+	FinancingType              pgtype.Text    `json:"financing_type"`
+	InterestRate               pgtype.Numeric `json:"interest_rate"`
+	BrokerRent                 pgtype.Numeric `json:"broker_rent"`
+	SystemRent                 pgtype.Numeric `json:"system_rent"`
+	CurrentOccupancy           pgtype.Numeric `json:"current_occupancy"`
+	ExpenseOverrides           []byte         `json:"expense_overrides"`
+	UnitMix                    []byte         `json:"unit_mix"`
+	LotSqft                    pgtype.Int4    `json:"lot_sqft"`
+	BuildingCount              pgtype.Int4    `json:"building_count"`
+	Notes                      pgtype.Text    `json:"notes"`
+	SourceType                 string         `json:"source_type"`
+	LeaseType                  pgtype.Text    `json:"lease_type"`
+	TenantCount                pgtype.Int4    `json:"tenant_count"`
+	AnchorTenant               pgtype.Text    `json:"anchor_tenant"`
+	WeightedAvgLeaseYrs        pgtype.Numeric `json:"weighted_avg_lease_yrs"`
+	CommercialSqft             pgtype.Int4    `json:"commercial_sqft"`
+	CommercialMix              []byte         `json:"commercial_mix"`
+	YearRenovated              pgtype.Int4    `json:"year_renovated"`
+	Stories                    pgtype.Int4    `json:"stories"`
+	Zoning                     pgtype.Text    `json:"zoning"`
+	Construction               pgtype.Text    `json:"construction"`
+	ParkingSpaces              pgtype.Int4    `json:"parking_spaces"`
+	BrokerCapRate              pgtype.Numeric `json:"broker_cap_rate"`
+	Description                pgtype.Text    `json:"description"`
+	Parking                    pgtype.Text    `json:"parking"`
+	BrokerNoi                  pgtype.Numeric `json:"broker_noi"`
+	BrokerNoiStabilized        pgtype.Numeric `json:"broker_noi_stabilized"`
+	GrossPotentialRent         pgtype.Numeric `json:"gross_potential_rent"`
+	EffectiveGrossIncome       pgtype.Numeric `json:"effective_gross_income"`
+	VacancyPct                 pgtype.Numeric `json:"vacancy_pct"`
+	VacancyLabel               pgtype.Text    `json:"vacancy_label"`
+	ExpenseItems               []byte         `json:"expense_items"`
+	OmDate                     pgtype.Text    `json:"om_date"`
+	BrokerContact              []byte         `json:"broker_contact"`
+	Latitude                   pgtype.Numeric `json:"latitude"`
+	Longitude                  pgtype.Numeric `json:"longitude"`
+	Broker5yrIrr               pgtype.Numeric `json:"broker_5yr_irr"`
+	BrokerYr1Coc               pgtype.Numeric `json:"broker_yr1_coc"`
+	LoanTermYears              pgtype.Int4    `json:"loan_term_years"`
+	BrokerGrm                  pgtype.Numeric `json:"broker_grm"`
+	BrokerDscr                 pgtype.Numeric `json:"broker_dscr"`
+	AssumableDebtBalance       pgtype.Numeric `json:"assumable_debt_balance"`
+	AssumableDebtTerm          pgtype.Numeric `json:"assumable_debt_term"`
+	CapRateProForma            pgtype.Numeric `json:"cap_rate_pro_forma"`
+	BuildingClass              pgtype.Text    `json:"building_class"`
+	HoaMonthly                 pgtype.Numeric `json:"hoa_monthly"`
+	ClearHeightFt              pgtype.Numeric `json:"clear_height_ft"`
+	LoadingDocks               pgtype.Int4    `json:"loading_docks"`
+	OfficePct                  pgtype.Numeric `json:"office_pct"`
+	Sprinklered                pgtype.Text    `json:"sprinklered"`
+	TotalStorageUnits          pgtype.Int4    `json:"total_storage_units"`
+	ClimateControlledPct       pgtype.Numeric `json:"climate_controlled_pct"`
+	AssumableDebtRate          pgtype.Numeric `json:"assumable_debt_rate"`
+	InvestmentHighlights       []byte         `json:"investment_highlights"`
+	OtherIncomeItems           []byte         `json:"other_income_items"`
+	RenovationCost             pgtype.Numeric `json:"renovation_cost"`
+	ClaimedRenovationNoiUplift pgtype.Numeric `json:"claimed_renovation_noi_uplift"`
+	ValueAddData               []byte         `json:"value_add_data"`
+	BuildingAmenities          []string       `json:"building_amenities"`
+	MarketOverviewText         pgtype.Text    `json:"market_overview_text"`
 }
 
 // ============================================================
@@ -201,6 +263,44 @@ func (q *Queries) CreatePipelineProperty(ctx context.Context, arg CreatePipeline
 		arg.Zoning,
 		arg.Construction,
 		arg.ParkingSpaces,
+		arg.BrokerCapRate,
+		arg.Description,
+		arg.Parking,
+		arg.BrokerNoi,
+		arg.BrokerNoiStabilized,
+		arg.GrossPotentialRent,
+		arg.EffectiveGrossIncome,
+		arg.VacancyPct,
+		arg.VacancyLabel,
+		arg.ExpenseItems,
+		arg.OmDate,
+		arg.BrokerContact,
+		arg.Latitude,
+		arg.Longitude,
+		arg.Broker5yrIrr,
+		arg.BrokerYr1Coc,
+		arg.LoanTermYears,
+		arg.BrokerGrm,
+		arg.BrokerDscr,
+		arg.AssumableDebtBalance,
+		arg.AssumableDebtTerm,
+		arg.CapRateProForma,
+		arg.BuildingClass,
+		arg.HoaMonthly,
+		arg.ClearHeightFt,
+		arg.LoadingDocks,
+		arg.OfficePct,
+		arg.Sprinklered,
+		arg.TotalStorageUnits,
+		arg.ClimateControlledPct,
+		arg.AssumableDebtRate,
+		arg.InvestmentHighlights,
+		arg.OtherIncomeItems,
+		arg.RenovationCost,
+		arg.ClaimedRenovationNoiUplift,
+		arg.ValueAddData,
+		arg.BuildingAmenities,
+		arg.MarketOverviewText,
 	)
 	var i PipelineProperty
 	err := row.Scan(
@@ -251,6 +351,44 @@ func (q *Queries) CreatePipelineProperty(ctx context.Context, arg CreatePipeline
 		&i.Zoning,
 		&i.Construction,
 		&i.ParkingSpaces,
+		&i.Description,
+		&i.Parking,
+		&i.BrokerNoi,
+		&i.BrokerNoiStabilized,
+		&i.GrossPotentialRent,
+		&i.EffectiveGrossIncome,
+		&i.VacancyPct,
+		&i.VacancyLabel,
+		&i.ExpenseItems,
+		&i.OmDate,
+		&i.BrokerContact,
+		&i.Latitude,
+		&i.Longitude,
+		&i.Broker5yrIrr,
+		&i.BrokerYr1Coc,
+		&i.LoanTermYears,
+		&i.BrokerGrm,
+		&i.BrokerDscr,
+		&i.AssumableDebtBalance,
+		&i.AssumableDebtTerm,
+		&i.CapRateProForma,
+		&i.BuildingClass,
+		&i.HoaMonthly,
+		&i.ClearHeightFt,
+		&i.LoadingDocks,
+		&i.OfficePct,
+		&i.Sprinklered,
+		&i.TotalStorageUnits,
+		&i.ClimateControlledPct,
+		&i.AssumableDebtRate,
+		&i.InvestmentHighlights,
+		&i.OtherIncomeItems,
+		&i.RenovationCost,
+		&i.ClaimedRenovationNoiUplift,
+		&i.ValueAddData,
+		&i.BuildingAmenities,
+		&i.MarketOverviewText,
+		&i.ExtractionIssues,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -421,7 +559,7 @@ func (q *Queries) GetPipelineDeal(ctx context.Context, arg GetPipelineDealParams
 }
 
 const GetPipelineProperty = `-- name: GetPipelineProperty :one
-SELECT pp.id, pp.pipeline_deal_id, pp.address, pp.city, pp.state, pp.zip, pp.property_type, pp.beds, pp.baths, pp.sqft, pp.year_built, pp.units, pp.asking_price, pp.target_price, pp.down_payment_pct, pp.financing_type, pp.interest_rate, pp.broker_rent, pp.system_rent, pp.current_occupancy, pp.expense_overrides, pp.unit_mix, pp.lot_sqft, pp.building_count, pp.notes, pp.source_type, pp.om_data, pp.broker_cap_rate, pp.om_file_path, pp.om_file_data, pp.om_file_name, pp.om_file_type, pp.om_validation_status, pp.om_questions, pp.om_validated_data, pp.property_completeness, pp.lease_type, pp.tenant_count, pp.anchor_tenant, pp.weighted_avg_lease_yrs, pp.commercial_sqft, pp.commercial_mix, pp.year_renovated, pp.stories, pp.zoning, pp.construction, pp.parking_spaces, pp.created_at, pp.updated_at FROM pipeline_properties pp
+SELECT pp.id, pp.pipeline_deal_id, pp.address, pp.city, pp.state, pp.zip, pp.property_type, pp.beds, pp.baths, pp.sqft, pp.year_built, pp.units, pp.asking_price, pp.target_price, pp.down_payment_pct, pp.financing_type, pp.interest_rate, pp.broker_rent, pp.system_rent, pp.current_occupancy, pp.expense_overrides, pp.unit_mix, pp.lot_sqft, pp.building_count, pp.notes, pp.source_type, pp.om_data, pp.broker_cap_rate, pp.om_file_path, pp.om_file_data, pp.om_file_name, pp.om_file_type, pp.om_validation_status, pp.om_questions, pp.om_validated_data, pp.property_completeness, pp.lease_type, pp.tenant_count, pp.anchor_tenant, pp.weighted_avg_lease_yrs, pp.commercial_sqft, pp.commercial_mix, pp.year_renovated, pp.stories, pp.zoning, pp.construction, pp.parking_spaces, pp.description, pp.parking, pp.broker_noi, pp.broker_noi_stabilized, pp.gross_potential_rent, pp.effective_gross_income, pp.vacancy_pct, pp.vacancy_label, pp.expense_items, pp.om_date, pp.broker_contact, pp.latitude, pp.longitude, pp.broker_5yr_irr, pp.broker_yr1_coc, pp.loan_term_years, pp.broker_grm, pp.broker_dscr, pp.assumable_debt_balance, pp.assumable_debt_term, pp.cap_rate_pro_forma, pp.building_class, pp.hoa_monthly, pp.clear_height_ft, pp.loading_docks, pp.office_pct, pp.sprinklered, pp.total_storage_units, pp.climate_controlled_pct, pp.assumable_debt_rate, pp.investment_highlights, pp.other_income_items, pp.renovation_cost, pp.claimed_renovation_noi_uplift, pp.value_add_data, pp.building_amenities, pp.market_overview_text, pp.extraction_issues, pp.created_at, pp.updated_at FROM pipeline_properties pp
 JOIN pipeline_deals pd ON pd.id = pp.pipeline_deal_id
 WHERE pp.id = $1 AND pd.user_id = $2
 `
@@ -482,6 +620,44 @@ func (q *Queries) GetPipelineProperty(ctx context.Context, arg GetPipelineProper
 		&i.Zoning,
 		&i.Construction,
 		&i.ParkingSpaces,
+		&i.Description,
+		&i.Parking,
+		&i.BrokerNoi,
+		&i.BrokerNoiStabilized,
+		&i.GrossPotentialRent,
+		&i.EffectiveGrossIncome,
+		&i.VacancyPct,
+		&i.VacancyLabel,
+		&i.ExpenseItems,
+		&i.OmDate,
+		&i.BrokerContact,
+		&i.Latitude,
+		&i.Longitude,
+		&i.Broker5yrIrr,
+		&i.BrokerYr1Coc,
+		&i.LoanTermYears,
+		&i.BrokerGrm,
+		&i.BrokerDscr,
+		&i.AssumableDebtBalance,
+		&i.AssumableDebtTerm,
+		&i.CapRateProForma,
+		&i.BuildingClass,
+		&i.HoaMonthly,
+		&i.ClearHeightFt,
+		&i.LoadingDocks,
+		&i.OfficePct,
+		&i.Sprinklered,
+		&i.TotalStorageUnits,
+		&i.ClimateControlledPct,
+		&i.AssumableDebtRate,
+		&i.InvestmentHighlights,
+		&i.OtherIncomeItems,
+		&i.RenovationCost,
+		&i.ClaimedRenovationNoiUplift,
+		&i.ValueAddData,
+		&i.BuildingAmenities,
+		&i.MarketOverviewText,
+		&i.ExtractionIssues,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -789,7 +965,7 @@ func (q *Queries) ListPipelineDeals(ctx context.Context, arg ListPipelineDealsPa
 }
 
 const ListPipelineProperties = `-- name: ListPipelineProperties :many
-SELECT pp.id, pp.pipeline_deal_id, pp.address, pp.city, pp.state, pp.zip, pp.property_type, pp.beds, pp.baths, pp.sqft, pp.year_built, pp.units, pp.asking_price, pp.target_price, pp.down_payment_pct, pp.financing_type, pp.interest_rate, pp.broker_rent, pp.system_rent, pp.current_occupancy, pp.expense_overrides, pp.unit_mix, pp.lot_sqft, pp.building_count, pp.notes, pp.source_type, pp.om_data, pp.broker_cap_rate, pp.om_file_path, pp.om_file_data, pp.om_file_name, pp.om_file_type, pp.om_validation_status, pp.om_questions, pp.om_validated_data, pp.property_completeness, pp.lease_type, pp.tenant_count, pp.anchor_tenant, pp.weighted_avg_lease_yrs, pp.commercial_sqft, pp.commercial_mix, pp.year_renovated, pp.stories, pp.zoning, pp.construction, pp.parking_spaces, pp.created_at, pp.updated_at FROM pipeline_properties pp
+SELECT pp.id, pp.pipeline_deal_id, pp.address, pp.city, pp.state, pp.zip, pp.property_type, pp.beds, pp.baths, pp.sqft, pp.year_built, pp.units, pp.asking_price, pp.target_price, pp.down_payment_pct, pp.financing_type, pp.interest_rate, pp.broker_rent, pp.system_rent, pp.current_occupancy, pp.expense_overrides, pp.unit_mix, pp.lot_sqft, pp.building_count, pp.notes, pp.source_type, pp.om_data, pp.broker_cap_rate, pp.om_file_path, pp.om_file_data, pp.om_file_name, pp.om_file_type, pp.om_validation_status, pp.om_questions, pp.om_validated_data, pp.property_completeness, pp.lease_type, pp.tenant_count, pp.anchor_tenant, pp.weighted_avg_lease_yrs, pp.commercial_sqft, pp.commercial_mix, pp.year_renovated, pp.stories, pp.zoning, pp.construction, pp.parking_spaces, pp.description, pp.parking, pp.broker_noi, pp.broker_noi_stabilized, pp.gross_potential_rent, pp.effective_gross_income, pp.vacancy_pct, pp.vacancy_label, pp.expense_items, pp.om_date, pp.broker_contact, pp.latitude, pp.longitude, pp.broker_5yr_irr, pp.broker_yr1_coc, pp.loan_term_years, pp.broker_grm, pp.broker_dscr, pp.assumable_debt_balance, pp.assumable_debt_term, pp.cap_rate_pro_forma, pp.building_class, pp.hoa_monthly, pp.clear_height_ft, pp.loading_docks, pp.office_pct, pp.sprinklered, pp.total_storage_units, pp.climate_controlled_pct, pp.assumable_debt_rate, pp.investment_highlights, pp.other_income_items, pp.renovation_cost, pp.claimed_renovation_noi_uplift, pp.value_add_data, pp.building_amenities, pp.market_overview_text, pp.extraction_issues, pp.created_at, pp.updated_at FROM pipeline_properties pp
 JOIN pipeline_deals pd ON pd.id = pp.pipeline_deal_id
 WHERE pp.pipeline_deal_id = $1 AND pd.user_id = $2
 ORDER BY pp.created_at ASC
@@ -857,6 +1033,44 @@ func (q *Queries) ListPipelineProperties(ctx context.Context, arg ListPipelinePr
 			&i.Zoning,
 			&i.Construction,
 			&i.ParkingSpaces,
+			&i.Description,
+			&i.Parking,
+			&i.BrokerNoi,
+			&i.BrokerNoiStabilized,
+			&i.GrossPotentialRent,
+			&i.EffectiveGrossIncome,
+			&i.VacancyPct,
+			&i.VacancyLabel,
+			&i.ExpenseItems,
+			&i.OmDate,
+			&i.BrokerContact,
+			&i.Latitude,
+			&i.Longitude,
+			&i.Broker5yrIrr,
+			&i.BrokerYr1Coc,
+			&i.LoanTermYears,
+			&i.BrokerGrm,
+			&i.BrokerDscr,
+			&i.AssumableDebtBalance,
+			&i.AssumableDebtTerm,
+			&i.CapRateProForma,
+			&i.BuildingClass,
+			&i.HoaMonthly,
+			&i.ClearHeightFt,
+			&i.LoadingDocks,
+			&i.OfficePct,
+			&i.Sprinklered,
+			&i.TotalStorageUnits,
+			&i.ClimateControlledPct,
+			&i.AssumableDebtRate,
+			&i.InvestmentHighlights,
+			&i.OtherIncomeItems,
+			&i.RenovationCost,
+			&i.ClaimedRenovationNoiUplift,
+			&i.ValueAddData,
+			&i.BuildingAmenities,
+			&i.MarketOverviewText,
+			&i.ExtractionIssues,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -931,7 +1145,7 @@ UPDATE pipeline_properties SET
     om_validation_status   = CASE WHEN $3::boolean THEN 'validated' ELSE om_validation_status END,
     updated_at             = NOW()
 WHERE id = $1
-RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, unit_mix, lot_sqft, building_count, notes, source_type, om_data, broker_cap_rate, om_file_path, om_file_data, om_file_name, om_file_type, om_validation_status, om_questions, om_validated_data, property_completeness, lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix, year_renovated, stories, zoning, construction, parking_spaces, created_at, updated_at
+RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, unit_mix, lot_sqft, building_count, notes, source_type, om_data, broker_cap_rate, om_file_path, om_file_data, om_file_name, om_file_type, om_validation_status, om_questions, om_validated_data, property_completeness, lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix, year_renovated, stories, zoning, construction, parking_spaces, description, parking, broker_noi, broker_noi_stabilized, gross_potential_rent, effective_gross_income, vacancy_pct, vacancy_label, expense_items, om_date, broker_contact, latitude, longitude, broker_5yr_irr, broker_yr1_coc, loan_term_years, broker_grm, broker_dscr, assumable_debt_balance, assumable_debt_term, cap_rate_pro_forma, building_class, hoa_monthly, clear_height_ft, loading_docks, office_pct, sprinklered, total_storage_units, climate_controlled_pct, assumable_debt_rate, investment_highlights, other_income_items, renovation_cost, claimed_renovation_noi_uplift, value_add_data, building_amenities, market_overview_text, extraction_issues, created_at, updated_at
 `
 
 type UpdateOMValidatedDataParams struct {
@@ -993,6 +1207,44 @@ func (q *Queries) UpdateOMValidatedData(ctx context.Context, arg UpdateOMValidat
 		&i.Zoning,
 		&i.Construction,
 		&i.ParkingSpaces,
+		&i.Description,
+		&i.Parking,
+		&i.BrokerNoi,
+		&i.BrokerNoiStabilized,
+		&i.GrossPotentialRent,
+		&i.EffectiveGrossIncome,
+		&i.VacancyPct,
+		&i.VacancyLabel,
+		&i.ExpenseItems,
+		&i.OmDate,
+		&i.BrokerContact,
+		&i.Latitude,
+		&i.Longitude,
+		&i.Broker5yrIrr,
+		&i.BrokerYr1Coc,
+		&i.LoanTermYears,
+		&i.BrokerGrm,
+		&i.BrokerDscr,
+		&i.AssumableDebtBalance,
+		&i.AssumableDebtTerm,
+		&i.CapRateProForma,
+		&i.BuildingClass,
+		&i.HoaMonthly,
+		&i.ClearHeightFt,
+		&i.LoadingDocks,
+		&i.OfficePct,
+		&i.Sprinklered,
+		&i.TotalStorageUnits,
+		&i.ClimateControlledPct,
+		&i.AssumableDebtRate,
+		&i.InvestmentHighlights,
+		&i.OtherIncomeItems,
+		&i.RenovationCost,
+		&i.ClaimedRenovationNoiUplift,
+		&i.ValueAddData,
+		&i.BuildingAmenities,
+		&i.MarketOverviewText,
+		&i.ExtractionIssues,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1131,47 +1383,123 @@ UPDATE pipeline_properties SET
     zoning                 = COALESCE($33::text, zoning),
     construction           = COALESCE($34::text, construction),
     parking_spaces         = COALESCE($35::integer, parking_spaces),
+    description            = COALESCE($36::text, description),
+    parking                = COALESCE($37::text, parking),
+    broker_noi             = COALESCE($38::numeric, broker_noi),
+    broker_noi_stabilized  = COALESCE($39::numeric, broker_noi_stabilized),
+    gross_potential_rent   = COALESCE($40::numeric, gross_potential_rent),
+    effective_gross_income = COALESCE($41::numeric, effective_gross_income),
+    vacancy_pct            = COALESCE($42::numeric, vacancy_pct),
+    vacancy_label          = COALESCE($43::text, vacancy_label),
+    expense_items          = COALESCE($44::jsonb, expense_items),
+    om_date                = COALESCE($45::text, om_date),
+    broker_contact         = COALESCE($46::jsonb, broker_contact),
+    latitude               = COALESCE($47::numeric, latitude),
+    longitude              = COALESCE($48::numeric, longitude),
+    broker_5yr_irr         = COALESCE($49::numeric, broker_5yr_irr),
+    broker_yr1_coc         = COALESCE($50::numeric, broker_yr1_coc),
+    loan_term_years        = COALESCE($51::integer, loan_term_years),
+    broker_cap_rate        = COALESCE($52::numeric, broker_cap_rate),
+    broker_grm             = COALESCE($53::numeric, broker_grm),
+    broker_dscr            = COALESCE($54::numeric, broker_dscr),
+    assumable_debt_balance = COALESCE($55::numeric, assumable_debt_balance),
+    assumable_debt_term    = COALESCE($56::numeric, assumable_debt_term),
+    cap_rate_pro_forma     = COALESCE($57::numeric, cap_rate_pro_forma),
+    building_class         = COALESCE($58::text, building_class),
+    hoa_monthly            = COALESCE($59::numeric, hoa_monthly),
+    clear_height_ft        = COALESCE($60::numeric, clear_height_ft),
+    loading_docks          = COALESCE($61::integer, loading_docks),
+    office_pct             = COALESCE($62::numeric, office_pct),
+    sprinklered            = COALESCE($63::text, sprinklered),
+    total_storage_units    = COALESCE($64::integer, total_storage_units),
+    climate_controlled_pct = COALESCE($65::numeric, climate_controlled_pct),
+    assumable_debt_rate    = COALESCE($66::numeric, assumable_debt_rate),
+    investment_highlights  = COALESCE($67::jsonb, investment_highlights),
+    other_income_items     = COALESCE($68::jsonb, other_income_items),
+    renovation_cost        = COALESCE($69::numeric, renovation_cost),
+    claimed_renovation_noi_uplift = COALESCE($70::numeric, claimed_renovation_noi_uplift),
+    value_add_data         = COALESCE($71::jsonb, value_add_data),
+    building_amenities     = COALESCE($72::text[], building_amenities),
+    market_overview_text   = COALESCE($73::text, market_overview_text),
     updated_at             = NOW()
 WHERE id = $1
-RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, unit_mix, lot_sqft, building_count, notes, source_type, om_data, broker_cap_rate, om_file_path, om_file_data, om_file_name, om_file_type, om_validation_status, om_questions, om_validated_data, property_completeness, lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix, year_renovated, stories, zoning, construction, parking_spaces, created_at, updated_at
+RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, unit_mix, lot_sqft, building_count, notes, source_type, om_data, broker_cap_rate, om_file_path, om_file_data, om_file_name, om_file_type, om_validation_status, om_questions, om_validated_data, property_completeness, lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix, year_renovated, stories, zoning, construction, parking_spaces, description, parking, broker_noi, broker_noi_stabilized, gross_potential_rent, effective_gross_income, vacancy_pct, vacancy_label, expense_items, om_date, broker_contact, latitude, longitude, broker_5yr_irr, broker_yr1_coc, loan_term_years, broker_grm, broker_dscr, assumable_debt_balance, assumable_debt_term, cap_rate_pro_forma, building_class, hoa_monthly, clear_height_ft, loading_docks, office_pct, sprinklered, total_storage_units, climate_controlled_pct, assumable_debt_rate, investment_highlights, other_income_items, renovation_cost, claimed_renovation_noi_uplift, value_add_data, building_amenities, market_overview_text, extraction_issues, created_at, updated_at
 `
 
 type UpdatePipelinePropertyParams struct {
-	ID                  uuid.UUID      `json:"id"`
-	Address             pgtype.Text    `json:"address"`
-	City                pgtype.Text    `json:"city"`
-	State               pgtype.Text    `json:"state"`
-	Zip                 pgtype.Text    `json:"zip"`
-	PropertyType        pgtype.Text    `json:"property_type"`
-	Beds                pgtype.Numeric `json:"beds"`
-	Baths               pgtype.Numeric `json:"baths"`
-	Sqft                pgtype.Int4    `json:"sqft"`
-	YearBuilt           pgtype.Int4    `json:"year_built"`
-	Units               pgtype.Int4    `json:"units"`
-	AskingPrice         pgtype.Numeric `json:"asking_price"`
-	TargetPrice         pgtype.Numeric `json:"target_price"`
-	DownPaymentPct      pgtype.Numeric `json:"down_payment_pct"`
-	FinancingType       pgtype.Text    `json:"financing_type"`
-	InterestRate        pgtype.Numeric `json:"interest_rate"`
-	BrokerRent          pgtype.Numeric `json:"broker_rent"`
-	SystemRent          pgtype.Numeric `json:"system_rent"`
-	CurrentOccupancy    pgtype.Numeric `json:"current_occupancy"`
-	ExpenseOverrides    []byte         `json:"expense_overrides"`
-	UnitMix             []byte         `json:"unit_mix"`
-	LotSqft             pgtype.Int4    `json:"lot_sqft"`
-	BuildingCount       pgtype.Int4    `json:"building_count"`
-	Notes               pgtype.Text    `json:"notes"`
-	LeaseType           pgtype.Text    `json:"lease_type"`
-	TenantCount         pgtype.Int4    `json:"tenant_count"`
-	AnchorTenant        pgtype.Text    `json:"anchor_tenant"`
-	WeightedAvgLeaseYrs pgtype.Numeric `json:"weighted_avg_lease_yrs"`
-	CommercialSqft      pgtype.Int4    `json:"commercial_sqft"`
-	CommercialMix       []byte         `json:"commercial_mix"`
-	YearRenovated       pgtype.Int4    `json:"year_renovated"`
-	Stories             pgtype.Int4    `json:"stories"`
-	Zoning              pgtype.Text    `json:"zoning"`
-	Construction        pgtype.Text    `json:"construction"`
-	ParkingSpaces       pgtype.Int4    `json:"parking_spaces"`
+	ID                         uuid.UUID      `json:"id"`
+	Address                    pgtype.Text    `json:"address"`
+	City                       pgtype.Text    `json:"city"`
+	State                      pgtype.Text    `json:"state"`
+	Zip                        pgtype.Text    `json:"zip"`
+	PropertyType               pgtype.Text    `json:"property_type"`
+	Beds                       pgtype.Numeric `json:"beds"`
+	Baths                      pgtype.Numeric `json:"baths"`
+	Sqft                       pgtype.Int4    `json:"sqft"`
+	YearBuilt                  pgtype.Int4    `json:"year_built"`
+	Units                      pgtype.Int4    `json:"units"`
+	AskingPrice                pgtype.Numeric `json:"asking_price"`
+	TargetPrice                pgtype.Numeric `json:"target_price"`
+	DownPaymentPct             pgtype.Numeric `json:"down_payment_pct"`
+	FinancingType              pgtype.Text    `json:"financing_type"`
+	InterestRate               pgtype.Numeric `json:"interest_rate"`
+	BrokerRent                 pgtype.Numeric `json:"broker_rent"`
+	SystemRent                 pgtype.Numeric `json:"system_rent"`
+	CurrentOccupancy           pgtype.Numeric `json:"current_occupancy"`
+	ExpenseOverrides           []byte         `json:"expense_overrides"`
+	UnitMix                    []byte         `json:"unit_mix"`
+	LotSqft                    pgtype.Int4    `json:"lot_sqft"`
+	BuildingCount              pgtype.Int4    `json:"building_count"`
+	Notes                      pgtype.Text    `json:"notes"`
+	LeaseType                  pgtype.Text    `json:"lease_type"`
+	TenantCount                pgtype.Int4    `json:"tenant_count"`
+	AnchorTenant               pgtype.Text    `json:"anchor_tenant"`
+	WeightedAvgLeaseYrs        pgtype.Numeric `json:"weighted_avg_lease_yrs"`
+	CommercialSqft             pgtype.Int4    `json:"commercial_sqft"`
+	CommercialMix              []byte         `json:"commercial_mix"`
+	YearRenovated              pgtype.Int4    `json:"year_renovated"`
+	Stories                    pgtype.Int4    `json:"stories"`
+	Zoning                     pgtype.Text    `json:"zoning"`
+	Construction               pgtype.Text    `json:"construction"`
+	ParkingSpaces              pgtype.Int4    `json:"parking_spaces"`
+	Description                pgtype.Text    `json:"description"`
+	Parking                    pgtype.Text    `json:"parking"`
+	BrokerNoi                  pgtype.Numeric `json:"broker_noi"`
+	BrokerNoiStabilized        pgtype.Numeric `json:"broker_noi_stabilized"`
+	GrossPotentialRent         pgtype.Numeric `json:"gross_potential_rent"`
+	EffectiveGrossIncome       pgtype.Numeric `json:"effective_gross_income"`
+	VacancyPct                 pgtype.Numeric `json:"vacancy_pct"`
+	VacancyLabel               pgtype.Text    `json:"vacancy_label"`
+	ExpenseItems               []byte         `json:"expense_items"`
+	OmDate                     pgtype.Text    `json:"om_date"`
+	BrokerContact              []byte         `json:"broker_contact"`
+	Latitude                   pgtype.Numeric `json:"latitude"`
+	Longitude                  pgtype.Numeric `json:"longitude"`
+	Broker5yrIrr               pgtype.Numeric `json:"broker_5yr_irr"`
+	BrokerYr1Coc               pgtype.Numeric `json:"broker_yr1_coc"`
+	LoanTermYears              pgtype.Int4    `json:"loan_term_years"`
+	BrokerCapRate              pgtype.Numeric `json:"broker_cap_rate"`
+	BrokerGrm                  pgtype.Numeric `json:"broker_grm"`
+	BrokerDscr                 pgtype.Numeric `json:"broker_dscr"`
+	AssumableDebtBalance       pgtype.Numeric `json:"assumable_debt_balance"`
+	AssumableDebtTerm          pgtype.Numeric `json:"assumable_debt_term"`
+	CapRateProForma            pgtype.Numeric `json:"cap_rate_pro_forma"`
+	BuildingClass              pgtype.Text    `json:"building_class"`
+	HoaMonthly                 pgtype.Numeric `json:"hoa_monthly"`
+	ClearHeightFt              pgtype.Numeric `json:"clear_height_ft"`
+	LoadingDocks               pgtype.Int4    `json:"loading_docks"`
+	OfficePct                  pgtype.Numeric `json:"office_pct"`
+	Sprinklered                pgtype.Text    `json:"sprinklered"`
+	TotalStorageUnits          pgtype.Int4    `json:"total_storage_units"`
+	ClimateControlledPct       pgtype.Numeric `json:"climate_controlled_pct"`
+	AssumableDebtRate          pgtype.Numeric `json:"assumable_debt_rate"`
+	InvestmentHighlights       []byte         `json:"investment_highlights"`
+	OtherIncomeItems           []byte         `json:"other_income_items"`
+	RenovationCost             pgtype.Numeric `json:"renovation_cost"`
+	ClaimedRenovationNoiUplift pgtype.Numeric `json:"claimed_renovation_noi_uplift"`
+	ValueAddData               []byte         `json:"value_add_data"`
+	BuildingAmenities          []string       `json:"building_amenities"`
+	MarketOverviewText         pgtype.Text    `json:"market_overview_text"`
 }
 
 func (q *Queries) UpdatePipelineProperty(ctx context.Context, arg UpdatePipelinePropertyParams) (PipelineProperty, error) {
@@ -1211,6 +1539,44 @@ func (q *Queries) UpdatePipelineProperty(ctx context.Context, arg UpdatePipeline
 		arg.Zoning,
 		arg.Construction,
 		arg.ParkingSpaces,
+		arg.Description,
+		arg.Parking,
+		arg.BrokerNoi,
+		arg.BrokerNoiStabilized,
+		arg.GrossPotentialRent,
+		arg.EffectiveGrossIncome,
+		arg.VacancyPct,
+		arg.VacancyLabel,
+		arg.ExpenseItems,
+		arg.OmDate,
+		arg.BrokerContact,
+		arg.Latitude,
+		arg.Longitude,
+		arg.Broker5yrIrr,
+		arg.BrokerYr1Coc,
+		arg.LoanTermYears,
+		arg.BrokerCapRate,
+		arg.BrokerGrm,
+		arg.BrokerDscr,
+		arg.AssumableDebtBalance,
+		arg.AssumableDebtTerm,
+		arg.CapRateProForma,
+		arg.BuildingClass,
+		arg.HoaMonthly,
+		arg.ClearHeightFt,
+		arg.LoadingDocks,
+		arg.OfficePct,
+		arg.Sprinklered,
+		arg.TotalStorageUnits,
+		arg.ClimateControlledPct,
+		arg.AssumableDebtRate,
+		arg.InvestmentHighlights,
+		arg.OtherIncomeItems,
+		arg.RenovationCost,
+		arg.ClaimedRenovationNoiUplift,
+		arg.ValueAddData,
+		arg.BuildingAmenities,
+		arg.MarketOverviewText,
 	)
 	var i PipelineProperty
 	err := row.Scan(
@@ -1261,6 +1627,44 @@ func (q *Queries) UpdatePipelineProperty(ctx context.Context, arg UpdatePipeline
 		&i.Zoning,
 		&i.Construction,
 		&i.ParkingSpaces,
+		&i.Description,
+		&i.Parking,
+		&i.BrokerNoi,
+		&i.BrokerNoiStabilized,
+		&i.GrossPotentialRent,
+		&i.EffectiveGrossIncome,
+		&i.VacancyPct,
+		&i.VacancyLabel,
+		&i.ExpenseItems,
+		&i.OmDate,
+		&i.BrokerContact,
+		&i.Latitude,
+		&i.Longitude,
+		&i.Broker5yrIrr,
+		&i.BrokerYr1Coc,
+		&i.LoanTermYears,
+		&i.BrokerGrm,
+		&i.BrokerDscr,
+		&i.AssumableDebtBalance,
+		&i.AssumableDebtTerm,
+		&i.CapRateProForma,
+		&i.BuildingClass,
+		&i.HoaMonthly,
+		&i.ClearHeightFt,
+		&i.LoadingDocks,
+		&i.OfficePct,
+		&i.Sprinklered,
+		&i.TotalStorageUnits,
+		&i.ClimateControlledPct,
+		&i.AssumableDebtRate,
+		&i.InvestmentHighlights,
+		&i.OtherIncomeItems,
+		&i.RenovationCost,
+		&i.ClaimedRenovationNoiUplift,
+		&i.ValueAddData,
+		&i.BuildingAmenities,
+		&i.MarketOverviewText,
+		&i.ExtractionIssues,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1277,7 +1681,7 @@ UPDATE pipeline_properties SET
     om_file_type    = COALESCE($7::text, om_file_type),
     updated_at      = NOW()
 WHERE id = $1
-RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, unit_mix, lot_sqft, building_count, notes, source_type, om_data, broker_cap_rate, om_file_path, om_file_data, om_file_name, om_file_type, om_validation_status, om_questions, om_validated_data, property_completeness, lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix, year_renovated, stories, zoning, construction, parking_spaces, created_at, updated_at
+RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, unit_mix, lot_sqft, building_count, notes, source_type, om_data, broker_cap_rate, om_file_path, om_file_data, om_file_name, om_file_type, om_validation_status, om_questions, om_validated_data, property_completeness, lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix, year_renovated, stories, zoning, construction, parking_spaces, description, parking, broker_noi, broker_noi_stabilized, gross_potential_rent, effective_gross_income, vacancy_pct, vacancy_label, expense_items, om_date, broker_contact, latitude, longitude, broker_5yr_irr, broker_yr1_coc, loan_term_years, broker_grm, broker_dscr, assumable_debt_balance, assumable_debt_term, cap_rate_pro_forma, building_class, hoa_monthly, clear_height_ft, loading_docks, office_pct, sprinklered, total_storage_units, climate_controlled_pct, assumable_debt_rate, investment_highlights, other_income_items, renovation_cost, claimed_renovation_noi_uplift, value_add_data, building_amenities, market_overview_text, extraction_issues, created_at, updated_at
 `
 
 type UpdatePipelinePropertyOMParams struct {
@@ -1351,6 +1755,44 @@ func (q *Queries) UpdatePipelinePropertyOM(ctx context.Context, arg UpdatePipeli
 		&i.Zoning,
 		&i.Construction,
 		&i.ParkingSpaces,
+		&i.Description,
+		&i.Parking,
+		&i.BrokerNoi,
+		&i.BrokerNoiStabilized,
+		&i.GrossPotentialRent,
+		&i.EffectiveGrossIncome,
+		&i.VacancyPct,
+		&i.VacancyLabel,
+		&i.ExpenseItems,
+		&i.OmDate,
+		&i.BrokerContact,
+		&i.Latitude,
+		&i.Longitude,
+		&i.Broker5yrIrr,
+		&i.BrokerYr1Coc,
+		&i.LoanTermYears,
+		&i.BrokerGrm,
+		&i.BrokerDscr,
+		&i.AssumableDebtBalance,
+		&i.AssumableDebtTerm,
+		&i.CapRateProForma,
+		&i.BuildingClass,
+		&i.HoaMonthly,
+		&i.ClearHeightFt,
+		&i.LoadingDocks,
+		&i.OfficePct,
+		&i.Sprinklered,
+		&i.TotalStorageUnits,
+		&i.ClimateControlledPct,
+		&i.AssumableDebtRate,
+		&i.InvestmentHighlights,
+		&i.OtherIncomeItems,
+		&i.RenovationCost,
+		&i.ClaimedRenovationNoiUplift,
+		&i.ValueAddData,
+		&i.BuildingAmenities,
+		&i.MarketOverviewText,
+		&i.ExtractionIssues,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1364,7 +1806,7 @@ UPDATE pipeline_properties SET
     om_validated_data    = COALESCE($4::jsonb, om_validated_data),
     updated_at           = NOW()
 WHERE id = $1
-RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, unit_mix, lot_sqft, building_count, notes, source_type, om_data, broker_cap_rate, om_file_path, om_file_data, om_file_name, om_file_type, om_validation_status, om_questions, om_validated_data, property_completeness, lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix, year_renovated, stories, zoning, construction, parking_spaces, created_at, updated_at
+RETURNING id, pipeline_deal_id, address, city, state, zip, property_type, beds, baths, sqft, year_built, units, asking_price, target_price, down_payment_pct, financing_type, interest_rate, broker_rent, system_rent, current_occupancy, expense_overrides, unit_mix, lot_sqft, building_count, notes, source_type, om_data, broker_cap_rate, om_file_path, om_file_data, om_file_name, om_file_type, om_validation_status, om_questions, om_validated_data, property_completeness, lease_type, tenant_count, anchor_tenant, weighted_avg_lease_yrs, commercial_sqft, commercial_mix, year_renovated, stories, zoning, construction, parking_spaces, description, parking, broker_noi, broker_noi_stabilized, gross_potential_rent, effective_gross_income, vacancy_pct, vacancy_label, expense_items, om_date, broker_contact, latitude, longitude, broker_5yr_irr, broker_yr1_coc, loan_term_years, broker_grm, broker_dscr, assumable_debt_balance, assumable_debt_term, cap_rate_pro_forma, building_class, hoa_monthly, clear_height_ft, loading_docks, office_pct, sprinklered, total_storage_units, climate_controlled_pct, assumable_debt_rate, investment_highlights, other_income_items, renovation_cost, claimed_renovation_noi_uplift, value_add_data, building_amenities, market_overview_text, extraction_issues, created_at, updated_at
 `
 
 type UpdatePipelinePropertyOMValidationParams struct {
@@ -1431,6 +1873,44 @@ func (q *Queries) UpdatePipelinePropertyOMValidation(ctx context.Context, arg Up
 		&i.Zoning,
 		&i.Construction,
 		&i.ParkingSpaces,
+		&i.Description,
+		&i.Parking,
+		&i.BrokerNoi,
+		&i.BrokerNoiStabilized,
+		&i.GrossPotentialRent,
+		&i.EffectiveGrossIncome,
+		&i.VacancyPct,
+		&i.VacancyLabel,
+		&i.ExpenseItems,
+		&i.OmDate,
+		&i.BrokerContact,
+		&i.Latitude,
+		&i.Longitude,
+		&i.Broker5yrIrr,
+		&i.BrokerYr1Coc,
+		&i.LoanTermYears,
+		&i.BrokerGrm,
+		&i.BrokerDscr,
+		&i.AssumableDebtBalance,
+		&i.AssumableDebtTerm,
+		&i.CapRateProForma,
+		&i.BuildingClass,
+		&i.HoaMonthly,
+		&i.ClearHeightFt,
+		&i.LoadingDocks,
+		&i.OfficePct,
+		&i.Sprinklered,
+		&i.TotalStorageUnits,
+		&i.ClimateControlledPct,
+		&i.AssumableDebtRate,
+		&i.InvestmentHighlights,
+		&i.OtherIncomeItems,
+		&i.RenovationCost,
+		&i.ClaimedRenovationNoiUplift,
+		&i.ValueAddData,
+		&i.BuildingAmenities,
+		&i.MarketOverviewText,
+		&i.ExtractionIssues,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1452,5 +1932,23 @@ type UpdatePropertyCompletenessParams struct {
 // ADR-107: update computed completeness status after create/update.
 func (q *Queries) UpdatePropertyCompleteness(ctx context.Context, arg UpdatePropertyCompletenessParams) error {
 	_, err := q.db.Exec(ctx, UpdatePropertyCompleteness, arg.ID, arg.PropertyCompleteness)
+	return err
+}
+
+const UpdatePropertyExtractionIssues = `-- name: UpdatePropertyExtractionIssues :exec
+UPDATE pipeline_properties SET
+    extraction_issues = $2,
+    updated_at        = NOW()
+WHERE id = $1
+`
+
+type UpdatePropertyExtractionIssuesParams struct {
+	ID               uuid.UUID `json:"id"`
+	ExtractionIssues []byte    `json:"extraction_issues"`
+}
+
+// Pass 3: store validation issues after async OM re-read.
+func (q *Queries) UpdatePropertyExtractionIssues(ctx context.Context, arg UpdatePropertyExtractionIssuesParams) error {
+	_, err := q.db.Exec(ctx, UpdatePropertyExtractionIssues, arg.ID, arg.ExtractionIssues)
 	return err
 }

@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -681,6 +683,8 @@ func (h *Handler) CreateDealFromOM(w http.ResponseWriter, r *http.Request) {
 	dealName := "New Deal"
 	if clientDealName != "" {
 		dealName = clientDealName
+	} else if parsedOM.PropertyTitle != "" {
+		dealName = parsedOM.PropertyTitle
 	} else if extractedAddress != "" {
 		dealName = extractedAddress
 	}
@@ -699,11 +703,21 @@ func (h *Handler) CreateDealFromOM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create the property — populate structured columns from OM extraction so edit form is pre-filled.
+	// Create the property — populate ALL structured columns from OM extraction so the edit form
+	// is fully pre-filled regardless of how the deal was created (OM upload == manual entry
+	// in terms of data model; entry method differs, data does not).
 	propAddress := "See OM"
 	if extractedAddress != "" {
 		propAddress = extractedAddress
 	}
+	// Parse street/city/state/zip from the extracted address string.
+	// When successful, propAddress is narrowed to just the street portion so that
+	// the address, city, state, and zip wizard fields don't duplicate the same data.
+	propStreet, propCity, propState, propZip := parseUSAddressParts(propAddress)
+	if propStreet != "" {
+		propAddress = propStreet
+	}
+
 	// ADR-108: use extracted propertyType from Pass 1 if available, else fall back to heuristic.
 	extractedPropType := ""
 	if parsedOM.PropertyType != nil && *parsedOM.PropertyType != "" && *parsedOM.PropertyType != "other" {
@@ -711,17 +725,52 @@ func (h *Handler) CreateDealFromOM(w http.ResponseWriter, r *http.Request) {
 	} else {
 		extractedPropType = inferPropertyTypeFromOM(parsedOM)
 	}
+
 	// Broker rent fallback chain: GrossPotentialRentCurrent → GrossPotentialRent.
 	brokerRentOM := parsedOM.GrossPotentialRentCurrent
 	if brokerRentOM == nil {
 		brokerRentOM = parsedOM.GrossPotentialRent
 	}
+
+	// Income fallback chains — prefer full P&L fields (ADR-108) over legacy summary fields.
+	omGPR        := omCoalesceFloat(parsedOM.GrossPotentialRentCurrent, parsedOM.GrossPotentialRent)
+	omEGI        := omCoalesceFloat(parsedOM.TotalEffectiveGrossIncome, parsedOM.EffectiveGrossIncome)
+	omBrokerNOI  := omCoalesceFloat(parsedOM.NOICurrent, parsedOM.BrokerNOI)
+	omBrokerNOIStab := omCoalesceFloat(parsedOM.NOIProforma, parsedOM.BrokerNOIStabilized)
+	omVacancyPct := omCoalesceFloat(parsedOM.VacancyPct, parsedOM.VacancyAssumption)
+	omYr1CoC     := omCoalesceFloat(parsedOM.YearOneCashOnCash, parsedOM.CashOnCashCurrent)
+
+	// Assumable debt: prefer structured detail, fall back to legacy flat amount.
+	var omAssumableBalance, omAssumableRate *float64
+	if parsedOM.AssumableDebtDetail != nil {
+		omAssumableBalance = &parsedOM.AssumableDebtDetail.Balance
+		omAssumableRate    = &parsedOM.AssumableDebtDetail.InterestRate
+	} else {
+		omAssumableBalance = parsedOM.AssumableDebt
+	}
+
+	// Unit count: prefer rent roll sum; fall back to totalUnits (directly extracted or
+	// computed by Claude from "N x M-Unit Buildings" descriptions).
+	omUnits := omComputeUnits(parsedOM.RentByUnitType)
+	if omUnits == nil {
+		omUnits = parsedOM.TotalUnits
+	}
+
+	// OmDate: dereference *string safely.
+	omDateStr := strPtrVal(parsedOM.OmDate)
+
 	prop, err := h.store.Q().CreatePipelineProperty(r.Context(), queries.CreatePipelinePropertyParams{
 		PipelineDealID: deal.ID,
 		Address:        propAddress,
+		City:           textVal(propCity),
+		State:          textVal(propState),
+		Zip:            textVal(propZip),
 		SourceType:     "document_upload",
 		PropertyType:   textVal(extractedPropType),
 		Notes:          textVal(parsedOM.PropertyDescription),
+		Description:    textVal(parsedOM.PropertyDescription),
+		Units:          int4FromGoIntPtr(omUnits),
+		BuildingCount:  int4FromGoIntPtr(parsedOM.BuildingCount),
 		AskingPrice:    numericFromFloatPtr(parsedOM.AskingPrice),
 		BrokerRent:     numericFromFloatPtr(brokerRentOM),
 		Sqft:           int4FromFloat64Ptr(omCoalesceFloat(parsedOM.RentableSF, parsedOM.BuildingSqft)),
@@ -732,6 +781,38 @@ func (h *Handler) CreateDealFromOM(w http.ResponseWriter, r *http.Request) {
 		Zoning:         textFromPtr(parsedOM.Zoning),
 		Construction:   textFromPtr(parsedOM.Construction),
 		ParkingSpaces:  int4FromGoIntPtr(parsedOM.ParkingSpaces),
+		Parking:        textFromPtr(parsedOM.Parking),
+		// Income statement
+		CurrentOccupancy:     numericFromFloatPtr(parsedOM.CurrentOccupancy),
+		GrossPotentialRent:   numericFromFloatPtr(omGPR),
+		EffectiveGrossIncome: numericFromFloatPtr(omEGI),
+		BrokerNoi:            numericFromFloatPtr(omBrokerNOI),
+		BrokerNoiStabilized:  numericFromFloatPtr(omBrokerNOIStab),
+		VacancyPct:           numericFromFloatPtr(omVacancyPct),
+		VacancyLabel:         textFromPtr(parsedOM.VacancyLabel),
+		OmDate:               textVal(omDateStr),
+		// Return metrics
+		CapRateProForma: numericFromFloatPtr(parsedOM.CapRateProForma),
+		BrokerGrm:       numericFromFloatPtr(parsedOM.GRM),
+		BrokerDscr:      numericFromFloatPtr(parsedOM.DSCR),
+		Broker5yrIrr:    numericFromFloatPtr(parsedOM.FiveYearIRR),
+		BrokerYr1Coc:    numericFromFloatPtr(omYr1CoC),
+		// Assumable debt
+		AssumableDebtBalance: numericFromFloatPtr(omAssumableBalance),
+		AssumableDebtRate:    numericFromFloatPtr(omAssumableRate),
+		// JSONB — rent roll, expenses, broker, highlights
+		UnitMix:              omRentToUnitMixJSON(parsedOM.RentByUnitType),
+		CommercialMix:        omTenantsJSON(parsedOM.TenantSchedule),
+		ExpenseItems:         omExpenseItemsJSON(parsedOM.ExpenseItems),
+		BrokerContact:        omBrokerContactJSON(parsedOM.BrokerContact),
+		InvestmentHighlights: omHighlightsJSON(parsedOM.InvestmentHighlights),
+		// ADR-113: progressive disclosure typed columns
+		OtherIncomeItems:           omOtherIncomeJSON(parsedOM.OtherIncomeItems),
+		RenovationCost:             numericFromFloatPtr(parsedOM.RenovationCost),
+		ClaimedRenovationNoiUplift: numericFromFloatPtr(parsedOM.ClaimedRenovationNOIUplift),
+		ValueAddData:               omValueAddJSON(parsedOM.ValueAdd),
+		BuildingAmenities:          parsedOM.BuildingAmenities,
+		MarketOverviewText:         textVal(parsedOM.MarketOverviewText),
 	})
 	if err != nil {
 		h.logger.Error("CreatePipelineProperty failed in CreateDealFromOM", "error", err)
@@ -796,6 +877,33 @@ func (h *Handler) CreateDealFromOM(w http.ResponseWriter, r *http.Request) {
 	// Bump deal property count.
 	_ = h.store.Q().BumpPipelineDealActivity(r.Context(), deal.ID)
 
+	// Pass 3: validate extraction quality asynchronously.
+	// Uses keyFacts captured during Pass 2 — no PDF re-read needed.
+	// Result stored in extraction_issues; wizard surfaces warnings to user.
+	if len(parsedOM.KeyFacts) > 0 && h.cfg.AI.AnthropicAPIKey != "" {
+		propID := prop.ID
+		keyFacts := parsedOM.KeyFacts
+		extracted := parsedOM
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer cancel()
+			issues := h.validateOMExtraction(ctx, keyFacts, &extracted)
+			if len(issues) == 0 {
+				return
+			}
+			issuesJSON, err := json.Marshal(issues)
+			if err != nil {
+				return
+			}
+			if err := h.store.Q().UpdatePropertyExtractionIssues(ctx, queries.UpdatePropertyExtractionIssuesParams{
+				ID:               propID,
+				ExtractionIssues: issuesJSON,
+			}); err != nil {
+				h.logger.Warn("UpdatePropertyExtractionIssues failed", "error", err)
+			}
+		}()
+	}
+
 	// ADR-107: if inputComplete, mark the deal now.
 	if inputComplete {
 		if _, err := h.store.Q().MarkDealInputComplete(r.Context(), queries.MarkDealInputCompleteParams{
@@ -846,6 +954,7 @@ type omData struct {
 	RentalYield   *float64         `json:"rentalYield"`
 
 	// Common but not universal
+	PropertyTitle        string   `json:"propertyTitle,omitempty"`       // named title on OM cover (e.g. "Victorian Village Portfolio — 18 Units", "The Gulch on 12th")
 	PropertyAddress      string   `json:"propertyAddress,omitempty"`     // street address (e.g. "123 Main St, Garden City, NY 11530")
 	PropertyDescription  string   `json:"propertyDescription,omitempty"` // marketing tagline / summary
 	InvestmentHighlights []string `json:"investmentHighlights,omitempty"`
@@ -860,6 +969,12 @@ type omData struct {
 	BuildingSqft         *float64 `json:"buildingSqft"` // gross building area in sqft
 
 	// Physical detail — ADR-108 additions
+	BuildingCount *int     `json:"buildingCount,omitempty"` // number of buildings in the portfolio
+	TotalUnits    *int     `json:"totalUnits,omitempty"`    // total rental units (may be computed from N×M-unit buildings)
+
+	// Pass 3 validation support: verbatim key facts captured during extraction.
+	// Used by validateOMExtraction to check for obvious misses without re-reading the PDF.
+	KeyFacts []string `json:"keyFacts,omitempty"`
 	RentableSF   *float64 `json:"rentableSF,omitempty"`   // net rentable area
 	AvgUnitSF    *float64 `json:"avgUnitSF,omitempty"`    // avg unit size
 	ParkingSpaces *int    `json:"parkingSpaces,omitempty"` // total parking stalls
@@ -885,6 +1000,7 @@ type omData struct {
 	FinancingInterestAnnual *float64 `json:"financingInterestAnnual"`
 
 	// Income statement — full P&L (ADR-108)
+	CurrentOccupancy           *float64           `json:"currentOccupancy,omitempty"`    // decimal, e.g. 0.944 for 94.4%
 	GrossPotentialRentCurrent  *float64           `json:"grossPotentialRentCurrent,omitempty"`
 	GrossPotentialRentProforma *float64           `json:"grossPotentialRentProforma,omitempty"`
 	VacancyPct                 *float64           `json:"vacancyPct,omitempty"`          // decimal, e.g. 0.05
@@ -1039,9 +1155,16 @@ Core rules:
 - yearBuilt = year the property was originally constructed (required; different from yearRenovated).
 - yearRenovated = year of most recent major renovation (optional; null if not stated).
 
-PROPERTY ADDRESS vs DESCRIPTION — ALWAYS EXTRACT SEPARATELY:
+PROPERTY TITLE vs ADDRESS vs DESCRIPTION — THREE SEPARATE FIELDS:
+- propertyTitle = the BRANDED NAME of the property — a proper noun that functions as the project's identity. Extract this whenever the OM presents a standalone name for the property, even if that name incorporates the street. Recognition rules:
+  * ANY name ending in Apartments, Flats, Lofts, Place, Gardens, Plaza, Court, Commons, Portfolio, Residences, Manor, Village, House, Tower, Building, Center, Square → it IS a propertyTitle
+  * Names styled as headlines on the cover page or executive summary header → propertyTitle
+  * Examples: "Victorian Village Portfolio — 18 Units", "East 6th Street Flats", "The Gulch on 12th", "Parkview Apartments", "Riverside Lofts", "One University Place"
+  * NOT a propertyTitle: a plain address like "3814 East 6th Street" with no branding suffix
+  * If the OM cover shows BOTH a branded name AND an address, put the branded name in propertyTitle and the address in propertyAddress
+  * Do NOT put propertyTitle content into propertyDescription
 - propertyAddress = the full street address of the asset (e.g. "123 Main Street, Garden City, NY 11530"). Include street number, street name, city, state, and ZIP if present. This is a physical locator, not a description.
-- propertyDescription = the marketing summary or tagline used to describe the asset (e.g. "19-unit mixed-use property", "Trophy Class-A office tower with below-market rents", "Value-add multifamily opportunity"). This is typically a short phrase on the cover page or in the executive summary. Do NOT put the address here.
+- propertyDescription = the marketing summary or tagline used to describe the asset (e.g. "12-unit value-add garden-style apartment community", "Trophy Class-A office tower with below-market rents", "Value-add multifamily opportunity"). This is typically a sentence describing the asset class or investment thesis — NOT the property's proper name and NOT its street address.
 - If the OM only states an address with no separate marketing description, leave propertyDescription null.
 - If the OM only states a description with no parseable street address, leave propertyAddress null.
 - Never combine address and description into a single field.
@@ -1055,23 +1178,25 @@ LOT SIZE AND BUILDING SIZE — EXTRACT IN SQUARE FEET:
   * Use GBA if both GBA and NRA are present.
   * Return null if not stated.
 
-- For financials: extract GPR (Gross Potential Rent), vacancy, EGI, individual expense line items, NOI.
-- For expense line items: capture as array of [label, value] pairs (e.g. [["Property Taxes", "$42,000"], ["Insurance", "$8,500"]]).
+- For financials: extract the full income statement — GPR (current and proforma), vacancy, other income, EGI, all expense line items, NOI.
+- For expense line items: use the structured expenseItems array — each item has "label" (string), "amount" (annual dollars, number), and "pctOfEGI" (decimal if stated, else null). Extract EVERY named expense line. Do NOT use expenseLineItems (legacy).
+- For other income (laundry, parking, storage, late fees, etc.): use otherIncomeItems array with "label" and "amount".
+- noiCurrent = in-place NOI at current rents. noiProforma = stabilized/proforma NOI. noiSummaryStated = NOI from cover summary box.
 
 RENT BY UNIT TYPE — IMPORTANT:
-- OMs often state rents broken down by unit type (e.g. "studios $450 · 1bd $600 · 2bd $700").
-- These are per-type rent rates, NOT unit counts. Do NOT put them in expenseLineItems.
-- Extract them into rentByUnitType as one row per unit type, merging all stated information:
-  * rentCurrent = broker-stated / current / in-place rent for that unit type (number)
-  * rentProForma = pro forma / projected / stabilized rent (number)
-  * rentMarket = market rent (string — may be a range like "$750-900")
-  * count = number of units of this type (integer, if stated in a rent roll or unit mix table)
-  * sqftPerUnit = rentable area per unit of this type in square feet (number, if stated)
-  * parkingSlots = parking spaces included or allocated per unit of this type (integer, if stated)
-  * amenities = unit-level amenities for this unit type as a string array (e.g. ["in-unit W/D", "balcony", "dishwasher", "A/C"]). Only include amenities that differ by unit type. If all units share the same amenities, leave this null and put them in buildingAmenities instead.
-- Standard bedrooms mapping: studio/efficiency → 0, 1bd/1br → 1, 2bd/2br → 2, 3bd/3br → 3, 4bd → 4.
+- OMs often have a "Unit Mix" or "Rent Roll" table with one row per unit type.
+- Extract ALL rows into rentByUnitType — do not merge rows or skip any.
+- Column name mapping (OMs use varied labels — map them as follows):
+  * "Current Avg Rent", "In-Place Rent", "Current Rent", "Avg Rent" → rentCurrent (number, monthly)
+  * "Proforma Rent", "Pro Forma Rent", "Stabilized Rent", "Projected Rent" → rentProForma (number, monthly)
+  * "Market Rent", "Market Comparable", "Market Rate" → rentMarket (string — may be a range)
+  * "# Units", "Count", "Units" column → count (integer)
+  * "Avg SF", "SF/Unit", "Sqft" column → sqftPerUnit (number)
+- Standard bedrooms mapping: studio/efficiency → 0 bedrooms; 1bd/1br/1BR → 1; 2bd/2br/2BR → 2; 3bd/3br → 3.
 - Use a clean label for unitType: "Studio", "1 Bed", "2 Bed", "3 Bed", etc.
+- If a rent roll row has sub-types (e.g. "1BR Renovated" and "1BR Unrenovated"), keep them as separate rows with descriptive unitType labels.
 - Leave any field null if not stated for a given type.
+- Do NOT put rent roll data in expenseItems or additionalMetrics.
 
 BUILDING AMENITIES:
 - buildingAmenities = shared / common-area amenities that apply to the whole building as a string array.
@@ -1097,7 +1222,7 @@ FINANCING METRICS — extract if present:
 - For additional content not covered by named fields: use additionalSections for narrative prose sections (investment thesis, lease overview, value-add plan, etc.) and additionalMetrics for any tabular metrics (cap rate comps, market stats, demographics, etc.).
 - Return ONLY valid JSON — no markdown, no explanation, no prose outside the JSON.`
 
-const omExtractionUserPrompt = `Extract all information from this Offering Memorandum. Return this exact JSON structure (null for missing fields):
+const omExtractionUserPrompt = `Extract ALL information from this Offering Memorandum. Return ONLY this JSON structure (null for any field not present):
 
 {
   "brokerContact": {
@@ -1112,23 +1237,32 @@ const omExtractionUserPrompt = `Extract all information from this Offering Memor
   "askingPrice": number | null,
   "capRate": number | null,
   "capRateProForma": number | null,
-  "rentalYield": number | null,
+  "propertyTitle": string | null,
   "propertyAddress": string | null,
   "propertyDescription": string | null,
   "investmentHighlights": string[] | null,
+
   "yearBuilt": number | null,
   "yearRenovated": number | null,
   "stories": number | null,
   "zoning": string | null,
   "construction": string | null,
   "parking": string | null,
+  "parkingSpaces": number | null,
+  "buildingCount": number | null,
+  "totalUnits": number | null,
   "buildingAmenities": string[] | null,
   "lotSqft": number | null,
   "buildingSqft": number | null,
+  "rentableSF": number | null,
+  "avgUnitSF": number | null,
+  "walkScore": number | null,
+  "currentOccupancy": number | null,
+
   "rentByUnitType": [
     {
-      "unitType": "Studio",
-      "bedrooms": 0,
+      "unitType": string,
+      "bedrooms": number,
       "count": number | null,
       "sqftPerUnit": number | null,
       "parkingSlots": number | null,
@@ -1138,29 +1272,72 @@ const omExtractionUserPrompt = `Extract all information from this Offering Memor
       "amenities": string[] | null
     }
   ] | null,
+
+  "grossPotentialRentCurrent": number | null,
+  "grossPotentialRentProforma": number | null,
+  "grossPotentialRent": number | null,
+  "vacancyPct": number | null,
+  "vacancyLabel": string | null,
+  "otherIncomeItems": [{"label": string, "amount": number}] | null,
+  "effectiveGrossIncome": number | null,
+  "totalEffectiveGrossIncome": number | null,
+
+  "expenseItems": [
+    {"label": string, "amount": number, "pctOfEGI": number | null}
+  ] | null,
+  "totalExpenses": number | null,
+  "expenseRatioPct": number | null,
+  "noiCurrent": number | null,
+  "noiProforma": number | null,
+  "noiSummaryStated": number | null,
+
   "brokerNOI": number | null,
   "brokerNOIStabilized": number | null,
-  "grossPotentialRent": number | null,
-  "effectiveGrossIncome": number | null,
-  "totalExpenses": number | null,
-  "expenseLineItems": [["label", "value"], ...] | null,
-  "vacancyAssumption": number | null,
-  "vacancyLabel": string | null,
-  "dscr": number | null,
-  "stabilizedCashOnCash": number | null,
-  "financingInterestAnnual": number | null,
   "pricePerUnit": number | null,
   "pricePerSF": number | null,
   "grm": number | null,
-  "yearOneCashOnCash": number | null,
+  "cashOnCashCurrent": number | null,
   "fiveYearIRR": number | null,
-  "assumableDebt": number | null,
+  "dscr": number | null,
+
+  "valueAdd": {
+    "lowEstimate": number | null,
+    "highEstimate": number | null,
+    "unrenovatedUnits": number | null,
+    "costPerUnit": number | null
+  } | null,
+
+  "assumableDebtDetail": {
+    "balance": number | null,
+    "interestRate": number | null,
+    "maturityDate": string | null,
+    "loanType": string | null
+  } | null,
+
   "renovationCost": number | null,
   "claimedRenovationNOIUplift": number | null,
+
   "marketOverviewText": string | null,
-  "additionalMetrics": [{"label": string, "value": string}, ...] | null,
-  "additionalSections": [{"title": string, "content": string}, ...] | null
-}`
+  "additionalMetrics": [{"label": string, "value": string}] | null,
+  "additionalSections": [{"title": string, "content": string}] | null,
+
+  "keyFacts": string[] | null
+}
+
+FIELD NOTES:
+- keyFacts: capture 5–10 of the most important explicitly stated facts as verbatim short quotes from the OM — e.g. ["3 x 6-Unit Buildings", "Asking Price: $2,100,000", "Year Built: 1962", "Stories: 3 (per building)", "Cap Rate: 6.1%"]. These are used for quality validation after extraction. Prioritize physical attributes, price, and income figures.
+- capRate: use decimal (0.061 for 6.1%). If OM labels it "Proforma Cap Rate" or "Stabilized Cap Rate", put in capRateProForma instead.
+- currentOccupancy: decimal (0.94 for "17/18 units (94%)" or "94% occupied").
+- buildingCount: number of structures on the parcel. Extract from phrases like "3 x 6-Unit Buildings", "two buildings", "portfolio of 4 buildings" → integer count. Do NOT confuse with unit count.
+- totalUnits: total rental units in the property. When stated directly ("18 units", "24-unit building"), extract it. When described as "N x M-Unit Buildings" (e.g. "3 x 6-Unit Buildings"), compute N×M (this arithmetic derivation is permitted). Do NOT leave null when the count is trivially derivable.
+- stories: extract from "3-story", "stories: 3", "3 floors". When qualified as "per building" (e.g. "Stories: 3 (per building)"), still extract 3 — this is the per-building story count.
+- rentByUnitType: map OM rent roll columns as follows — "Current Avg Rent" or "In-Place Rent" → rentCurrent; "Proforma Rent" or "Stabilized Rent" → rentProForma; "Market Rent" or "Market Comparable" → rentMarket.
+- grossPotentialRentCurrent: GPR at current/in-place rents. grossPotentialRentProforma: GPR at proforma/stabilized rents.
+- noiCurrent: in-place NOI (current rents, current occupancy). noiProforma: stabilized/proforma NOI. noiSummaryStated: NOI from cover page summary box (may differ from P&L).
+- vacancyPct: decimal (0.04 for 4%). vacancyLabel: exact label from OM ("Vacancy & Credit Loss", "Economic Vacancy", etc.).
+- expenseItems: extract EVERY named expense line — do not skip any. amount is annual dollars.
+- otherIncomeItems: ancillary income below GPR (laundry, parking, storage, late fees, etc.).
+- valueAdd.lowEstimate/highEstimate: total value-add potential in dollars (e.g. $252,000–$294,000 → low=252000, high=294000).`
 
 // ---------------------------------------------------------------------------
 // ADR-108: Two-pass extraction — Pass 1 (classify) + Pass 2 (type-specific)
@@ -1220,13 +1397,18 @@ func omBuildExtractionSystemPrompt(propertyType string) string {
 		typeBlock = `
 TYPE-SPECIFIC INSTRUCTIONS — MULTIFAMILY / STUDENT HOUSING:
 1. Rent roll: extract ALL three rent columns per unit type — rentCurrent, rentProForma, rentMarket, count, sqftPerUnit.
-2. Full P&L: grossPotentialRentCurrent (and grossPotentialRentProforma if stated), vacancyPct, effectiveGrossIncome, all named expense rows in expenseItems (label, amount, pctOfEGI), total expenses, NOI.
-3. NOI cross-check: extract noiSummaryStated (from cover/summary box) AND noiComputedFromStatement (from P&L) separately — even if they differ.
-4. Return metrics: cashOnCashCurrent (Year 1 CoC), cashOnCashStabilized, fiveYearIRR, grm.
-5. Assumable debt: populate assumableDebtDetail (balance, interestRate, maturityDate, loanType) if stated.
-6. Value-add: populate valueAdd (lowEstimate, highEstimate, unrenovatedUnits, costPerUnit) if stated.
-7. Broker market section: populate brokerMarket (vacancyRate, rentGrowthYoY, jobGrowth, medianHHI, walkScore, capRateComprBps, submarketName, dataSource).
-8. Renovation economics: if the OM states a total renovation cost or per-unit budget, populate renovationCost (total dollars; multiply per-unit × unit count if stated per unit). If the OM states an expected NOI increase from renovation (e.g. "Year 2 NOI", "post-renovation NOI"), populate claimedRenovationNOIUplift as the INCREMENTAL NOI increase only — not the absolute stabilised NOI. If the OM only states a stabilised NOI without calling it a renovation uplift, leave claimedRenovationNOIUplift null.`
+2. Occupancy: extract currentOccupancy as a decimal (e.g. 0.944 for "17 of 18 units occupied" or "94.4% occupied"). Leave null if not stated.
+3. Full P&L: grossPotentialRentCurrent (and grossPotentialRentProforma if stated), vacancyPct, effectiveGrossIncome, all named expense rows in expenseItems (label, amount, pctOfEGI), total expenses, NOI.
+4. NOI cross-check: extract noiSummaryStated (from cover/summary box) AND noiComputedFromStatement (from P&L) separately — even if they differ.
+5. Return metrics: cashOnCashCurrent (Year 1 CoC), cashOnCashStabilized, fiveYearIRR, grm.
+6. Assumable debt: populate assumableDebtDetail (balance, interestRate, maturityDate, loanType) if stated.
+7. Value-add: populate valueAdd (lowEstimate, highEstimate, unrenovatedUnits, costPerUnit) if stated.
+8. Broker market section: populate brokerMarket (vacancyRate, rentGrowthYoY, jobGrowth, medianHHI, walkScore, capRateComprBps, submarketName, dataSource).
+9. Renovation economics: if the OM states a total renovation cost or per-unit budget, populate renovationCost (total dollars; multiply per-unit × unit count if stated per unit). If the OM states an expected NOI increase from renovation (e.g. "Year 2 NOI", "post-renovation NOI"), populate claimedRenovationNOIUplift as the INCREMENTAL NOI increase only — not the absolute stabilised NOI. If the OM only states a stabilised NOI without calling it a renovation uplift, leave claimedRenovationNOIUplift null.
+10. Building count and unit count: these are CRITICAL physical attributes — do not skip them.
+  - buildingCount: number of structures. Phrases like "3 x 6-Unit Buildings", "two buildings on parcel", "4-building campus" → extract the building count (3, 2, 4). This is NOT the unit count.
+  - totalUnits: total rental units across all buildings. May be stated directly ("18 units", "24-unit property") or derivable as N×M from "N x M-Unit Buildings" (e.g. "3 x 6-Unit Buildings" → 18). Computing N×M is REQUIRED here — this is an explicitly stated arithmetic relationship, not an inference.
+  - stories: extract from "3-story", "Stories: 3", "3 floors (per building)" → 3. The qualifier "per building" does not change the value — extract the number.`
 	case "nnn", "retail", "office":
 		typeBlock = `
 TYPE-SPECIFIC INSTRUCTIONS — NNN / RETAIL / OFFICE:
@@ -2749,6 +2931,36 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty, 
 			}
 		}
 
+		// ADR-113 Phase 7: typed column → om_data fallback for progressive fields.
+		// This ensures manual-entry deals produce equally rich memos as OM-uploaded deals.
+		if len(p.OtherIncomeItems) > 2 && string(p.OtherIncomeItems) != "null" {
+			var typedOtherIncome []omOtherIncomeItem
+			if json.Unmarshal(p.OtherIncomeItems, &typedOtherIncome) == nil && len(typedOtherIncome) > 0 {
+				om.OtherIncomeItems = typedOtherIncome
+				hasOMForProp = true
+			}
+		}
+		if v := numericToFloat(p.RenovationCost); v != nil {
+			om.RenovationCost = v
+		}
+		if v := numericToFloat(p.ClaimedRenovationNoiUplift); v != nil {
+			om.ClaimedRenovationNOIUplift = v
+		}
+		if len(p.ValueAddData) > 2 && string(p.ValueAddData) != "null" {
+			var typedValueAdd omValueAdd
+			if json.Unmarshal(p.ValueAddData, &typedValueAdd) == nil {
+				om.ValueAdd = &typedValueAdd
+			}
+		}
+		if len(p.BuildingAmenities) > 0 {
+			om.BuildingAmenities = p.BuildingAmenities
+			hasOMForProp = true
+		}
+		if p.MarketOverviewText.Valid && p.MarketOverviewText.String != "" {
+			om.MarketOverviewText = p.MarketOverviewText.String
+			hasOMForProp = true
+		}
+
 		if hasOMForProp {
 			// Update propType from OM if not in structured column.
 			if propType == "" && om.PropertyType != nil {
@@ -2840,6 +3052,16 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty, 
 					desc = desc[:300] + "…"
 				}
 				sb.WriteString(fmt.Sprintf("- Property description: %s\n", desc))
+			}
+			if len(om.BuildingAmenities) > 0 {
+				sb.WriteString(fmt.Sprintf("- Building amenities: %s\n", strings.Join(om.BuildingAmenities, ", ")))
+			}
+			if om.MarketOverviewText != "" {
+				text := om.MarketOverviewText
+				if len(text) > 400 {
+					text = text[:400] + "…"
+				}
+				sb.WriteString(fmt.Sprintf("- Broker market context: %s\n", text))
 			}
 		}
 
@@ -3163,6 +3385,380 @@ func buildPipelineMemoPrompt(dealName string, props []queries.PipelineProperty, 
 func coalesceFloat(a, b *float64) *float64 {
 	if a != nil { return a }
 	return b
+}
+
+// ---------------------------------------------------------------------------
+// Pass 3 — Extraction validation
+// ---------------------------------------------------------------------------
+
+// omExtractionIssue is a single field-level discrepancy found during validation.
+// Stored in pipeline_properties.extraction_issues and surfaced to the user in the wizard.
+type omExtractionIssue struct {
+	Field    string `json:"field"`    // e.g. "buildingCount"
+	Tab      string `json:"tab"`      // "property" | "pricing" | "income" | "expenses" | "rentroll"
+	Severity string `json:"severity"` // "high" | "medium"
+	OmSays   string `json:"omSays"`   // verbatim quote or close paraphrase from OM
+	Message  string `json:"message"`  // user-facing: "OM states '3 x 6-Unit Buildings' — please verify Number of Buildings"
+}
+
+const omExtractionCheckSystemPrompt = `You are auditing a real estate data extraction. You will be given:
+1. Key facts quoted verbatim from the offering memorandum
+2. The extracted data JSON
+
+Your job: identify fields that were clearly missed or extracted incorrectly.
+
+Rules:
+- Only flag EXPLICIT contradictions — the OM fact plainly states a value but extraction returned null or a wrong value
+- Do NOT flag inferences or calculations (e.g. do not say cap rate could be derived)
+- Maximum 5 issues — only the most impactful ones for a buyer's decision
+- Prioritize: buildingCount, totalUnits, stories, units, askingPrice, yearBuilt, brokerNOI, vacancyPct
+- message must be plain English written for a busy real estate professional (not a developer)
+- Return valid JSON only — no markdown, no prose`
+
+const omExtractionCheckUserPrompt = `Key facts from the offering memorandum (verbatim quotes):
+%s
+
+Extracted data (key fields only):
+%s
+
+Identify any obvious misses. Return a JSON array, or [] if none found:
+[{
+  "field": string,      // exact field name that was missed or wrong
+  "tab": "property" | "pricing" | "income" | "expenses" | "rentroll",
+  "severity": "high" | "medium",
+  "omSays": string,     // the relevant key fact (short, verbatim)
+  "message": string     // e.g. "OM states '3 x 6-Unit Buildings' — please verify Number of Buildings"
+}]`
+
+// validateOMExtraction runs a lightweight text-only validation pass using keyFacts
+// captured during Pass 2. No PDF re-read — uses Haiku for speed.
+func (h *Handler) validateOMExtraction(ctx context.Context, keyFacts []string, extracted *omData) []omExtractionIssue {
+	if len(keyFacts) == 0 {
+		return nil
+	}
+
+	// Build a slim extracted-data summary — only checkable high-value fields.
+	type extractedSummary struct {
+		BuildingCount  *int     `json:"buildingCount"`
+		TotalUnits     *int     `json:"totalUnits"`
+		Units          int      `json:"rentRollUnitCount"` // sum from rentByUnitType
+		Stories        *int     `json:"stories"`
+		YearBuilt      *int     `json:"yearBuilt"`
+		BuildingSqft   *float64 `json:"buildingSqft"`
+		AskingPrice    *float64 `json:"askingPrice"`
+		CapRate        *float64 `json:"capRate"`
+		BrokerNOI      *float64 `json:"brokerNOI"`
+		GPRCurrent     *float64 `json:"grossPotentialRentCurrent"`
+		VacancyPct     *float64 `json:"vacancyPct"`
+		ExpenseCount   int      `json:"expenseItemCount"`
+		RentRollRows   int      `json:"rentRollRows"`
+	}
+	unitCount := 0
+	for _, r := range extracted.RentByUnitType {
+		if r.Count != nil {
+			unitCount += *r.Count
+		}
+	}
+	summary := extractedSummary{
+		BuildingCount: extracted.BuildingCount,
+		TotalUnits:    extracted.TotalUnits,
+		Units:         unitCount,
+		Stories:       extracted.Stories,
+		YearBuilt:     extracted.YearBuilt,
+		BuildingSqft:  extracted.BuildingSqft,
+		AskingPrice:   extracted.AskingPrice,
+		CapRate:       extracted.CapRate,
+		BrokerNOI:     extracted.BrokerNOI,
+		GPRCurrent:    extracted.GrossPotentialRentCurrent,
+		VacancyPct:    extracted.VacancyPct,
+		ExpenseCount:  len(extracted.ExpenseItems),
+		RentRollRows:  len(extracted.RentByUnitType),
+	}
+	summaryJSON, _ := json.MarshalIndent(summary, "", "  ")
+
+	// Format key facts as numbered list.
+	var factsStr strings.Builder
+	for i, f := range keyFacts {
+		fmt.Fprintf(&factsStr, "%d. %s\n", i+1, f)
+	}
+
+	userMsg := fmt.Sprintf(omExtractionCheckUserPrompt, factsStr.String(), string(summaryJSON))
+
+	reqBody := anthropicDocumentRequest{
+		Model:     "claude-haiku-4-5-20251001",
+		MaxTokens: 1024,
+		System:    omExtractionCheckSystemPrompt,
+		Messages: []anthropicDocumentMsg{
+			{Role: "user", Content: []interface{}{anthropicTextBlock{Type: "text", Text: userMsg}}},
+		},
+	}
+
+	bodyBytes, _ := json.Marshal(reqBody)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", h.cfg.AI.AnthropicAPIKey)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+
+	httpResp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil
+	}
+	defer httpResp.Body.Close()
+	respBytes, _ := io.ReadAll(httpResp.Body)
+
+	var envelope struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(respBytes, &envelope) != nil || len(envelope.Content) == 0 {
+		return nil
+	}
+	rawText := strings.TrimSpace(envelope.Content[0].Text)
+	// Strip markdown fences if present.
+	if strings.HasPrefix(rawText, "```") {
+		lines := strings.Split(rawText, "\n")
+		if len(lines) >= 3 {
+			rawText = strings.Join(lines[1:len(lines)-1], "\n")
+		}
+	}
+
+	var issues []omExtractionIssue
+	if json.Unmarshal([]byte(rawText), &issues) != nil {
+		return nil
+	}
+	return issues
+}
+
+// parseUSAddressParts extracts street, city, state, and ZIP from a standard US address string.
+// Handles "Street, City, ST NNNNN" and "Street, City, ST NNNNN-NNNN" formats.
+// Returns empty strings if pattern does not match.
+// street is the portion before the city — useful for storing only the street in the address column.
+var usAddrRe = regexp.MustCompile(`,\s*([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$`)
+
+func parseUSAddressParts(addr string) (street, city, state, zip string) {
+	addr = strings.TrimSpace(addr)
+	loc := usAddrRe.FindStringIndex(addr)
+	if loc == nil {
+		return
+	}
+	m := usAddrRe.FindStringSubmatch(addr)
+	state = strings.ToUpper(m[1])
+	zip = m[2]
+	rest := strings.TrimSpace(addr[:loc[0]])
+	parts := strings.Split(rest, ",")
+	city = strings.TrimSpace(parts[len(parts)-1])
+	if len(parts) > 1 {
+		street = strings.TrimSpace(strings.Join(parts[:len(parts)-1], ","))
+	} else {
+		street = rest // no city separator found; keep rest as street
+	}
+	return
+}
+
+// omComputeUnits sums unit counts from OM rent roll rows.
+func omComputeUnits(rows []omRentByUnitType) *int {
+	if len(rows) == 0 {
+		return nil
+	}
+	total := 0
+	for _, r := range rows {
+		if r.Count != nil {
+			total += *r.Count
+		}
+	}
+	if total == 0 {
+		return nil
+	}
+	return &total
+}
+
+// omParseRentString tries to parse a dollar/numeric string like "$1,495" or "1495" to float64.
+func omParseRentString(s string) *float64 {
+	clean := strings.NewReplacer("$", "", ",", "").Replace(strings.TrimSpace(s))
+	// For ranges like "750-900", take the average.
+	if idx := strings.Index(clean, "-"); idx > 0 {
+		lo, err1 := strconv.ParseFloat(clean[:idx], 64)
+		hi, err2 := strconv.ParseFloat(clean[idx+1:], 64)
+		if err1 == nil && err2 == nil {
+			avg := (lo + hi) / 2
+			return &avg
+		}
+	}
+	if v, err := strconv.ParseFloat(clean, 64); err == nil {
+		return &v
+	}
+	return nil
+}
+
+// omRentToUnitMixJSON converts OM rent-by-unit-type rows to the UnitMixRow JSONB format
+// expected by the wizard and stored in the unit_mix column.
+func omRentToUnitMixJSON(rows []omRentByUnitType) []byte {
+	if len(rows) == 0 {
+		return nil
+	}
+	type unitMixRow struct {
+		Type         string   `json:"type"`
+		Count        int      `json:"count"`
+		Beds         *int     `json:"beds"`
+		Baths        *float64 `json:"baths"`
+		SqftPerUnit  *float64 `json:"sqftPerUnit"`
+		RentCurrent  *float64 `json:"rentCurrent"`
+		RentProForma *float64 `json:"rentProForma"`
+		RentMarket   *float64 `json:"rentMarket"`
+		OccupancyPct *float64 `json:"occupancyPct"`
+		PricePerUnit *float64 `json:"pricePerUnit"`
+		BuildingLabel *string `json:"buildingLabel"`
+	}
+	out := make([]unitMixRow, 0, len(rows))
+	for _, r := range rows {
+		beds := r.Bedrooms
+		cnt := 0
+		if r.Count != nil {
+			cnt = *r.Count
+		}
+		// Resolve market rent: prefer numeric avg, fall back to parsing string.
+		var mktRent *float64
+		if r.RentMarket != nil {
+			mktRent = omParseRentString(*r.RentMarket)
+		}
+		out = append(out, unitMixRow{
+			Type:         r.UnitType,
+			Count:        cnt,
+			Beds:         &beds,
+			SqftPerUnit:  r.SqftPerUnit,
+			RentCurrent:  r.RentCurrent,
+			RentProForma: r.RentProForma,
+			RentMarket:   mktRent,
+		})
+	}
+	b, _ := json.Marshal(out)
+	return b
+}
+
+// omExpenseItemsJSON converts OM expense items to the ExpenseItem JSONB format.
+func omExpenseItemsJSON(items []omExpenseItem) []byte {
+	if len(items) == 0 {
+		return nil
+	}
+	type expenseItem struct {
+		Label  string   `json:"label"`
+		Amount float64  `json:"amount"`
+		Pct    *float64 `json:"pct,omitempty"`
+	}
+	out := make([]expenseItem, 0, len(items))
+	for _, e := range items {
+		out = append(out, expenseItem{Label: e.Label, Amount: e.Amount, Pct: e.PctOfEGI})
+	}
+	b, _ := json.Marshal(out)
+	return b
+}
+
+// omBrokerContactJSON converts an OM broker contact to the BrokerContact JSONB format.
+func omBrokerContactJSON(bc *omBrokerContact) []byte {
+	if bc == nil {
+		return nil
+	}
+	type brokerContact struct {
+		Name    *string `json:"name"`
+		Title   *string `json:"title"`
+		Company *string `json:"company"`
+		Phone   *string `json:"phone"`
+		Email   *string `json:"email"`
+		License *string `json:"license"`
+	}
+	b, _ := json.Marshal(brokerContact{
+		Name:    bc.Name,
+		Title:   bc.Title,
+		Company: bc.Company,
+		Phone:   bc.Phone,
+		Email:   bc.Email,
+		License: bc.LicenseNumber,
+	})
+	return b
+}
+
+// omTenantsJSON converts OM tenant schedule rows to the CommercialTenant JSONB format.
+func omTenantsJSON(tenants []omTenant) []byte {
+	if len(tenants) == 0 {
+		return nil
+	}
+	type commercialTenant struct {
+		TenantName       *string  `json:"tenantName"`
+		Sqft             *float64 `json:"sqft"`
+		MonthlyRent      *float64 `json:"monthlyRent"`
+		AnnualRent       *float64 `json:"annualRent"`
+		LeaseType        *string  `json:"leaseType"`
+		LeaseExpiry      *string  `json:"leaseExpiry"`
+		AnnualRentBumpPct *float64 `json:"annualRentBumpPct"`
+	}
+	out := make([]commercialTenant, 0, len(tenants))
+	for _, t := range tenants {
+		name := t.TenantName
+		var monthlyRent *float64
+		if t.AnnualRent != nil {
+			v := *t.AnnualRent / 12
+			monthlyRent = &v
+		}
+		out = append(out, commercialTenant{
+			TenantName:       &name,
+			Sqft:             t.SquareFeet,
+			MonthlyRent:      monthlyRent,
+			AnnualRent:       t.AnnualRent,
+			LeaseType:        t.LeaseType,
+			LeaseExpiry:      t.LeaseExpiry,
+			AnnualRentBumpPct: t.AnnualRentBumpPct,
+		})
+	}
+	b, _ := json.Marshal(out)
+	return b
+}
+
+// omOtherIncomeJSON converts OM other income items to the OtherIncomeItem JSONB format.
+func omOtherIncomeJSON(items []omOtherIncomeItem) []byte {
+	if len(items) == 0 {
+		return nil
+	}
+	type otherIncomeItem struct {
+		Label  string  `json:"label"`
+		Amount float64 `json:"amount"`
+	}
+	out := make([]otherIncomeItem, 0, len(items))
+	for _, item := range items {
+		out = append(out, otherIncomeItem{Label: item.Label, Amount: item.Amount})
+	}
+	b, _ := json.Marshal(out)
+	return b
+}
+
+// omValueAddJSON converts an OM value-add block to JSONB bytes.
+func omValueAddJSON(va *omValueAdd) []byte {
+	if va == nil {
+		return nil
+	}
+	b, _ := json.Marshal(va)
+	return b
+}
+
+// omHighlightsJSON marshals a string slice to JSONB bytes, returning nil for empty/nil input.
+func omHighlightsJSON(highlights []string) []byte {
+	if len(highlights) == 0 {
+		return nil
+	}
+	b, _ := json.Marshal(highlights)
+	return b
+}
+
+// strPtrVal dereferences a *string safely, returning "" for nil.
+func strPtrVal(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // buildTypeSpecificMemoBlock returns type-dispatched analysis instructions for Claude.

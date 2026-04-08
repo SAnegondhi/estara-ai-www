@@ -87,6 +87,24 @@ func (h *AnalysisHandler) QueueAnalysis(w http.ResponseWriter, r *http.Request) 
 		"cache_key", req.CacheKey,
 	)
 
+	// Pre-queue cache check: if a valid cached result exists, return immediately
+	// so the client can fetch the report directly — avoids the SSE race condition
+	// where the job completes before the client opens the stream.
+	if !req.ForceRefresh && h.cache != nil && req.CacheKey != "" {
+		if cached, err := h.cache.Get(ctx, user.UserID, req.CacheKey); err == nil && len(cached) > 0 {
+			h.logger.Info("returning cached analysis (pre-queue)",
+				"user_id", user.UserID,
+				"cache_key", req.CacheKey,
+			)
+			httputil.JSON(w, http.StatusOK, agents.AnalysisJobResponse{
+				Success:  true,
+				Cached:   true,
+				CacheKey: req.CacheKey,
+			})
+			return
+		}
+	}
+
 	// Create job
 	job := queue.NewJob(queue.JobTypeMarketAnalysis, user.UserID, map[string]interface{}{
 		"location":     req.Location,

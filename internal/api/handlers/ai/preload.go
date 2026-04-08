@@ -199,11 +199,13 @@ func (h *Handler) PreloadReports(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Batch fetch cache data for all items to populate preview/hasReport
+	// Batch fetch cache data for all items to populate preview/hasReport.
+	// analysis_cache uses a different key format ("analysis_{loc}") than market_analysis_reports
+	// ("market_analysis:{loc}"). Derive the correct key from location.
 	if len(analysisItems) > 0 {
 		cacheKeys := make([]string, len(analysisItems))
 		for i, item := range analysisItems {
-			cacheKeys[i] = item.CacheKey
+			cacheKeys[i] = locationToAnalysisCacheKey(item.Location)
 		}
 
 		cachedItems, err := h.store.Q().BatchGetAnalysisCacheByKeys(ctx, cacheKeys)
@@ -215,7 +217,7 @@ func (h *Handler) PreloadReports(w http.ResponseWriter, r *http.Request) {
 
 			// Populate preview and hasReport for each item
 			for i := range analysisItems {
-				if cachedData, found := cacheMap[analysisItems[i].CacheKey]; found {
+				if cachedData, found := cacheMap[locationToAnalysisCacheKey(analysisItems[i].Location)]; found {
 					content := string(cachedData.Content)
 					fullReport := ""
 					if cachedData.FullReport.Valid {
@@ -260,7 +262,7 @@ func convertToAnalysisItemBasic(report queries.MarketAnalysisReport) AnalysisIte
 		ID:                 report.ID,
 		Location:           report.Location,
 		LocationNormalized: report.LocationNormalized,
-		CacheKey:           report.CacheKey,
+		CacheKey:           locationToAnalysisCacheKey(report.Location),
 		Status:             report.Status,
 		GeneratedAt:        generatedAt,
 		CreatedAt:          report.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
@@ -274,8 +276,9 @@ func convertToAnalysisItemBasic(report queries.MarketAnalysisReport) AnalysisIte
 func (h *Handler) convertToAnalysisItem(ctx context.Context, report queries.MarketAnalysisReport) AnalysisItem {
 	item := convertToAnalysisItemBasic(report)
 
-	// Try to fetch from cache to get preview and hasReport
-	cachedData, err := h.store.Q().GetAnalysisCacheByKey(ctx, report.CacheKey)
+	// Try to fetch from cache to get preview and hasReport.
+	// analysis_cache key differs from market_analysis_reports.cache_key — derive from location.
+	cachedData, err := h.store.Q().GetAnalysisCacheByKey(ctx, locationToAnalysisCacheKey(report.Location))
 	if err == nil {
 		content := string(cachedData.Content)
 		fullReport := ""
@@ -308,7 +311,7 @@ func convertToAnalysisItemWithDistanceBasic(report queries.ListReportsByProximit
 		ID:                 report.ID,
 		Location:           report.Location,
 		LocationNormalized: report.LocationNormalized,
-		CacheKey:           report.CacheKey,
+		CacheKey:           locationToAnalysisCacheKey(report.Location),
 		Status:             report.Status,
 		GeneratedAt:        generatedAt,
 		CreatedAt:          report.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
@@ -323,8 +326,9 @@ func convertToAnalysisItemWithDistanceBasic(report queries.ListReportsByProximit
 func (h *Handler) convertToAnalysisItemWithDistance(ctx context.Context, report queries.ListReportsByProximityRow) AnalysisItem {
 	item := convertToAnalysisItemWithDistanceBasic(report)
 
-	// Try to fetch from cache to get preview and hasReport
-	cachedData, err := h.store.Q().GetAnalysisCacheByKey(ctx, report.CacheKey)
+	// Try to fetch from cache to get preview and hasReport.
+	// analysis_cache key differs from market_analysis_reports.cache_key — derive from location.
+	cachedData, err := h.store.Q().GetAnalysisCacheByKey(ctx, locationToAnalysisCacheKey(report.Location))
 	if err == nil {
 		content := string(cachedData.Content)
 		fullReport := ""

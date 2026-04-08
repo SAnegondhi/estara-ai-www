@@ -3,13 +3,20 @@ package ai
 // ADR-103: Pipeline → Frontier integration helpers.
 // Maps pipeline_properties rows to investment.ScoredProperty so they can flow
 // through the existing frontier BuildCohorts pipeline (pinned cohort semantics).
+//
+// ADR-113 (type-aware peer discovery): discoverPipelinePeers finds comparable
+// CRE/residential properties so Configs 1 and 2 can populate when a pipeline deal
+// is analysed. Commercial types route to Claude (LoopNet/Crexi); residential types
+// route through the normal HasData/BrightData priority chain.
 
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	queries "github.com/estara-ai/www/internal/db/queries"
 	"github.com/estara-ai/www/internal/services/investment"
+	"github.com/estara-ai/www/internal/services/property/providers"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -149,4 +156,150 @@ func numericToFloat(n pgtype.Numeric) (float64, bool) {
 		return 0, false
 	}
 	return f.Float64, true
+}
+
+// mapPipelineTypeToProviderType converts a pipeline property type string to the
+// corresponding providers.PropertyType for comparable peer search.
+// Returns ("", false) for types where peer discovery is not applicable.
+func mapPipelineTypeToProviderType(pipelineType string) (providers.PropertyType, bool) {
+	switch pipelineType {
+	case "sfh":
+		return providers.PropertyTypeSingleFamily, true
+	case "condo":
+		return providers.PropertyTypeCondo, true
+	case "townhouse":
+		return providers.PropertyTypeTownhouse, true
+	case "multifamily":
+		return providers.PropertyTypeMultiFamilyCRE, true
+	case "nnn":
+		return providers.PropertyTypeNNN, true
+	case "retail":
+		return providers.PropertyTypeRetail, true
+	case "office", "commercial":
+		return providers.PropertyTypeOffice, true
+	case "industrial":
+		return providers.PropertyTypeIndustrial, true
+	case "warehouse":
+		return providers.PropertyTypeWarehouse, true
+	case "self_storage":
+		return providers.PropertyTypeSelfStorage, true
+	case "mixed_use":
+		return providers.PropertyTypeMixedUse, true
+	case "student_housing":
+		return providers.PropertyTypeStudentHousing, true
+	case "senior_housing":
+		return providers.PropertyTypeSeniorHousing, true
+	default:
+		return "", false // portfolio, other → skip peer discovery
+	}
+}
+
+// peerGroupKey uniquely identifies a peer discovery group by city, state, and property type.
+type peerGroupKey struct {
+	city         string
+	state        string
+	propertyType string
+}
+
+// discoverPipelinePeers finds comparable properties for Frontier Configs 1/2.
+// Groups pinned properties by (city, state, propertyType), searches for peers at
+// ±40% of median group price, and returns non-pinned ScoredProperty slices.
+// Peers are searched using the type-aware property finder (CRE → Claude/LoopNet,
+// residential → HasData/BrightData priority chain).
+func (h *Handler) discoverPipelinePeers(
+	ctx context.Context,
+	mapped []investment.ScoredProperty,
+) []investment.ScoredProperty {
+	if h.propertyFinder == nil {
+		return nil
+	}
+
+	// Build a set of pinned IDs to avoid collisions.
+	pinnedIDs := make(map[string]bool, len(mapped))
+	for _, sp := range mapped {
+		pinnedIDs[sp.Property.ID] = true
+	}
+
+	// Group by (city, state, propertyType) and collect prices.
+	groups := make(map[peerGroupKey][]int)
+	for _, sp := range mapped {
+		key := peerGroupKey{
+			city:         sp.Property.City,
+			state:        sp.Property.State,
+			propertyType: sp.Property.PropertyType,
+		}
+		groups[key] = append(groups[key], sp.Property.Price)
+	}
+
+	var peers []investment.ScoredProperty
+
+	for key, prices := range groups {
+		providerType, ok := mapPipelineTypeToProviderType(key.propertyType)
+		if !ok {
+			continue
+		}
+
+		// Compute median price for the group.
+		sorted := make([]int, len(prices))
+		copy(sorted, prices)
+		sort.Ints(sorted)
+		median := sorted[len(sorted)/2]
+
+		minPrice := int(float64(median) * 0.6)
+		maxPrice := int(float64(median) * 1.4)
+
+		resp, err := h.propertyFinder.Search(ctx, providers.SearchParams{
+			City:         key.city,
+			State:        key.state,
+			PropertyType: providerType,
+			MinPrice:     minPrice,
+			MaxPrice:     maxPrice,
+			Limit:        20,
+		})
+		if err != nil {
+			h.logger.Warn("peer discovery search failed",
+				"city", key.city,
+				"state", key.state,
+				"type", key.propertyType,
+				"error", err,
+			)
+			continue
+		}
+
+		for _, prop := range resp.Properties {
+			if pinnedIDs[prop.ID] {
+				continue
+			}
+			// Resolve income: for CRE types, NOI is EstimatedRent (annual);
+			// for residential, use EstimatedRent directly.
+			estimatedRent := prop.EstimatedRent
+			if providers.IsCommercialPropertyType(providerType) && prop.NOI > 0 && estimatedRent == 0 {
+				estimatedRent = prop.NOI
+			}
+
+			peers = append(peers, investment.ScoredProperty{
+				Property: investment.Property{
+					ID:            prop.ID,
+					Address:       prop.Address,
+					City:          prop.City,
+					State:         prop.State,
+					ZipCode:       prop.ZipCode,
+					Price:         prop.Price,
+					Beds:          prop.Beds,
+					Baths:         prop.Baths,
+					Sqft:          prop.Sqft,
+					EstimatedRent: estimatedRent,
+					YearBuilt:     prop.YearBuilt,
+					PropertyType:  string(prop.PropertyType),
+				},
+				OverallScore: 50, // below pinned deal score (60) — won't dominate Config 0
+			})
+
+			if len(peers) >= 30 {
+				return peers
+			}
+		}
+	}
+
+	return peers
 }

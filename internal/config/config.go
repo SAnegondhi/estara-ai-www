@@ -150,10 +150,11 @@ type PropertyConfig struct {
 
 // MarketConfig holds market data configuration
 type MarketConfig struct {
-	FREDAPIKey   string `mapstructure:"FRED_API_KEY"`
-	CensusAPIKey string `mapstructure:"CENSUS_API_KEY"`
-	BLSAPIKey    string `mapstructure:"BLS_API_KEY"`
-	CacheTTL     time.Duration
+	FREDAPIKey     string `mapstructure:"FRED_API_KEY"`
+	CensusAPIKey   string `mapstructure:"CENSUS_API_KEY"`
+	BLSAPIKey      string `mapstructure:"BLS_API_KEY"`
+	GeocodioAPIKey string `mapstructure:"GEOCODIO_API_KEY"`
+	CacheTTL       time.Duration
 }
 
 // CronConfig holds cron job configuration
@@ -277,6 +278,7 @@ func Load() (*Config, error) {
 		BrightDataAPIKey:      v.GetString("BRIGHTDATA_API_KEY"),
 		HasDataEnabled:        v.GetBool("PROPERTY_FINDER_HASDATA_ENABLED"),
 		HasDataAPIKey:         v.GetString("HASDATA_API_KEY"),
+		ClaudeEnabled:         v.GetBool("PROPERTY_FINDER_CLAUDE_ENABLED"),
 		PublicEnabled:         v.GetBool("PROPERTY_FINDER_PUBLIC_ENABLED"),
 		CacheTTL:              24 * time.Hour,
 		EnrichmentConcurrency: v.GetInt("HASDATA_CONCURRENT_CONNECTIONS"),
